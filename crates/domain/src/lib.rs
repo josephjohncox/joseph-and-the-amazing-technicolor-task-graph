@@ -1117,8 +1117,9 @@ impl GoalState {
                     title: Some(format!("Unify review round {round}")),
                     subgoal_id: Some(format!("review-round-{round}")),
                     prompt: format!(
-                        "Unify critic reviews for goal '{}'. Decide whether the actor output satisfies the objective and identify any retry work.",
-                        self.goal.title
+                        "Unify critic reviews for goal '{}'. Decide whether the actor output satisfies the objective and identify any retry work.{}",
+                        self.goal.title,
+                        self.goal.review_policy.doctrine.prompt_summary()
                     ),
                     reason: "join reviewer branches into a single satisfaction decision"
                         .to_string(),
@@ -1132,6 +1133,7 @@ impl GoalState {
                             self.goal.review_policy.actor_critic.reward_threshold,
                         ),
                     }),
+                    review_doctrine: Some(self.goal.review_policy.doctrine.clone()),
                     execution: None,
                     priority: TaskPriority::High,
                     tags: vec!["review".to_string(), "unification".to_string()],
@@ -1216,6 +1218,7 @@ impl GoalState {
                     budget: None,
                     sandbox: None,
                     done_criteria: None,
+                    review_doctrine: None,
                     execution: None,
                     priority: TaskPriority::Normal,
                     tags: vec!["steering".to_string()],
@@ -1250,6 +1253,7 @@ impl GoalState {
                         artifact_exists: true,
                         validator_score_min: Some(self.goal.research_policy.min_confidence),
                     }),
+                    review_doctrine: None,
                     execution: None,
                     priority: TaskPriority::High,
                     tags: vec!["steering".to_string(), "research".to_string()],
@@ -1257,6 +1261,72 @@ impl GoalState {
                 spawn_policy.ensure_spawn_allowed(&root, std::slice::from_ref(&request))?;
                 let task_id = self.insert_child_task(root.id, &root, request)?;
                 format!("steering_research_requested:{task_id}")
+            }
+            SteeringDirectiveKind::RequestStandardReview {
+                check,
+                topic,
+                reason,
+            } => {
+                if !self.goal.control_policy.allow_task_injection {
+                    return Err(DomainError::SteeringDenied(
+                        "task injection is disabled".to_string(),
+                    ));
+                }
+                if check.is_research_like() && !self.goal.research_policy.enabled {
+                    return Err(DomainError::SteeringDenied(
+                        "research tasks are disabled for this goal".to_string(),
+                    ));
+                }
+                let root = self.root_task()?.clone();
+                let target_task_id = directive.task_id;
+                let question = check.research_question(topic.as_deref(), &self.goal.title);
+                let prompt = if check.is_research_like() {
+                    format!(
+                        "Answer this state-of-the-art research question with primary or canonical sources, confidence, and a concrete information-use plan: {question}"
+                    )
+                } else {
+                    format!(
+                        "{}{}",
+                        check.review_prompt(topic.as_deref(), &self.goal.title),
+                        self.goal.review_policy.doctrine.prompt_summary()
+                    )
+                };
+                let request = ChildTaskRequest {
+                    role: check.worker_role(),
+                    purpose: if check.is_research_like() {
+                        Some(TaskPurpose::Research { question })
+                    } else if let Some(subject_id) = target_task_id {
+                        Some(TaskPurpose::Review {
+                            subject_id,
+                            round: 0,
+                        })
+                    } else {
+                        Some(TaskPurpose::Work)
+                    },
+                    title: Some(format!("Standard review: {}", check.title())),
+                    subgoal_id: Some("standard-review-steering".to_string()),
+                    prompt,
+                    reason: reason.clone(),
+                    dependencies: target_task_id.into_iter().collect(),
+                    budget: None,
+                    sandbox: None,
+                    done_criteria: Some(DoneCriteria {
+                        tests_pass: false,
+                        artifact_exists: true,
+                        validator_score_min: Some(if check.is_research_like() {
+                            self.goal.research_policy.min_confidence
+                        } else {
+                            self.goal.review_policy.actor_critic.reward_threshold
+                        }),
+                    }),
+                    review_doctrine: Some(self.goal.review_policy.doctrine.clone()),
+                    execution: None,
+                    priority: TaskPriority::High,
+                    tags: check.tags(),
+                };
+                spawn_policy.ensure_spawn_allowed(&root, std::slice::from_ref(&request))?;
+                let task_id = self.insert_child_task(root.id, &root, request)?;
+                format!("steering_standard_review_requested:{task_id}:{}", check.as_str())
             }
             SteeringDirectiveKind::Pause { reason } => {
                 self.status = GoalStatus::Paused;
@@ -1525,6 +1595,7 @@ impl GoalState {
                 budget: Some(target.budget.child_budget()),
                 sandbox: Some(target.sandbox.clone()),
                 done_criteria: Some(target.done_criteria.clone()),
+                review_doctrine: Some(target.review_doctrine.clone()),
                 execution: Some(execution),
                 priority: target.priority.clone(),
                 tags,
@@ -1721,6 +1792,7 @@ impl GoalState {
                 artifact_exists: true,
                 validator_score_min: Some(actor_critic.reward_threshold),
             }),
+            review_doctrine: Some(self.goal.review_policy.doctrine.clone()),
             execution: None,
             priority: TaskPriority::High,
             tags: vec!["actor_retry".to_string(), "review_feedback".to_string()],
@@ -1757,8 +1829,9 @@ impl GoalState {
                     title: Some(format!("Critic review round {round}")),
                     subgoal_id: Some(format!("review-round-{round}")),
                     prompt: format!(
-                        "Critique goal '{}'. Review actor artifacts against the objective, done criteria, budget, safety constraints, and missing evidence. Return structured findings and a satisfaction score.",
-                        self.goal.title
+                        "Critique goal '{}'. Review actor artifacts against the objective, done criteria, budget, safety constraints, and missing evidence. Return structured findings and a satisfaction score.{}",
+                        self.goal.title,
+                        self.goal.review_policy.doctrine.prompt_summary()
                     ),
                     reason: "actor output requires independent critic review before goal satisfaction".to_string(),
                     dependencies: subject_task_ids.clone(),
@@ -1769,6 +1842,7 @@ impl GoalState {
                         artifact_exists: true,
                         validator_score_min: Some(self.goal.review_policy.actor_critic.reward_threshold),
                     }),
+                    review_doctrine: Some(self.goal.review_policy.doctrine.clone()),
                     execution: None,
                     priority: TaskPriority::High,
                     tags: vec!["review".to_string(), "critic".to_string()],
@@ -1925,8 +1999,9 @@ impl GoalState {
                         .clone()
                         .or_else(|| Some(format!("branch-group-{}", group.id))),
                     prompt: format!(
-                        "Compare branch candidates for group {} and vote for one implementation. Consider correctness, evidence, maintainability, risk, tests, and goal fit. Return a structured branch_vote with selected_task_id.",
-                        group.id
+                        "Compare branch candidates for group {} and vote for one implementation. Consider correctness, evidence, maintainability, risk, tests, and goal fit. Return a structured branch_vote with selected_task_id.{}",
+                        group.id,
+                        self.goal.review_policy.doctrine.prompt_summary()
                     ),
                     reason: "branch candidates require independent vote before selection"
                         .to_string(),
@@ -1940,6 +2015,7 @@ impl GoalState {
                             self.goal.review_policy.actor_critic.reward_threshold,
                         ),
                     }),
+                    review_doctrine: Some(self.goal.review_policy.doctrine.clone()),
                     execution: None,
                     priority: TaskPriority::High,
                     tags: vec![
@@ -1987,8 +2063,9 @@ impl GoalState {
                 .clone()
                 .or_else(|| Some(format!("branch-group-{}", group.id))),
             prompt: format!(
-                "Unify branch group {}. Read candidate artifacts and vote tasks, choose the implementation that best satisfies the goal, and return a structured branch_vote with selected_task_id plus rationale.",
-                group.id
+                "Unify branch group {}. Read candidate artifacts and vote tasks, choose the implementation that best satisfies the goal, and return a structured branch_vote with selected_task_id plus rationale.{}",
+                group.id,
+                self.goal.review_policy.doctrine.prompt_summary()
             ),
             reason: "join branch votes into a single candidate selection".to_string(),
             dependencies,
@@ -1999,6 +2076,7 @@ impl GoalState {
                 artifact_exists: true,
                 validator_score_min: Some(self.goal.review_policy.actor_critic.reward_threshold),
             }),
+            review_doctrine: Some(self.goal.review_policy.doctrine.clone()),
             execution: None,
             priority: TaskPriority::Critical,
             tags: vec![
@@ -2375,6 +2453,7 @@ pub enum WorkerKind {
     Research,
     Reviewer,
     Tester,
+    FormalMethods,
     Validator,
     PatchMerger,
     RustTool,
@@ -2925,6 +3004,8 @@ pub struct ReviewPolicy {
     pub unifier_role: WorkerKind,
     pub min_satisfaction_score: f32,
     pub actor_critic: ActorCriticPolicy,
+    #[serde(default)]
+    pub doctrine: ReviewDoctrine,
 }
 
 impl Default for ReviewPolicy {
@@ -2939,6 +3020,7 @@ impl Default for ReviewPolicy {
             unifier_role: WorkerKind::PatchMerger,
             min_satisfaction_score: 0.85,
             actor_critic: ActorCriticPolicy::default(),
+            doctrine: ReviewDoctrine::default(),
         }
     }
 }
@@ -2971,6 +3053,1027 @@ impl Default for ActorCriticPolicy {
             reward_threshold: 0.85,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewDoctrine {
+    pub enabled: bool,
+    #[serde(default)]
+    pub presets: Vec<ReviewDoctrinePreset>,
+    pub coverage: ReviewDoctrineCoveragePolicy,
+    #[serde(default)]
+    pub custom_objectives: Vec<ReviewObjective>,
+    #[serde(default)]
+    pub custom_evidence_requirements: Vec<ReviewEvidenceRequirement>,
+    #[serde(default)]
+    pub custom_style_doctrines: Vec<StyleDoctrine>,
+    #[serde(default)]
+    pub custom_validation_gates: Vec<ValidationGate>,
+    #[serde(default)]
+    pub custom_subagents: Vec<ReviewSubagentProfile>,
+    #[serde(default)]
+    pub overrides: Vec<ReviewDoctrineOverride>,
+}
+
+impl Default for ReviewDoctrine {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            presets: vec![ReviewDoctrinePreset::CoreEngineering],
+            coverage: ReviewDoctrineCoveragePolicy::default(),
+            custom_objectives: Vec::new(),
+            custom_evidence_requirements: Vec::new(),
+            custom_style_doctrines: Vec::new(),
+            custom_validation_gates: Vec::new(),
+            custom_subagents: Vec::new(),
+            overrides: Vec::new(),
+        }
+    }
+}
+
+impl ReviewDoctrine {
+    pub fn strict_engineering() -> Self {
+        Self {
+            enabled: true,
+            presets: vec![
+                ReviewDoctrinePreset::CoreEngineering,
+                ReviewDoctrinePreset::Testing,
+                ReviewDoctrinePreset::FormalMethods,
+                ReviewDoctrinePreset::FunctionalDomainDrivenDesign,
+                ReviewDoctrinePreset::LazinessLost,
+            ],
+            coverage: ReviewDoctrineCoveragePolicy {
+                require_objective_results: true,
+                require_gate_results: true,
+                require_required_evidence: true,
+                allow_not_applicable: true,
+                min_objective_score: Some(0.8),
+            },
+            custom_objectives: Vec::new(),
+            custom_evidence_requirements: Vec::new(),
+            custom_style_doctrines: Vec::new(),
+            custom_validation_gates: Vec::new(),
+            custom_subagents: Vec::new(),
+            overrides: Vec::new(),
+        }
+    }
+
+    pub fn resolved_objectives(&self) -> Vec<ReviewObjective> {
+        let mut objectives = BTreeMap::new();
+        for preset in &self.presets {
+            for objective in preset.objectives() {
+                objectives.insert(objective.id.clone(), objective);
+            }
+        }
+        for objective in &self.custom_objectives {
+            objectives.insert(objective.id.clone(), objective.clone());
+        }
+        self.apply_objective_overrides(objectives)
+            .into_values()
+            .collect()
+    }
+
+    pub fn resolved_evidence_requirements(&self) -> Vec<ReviewEvidenceRequirement> {
+        let mut requirements = BTreeMap::new();
+        for preset in &self.presets {
+            for requirement in preset.evidence_requirements() {
+                requirements.insert(requirement.id.clone(), requirement);
+            }
+        }
+        for requirement in &self.custom_evidence_requirements {
+            requirements.insert(requirement.id.clone(), requirement.clone());
+        }
+        self.apply_evidence_overrides(requirements)
+            .into_values()
+            .collect()
+    }
+
+    pub fn resolved_style_doctrines(&self) -> Vec<StyleDoctrine> {
+        let mut doctrines = BTreeMap::new();
+        for preset in &self.presets {
+            for doctrine in preset.style_doctrines() {
+                doctrines.insert(doctrine.id.clone(), doctrine);
+            }
+        }
+        for doctrine in &self.custom_style_doctrines {
+            doctrines.insert(doctrine.id.clone(), doctrine.clone());
+        }
+        self.apply_style_overrides(doctrines).into_values().collect()
+    }
+
+    pub fn resolved_validation_gates(&self) -> Vec<ValidationGate> {
+        let mut gates = BTreeMap::new();
+        for preset in &self.presets {
+            for gate in preset.validation_gates() {
+                gates.insert(gate.id.clone(), gate);
+            }
+        }
+        for gate in &self.custom_validation_gates {
+            gates.insert(gate.id.clone(), gate.clone());
+        }
+        self.apply_gate_overrides(gates).into_values().collect()
+    }
+
+    pub fn resolved_subagents(&self) -> Vec<ReviewSubagentProfile> {
+        let mut subagents = BTreeMap::new();
+        for preset in &self.presets {
+            for subagent in preset.subagents() {
+                subagents.insert(subagent.id.clone(), subagent);
+            }
+        }
+        for subagent in &self.custom_subagents {
+            subagents.insert(subagent.id.clone(), subagent.clone());
+        }
+        self.apply_subagent_overrides(subagents)
+            .into_values()
+            .collect()
+    }
+
+    pub fn prompt_summary(&self) -> String {
+        if !self.enabled {
+            return String::new();
+        }
+        let objectives = self
+            .resolved_objectives()
+            .into_iter()
+            .filter(|objective| objective.required)
+            .map(|objective| format!("{}: {}", objective.id, objective.title))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let gates = self
+            .resolved_validation_gates()
+            .into_iter()
+            .filter(|gate| gate.required)
+            .map(|gate| format!("{}: {}", gate.id, gate.description))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let styles = self
+            .resolved_style_doctrines()
+            .into_iter()
+            .filter(|doctrine| doctrine.required)
+            .map(|doctrine| format!("{}: {}", doctrine.id, doctrine.name))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "\n\nReview doctrine: evaluate required objectives [{}]. Required validation gates [{}]. Required style doctrines [{}]. Return objective_results and gate_results with evidence URIs or notes for each required item.",
+            objectives, gates, styles
+        )
+    }
+
+    pub fn stub_objective_results(&self) -> Vec<ReviewObjectiveResult> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.resolved_objectives()
+            .into_iter()
+            .filter(|objective| objective.required)
+            .map(|objective| ReviewObjectiveResult {
+                objective_id: objective.id.clone(),
+                decision: ReviewObjectiveDecision::Pass,
+                score: objective.min_score.unwrap_or(0.9).max(0.9),
+                evidence: vec![format!("memory://review-objective/{}", objective.id)],
+                notes: vec![format!("stub coverage for {}", objective.title)],
+            })
+            .collect()
+    }
+
+    pub fn stub_gate_results(&self) -> Vec<ValidationGateResult> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.resolved_validation_gates()
+            .into_iter()
+            .filter(|gate| gate.required)
+            .map(|gate| ValidationGateResult {
+                gate_id: gate.id.clone(),
+                passed: true,
+                score: gate.min_score.unwrap_or(0.9).max(0.9),
+                evidence: vec![format!("memory://validation-gate/{}", gate.id)],
+                notes: vec![format!("stub gate result for {}", gate.description)],
+            })
+            .collect()
+    }
+
+    fn apply_objective_overrides(
+        &self,
+        mut objectives: BTreeMap<String, ReviewObjective>,
+    ) -> BTreeMap<String, ReviewObjective> {
+        for override_ in &self.overrides {
+            if override_.target != ReviewDoctrineOverrideTarget::Objective {
+                continue;
+            }
+            match override_.action {
+                ReviewDoctrineOverrideAction::Disable => {
+                    objectives.remove(&override_.id);
+                }
+                ReviewDoctrineOverrideAction::Require => {
+                    if let Some(objective) = objectives.get_mut(&override_.id) {
+                        objective.required = true;
+                    }
+                }
+                ReviewDoctrineOverrideAction::MakeOptional => {
+                    if let Some(objective) = objectives.get_mut(&override_.id) {
+                        objective.required = false;
+                    }
+                }
+                ReviewDoctrineOverrideAction::SetMinScore => {
+                    if let Some(objective) = objectives.get_mut(&override_.id) {
+                        objective.min_score = override_.min_score;
+                    }
+                }
+            }
+        }
+        objectives
+    }
+
+    fn apply_evidence_overrides(
+        &self,
+        mut requirements: BTreeMap<String, ReviewEvidenceRequirement>,
+    ) -> BTreeMap<String, ReviewEvidenceRequirement> {
+        for override_ in &self.overrides {
+            if override_.target != ReviewDoctrineOverrideTarget::EvidenceRequirement {
+                continue;
+            }
+            match override_.action {
+                ReviewDoctrineOverrideAction::Disable => {
+                    requirements.remove(&override_.id);
+                }
+                ReviewDoctrineOverrideAction::Require => {
+                    if let Some(requirement) = requirements.get_mut(&override_.id) {
+                        requirement.required = true;
+                    }
+                }
+                ReviewDoctrineOverrideAction::MakeOptional => {
+                    if let Some(requirement) = requirements.get_mut(&override_.id) {
+                        requirement.required = false;
+                    }
+                }
+                ReviewDoctrineOverrideAction::SetMinScore => {}
+            }
+        }
+        requirements
+    }
+
+    fn apply_style_overrides(
+        &self,
+        mut doctrines: BTreeMap<String, StyleDoctrine>,
+    ) -> BTreeMap<String, StyleDoctrine> {
+        for override_ in &self.overrides {
+            if override_.target != ReviewDoctrineOverrideTarget::StyleDoctrine {
+                continue;
+            }
+            match override_.action {
+                ReviewDoctrineOverrideAction::Disable => {
+                    doctrines.remove(&override_.id);
+                }
+                ReviewDoctrineOverrideAction::Require => {
+                    if let Some(doctrine) = doctrines.get_mut(&override_.id) {
+                        doctrine.required = true;
+                    }
+                }
+                ReviewDoctrineOverrideAction::MakeOptional => {
+                    if let Some(doctrine) = doctrines.get_mut(&override_.id) {
+                        doctrine.required = false;
+                    }
+                }
+                ReviewDoctrineOverrideAction::SetMinScore => {}
+            }
+        }
+        doctrines
+    }
+
+    fn apply_gate_overrides(
+        &self,
+        mut gates: BTreeMap<String, ValidationGate>,
+    ) -> BTreeMap<String, ValidationGate> {
+        for override_ in &self.overrides {
+            if override_.target != ReviewDoctrineOverrideTarget::ValidationGate {
+                continue;
+            }
+            match override_.action {
+                ReviewDoctrineOverrideAction::Disable => {
+                    gates.remove(&override_.id);
+                }
+                ReviewDoctrineOverrideAction::Require => {
+                    if let Some(gate) = gates.get_mut(&override_.id) {
+                        gate.required = true;
+                    }
+                }
+                ReviewDoctrineOverrideAction::MakeOptional => {
+                    if let Some(gate) = gates.get_mut(&override_.id) {
+                        gate.required = false;
+                    }
+                }
+                ReviewDoctrineOverrideAction::SetMinScore => {
+                    if let Some(gate) = gates.get_mut(&override_.id) {
+                        gate.min_score = override_.min_score;
+                    }
+                }
+            }
+        }
+        gates
+    }
+
+    fn apply_subagent_overrides(
+        &self,
+        mut subagents: BTreeMap<String, ReviewSubagentProfile>,
+    ) -> BTreeMap<String, ReviewSubagentProfile> {
+        for override_ in &self.overrides {
+            if override_.target != ReviewDoctrineOverrideTarget::Subagent {
+                continue;
+            }
+            match override_.action {
+                ReviewDoctrineOverrideAction::Disable => {
+                    subagents.remove(&override_.id);
+                }
+                ReviewDoctrineOverrideAction::Require => {
+                    if let Some(subagent) = subagents.get_mut(&override_.id) {
+                        subagent.inherited_by_default = true;
+                    }
+                }
+                ReviewDoctrineOverrideAction::MakeOptional => {
+                    if let Some(subagent) = subagents.get_mut(&override_.id) {
+                        subagent.inherited_by_default = false;
+                    }
+                }
+                ReviewDoctrineOverrideAction::SetMinScore => {}
+            }
+        }
+        subagents
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDoctrinePreset {
+    CoreEngineering,
+    Testing,
+    FormalMethods,
+    FunctionalDomainDrivenDesign,
+    LazinessLost,
+    Security,
+    Performance,
+}
+
+impl ReviewDoctrinePreset {
+    fn objectives(&self) -> Vec<ReviewObjective> {
+        match self {
+            Self::CoreEngineering => vec![
+                ReviewObjective::new(
+                    "correctness.behavior",
+                    ReviewObjectiveCategory::Correctness,
+                    "Behavioral correctness",
+                    "Implementation satisfies the stated objective, edge cases, and durable task contract.",
+                ),
+                ReviewObjective::new(
+                    "quality.maintainability",
+                    ReviewObjectiveCategory::CodeQuality,
+                    "Maintainability",
+                    "Code should be easy to read, localize, test, and change without global reasoning.",
+                ),
+                ReviewObjective::new(
+                    "abstraction.future_time",
+                    ReviewObjectiveCategory::AbstractionQuality,
+                    "Abstraction pays for future time",
+                    "Prefer simple, powerful abstractions over copied bulk or speculative frameworks.",
+                ),
+            ],
+            Self::Testing => vec![
+                ReviewObjective::new(
+                    "testing.regression",
+                    ReviewObjectiveCategory::Testing,
+                    "Regression evidence",
+                    "Changed behavior has focused tests or an explicit reason tests are not useful.",
+                ),
+                ReviewObjective::new(
+                    "testing.hypothesis",
+                    ReviewObjectiveCategory::HypothesisTesting,
+                    "Hypothesis and property testing",
+                    "Important invariants have property, generative, fuzz, or explicit hypothesis tests when appropriate.",
+                ),
+            ],
+            Self::FormalMethods => vec![
+                ReviewObjective::new(
+                    "formal.type_soundness",
+                    ReviewObjectiveCategory::TypeSoundness,
+                    "Type-theory soundness",
+                    "Types, lifetimes, ownership, generics, and protocol states rule out invalid states where practical.",
+                ),
+                ReviewObjective::new(
+                    "formal.verification",
+                    ReviewObjectiveCategory::FormalVerification,
+                    "Formal verification posture",
+                    "Proofs, model checks, contracts, or mechanized checks cover critical invariants when justified by risk.",
+                ),
+            ],
+            Self::FunctionalDomainDrivenDesign => vec![
+                ReviewObjective::new(
+                    "ddd.ubiquitous_language",
+                    ReviewObjectiveCategory::DomainModeling,
+                    "Domain language",
+                    "Names, boundaries, and state transitions reflect the domain instead of incidental framework mechanics.",
+                ),
+                ReviewObjective::new(
+                    "functional.core",
+                    ReviewObjectiveCategory::FunctionalDesign,
+                    "Functional core",
+                    "Prefer pure domain transformations at the core with effects pushed to adapters and durable boundaries.",
+                ),
+                ReviewObjective::new(
+                    "semantics.denotational",
+                    ReviewObjectiveCategory::DenotationalSemantics,
+                    "Denotational clarity",
+                    "Core types and functions have a clear meaning independent of execution accidents.",
+                ),
+            ],
+            Self::LazinessLost => vec![ReviewObjective::new(
+                "simplicity.negative_code",
+                ReviewObjectiveCategory::Simplicity,
+                "Virtuous laziness",
+                "Reject vanity bulk; optimize for simpler systems, reduced cognitive load, and useful abstraction.",
+            )],
+            Self::Security => vec![ReviewObjective::new(
+                "security.boundaries",
+                ReviewObjectiveCategory::Security,
+                "Security boundaries",
+                "Secrets, auth, sandbox boundaries, and privilege transitions are explicit and minimally scoped.",
+            )],
+            Self::Performance => vec![ReviewObjective::new(
+                "performance.evidence",
+                ReviewObjectiveCategory::Performance,
+                "Performance evidence",
+                "Performance-sensitive changes include measurements, complexity analysis, or a clear non-goal statement.",
+            )],
+        }
+    }
+
+    fn evidence_requirements(&self) -> Vec<ReviewEvidenceRequirement> {
+        match self {
+            Self::CoreEngineering => vec![
+                ReviewEvidenceRequirement::new(
+                    "evidence.diff_summary",
+                    ReviewEvidenceKind::CodeInspection,
+                    "Reviewer can identify the changed behavior and affected boundaries.",
+                ),
+                ReviewEvidenceRequirement::new(
+                    "evidence.build",
+                    ReviewEvidenceKind::Compile,
+                    "Compilation or equivalent build check passes.",
+                ),
+            ],
+            Self::Testing => vec![
+                ReviewEvidenceRequirement::new(
+                    "evidence.unit_integration_tests",
+                    ReviewEvidenceKind::AutomatedTests,
+                    "Unit, integration, or smoke tests cover the changed behavior.",
+                ),
+                ReviewEvidenceRequirement::new(
+                    "evidence.property_tests",
+                    ReviewEvidenceKind::PropertyTests,
+                    "Property, fuzz, or hypothesis tests cover invariant-heavy paths when appropriate.",
+                ),
+            ],
+            Self::FormalMethods => vec![
+                ReviewEvidenceRequirement::new(
+                    "evidence.type_check",
+                    ReviewEvidenceKind::TypeCheck,
+                    "Type checks, static analysis, or compiler diagnostics support the soundness claim.",
+                ),
+                ReviewEvidenceRequirement::new(
+                    "evidence.formal_proof",
+                    ReviewEvidenceKind::FormalProof,
+                    "Proof, model-check, contract-check, or explicit risk-based waiver exists for critical invariants.",
+                ),
+            ],
+            Self::FunctionalDomainDrivenDesign => vec![ReviewEvidenceRequirement::new(
+                "evidence.domain_boundaries",
+                ReviewEvidenceKind::ArchitectureReview,
+                "Reviewer can map code boundaries to domain concepts and effect boundaries.",
+            )],
+            Self::LazinessLost => vec![ReviewEvidenceRequirement::new(
+                "evidence.simplicity_review",
+                ReviewEvidenceKind::StyleReview,
+                "Reviewer checks for generated bulk, duplicated variants, and unnecessary layer growth.",
+            )],
+            Self::Security => vec![ReviewEvidenceRequirement::new(
+                "evidence.security_review",
+                ReviewEvidenceKind::SecurityScan,
+                "Security-sensitive changes have explicit boundary and secret-handling evidence.",
+            )],
+            Self::Performance => vec![ReviewEvidenceRequirement::new(
+                "evidence.benchmark",
+                ReviewEvidenceKind::PerformanceBenchmark,
+                "Performance-sensitive changes include benchmark or complexity evidence.",
+            )],
+        }
+    }
+
+    fn style_doctrines(&self) -> Vec<StyleDoctrine> {
+        match self {
+            Self::CoreEngineering => vec![StyleDoctrine::new(
+                "style.clean_small_surface",
+                "Clean small surface area",
+                "Keep changes narrowly scoped, readable, and aligned with local patterns.",
+            )],
+            Self::Testing => vec![StyleDoctrine::new(
+                "style.tests_as_spec",
+                "Tests as executable specification",
+                "Tests should state observable behavior and invariants, not only implementation details.",
+            )],
+            Self::FormalMethods => vec![StyleDoctrine::new(
+                "style.invalid_states_unrepresentable",
+                "Invalid states unrepresentable",
+                "Use type structure and protocol states to rule out illegal transitions where practical.",
+            )],
+            Self::FunctionalDomainDrivenDesign => vec![StyleDoctrine::new(
+                "style.functional_ddd",
+                "Functional domain-driven design",
+                "Keep domain semantics pure and explicit; isolate infrastructure at the edges.",
+            )],
+            Self::LazinessLost => vec![StyleDoctrine {
+                id: "style.laziness_lost".to_string(),
+                name: "Virtuous laziness over generated bulk".to_string(),
+                description: "LLM output should make the system smaller, clearer, and easier for future humans to change.".to_string(),
+                required: true,
+                references: vec![ReviewReference {
+                    title: "The peril of laziness lost".to_string(),
+                    uri: "https://bcantrill.dtrace.org/2026/04/12/the-peril-of-laziness-lost/".to_string(),
+                    note: "Use as a style doctrine for resisting generated code bulk and vanity metrics.".to_string(),
+                }],
+                anti_patterns: vec![
+                    "large generated layer without abstraction payoff".to_string(),
+                    "copy-pasted variants where one concept should exist".to_string(),
+                    "metric-driven line growth without increased clarity".to_string(),
+                ],
+                positive_indicators: vec![
+                    "removes accidental complexity".to_string(),
+                    "introduces a crisp domain abstraction only where it earns its keep".to_string(),
+                    "reduces future cognitive load".to_string(),
+                ],
+                tags: vec!["simplicity".to_string(), "abstraction".to_string()],
+            }],
+            Self::Security => vec![StyleDoctrine::new(
+                "style.least_privilege",
+                "Least privilege",
+                "Prefer narrow, auditable privileges and explicit secret flow.",
+            )],
+            Self::Performance => vec![StyleDoctrine::new(
+                "style.performance_clarity",
+                "Performance clarity",
+                "Make complexity and resource tradeoffs visible at the boundary where they matter.",
+            )],
+        }
+    }
+
+    fn validation_gates(&self) -> Vec<ValidationGate> {
+        match self {
+            Self::CoreEngineering => vec![ValidationGate::new(
+                "gate.compile",
+                ValidationGateKind::Compile,
+                "Build or compile check passes for changed packages.",
+            )],
+            Self::Testing => vec![ValidationGate::new(
+                "gate.tests",
+                ValidationGateKind::TestSuite,
+                "Relevant automated tests pass or a reviewer-approved waiver explains why.",
+            )],
+            Self::FormalMethods => vec![
+                ValidationGate::new(
+                    "gate.type_soundness",
+                    ValidationGateKind::TypeSoundness,
+                    "Type-level invariants and state transitions are checked by compiler, type checker, or static analysis.",
+                ),
+                ValidationGate::optional(
+                    "gate.formal_verification",
+                    ValidationGateKind::FormalVerification,
+                    "Formal proof, model checking, or contract verification is supplied when risk warrants it.",
+                ),
+            ],
+            Self::FunctionalDomainDrivenDesign => vec![ValidationGate::new(
+                "gate.domain_model",
+                ValidationGateKind::ArchitectureReview,
+                "Domain model and effect boundaries are reviewed.",
+            )],
+            Self::LazinessLost => vec![ValidationGate::new(
+                "gate.simplicity",
+                ValidationGateKind::StyleReview,
+                "Reviewer explicitly checks for unnecessary generated bulk and abstraction debt.",
+            )],
+            Self::Security => vec![ValidationGate::new(
+                "gate.security_boundaries",
+                ValidationGateKind::SecurityReview,
+                "Security-sensitive boundaries and secrets are reviewed.",
+            )],
+            Self::Performance => vec![ValidationGate::optional(
+                "gate.performance",
+                ValidationGateKind::PerformanceBenchmark,
+                "Performance-sensitive behavior has measurements or complexity analysis.",
+            )],
+        }
+    }
+
+    fn subagents(&self) -> Vec<ReviewSubagentProfile> {
+        match self {
+            Self::CoreEngineering => vec![ReviewSubagentProfile::new(
+                "subagent.code_reviewer",
+                WorkerKind::Reviewer,
+                "Code quality reviewer",
+                vec![
+                    "correctness.behavior".to_string(),
+                    "quality.maintainability".to_string(),
+                    "abstraction.future_time".to_string(),
+                ],
+            )],
+            Self::Testing => vec![ReviewSubagentProfile::new(
+                "subagent.tester",
+                WorkerKind::Tester,
+                "Testing reviewer",
+                vec![
+                    "testing.regression".to_string(),
+                    "testing.hypothesis".to_string(),
+                ],
+            )],
+            Self::FormalMethods => vec![ReviewSubagentProfile::new(
+                "subagent.formal_methods",
+                WorkerKind::FormalMethods,
+                "Formal-methods reviewer",
+                vec![
+                    "formal.type_soundness".to_string(),
+                    "formal.verification".to_string(),
+                ],
+            )],
+            Self::FunctionalDomainDrivenDesign => vec![ReviewSubagentProfile::new(
+                "subagent.functional_ddd",
+                WorkerKind::Reviewer,
+                "Functional DDD reviewer",
+                vec![
+                    "ddd.ubiquitous_language".to_string(),
+                    "functional.core".to_string(),
+                    "semantics.denotational".to_string(),
+                ],
+            )],
+            Self::LazinessLost => vec![ReviewSubagentProfile::new(
+                "subagent.simplicity_critic",
+                WorkerKind::Reviewer,
+                "Simplicity critic",
+                vec!["simplicity.negative_code".to_string()],
+            )],
+            Self::Security => vec![ReviewSubagentProfile::new(
+                "subagent.security_reviewer",
+                WorkerKind::Validator,
+                "Security boundary reviewer",
+                vec!["security.boundaries".to_string()],
+            )],
+            Self::Performance => vec![ReviewSubagentProfile::new(
+                "subagent.performance_reviewer",
+                WorkerKind::Tester,
+                "Performance reviewer",
+                vec!["performance.evidence".to_string()],
+            )],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewObjectiveCategory {
+    Correctness,
+    CodeReview,
+    Testing,
+    HypothesisTesting,
+    TypeSoundness,
+    FormalVerification,
+    CodeQuality,
+    CodeStyle,
+    Architecture,
+    DomainModeling,
+    FunctionalDesign,
+    DenotationalSemantics,
+    AbstractionQuality,
+    Simplicity,
+    Security,
+    Performance,
+    Reliability,
+    Observability,
+    Documentation,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewObjective {
+    pub id: String,
+    pub category: ReviewObjectiveCategory,
+    pub title: String,
+    pub description: String,
+    pub required: bool,
+    pub min_score: Option<f32>,
+    pub severity_if_failed: ReviewSeverity,
+    #[serde(default)]
+    pub evidence_requirement_ids: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl ReviewObjective {
+    fn new(
+        id: impl Into<String>,
+        category: ReviewObjectiveCategory,
+        title: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            category,
+            title: title.into(),
+            description: description.into(),
+            required: true,
+            min_score: Some(0.8),
+            severity_if_failed: ReviewSeverity::High,
+            evidence_requirement_ids: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewEvidenceKind {
+    Compile,
+    AutomatedTests,
+    PropertyTests,
+    TypeCheck,
+    FormalProof,
+    StaticAnalysis,
+    CodeInspection,
+    ArchitectureReview,
+    StyleReview,
+    SecurityScan,
+    PerformanceBenchmark,
+    DocumentationReview,
+    ExternalReference,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewEvidenceRequirement {
+    pub id: String,
+    pub kind: ReviewEvidenceKind,
+    pub description: String,
+    pub required: bool,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub artifact_kinds: Vec<ArtifactKind>,
+    #[serde(default)]
+    pub applies_to_objective_ids: Vec<String>,
+}
+
+impl ReviewEvidenceRequirement {
+    fn new(
+        id: impl Into<String>,
+        kind: ReviewEvidenceKind,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            description: description.into(),
+            required: true,
+            commands: Vec::new(),
+            artifact_kinds: Vec::new(),
+            applies_to_objective_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewReference {
+    pub title: String,
+    pub uri: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct StyleDoctrine {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    #[serde(default)]
+    pub references: Vec<ReviewReference>,
+    #[serde(default)]
+    pub anti_patterns: Vec<String>,
+    #[serde(default)]
+    pub positive_indicators: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl StyleDoctrine {
+    fn new(id: impl Into<String>, name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            required: true,
+            references: Vec::new(),
+            anti_patterns: Vec::new(),
+            positive_indicators: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationGateKind {
+    Compile,
+    TestSuite,
+    PropertyTesting,
+    TypeSoundness,
+    FormalVerification,
+    StaticAnalysis,
+    CodeReview,
+    ArchitectureReview,
+    StyleReview,
+    SecurityReview,
+    PerformanceBenchmark,
+    DocumentationReview,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ValidationGate {
+    pub id: String,
+    pub kind: ValidationGateKind,
+    pub description: String,
+    pub required: bool,
+    pub min_score: Option<f32>,
+    pub failure_blocks: bool,
+    #[serde(default)]
+    pub evidence_requirement_ids: Vec<String>,
+    #[serde(default)]
+    pub applies_to_roles: Vec<WorkerKind>,
+}
+
+impl ValidationGate {
+    fn new(id: impl Into<String>, kind: ValidationGateKind, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            description: description.into(),
+            required: true,
+            min_score: Some(0.8),
+            failure_blocks: true,
+            evidence_requirement_ids: Vec::new(),
+            applies_to_roles: Vec::new(),
+        }
+    }
+
+    fn optional(
+        id: impl Into<String>,
+        kind: ValidationGateKind,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            required: false,
+            failure_blocks: false,
+            ..Self::new(id, kind, description)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewSubagentProfile {
+    pub id: String,
+    pub role: WorkerKind,
+    pub name: String,
+    #[serde(default)]
+    pub objective_ids: Vec<String>,
+    #[serde(default)]
+    pub evidence_requirement_ids: Vec<String>,
+    #[serde(default)]
+    pub validation_gate_ids: Vec<String>,
+    #[serde(default)]
+    pub required_capabilities: Vec<RunnerCapability>,
+    #[serde(default)]
+    pub required_model_features: Vec<ModelFeature>,
+    #[serde(default)]
+    pub prompt_hints: Vec<String>,
+    pub inherited_by_default: bool,
+}
+
+impl ReviewSubagentProfile {
+    fn new(
+        id: impl Into<String>,
+        role: WorkerKind,
+        name: impl Into<String>,
+        objective_ids: Vec<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            role,
+            name: name.into(),
+            objective_ids,
+            evidence_requirement_ids: Vec::new(),
+            validation_gate_ids: Vec::new(),
+            required_capabilities: vec![RunnerCapability::Review],
+            required_model_features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
+            prompt_hints: Vec::new(),
+            inherited_by_default: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewDoctrineCoveragePolicy {
+    pub require_objective_results: bool,
+    pub require_gate_results: bool,
+    pub require_required_evidence: bool,
+    pub allow_not_applicable: bool,
+    pub min_objective_score: Option<f32>,
+}
+
+impl Default for ReviewDoctrineCoveragePolicy {
+    fn default() -> Self {
+        Self {
+            require_objective_results: false,
+            require_gate_results: false,
+            require_required_evidence: false,
+            allow_not_applicable: true,
+            min_objective_score: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewDoctrineOverride {
+    pub target: ReviewDoctrineOverrideTarget,
+    pub id: String,
+    pub action: ReviewDoctrineOverrideAction,
+    pub min_score: Option<f32>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDoctrineOverrideTarget {
+    Objective,
+    EvidenceRequirement,
+    StyleDoctrine,
+    ValidationGate,
+    Subagent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDoctrineOverrideAction {
+    Disable,
+    Require,
+    MakeOptional,
+    SetMinScore,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ReviewObjectiveResult {
+    pub objective_id: String,
+    pub decision: ReviewObjectiveDecision,
+    pub score: f32,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewObjectiveDecision {
+    Pass,
+    Fail,
+    NotApplicable,
+    NotChecked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct ValidationGateResult {
+    pub gate_id: String,
+    pub passed: bool,
+    pub score: f32,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -3450,6 +4553,11 @@ pub enum SteeringDirectiveKind {
         question: String,
         reason: String,
     },
+    RequestStandardReview {
+        check: StandardReviewCheck,
+        topic: Option<String>,
+        reason: String,
+    },
     Pause {
         reason: String,
     },
@@ -3459,6 +4567,167 @@ pub enum SteeringDirectiveKind {
     Cancel {
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardReviewCheck {
+    Abstraction,
+    Readability,
+    Compile,
+    TestEvidence,
+    HypothesisTesting,
+    TypeSoundness,
+    FormalVerification,
+    CleanCode,
+    Ddd,
+    FunctionalDdd,
+    DenotationalSemantics,
+    CanonicalStyle,
+    LibraryFit,
+    ReferenceSearch,
+    WebSearch,
+    DeepResearch,
+    Simplicity,
+}
+
+impl StandardReviewCheck {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Abstraction => "abstraction",
+            Self::Readability => "readability",
+            Self::Compile => "compile",
+            Self::TestEvidence => "test_evidence",
+            Self::HypothesisTesting => "hypothesis_testing",
+            Self::TypeSoundness => "type_soundness",
+            Self::FormalVerification => "formal_verification",
+            Self::CleanCode => "clean_code",
+            Self::Ddd => "ddd",
+            Self::FunctionalDdd => "functional_ddd",
+            Self::DenotationalSemantics => "denotational_semantics",
+            Self::CanonicalStyle => "canonical_style",
+            Self::LibraryFit => "library_fit",
+            Self::ReferenceSearch => "reference_search",
+            Self::WebSearch => "web_search",
+            Self::DeepResearch => "deep_research",
+            Self::Simplicity => "simplicity",
+        }
+    }
+
+    fn title(&self) -> &'static str {
+        match self {
+            Self::Abstraction => "abstraction check",
+            Self::Readability => "readability check",
+            Self::Compile => "compile check",
+            Self::TestEvidence => "test evidence check",
+            Self::HypothesisTesting => "hypothesis/property testing check",
+            Self::TypeSoundness => "type soundness check",
+            Self::FormalVerification => "formal verification check",
+            Self::CleanCode => "clean code check",
+            Self::Ddd => "domain-driven design check",
+            Self::FunctionalDdd => "functional DDD check",
+            Self::DenotationalSemantics => "denotational semantics check",
+            Self::CanonicalStyle => "canonical style check",
+            Self::LibraryFit => "library fit check",
+            Self::ReferenceSearch => "reference search",
+            Self::WebSearch => "web search",
+            Self::DeepResearch => "deep research",
+            Self::Simplicity => "simplicity check",
+        }
+    }
+
+    fn worker_role(&self) -> WorkerKind {
+        match self {
+            Self::Compile | Self::TestEvidence | Self::HypothesisTesting => WorkerKind::Tester,
+            Self::TypeSoundness | Self::FormalVerification => WorkerKind::FormalMethods,
+            Self::ReferenceSearch | Self::WebSearch | Self::DeepResearch | Self::LibraryFit => {
+                WorkerKind::Research
+            }
+            _ => WorkerKind::Reviewer,
+        }
+    }
+
+    fn is_research_like(&self) -> bool {
+        matches!(
+            self,
+            Self::ReferenceSearch | Self::WebSearch | Self::DeepResearch | Self::LibraryFit
+        )
+    }
+
+    fn review_prompt(&self, topic: Option<&str>, goal_title: &str) -> String {
+        let focus = topic.unwrap_or(goal_title);
+        match self {
+            Self::Abstraction => format!(
+                "Review '{focus}' for abstraction quality. Identify duplication, leaky boundaries, speculative frameworks, and places where a smaller stronger abstraction would reduce future cognitive load."
+            ),
+            Self::Readability => format!(
+                "Review '{focus}' for readability. Check naming, control flow, locality, comments, file boundaries, and whether a future maintainer can understand the change without hidden context."
+            ),
+            Self::Compile => format!(
+                "Review '{focus}' for compile/build evidence. Verify the relevant package builds or explain the minimal command that must pass."
+            ),
+            Self::TestEvidence => format!(
+                "Review '{focus}' for test evidence. Check unit, integration, smoke, and regression coverage against the changed behavior."
+            ),
+            Self::HypothesisTesting => format!(
+                "Review '{focus}' for property, fuzz, generative, or hypothesis-style tests. Identify invariants and whether examples are too narrow."
+            ),
+            Self::TypeSoundness => format!(
+                "Review '{focus}' for type-theory soundness. Check whether invalid states, illegal transitions, and unsafe protocol states are ruled out by types where practical."
+            ),
+            Self::FormalVerification => format!(
+                "Review '{focus}' for formal verification posture. Decide whether proof, model checking, contracts, or a documented waiver is appropriate for critical invariants."
+            ),
+            Self::CleanCode => format!(
+                "Review '{focus}' for clean code: cohesion, coupling, naming, duplication, error handling, and whether abstractions earn their keep."
+            ),
+            Self::Ddd => format!(
+                "Review '{focus}' for DDD fit. Check ubiquitous language, aggregate or boundary choices, domain events, and whether infrastructure details pollute domain logic."
+            ),
+            Self::FunctionalDdd => format!(
+                "Review '{focus}' for functional domain-driven design. Prefer pure domain functions, explicit data transformations, immutable boundaries, and effect isolation."
+            ),
+            Self::DenotationalSemantics => format!(
+                "Review '{focus}' for denotational clarity. Explain what the core types and functions mean independent of runtime accidents."
+            ),
+            Self::CanonicalStyle => format!(
+                "Review '{focus}' against canonical style for this language, framework, and repository. Prefer established local idioms over invented style."
+            ),
+            Self::Simplicity => format!(
+                "Review '{focus}' for simplicity and virtuous laziness. Reject generated bulk, line-count vanity, needless layers, and abstractions that do not reduce future work."
+            ),
+            Self::LibraryFit | Self::ReferenceSearch | Self::WebSearch | Self::DeepResearch => {
+                self.research_question(topic, goal_title)
+            }
+        }
+    }
+
+    fn research_question(&self, topic: Option<&str>, goal_title: &str) -> String {
+        let focus = topic.unwrap_or(goal_title);
+        match self {
+            Self::LibraryFit => format!(
+                "What are the standard, well-supported libraries or services for implementing {focus}, and which should this repo use or avoid?"
+            ),
+            Self::ReferenceSearch => format!(
+                "What canonical references, official docs, or style guides should guide {focus}?"
+            ),
+            Self::WebSearch => format!(
+                "What current external information affects the implementation or review of {focus}?"
+            ),
+            Self::DeepResearch => format!(
+                "What state-of-the-art papers, libraries, design patterns, and production practices should guide {focus}, and how should the gathered information change the task plan?"
+            ),
+            _ => format!("What evidence is needed to review {focus}?"),
+        }
+    }
+
+    fn tags(&self) -> Vec<String> {
+        vec![
+            "steering".to_string(),
+            "standard-review".to_string(),
+            self.as_str().to_string(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -4294,6 +5563,7 @@ pub enum RunnerCapability {
     OpenAiCompatible,
     Gpu,
     NetworkOpen,
+    FormalVerification,
 }
 
 impl RunnerCapability {
@@ -5494,7 +6764,7 @@ impl AgentRunResult {
                 task.role.as_str(),
                 task.id
             ),
-            review: ReviewOutput::for_task_purpose(&task.purpose),
+            review: ReviewOutput::for_task(task),
             research: ResearchOutput::for_task_purpose(&task.purpose),
             branch_vote: BranchVoteOutput::for_task_purpose(&task.purpose),
             runner_id: Some("stub-runner".to_string()),
@@ -5551,17 +6821,30 @@ pub struct ReviewOutput {
     pub reward: f32,
     #[serde(default)]
     pub findings: Vec<ReviewFinding>,
+    #[serde(default)]
+    pub objective_results: Vec<ReviewObjectiveResult>,
+    #[serde(default)]
+    pub gate_results: Vec<ValidationGateResult>,
     pub retry_recommended: bool,
     pub unification_summary: Option<String>,
 }
 
 impl ReviewOutput {
+    pub fn for_task(task: &TaskNode) -> Option<Self> {
+        let mut review = Self::for_task_purpose(&task.purpose)?;
+        review.objective_results = task.review_doctrine.stub_objective_results();
+        review.gate_results = task.review_doctrine.stub_gate_results();
+        Some(review)
+    }
+
     pub fn for_task_purpose(purpose: &TaskPurpose) -> Option<Self> {
         match purpose {
             TaskPurpose::Review { .. } => Some(Self {
                 decision: ReviewDecision::Accept,
                 reward: 0.9,
                 findings: Vec::new(),
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
                 retry_recommended: false,
                 unification_summary: None,
             }),
@@ -5569,6 +6852,8 @@ impl ReviewOutput {
                 decision: ReviewDecision::Accept,
                 reward: 0.9,
                 findings: Vec::new(),
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
                 retry_recommended: false,
                 unification_summary: Some(
                     "stub unification accepted reviewer evidence".to_string(),
@@ -5578,6 +6863,8 @@ impl ReviewOutput {
                 decision: ReviewDecision::Accept,
                 reward: 0.8,
                 findings: Vec::new(),
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
                 retry_recommended: false,
                 unification_summary: Some("stub vote selected a branch candidate".to_string()),
             }),
@@ -6616,6 +7903,7 @@ impl WorkerKind {
             "research",
             "reviewer",
             "tester",
+            "formal_methods",
             "validator",
             "patch_merger",
             "rust_tool",
@@ -6630,6 +7918,7 @@ impl WorkerKind {
             Self::Research => "research",
             Self::Reviewer => "reviewer",
             Self::Tester => "tester",
+            Self::FormalMethods => "formal_methods",
             Self::Validator => "validator",
             Self::PatchMerger => "patch_merger",
             Self::RustTool => "rust_tool",
@@ -6727,6 +8016,7 @@ mod tests {
             budget: None,
             sandbox: None,
             done_criteria: None,
+            review_doctrine: None,
             execution: None,
             priority: TaskPriority::Critical,
             tags: vec!["progress".to_string()],
@@ -6790,6 +8080,7 @@ mod tests {
             budget: None,
             sandbox: None,
             done_criteria: None,
+            review_doctrine: None,
             execution: None,
             priority: TaskPriority::Normal,
             tags: Vec::new(),
@@ -6879,6 +8170,7 @@ mod tests {
                 budget: None,
                 sandbox: None,
                 done_criteria: None,
+                review_doctrine: None,
                 execution: None,
                 priority: TaskPriority::Normal,
                 tags: vec!["tests".to_string()],

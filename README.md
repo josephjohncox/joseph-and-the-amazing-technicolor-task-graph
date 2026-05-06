@@ -1,5 +1,7 @@
 # Joseph and the Amazing Technicolor Task Graph
 
+![Joseph and the Amazing Technicolor Task Graph](./assets/coat-logo.png)
+
 A durable task-tree control plane for long-running agentic engineering work.
 
 `coat` is the short operational slug for commands, packages, environment variables, service images, and deployment names.

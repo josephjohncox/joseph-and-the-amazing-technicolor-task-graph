@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ValidationGateResult",
+  "type": "object",
+  "properties": {
+    "evidence": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate_id": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "score": {
+      "type": "number",
+      "format": "float"
+    }
+  },
+  "required": [
+    "gate_id",
+    "passed",
+    "score"
+  ]
+}

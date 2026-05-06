@@ -38,6 +38,28 @@
     "kind"
   ],
   "$defs": {
+    "StandardReviewCheck": {
+      "type": "string",
+      "enum": [
+        "abstraction",
+        "readability",
+        "compile",
+        "test_evidence",
+        "hypothesis_testing",
+        "type_soundness",
+        "formal_verification",
+        "clean_code",
+        "ddd",
+        "functional_ddd",
+        "denotational_semantics",
+        "canonical_style",
+        "library_fit",
+        "reference_search",
+        "web_search",
+        "deep_research",
+        "simplicity"
+      ]
+    },
     "SteeringDirectiveKind": {
       "oneOf": [
         {
@@ -119,6 +141,32 @@
         {
           "type": "object",
           "properties": {
+            "check": {
+              "$ref": "#/$defs/StandardReviewCheck"
+            },
+            "kind": {
+              "type": "string",
+              "const": "request_standard_review"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "topic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "check",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "pause"
@@ -175,6 +223,7 @@
         "research",
         "reviewer",
         "tester",
+        "formal_methods",
         "validator",
         "patch_merger",
         "rust_tool"

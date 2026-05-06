@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewDoctrineCoveragePolicy",
+  "type": "object",
+  "properties": {
+    "allow_not_applicable": {
+      "type": "boolean"
+    },
+    "min_objective_score": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    },
+    "require_gate_results": {
+      "type": "boolean"
+    },
+    "require_objective_results": {
+      "type": "boolean"
+    },
+    "require_required_evidence": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "require_objective_results",
+    "require_gate_results",
+    "require_required_evidence",
+    "allow_not_applicable"
+  ]
+}

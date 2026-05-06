@@ -897,7 +897,8 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
-        "network_open"
+        "network_open",
+        "formal_verification"
       ]
     },
     "RunnerLocality": {
@@ -1009,6 +1010,7 @@
         "research",
         "reviewer",
         "tester",
+        "formal_methods",
         "validator",
         "patch_merger",
         "rust_tool"

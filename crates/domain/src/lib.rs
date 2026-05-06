@@ -126,7 +126,11 @@ impl GoalSpec {
         }
         if self.review_policy.doctrine.enabled
             && self.review_policy.doctrine.coverage.require_gate_results
-            && self.review_policy.doctrine.resolved_validation_gates().is_empty()
+            && self
+                .review_policy
+                .doctrine
+                .resolved_validation_gates()
+                .is_empty()
         {
             missing.push(
                 "review doctrine requires gate results but no validation gates are selected"
@@ -1326,7 +1330,10 @@ impl GoalState {
                 };
                 spawn_policy.ensure_spawn_allowed(&root, std::slice::from_ref(&request))?;
                 let task_id = self.insert_child_task(root.id, &root, request)?;
-                format!("steering_standard_review_requested:{task_id}:{}", check.as_str())
+                format!(
+                    "steering_standard_review_requested:{task_id}:{}",
+                    check.as_str()
+                )
             }
             SteeringDirectiveKind::Pause { reason } => {
                 self.status = GoalStatus::Paused;
@@ -2105,11 +2112,27 @@ impl GoalState {
             .branch_groups
             .iter()
             .find(|group| group.id == vote.group_id)
-            .ok_or(DomainError::BranchGroupNotFound(vote.group_id))?;
+            .ok_or(DomainError::BranchGroupNotFound(vote.group_id))?
+            .clone();
         if !group.candidate_task_ids.contains(&vote.selected_task_id) {
             return Err(DomainError::BranchDenied(format!(
                 "vote selected task {} outside branch group {}",
                 vote.selected_task_id, vote.group_id
+            )));
+        }
+        if !group.voter_task_ids.is_empty()
+            && !group.voter_task_ids.contains(&voter_task_id)
+            && group.unification_task_id != Some(voter_task_id)
+        {
+            return Err(DomainError::BranchDenied(format!(
+                "task {voter_task_id} is not an authorized voter or unifier for branch group {}",
+                vote.group_id
+            )));
+        }
+        if !self.task_terminal_ok(vote.selected_task_id) {
+            return Err(DomainError::BranchDenied(format!(
+                "vote selected task {} before it was successfully validated",
+                vote.selected_task_id
             )));
         }
         self.branch_votes.retain(|record| {
@@ -2510,6 +2533,16 @@ impl TaskPurpose {
 
     pub fn is_review(&self) -> bool {
         matches!(self, Self::Review { .. })
+    }
+
+    pub fn is_review_doctrine_subject(&self) -> bool {
+        matches!(
+            self,
+            Self::Review { .. }
+                | Self::Unification { .. }
+                | Self::BranchVote { .. }
+                | Self::BranchUnification { .. }
+        )
     }
 
     pub fn is_unification(&self) -> bool {
@@ -3159,7 +3192,9 @@ impl ReviewDoctrine {
         for doctrine in &self.custom_style_doctrines {
             doctrines.insert(doctrine.id.clone(), doctrine.clone());
         }
-        self.apply_style_overrides(doctrines).into_values().collect()
+        self.apply_style_overrides(doctrines)
+            .into_values()
+            .collect()
     }
 
     pub fn resolved_validation_gates(&self) -> Vec<ValidationGate> {
@@ -3923,7 +3958,11 @@ pub struct ValidationGate {
 }
 
 impl ValidationGate {
-    fn new(id: impl Into<String>, kind: ValidationGateKind, description: impl Into<String>) -> Self {
+    fn new(
+        id: impl Into<String>,
+        kind: ValidationGateKind,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             kind,
@@ -3977,6 +4016,10 @@ impl ReviewSubagentProfile {
         name: impl Into<String>,
         objective_ids: Vec<String>,
     ) -> Self {
+        let mut required_capabilities = vec![RunnerCapability::Review];
+        if role == WorkerKind::FormalMethods {
+            required_capabilities.push(RunnerCapability::FormalVerification);
+        }
         Self {
             id: id.into(),
             role,
@@ -3984,7 +4027,7 @@ impl ReviewSubagentProfile {
             objective_ids,
             evidence_requirement_ids: Vec::new(),
             validation_gate_ids: Vec::new(),
-            required_capabilities: vec![RunnerCapability::Review],
+            required_capabilities,
             required_model_features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
             prompt_hints: Vec::new(),
             inherited_by_default: true,
@@ -4592,7 +4635,29 @@ pub enum StandardReviewCheck {
 }
 
 impl StandardReviewCheck {
-    fn as_str(&self) -> &'static str {
+    pub fn all() -> &'static [StandardReviewCheck] {
+        &[
+            StandardReviewCheck::Abstraction,
+            StandardReviewCheck::Readability,
+            StandardReviewCheck::Compile,
+            StandardReviewCheck::TestEvidence,
+            StandardReviewCheck::HypothesisTesting,
+            StandardReviewCheck::TypeSoundness,
+            StandardReviewCheck::FormalVerification,
+            StandardReviewCheck::CleanCode,
+            StandardReviewCheck::Ddd,
+            StandardReviewCheck::FunctionalDdd,
+            StandardReviewCheck::DenotationalSemantics,
+            StandardReviewCheck::CanonicalStyle,
+            StandardReviewCheck::LibraryFit,
+            StandardReviewCheck::ReferenceSearch,
+            StandardReviewCheck::WebSearch,
+            StandardReviewCheck::DeepResearch,
+            StandardReviewCheck::Simplicity,
+        ]
+    }
+
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Abstraction => "abstraction",
             Self::Readability => "readability",
@@ -4614,7 +4679,7 @@ impl StandardReviewCheck {
         }
     }
 
-    fn title(&self) -> &'static str {
+    pub fn title(&self) -> &'static str {
         match self {
             Self::Abstraction => "abstraction check",
             Self::Readability => "readability check",
@@ -4636,7 +4701,7 @@ impl StandardReviewCheck {
         }
     }
 
-    fn worker_role(&self) -> WorkerKind {
+    pub fn worker_role(&self) -> WorkerKind {
         match self {
             Self::Compile | Self::TestEvidence | Self::HypothesisTesting => WorkerKind::Tester,
             Self::TypeSoundness | Self::FormalVerification => WorkerKind::FormalMethods,
@@ -4647,14 +4712,14 @@ impl StandardReviewCheck {
         }
     }
 
-    fn is_research_like(&self) -> bool {
+    pub fn is_research_like(&self) -> bool {
         matches!(
             self,
             Self::ReferenceSearch | Self::WebSearch | Self::DeepResearch | Self::LibraryFit
         )
     }
 
-    fn review_prompt(&self, topic: Option<&str>, goal_title: &str) -> String {
+    pub fn review_prompt(&self, topic: Option<&str>, goal_title: &str) -> String {
         let focus = topic.unwrap_or(goal_title);
         match self {
             Self::Abstraction => format!(
@@ -4702,7 +4767,7 @@ impl StandardReviewCheck {
         }
     }
 
-    fn research_question(&self, topic: Option<&str>, goal_title: &str) -> String {
+    pub fn research_question(&self, topic: Option<&str>, goal_title: &str) -> String {
         let focus = topic.unwrap_or(goal_title);
         match self {
             Self::LibraryFit => format!(
@@ -4721,7 +4786,7 @@ impl StandardReviewCheck {
         }
     }
 
-    fn tags(&self) -> Vec<String> {
+    pub fn tags(&self) -> Vec<String> {
         vec![
             "steering".to_string(),
             "standard-review".to_string(),
@@ -6506,6 +6571,18 @@ pub struct RunnerHeartbeat {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+pub struct RunnerStatus {
+    pub registration: RunnerRegistration,
+    pub running_tasks: u32,
+    pub capacity_remaining: u32,
+    pub last_seen_age_seconds: u64,
+    pub dispatchable: bool,
+    pub stale: bool,
+    pub full: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub struct RunnerDispatchRequest {
     pub goal_id: GoalId,
     pub task: TaskNode,
@@ -6744,6 +6821,8 @@ pub struct AgentRunResult {
     #[serde(default)]
     pub object_artifacts: Vec<ObjectStorageArtifactRef>,
     #[serde(default)]
+    pub test_evidence: Vec<TestCommandEvidence>,
+    #[serde(default)]
     pub child_requests: Vec<ChildTaskRequest>,
     pub confidence: f32,
     #[serde(default)]
@@ -6805,11 +6884,47 @@ impl AgentRunResult {
                 None
             },
             object_artifacts: Vec::new(),
+            test_evidence: if task.done_criteria.tests_pass && task.purpose.is_work_like() {
+                vec![TestCommandEvidence::stub_pass(task.id)]
+            } else {
+                Vec::new()
+            },
             child_requests: Vec::new(),
             confidence: 0.9,
             next_actions: Vec::new(),
             diagnostics: Vec::new(),
             notification_reports: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TestCommandEvidence {
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub passed: bool,
+    pub duration_ms: Option<u64>,
+    pub stdout_uri: Option<String>,
+    pub stderr_uri: Option<String>,
+    pub artifact_uri: Option<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+impl TestCommandEvidence {
+    pub fn stub_pass(task_id: TaskId) -> Self {
+        Self {
+            command: "stub test evidence".to_string(),
+            exit_code: Some(0),
+            passed: true,
+            duration_ms: Some(0),
+            stdout_uri: Some(format!("memory://test-evidence/{task_id}/stdout")),
+            stderr_uri: None,
+            artifact_uri: Some(format!("memory://test-evidence/{task_id}")),
+            notes: vec![
+                "Stub evidence validates the contract shape only; live runners should record real commands.".to_string(),
+            ],
         }
     }
 }
@@ -6888,9 +7003,22 @@ pub struct ReviewFinding {
     pub severity: ReviewSeverity,
     pub title: String,
     pub body: String,
+    pub file: Option<String>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    pub priority: Option<u8>,
     #[serde(default)]
     pub evidence: Vec<String>,
     pub suggested_action: Option<String>,
+}
+
+impl ReviewFinding {
+    fn blocks_validation(&self) -> bool {
+        matches!(
+            self.severity,
+            ReviewSeverity::High | ReviewSeverity::Critical
+        ) || self.priority.is_some_and(|priority| priority <= 1)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -6972,6 +7100,8 @@ pub struct ValidationReport {
     pub git_result: Option<GitResultRef>,
     #[serde(default)]
     pub object_artifacts: Vec<ObjectStorageArtifactRef>,
+    #[serde(default)]
+    pub test_evidence: Vec<TestCommandEvidence>,
 }
 
 impl ValidationReport {
@@ -7013,6 +7143,7 @@ impl ValidationReport {
                 artifacts,
                 git_result: req.result.git_result,
                 object_artifacts: req.result.object_artifacts,
+                test_evidence: req.result.test_evidence,
             };
         }
 
@@ -7021,6 +7152,20 @@ impl ValidationReport {
             || !req.result.object_artifacts.is_empty();
         if req.task.done_criteria.artifact_exists && !artifact_exists {
             missing_criteria.push("artifact_exists".to_string());
+        }
+        if req.task.done_criteria.tests_pass
+            && (req.task.purpose.is_work_like() || req.task.role == WorkerKind::Tester)
+        {
+            if req.result.test_evidence.is_empty() {
+                missing_criteria.push("test_evidence".to_string());
+            } else if !req
+                .result
+                .test_evidence
+                .iter()
+                .any(|evidence| evidence.passed)
+            {
+                missing_criteria.push("tests_pass".to_string());
+            }
         }
         if let Some(min_score) = req.task.done_criteria.validator_score_min {
             if effective_score < min_score
@@ -7051,6 +7196,29 @@ impl ValidationReport {
         ) && branch_vote.is_none()
         {
             missing_criteria.push("branch_vote_output".to_string());
+        }
+        if let Some(candidate_task_ids) = branch_candidate_ids(&req.task.purpose) {
+            if let Some(vote) = &branch_vote {
+                if !candidate_task_ids.contains(&vote.selected_task_id) {
+                    missing_criteria.push("branch_vote_candidate".to_string());
+                }
+            }
+        }
+        if req.task.purpose.is_review() || req.task.purpose.is_unification() {
+            if review.is_none() {
+                missing_criteria.push("review_output".to_string());
+            }
+        }
+        collect_review_doctrine_missing(
+            &req.task,
+            review.as_ref(),
+            &mut missing_criteria,
+            &mut reasons,
+        );
+        if let Some(review) = &review {
+            if review.findings.iter().any(ReviewFinding::blocks_validation) {
+                missing_criteria.push("blocking_review_finding".to_string());
+            }
         }
         let passed = req.result.status == WorkerRunStatus::Done && missing_criteria.is_empty();
         if let Some(review) = &review {
@@ -7101,8 +7269,112 @@ impl ValidationReport {
             artifacts,
             git_result: req.result.git_result,
             object_artifacts: req.result.object_artifacts,
+            test_evidence: req.result.test_evidence,
         }
     }
+}
+
+fn branch_candidate_ids(purpose: &TaskPurpose) -> Option<&[TaskId]> {
+    match purpose {
+        TaskPurpose::BranchVote {
+            candidate_task_ids, ..
+        }
+        | TaskPurpose::BranchUnification {
+            candidate_task_ids, ..
+        } => Some(candidate_task_ids.as_slice()),
+        _ => None,
+    }
+}
+
+fn collect_review_doctrine_missing(
+    task: &TaskNode,
+    review: Option<&ReviewOutput>,
+    missing_criteria: &mut Vec<String>,
+    reasons: &mut Vec<String>,
+) {
+    let doctrine = &task.review_doctrine;
+    if !doctrine.enabled
+        || !(task.purpose.is_review_doctrine_subject() || task.role.inherits_review_doctrine())
+    {
+        return;
+    }
+    let Some(review) = review else {
+        if doctrine.coverage.require_objective_results || doctrine.coverage.require_gate_results {
+            missing_criteria.push("review_output".to_string());
+        }
+        return;
+    };
+
+    if doctrine.coverage.require_objective_results {
+        let results: BTreeMap<&str, &ReviewObjectiveResult> = review
+            .objective_results
+            .iter()
+            .map(|result| (result.objective_id.as_str(), result))
+            .collect();
+        for objective in doctrine
+            .resolved_objectives()
+            .into_iter()
+            .filter(|objective| objective.required)
+        {
+            let Some(result) = results.get(objective.id.as_str()) else {
+                missing_criteria.push(format!("review_objective_missing:{}", objective.id));
+                continue;
+            };
+            if matches!(
+                result.decision,
+                ReviewObjectiveDecision::Fail | ReviewObjectiveDecision::NotChecked
+            ) || (!doctrine.coverage.allow_not_applicable
+                && result.decision == ReviewObjectiveDecision::NotApplicable)
+            {
+                missing_criteria.push(format!("review_objective_failed:{}", objective.id));
+            }
+            let min_score = objective
+                .min_score
+                .or(doctrine.coverage.min_objective_score)
+                .unwrap_or(0.0);
+            if result.score < min_score {
+                missing_criteria.push(format!("review_objective_score:{}", objective.id));
+            }
+            if doctrine.coverage.require_required_evidence && result.evidence.is_empty() {
+                missing_criteria.push(format!("review_objective_evidence:{}", objective.id));
+            }
+        }
+    }
+
+    if doctrine.coverage.require_gate_results {
+        let results: BTreeMap<&str, &ValidationGateResult> = review
+            .gate_results
+            .iter()
+            .map(|result| (result.gate_id.as_str(), result))
+            .collect();
+        for gate in doctrine
+            .resolved_validation_gates()
+            .into_iter()
+            .filter(|gate| gate.required)
+        {
+            let Some(result) = results.get(gate.id.as_str()) else {
+                missing_criteria.push(format!("validation_gate_missing:{}", gate.id));
+                continue;
+            };
+            if gate.failure_blocks && !result.passed {
+                missing_criteria.push(format!("validation_gate_failed:{}", gate.id));
+            }
+            if let Some(min_score) = gate.min_score {
+                if result.score < min_score {
+                    missing_criteria.push(format!("validation_gate_score:{}", gate.id));
+                }
+            }
+            if doctrine.coverage.require_required_evidence && result.evidence.is_empty() {
+                missing_criteria.push(format!("validation_gate_evidence:{}", gate.id));
+            }
+        }
+    }
+
+    reasons.push(format!(
+        "review doctrine checked {} objectives and {} gates",
+        review.objective_results.len(),
+        review.gate_results.len()
+    ));
 }
 
 fn result_artifacts(result: &AgentRunResult) -> Vec<ArtifactRef> {
@@ -7924,6 +8196,17 @@ impl WorkerKind {
             Self::RustTool => "rust_tool",
         }
     }
+
+    pub fn inherits_review_doctrine(&self) -> bool {
+        matches!(
+            self,
+            Self::Reviewer
+                | Self::Tester
+                | Self::FormalMethods
+                | Self::Validator
+                | Self::PatchMerger
+        )
+    }
 }
 
 pub fn detect_cycles(tasks: &BTreeMap<TaskId, TaskNode>) -> Result<(), DomainError> {
@@ -8107,6 +8390,90 @@ mod tests {
         });
         assert!(!report.passed);
         assert_eq!(report.status_after_validation, TaskStatus::Runnable);
+    }
+
+    #[test]
+    fn tester_validation_requires_passing_command_evidence() {
+        let state = GoalState::new(GoalSpec::new("tests", "run the bounded test suite"));
+        let mut task = state.runnable_tasks().remove(0);
+        task.role = WorkerKind::Tester;
+        let result = AgentRunResult {
+            test_evidence: Vec::new(),
+            ..AgentRunResult::stub_done(&task)
+        };
+        let missing_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result,
+        });
+
+        assert!(!missing_report.passed);
+        assert!(
+            missing_report
+                .missing_criteria
+                .contains(&"test_evidence".to_string())
+        );
+
+        let passing_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result: AgentRunResult {
+                test_evidence: vec![TestCommandEvidence::stub_pass(task.id)],
+                ..AgentRunResult::stub_done(&task)
+            },
+        });
+
+        assert!(passing_report.passed);
+    }
+
+    #[test]
+    fn high_priority_review_finding_blocks_validation() {
+        let state = GoalState::new(GoalSpec::new(
+            "review finding",
+            "block review validation on high priority findings",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        let subject_id = task.id;
+        task.role = WorkerKind::Reviewer;
+        task.purpose = TaskPurpose::Review {
+            subject_id,
+            round: 0,
+        };
+        let result = AgentRunResult {
+            review: Some(ReviewOutput {
+                decision: ReviewDecision::Accept,
+                reward: 0.95,
+                findings: vec![ReviewFinding {
+                    severity: ReviewSeverity::High,
+                    title: "Unsound API boundary".to_string(),
+                    body: "The review found a blocking issue in the domain boundary.".to_string(),
+                    file: Some("crates/domain/src/lib.rs".to_string()),
+                    start_line: Some(1),
+                    end_line: Some(1),
+                    priority: Some(1),
+                    evidence: vec!["git://diff/example".to_string()],
+                    suggested_action: Some("Fix before accepting the review.".to_string()),
+                }],
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
+                retry_recommended: false,
+                unification_summary: None,
+            }),
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"blocking_review_finding".to_string())
+        );
     }
 
     #[test]
@@ -8563,6 +8930,108 @@ mod tests {
     }
 
     #[test]
+    fn branch_vote_validation_rejects_unknown_candidate() {
+        let state = GoalState::new(GoalSpec::new(
+            "branch vote",
+            "branch vote output must select one declared candidate",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        let candidate = Uuid::new_v4();
+        task.purpose = TaskPurpose::BranchVote {
+            group_id: Uuid::new_v4(),
+            candidate_task_ids: vec![candidate],
+        };
+        let unknown_candidate = Uuid::new_v4();
+        let result = AgentRunResult {
+            branch_vote: Some(BranchVoteOutput {
+                group_id: task.purpose.branch_group_id().expect("group id"),
+                selected_task_id: unknown_candidate,
+                ranked_task_ids: vec![unknown_candidate],
+                confidence: 0.9,
+                rationale: "bad vote".to_string(),
+            }),
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"branch_vote_candidate".to_string())
+        );
+    }
+
+    #[test]
+    fn coordinator_rejects_branch_vote_for_unvalidated_candidate() {
+        let mut goal = GoalSpec::new(
+            "branch validation",
+            "patch merger must not select an unvalidated candidate",
+        );
+        goal.review_policy.enabled = false;
+        goal.branching_policy.enabled = true;
+
+        let mut state = GoalState::new(goal);
+        let root_id = state.runnable_tasks().remove(0).id;
+        let group = state
+            .branch_task(
+                BranchRequest {
+                    goal_id: state.goal.id,
+                    target_task_id: Some(root_id),
+                    subgoal_id: None,
+                    reason: "compare candidates".to_string(),
+                    candidate_count: 2,
+                    candidate_roles: Vec::new(),
+                    candidate_executions: Vec::new(),
+                    prompt_overrides: Vec::new(),
+                    selection_strategy: Some(BranchSelectionStrategy::VoterQuorum),
+                    operator: Some("test".to_string()),
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("branch group");
+
+        let report = ValidationReport {
+            goal_id: state.goal.id,
+            task_id: root_id,
+            passed: true,
+            score: 0.9,
+            review: None,
+            research: None,
+            branch_vote: Some(BranchVoteOutput {
+                group_id: group.id,
+                selected_task_id: group.candidate_task_ids[0],
+                ranked_task_ids: group.candidate_task_ids.clone(),
+                confidence: 0.9,
+                rationale: "candidate has not validated yet".to_string(),
+            }),
+            status_after_validation: TaskStatus::Done,
+            reasons: Vec::new(),
+            missing_criteria: Vec::new(),
+            child_requests: Vec::new(),
+            artifacts: Vec::new(),
+            git_result: None,
+            object_artifacts: Vec::new(),
+            test_evidence: Vec::new(),
+        };
+
+        let error = state
+            .apply_validation(report)
+            .expect_err("unvalidated candidate vote should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("before it was successfully validated")
+        );
+    }
+
+    #[test]
     fn review_frontier_forks_reviews_and_joins_unification() {
         let mut state = GoalState::new(GoalSpec::new("reviewed", "ship reviewed work"));
         let root = state.runnable_tasks().remove(0);
@@ -8763,9 +9232,15 @@ mod tests {
                 severity: ReviewSeverity::High,
                 title: "Missing proof".to_string(),
                 body: "The actor did not provide enough evidence.".to_string(),
+                file: Some("docs/evidence.md".to_string()),
+                start_line: Some(1),
+                end_line: Some(1),
+                priority: Some(1),
                 evidence: vec!["memory://evidence".to_string()],
                 suggested_action: Some("Add evidence before accepting.".to_string()),
             }],
+            objective_results: Vec::new(),
+            gate_results: Vec::new(),
             retry_recommended: true,
             unification_summary: None,
         });
@@ -8846,9 +9321,15 @@ mod tests {
                 severity: ReviewSeverity::Medium,
                 title: "Needs iteration".to_string(),
                 body: "The unifier requested one more actor pass.".to_string(),
+                file: None,
+                start_line: None,
+                end_line: None,
+                priority: Some(2),
                 evidence: vec!["memory://review".to_string()],
                 suggested_action: Some("Run bounded actor retry.".to_string()),
             }],
+            objective_results: Vec::new(),
+            gate_results: Vec::new(),
             retry_recommended: true,
             unification_summary: Some("retry required".to_string()),
         });
@@ -8902,6 +9383,120 @@ mod tests {
             .expect("research task");
         assert_eq!(research.role, WorkerKind::Research);
         assert_eq!(state.steering_directives.len(), 1);
+    }
+
+    #[test]
+    fn standard_review_steering_spawns_review_and_research_tasks() {
+        let mut goal = GoalSpec::new(
+            "steer review",
+            "allow standard review checks to steer durable tasks",
+        );
+        goal.review_policy.doctrine = ReviewDoctrine::strict_engineering();
+        let mut state = GoalState::new(goal);
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "check abstraction".to_string(),
+                    kind: SteeringDirectiveKind::RequestStandardReview {
+                        check: StandardReviewCheck::Abstraction,
+                        topic: Some("domain state".to_string()),
+                        reason: "review abstraction quality".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("abstraction steering applies");
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "research libraries".to_string(),
+                    kind: SteeringDirectiveKind::RequestStandardReview {
+                        check: StandardReviewCheck::DeepResearch,
+                        topic: Some("review doctrine libraries".to_string()),
+                        reason: "need state of the art".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("deep research steering applies");
+
+        assert!(state.tasks.values().any(|task| {
+            task.role == WorkerKind::Reviewer
+                && task.tags.iter().any(|tag| tag == "abstraction")
+                && task.review_doctrine.enabled
+        }));
+        assert!(
+            state
+                .tasks
+                .values()
+                .any(|task| task.role == WorkerKind::Research
+                    && matches!(task.purpose, TaskPurpose::Research { .. }))
+        );
+    }
+
+    #[test]
+    fn review_doctrine_requires_objective_and_gate_coverage() {
+        let mut goal = GoalSpec::new(
+            "strict review",
+            "review doctrine should require typed objective and gate evidence",
+        );
+        goal.review_policy.doctrine = ReviewDoctrine::strict_engineering();
+        let mut state = GoalState::new(goal);
+        let root = state.runnable_tasks().remove(0);
+        let actor_result = AgentRunResult::stub_done(&root);
+        state
+            .apply_agent_result(actor_result.clone(), &SpawnPolicy::default())
+            .expect("actor result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: root.goal_id,
+                task: root,
+                result: actor_result,
+            }))
+            .expect("actor validation");
+        state
+            .ensure_review_frontier(&SpawnPolicy::default())
+            .expect("review spawned");
+        let review = state
+            .tasks
+            .values()
+            .find(|task| task.purpose.is_review())
+            .cloned()
+            .expect("review task");
+        assert!(review.review_doctrine.enabled);
+
+        let mut missing_result = AgentRunResult::stub_done(&review);
+        if let Some(review_output) = missing_result.review.as_mut() {
+            review_output.objective_results.clear();
+        }
+        let missing_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: review.goal_id,
+            task: review.clone(),
+            result: missing_result,
+        });
+        assert!(!missing_report.passed);
+        assert!(
+            missing_report
+                .missing_criteria
+                .iter()
+                .any(|missing| { missing.starts_with("review_objective_missing:") })
+        );
+
+        let covered_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: review.goal_id,
+            task: review.clone(),
+            result: AgentRunResult::stub_done(&review),
+        });
+        assert!(covered_report.passed, "{covered_report:?}");
     }
 
     #[test]
@@ -9193,6 +9788,10 @@ mod tests {
             "../../../examples/goal-branching-competition.json"
         ))
         .expect("goal-branching-competition example parses");
+        serde_json::from_str::<GoalSpec>(include_str!(
+            "../../../examples/goal-review-doctrine.json"
+        ))
+        .expect("goal-review-doctrine example parses");
         serde_json::from_str::<RestartRequest>(include_str!(
             "../../../examples/restart-request-task.json"
         ))
@@ -9229,6 +9828,14 @@ mod tests {
             "../../../examples/steering-request-research.json"
         ))
         .expect("steering example parses");
+        serde_json::from_str::<SteeringDirective>(include_str!(
+            "../../../examples/steering-standard-abstraction.json"
+        ))
+        .expect("standard abstraction steering example parses");
+        serde_json::from_str::<SteeringDirective>(include_str!(
+            "../../../examples/steering-standard-deep-research.json"
+        ))
+        .expect("standard deep research steering example parses");
         serde_json::from_str::<ResearchOutput>(include_str!(
             "../../../examples/research-output-memory-substrate.json"
         ))

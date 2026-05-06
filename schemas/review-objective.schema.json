@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewObjective",
+  "type": "object",
+  "properties": {
+    "category": {
+      "$ref": "#/$defs/ReviewObjectiveCategory"
+    },
+    "description": {
+      "type": "string"
+    },
+    "evidence_requirement_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "id": {
+      "type": "string"
+    },
+    "min_score": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    },
+    "required": {
+      "type": "boolean"
+    },
+    "severity_if_failed": {
+      "$ref": "#/$defs/ReviewSeverity"
+    },
+    "tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "category",
+    "title",
+    "description",
+    "required",
+    "severity_if_failed"
+  ],
+  "$defs": {
+    "ReviewObjectiveCategory": {
+      "type": "string",
+      "enum": [
+        "correctness",
+        "code_review",
+        "testing",
+        "hypothesis_testing",
+        "type_soundness",
+        "formal_verification",
+        "code_quality",
+        "code_style",
+        "architecture",
+        "domain_modeling",
+        "functional_design",
+        "denotational_semantics",
+        "abstraction_quality",
+        "simplicity",
+        "security",
+        "performance",
+        "reliability",
+        "observability",
+        "documentation",
+        "custom"
+      ]
+    },
+    "ReviewSeverity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  }
+}

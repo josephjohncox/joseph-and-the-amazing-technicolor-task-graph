@@ -1,0 +1,138 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756800",
+  "title": "Strict review doctrine",
+  "objective": "Run a code change through strict typed review objectives, evidence requirements, style doctrines, and validation gates before the goal can be satisfied.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 400000,
+    "remaining_tokens": 400000,
+    "max_runtime_seconds": 3600,
+    "remaining_runtime_seconds": 3600,
+    "max_tool_calls": 300,
+    "remaining_tool_calls": 300,
+    "max_child_tasks": 16,
+    "remaining_child_tasks": 16,
+    "max_patch_size": 120000
+  },
+  "done_criteria": {
+    "tests_pass": true,
+    "artifact_exists": true,
+    "validator_score_min": 0.9
+  },
+  "review_policy": {
+    "enabled": true,
+    "min_reviews": 2,
+    "max_review_rounds": 3,
+    "join_strategy": "all_required",
+    "require_unification": true,
+    "reviewer_roles": ["reviewer", "tester", "formal_methods"],
+    "unifier_role": "patch_merger",
+    "min_satisfaction_score": 0.9,
+    "actor_critic": {
+      "enabled": true,
+      "critic_role": "reviewer",
+      "actor_retry_role": "planner",
+      "max_actor_retries": 2,
+      "reward_threshold": 0.9
+    },
+    "doctrine": {
+      "enabled": true,
+      "presets": [
+        "core_engineering",
+        "testing",
+        "formal_methods",
+        "functional_domain_driven_design",
+        "laziness_lost"
+      ],
+      "coverage": {
+        "require_objective_results": true,
+        "require_gate_results": true,
+        "require_required_evidence": true,
+        "allow_not_applicable": true,
+        "min_objective_score": 0.82
+      },
+      "custom_objectives": [
+        {
+          "id": "libraries.state_of_the_art",
+          "category": "architecture",
+          "title": "State-of-the-art library fit",
+          "description": "Implementation uses standard, well-supported libraries or documents why it does not.",
+          "required": true,
+          "min_score": 0.82,
+          "severity_if_failed": "high",
+          "evidence_requirement_ids": ["evidence.library_reference"],
+          "tags": ["libraries", "research"]
+        }
+      ],
+      "custom_evidence_requirements": [
+        {
+          "id": "evidence.library_reference",
+          "kind": "external_reference",
+          "description": "Research cites official docs, canonical references, or papers for major library choices.",
+          "required": true,
+          "commands": [],
+          "artifact_kinds": ["report"],
+          "applies_to_objective_ids": ["libraries.state_of_the_art"]
+        }
+      ],
+      "custom_style_doctrines": [
+        {
+          "id": "style.repository_canonical",
+          "name": "Canonical repository style",
+          "description": "Prefer established repo conventions over invented abstractions or framework-shaped code.",
+          "required": true,
+          "references": [],
+          "anti_patterns": ["foreign style imposed without local reason"],
+          "positive_indicators": ["names and module boundaries match existing code"],
+          "tags": ["style", "canonical"]
+        }
+      ],
+      "custom_validation_gates": [
+        {
+          "id": "gate.library_reference",
+          "kind": "architecture_review",
+          "description": "Reviewer confirms library and design choices are backed by current canonical references.",
+          "required": true,
+          "min_score": 0.82,
+          "failure_blocks": true,
+          "evidence_requirement_ids": ["evidence.library_reference"],
+          "applies_to_roles": ["research", "reviewer"]
+        }
+      ],
+      "custom_subagents": [
+        {
+          "id": "subagent.library_researcher",
+          "role": "research",
+          "name": "Library and paper researcher",
+          "objective_ids": ["libraries.state_of_the_art"],
+          "evidence_requirement_ids": ["evidence.library_reference"],
+          "validation_gate_ids": ["gate.library_reference"],
+          "required_capabilities": ["research", "mcp_tools"],
+          "required_model_features": ["tool_use", "json_schema", "long_context"],
+          "prompt_hints": ["Search official docs, canonical papers, and mature library ecosystems before recommending implementation direction."],
+          "inherited_by_default": true
+        }
+      ],
+      "overrides": [
+        {
+          "target": "validation_gate",
+          "id": "gate.formal_verification",
+          "action": "make_optional",
+          "min_score": null,
+          "note": "Formal verification is risk-triggered; type soundness remains required."
+        }
+      ]
+    }
+  },
+  "research_policy": {
+    "enabled": true,
+    "question_first": true,
+    "require_sources": true,
+    "require_use_plan": true,
+    "max_search_depth": 5,
+    "min_confidence": 0.8,
+    "allowed_providers": ["web", "docs", "mcp", "memory", "repo"],
+    "source_quality_order": ["primary", "official_docs", "peer_reviewed", "reputable_secondary"]
+  },
+  "initial_tasks": []
+}

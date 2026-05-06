@@ -29,7 +29,7 @@ This is how COAT allows multiple subagents or models to solve the same goal with
 
 `coat-runner-registry` is the first control-plane service for distributed nodes.
 
-Runners POST `RunnerRegistration` to `/runners`, send `/runners/heartbeat`, and the coordinator or operator can POST `/dispatch` with a task to receive a `RunnerDispatchDecision`. The bundled TypeScript sidecars self-register when `RUNNER_REGISTRY_URL` is configured and expose `/registration` plus `/capabilities` for inspection.
+Runners POST `RunnerRegistration` to `/runners`, send `/runners/heartbeat`, and the coordinator or operator can POST `/dispatch` with a task to receive a `RunnerDispatchDecision`. Operators can inspect `/runners/status` or `coat runner status` to see each runner's running tasks, remaining capacity, stale/full flags, and dispatchability. The bundled TypeScript sidecars self-register when `RUNNER_REGISTRY_URL` is configured and expose `/registration` plus `/capabilities` for inspection.
 
 The registry is in-memory in this scaffold. It filters dispatch candidates by heartbeat lease and remaining capacity, but production should move runner state into Restate virtual objects or an indexed backing store.
 

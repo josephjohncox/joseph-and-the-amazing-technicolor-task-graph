@@ -11,6 +11,7 @@ use axum::{
 };
 use coat_domain::{
     RunnerDispatchDecision, RunnerDispatchRequest, RunnerHeartbeat, RunnerRegistration,
+    RunnerStatus,
 };
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
@@ -46,6 +47,21 @@ impl RunnerRecord {
         let ttl = Duration::from_secs(self.registration.lease_ttl_seconds);
         now.duration_since(self.last_seen) <= ttl && self.capacity_remaining > 0
     }
+
+    fn status(&self, now: Instant) -> RunnerStatus {
+        let last_seen_age = now.duration_since(self.last_seen);
+        let stale = last_seen_age > Duration::from_secs(self.registration.lease_ttl_seconds);
+        let full = self.capacity_remaining == 0;
+        RunnerStatus {
+            registration: self.registration.clone(),
+            running_tasks: self.running_tasks,
+            capacity_remaining: self.capacity_remaining,
+            last_seen_age_seconds: last_seen_age.as_secs(),
+            dispatchable: !stale && !full,
+            stale,
+            full,
+        }
+    }
 }
 
 #[tokio::main]
@@ -62,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/runners", get(list_runners).post(register_runner))
+        .route("/runners/status", get(list_runner_status))
         .route("/runners/heartbeat", post(heartbeat))
         .route("/dispatch", post(dispatch))
         .with_state(state)
@@ -91,6 +108,18 @@ async fn list_runners(State(state): State<RegistryState>) -> Json<Vec<RunnerRegi
             .await
             .values()
             .map(|record| record.registration.clone())
+            .collect(),
+    )
+}
+
+async fn list_runner_status(State(state): State<RegistryState>) -> Json<Vec<RunnerStatus>> {
+    let now = Instant::now();
+    Json(
+        state
+            .read()
+            .await
+            .values()
+            .map(|record| record.status(now))
             .collect(),
     )
 }
@@ -160,12 +189,19 @@ mod tests {
         let now = Instant::now();
         let mut record = RunnerRecord::new(registration());
         assert!(record.is_dispatchable(now));
+        assert!(record.status(now).dispatchable);
 
         record.capacity_remaining = 0;
         assert!(!record.is_dispatchable(now));
+        let full = record.status(now);
+        assert!(full.full);
+        assert!(!full.dispatchable);
 
         record.capacity_remaining = 1;
         record.last_seen = now - Duration::from_secs(301);
         assert!(!record.is_dispatchable(now));
+        let stale = record.status(now);
+        assert!(stale.stale);
+        assert!(!stale.dispatchable);
     }
 }

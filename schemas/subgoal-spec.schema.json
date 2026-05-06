@@ -67,6 +67,7 @@
         "research",
         "reviewer",
         "tester",
+        "formal_methods",
         "validator",
         "patch_merger",
         "rust_tool"

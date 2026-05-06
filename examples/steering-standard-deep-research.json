@@ -1,0 +1,13 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756811",
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756800",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Research the current canonical implementation direction before coding.",
+  "kind": {
+    "kind": "request_standard_review",
+    "check": "deep_research",
+    "topic": "typed review objectives, formal-methods review, property testing, clean DDD, and state-of-the-art Rust libraries",
+    "reason": "Need sourced guidance on best libraries, papers, and style before locking in the architecture."
+  }
+}

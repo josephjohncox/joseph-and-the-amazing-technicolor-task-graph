@@ -65,6 +65,7 @@ enum WorkerKind {
   WORKER_KIND_VALIDATOR = 7;
   WORKER_KIND_PATCH_MERGER = 8;
   WORKER_KIND_RUST_TOOL = 9;
+  WORKER_KIND_FORMAL_METHODS = 10;
 }
 
 enum TaskPurposeKind {

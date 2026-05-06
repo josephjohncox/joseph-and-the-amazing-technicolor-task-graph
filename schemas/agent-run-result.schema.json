@@ -128,6 +128,13 @@
     "task_id": {
       "type": "string",
       "format": "uuid"
+    },
+    "test_evidence": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TestCommandEvidence"
+      }
     }
   },
   "required": [
@@ -426,6 +433,17 @@
         },
         "reason": {
           "type": "string"
+        },
+        "review_doctrine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewDoctrine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "role": {
           "$ref": "#/$defs/WorkerKind"
@@ -1424,11 +1442,237 @@
         "inconclusive"
       ]
     },
+    "ReviewDoctrine": {
+      "type": "object",
+      "properties": {
+        "coverage": {
+          "$ref": "#/$defs/ReviewDoctrineCoveragePolicy"
+        },
+        "custom_evidence_requirements": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewEvidenceRequirement"
+          }
+        },
+        "custom_objectives": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewObjective"
+          }
+        },
+        "custom_style_doctrines": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StyleDoctrine"
+          }
+        },
+        "custom_subagents": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewSubagentProfile"
+          }
+        },
+        "custom_validation_gates": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ValidationGate"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "overrides": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewDoctrineOverride"
+          }
+        },
+        "presets": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewDoctrinePreset"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "coverage"
+      ]
+    },
+    "ReviewDoctrineCoveragePolicy": {
+      "type": "object",
+      "properties": {
+        "allow_not_applicable": {
+          "type": "boolean"
+        },
+        "min_objective_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "require_gate_results": {
+          "type": "boolean"
+        },
+        "require_objective_results": {
+          "type": "boolean"
+        },
+        "require_required_evidence": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "require_objective_results",
+        "require_gate_results",
+        "require_required_evidence",
+        "allow_not_applicable"
+      ]
+    },
+    "ReviewDoctrineOverride": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ReviewDoctrineOverrideAction"
+        },
+        "id": {
+          "type": "string"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "note": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/ReviewDoctrineOverrideTarget"
+        }
+      },
+      "required": [
+        "target",
+        "id",
+        "action",
+        "note"
+      ]
+    },
+    "ReviewDoctrineOverrideAction": {
+      "type": "string",
+      "enum": [
+        "disable",
+        "require",
+        "make_optional",
+        "set_min_score"
+      ]
+    },
+    "ReviewDoctrineOverrideTarget": {
+      "type": "string",
+      "enum": [
+        "objective",
+        "evidence_requirement",
+        "style_doctrine",
+        "validation_gate",
+        "subagent"
+      ]
+    },
+    "ReviewDoctrinePreset": {
+      "type": "string",
+      "enum": [
+        "core_engineering",
+        "testing",
+        "formal_methods",
+        "functional_domain_driven_design",
+        "laziness_lost",
+        "security",
+        "performance"
+      ]
+    },
+    "ReviewEvidenceKind": {
+      "type": "string",
+      "enum": [
+        "compile",
+        "automated_tests",
+        "property_tests",
+        "type_check",
+        "formal_proof",
+        "static_analysis",
+        "code_inspection",
+        "architecture_review",
+        "style_review",
+        "security_scan",
+        "performance_benchmark",
+        "documentation_review",
+        "external_reference",
+        "custom"
+      ]
+    },
+    "ReviewEvidenceRequirement": {
+      "type": "object",
+      "properties": {
+        "applies_to_objective_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifact_kinds": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactKind"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ReviewEvidenceKind"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "description",
+        "required"
+      ]
+    },
     "ReviewFinding": {
       "type": "object",
       "properties": {
         "body": {
           "type": "string"
+        },
+        "end_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         },
         "evidence": {
           "type": "array",
@@ -1437,8 +1681,31 @@
             "type": "string"
           }
         },
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
         "severity": {
           "$ref": "#/$defs/ReviewSeverity"
+        },
+        "start_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         },
         "suggested_action": {
           "type": [
@@ -1456,6 +1723,126 @@
         "body"
       ]
     },
+    "ReviewObjective": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ReviewObjectiveCategory"
+        },
+        "description": {
+          "type": "string"
+        },
+        "evidence_requirement_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "severity_if_failed": {
+          "$ref": "#/$defs/ReviewSeverity"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "category",
+        "title",
+        "description",
+        "required",
+        "severity_if_failed"
+      ]
+    },
+    "ReviewObjectiveCategory": {
+      "type": "string",
+      "enum": [
+        "correctness",
+        "code_review",
+        "testing",
+        "hypothesis_testing",
+        "type_soundness",
+        "formal_verification",
+        "code_quality",
+        "code_style",
+        "architecture",
+        "domain_modeling",
+        "functional_design",
+        "denotational_semantics",
+        "abstraction_quality",
+        "simplicity",
+        "security",
+        "performance",
+        "reliability",
+        "observability",
+        "documentation",
+        "custom"
+      ]
+    },
+    "ReviewObjectiveDecision": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "not_applicable",
+        "not_checked"
+      ]
+    },
+    "ReviewObjectiveResult": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/ReviewObjectiveDecision"
+        },
+        "evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "objective_id": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "objective_id",
+        "decision",
+        "score"
+      ]
+    },
     "ReviewOutput": {
       "type": "object",
       "properties": {
@@ -1467,6 +1854,20 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/ReviewFinding"
+          }
+        },
+        "gate_results": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ValidationGateResult"
+          }
+        },
+        "objective_results": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewObjectiveResult"
           }
         },
         "retry_recommended": {
@@ -1489,6 +1890,25 @@
         "retry_recommended"
       ]
     },
+    "ReviewReference": {
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "uri",
+        "note"
+      ]
+    },
     "ReviewSeverity": {
       "type": "string",
       "enum": [
@@ -1497,6 +1917,71 @@
         "medium",
         "high",
         "critical"
+      ]
+    },
+    "ReviewSubagentProfile": {
+      "type": "object",
+      "properties": {
+        "evidence_requirement_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "inherited_by_default": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "objective_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "prompt_hints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_model_features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "validation_gate_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "name",
+        "inherited_by_default"
       ]
     },
     "RiskTolerance": {
@@ -1526,7 +2011,8 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
-        "network_open"
+        "network_open",
+        "formal_verification"
       ]
     },
     "RunnerLocality": {
@@ -1701,6 +2187,57 @@
         "reputable_secondary",
         "community",
         "unknown"
+      ]
+    },
+    "StyleDoctrine": {
+      "type": "object",
+      "properties": {
+        "anti_patterns": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "positive_indicators": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "references": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewReference"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "required"
       ]
     },
     "TaskPriority": {
@@ -1903,6 +2440,161 @@
         }
       ]
     },
+    "TestCommandEvidence": {
+      "type": "object",
+      "properties": {
+        "artifact_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "notes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "stderr_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stdout_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command",
+        "passed"
+      ]
+    },
+    "ValidationGate": {
+      "type": "object",
+      "properties": {
+        "applies_to_roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkerKind"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "evidence_requirement_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "failure_blocks": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ValidationGateKind"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "description",
+        "required",
+        "failure_blocks"
+      ]
+    },
+    "ValidationGateKind": {
+      "type": "string",
+      "enum": [
+        "compile",
+        "test_suite",
+        "property_testing",
+        "type_soundness",
+        "formal_verification",
+        "static_analysis",
+        "code_review",
+        "architecture_review",
+        "style_review",
+        "security_review",
+        "performance_benchmark",
+        "documentation_review",
+        "custom"
+      ]
+    },
+    "ValidationGateResult": {
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "gate_id": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "gate_id",
+        "passed",
+        "score"
+      ]
+    },
     "WorkerKind": {
       "type": "string",
       "enum": [
@@ -1912,6 +2604,7 @@
         "research",
         "reviewer",
         "tester",
+        "formal_methods",
         "validator",
         "patch_merger",
         "rust_tool"

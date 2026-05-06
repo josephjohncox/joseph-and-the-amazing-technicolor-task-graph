@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewDoctrineOverride",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/ReviewDoctrineOverrideAction"
+    },
+    "id": {
+      "type": "string"
+    },
+    "min_score": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    },
+    "note": {
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/ReviewDoctrineOverrideTarget"
+    }
+  },
+  "required": [
+    "target",
+    "id",
+    "action",
+    "note"
+  ],
+  "$defs": {
+    "ReviewDoctrineOverrideAction": {
+      "type": "string",
+      "enum": [
+        "disable",
+        "require",
+        "make_optional",
+        "set_min_score"
+      ]
+    },
+    "ReviewDoctrineOverrideTarget": {
+      "type": "string",
+      "enum": [
+        "objective",
+        "evidence_requirement",
+        "style_doctrine",
+        "validation_gate",
+        "subagent"
+      ]
+    }
+  }
+}

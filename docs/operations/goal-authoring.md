@@ -156,6 +156,10 @@ Include concrete edits when changes are requested.
 
 `review_policy`: Keep enabled for any task that changes code, deployment, policy, memory promotion, or user-visible behavior. Use at least one critic and a unifier when multiple branches or agents contribute.
 
+`review_policy.doctrine`: Opt in when the goal needs overarching review standards. Select presets such as `core_engineering`, `testing`, `formal_methods`, `functional_domain_driven_design`, `laziness_lost`, `security`, or `performance`; add custom objectives, evidence requirements, style doctrines, validation gates, subagent profiles, and overrides. Set `coverage.require_objective_results` and `coverage.require_gate_results` when reviewer/tester/formal-methods tasks must prove coverage before validation passes. See `examples/goal-review-doctrine.json`.
+
+Standard review steering: Use `request_standard_review` to inject bounded checks while a goal is running. `abstraction`, `readability`, `clean_code`, `ddd`, `functional_ddd`, `denotational_semantics`, `canonical_style`, and `simplicity` spawn review-like tasks. `compile`, `test_evidence`, and `hypothesis_testing` spawn tester-style tasks. `type_soundness` and `formal_verification` spawn formal-methods tasks. `library_fit`, `reference_search`, `web_search`, and `deep_research` spawn sourced research tasks that return an information-use plan.
+
 `control_policy`: Use `human_steered_continuous` for long-running initiatives that need operator steering. Use explicit stop conditions; do not rely on a free-running loop.
 
 `restart_policy`: Enable for work that may be resumed after runner loss, timeouts, config repair, model changes, or operator steering. Keep max restart counts finite. Use `scope = task` for a single failed task, `scope = blocked` for all blocked tasks, and `scope = goal` only when the whole frontier should be requeued.
@@ -175,6 +179,27 @@ Include concrete edits when changes are requested.
 `default_execution`: Pick the least powerful runner that can do the work. Add local model candidates when the runner can actually serve them. Add MCP servers by reference and keep auth in `SecretRef`. For Codex or Claude device/browser login, set `auth_distribution.mode = runner_local_only` and require runner labels; for distributed human auth, use a brokered lease and approval.
 
 ## Submission Commands
+
+Draft a starter goal without hand-writing the full contract:
+
+```sh
+cargo run -p coat-cli -- goal draft \
+  --title "Typed memory retrieval review" \
+  --objective "Review and implement typed memory retrieval for runner-distributed tasks. Success means schemas regenerate, cargo tests pass, docs explain operator use, and reviewer doctrine accepts the evidence." \
+  --strict-review \
+  --human-steered \
+  --subgoal "id=research-memory,title=Research memory substrate,role=research,objective=Find current supported memory/vector/RAG libraries,tags=research|memory" \
+  --initial-task "role=research,subgoal=research-memory,title=Research memory substrate,prompt=Find current supported memory/vector/RAG libraries and return sourced recommendations,tags=research|preflight" \
+  --out examples/drafts/typed-memory-retrieval.json
+```
+
+`--subgoal` and `--initial-task` accept comma-separated `key=value` fields. Use `|` inside list fields such as `tags`, `dependencies`, and `acceptance_evidence`. For anything more complex than a seed frontier, draft JSON and then run the critic pass.
+
+List built-in standard checks:
+
+```sh
+cargo run -p coat-cli -- goal review-checks
+```
 
 Lint before submit:
 
@@ -214,6 +239,16 @@ Steer with research:
 cargo run -p coat-cli -- goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/steering-request-research.json
+```
+
+Steer with a standard check directly:
+
+```sh
+cargo run -p coat-cli -- goal steer-standard \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
+  --check deep_research \
+  --topic "memory substrate and vector RAG libraries" \
+  --reason "Implementation should be guided by current standard libraries and supported services."
 ```
 
 Approve a waiting task:

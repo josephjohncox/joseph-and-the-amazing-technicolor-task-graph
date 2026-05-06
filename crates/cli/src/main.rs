@@ -1,13 +1,15 @@
-use std::{fs, path::PathBuf, process::Command};
+use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use coat_domain::{
-    BranchRequest, BranchSelectionRequest, EventSource, ExternalEvent, GoalSpec, HumanApproval,
-    MemoryContextRequest, MemoryJoinRequest, MemoryRepairRequest, MemorySearchRequest,
-    MemoryWriteRequest, NotificationRequest, RestartRequest, RunnerDispatchRequest,
-    RunnerRegistration, SteeringDirective, TaskPurposeKind, TaskQuery, TaskStatus,
-    TriggeredGoalRequest, WorkerKind,
+    BranchRequest, BranchSelectionRequest, ChildTaskRequest, ControlLoopMode, EventSource,
+    ExternalEvent, GoalSpec, HumanApproval, MemoryContextRequest, MemoryJoinRequest,
+    MemoryRepairRequest, MemorySearchRequest, MemoryWriteRequest, NotificationRequest,
+    RestartRequest, ReviewDoctrine, ReviewDoctrinePreset, RunnerDispatchRequest,
+    RunnerRegistration, StandardReviewCheck, SteeringDirective, SteeringDirectiveKind, SubgoalSpec,
+    TaskPriority, TaskPurpose, TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest,
+    WorkerKind,
 };
 use uuid::Uuid;
 
@@ -136,6 +138,7 @@ struct EventFileArgs {
 #[derive(Debug, Subcommand)]
 enum RunnerSubcommand {
     List(RunnerListArgs),
+    Status(RunnerListArgs),
     Register(RunnerRegisterArgs),
     Dispatch(RunnerDispatchArgs),
 }
@@ -276,16 +279,55 @@ struct RunnerDispatchArgs {
 
 #[derive(Debug, Subcommand)]
 enum GoalSubcommand {
+    Draft(DraftGoalArgs),
     Submit(SubmitGoalArgs),
     Status(GoalIdArgs),
     Progress(GoalIdArgs),
     Tasks(GoalTasksArgs),
     Lint(GoalLintArgs),
     Steer(SteerGoalArgs),
+    SteerStandard(SteerStandardGoalArgs),
+    ReviewChecks,
     Restart(RestartGoalArgs),
     Branch(BranchGoalArgs),
     SelectBranch(SelectBranchArgs),
     Cancel(CancelGoalArgs),
+}
+
+#[derive(Debug, Args)]
+struct DraftGoalArgs {
+    #[arg(long)]
+    title: String,
+    #[arg(long)]
+    objective: String,
+    #[arg(long)]
+    repo: Option<String>,
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long)]
+    strict_review: bool,
+    #[arg(long)]
+    human_steered: bool,
+    #[arg(long)]
+    enable_branching: bool,
+    #[arg(long)]
+    plan_summary: Option<String>,
+    #[arg(long)]
+    acceptance_evidence: Vec<String>,
+    #[arg(long)]
+    constraint: Vec<String>,
+    #[arg(long)]
+    out_of_scope: Vec<String>,
+    #[arg(long)]
+    assumption: Vec<String>,
+    #[arg(long)]
+    open_question: Vec<String>,
+    #[arg(long)]
+    review_preset: Vec<String>,
+    #[arg(long)]
+    subgoal: Vec<String>,
+    #[arg(long)]
+    initial_task: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -364,6 +406,34 @@ struct SteerGoalArgs {
     goal_id: Uuid,
     #[arg(long)]
     file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct SteerStandardGoalArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[arg(long)]
+    goal_id: Uuid,
+    #[arg(long)]
+    task_id: Option<Uuid>,
+    #[arg(long)]
+    check: String,
+    #[arg(long)]
+    topic: Option<String>,
+    #[arg(long, default_value = "operator requested a standard review check")]
+    reason: String,
+    #[arg(long)]
+    message: Option<String>,
+    #[arg(long)]
+    operator: Option<String>,
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long)]
+    emit_only: bool,
 }
 
 #[derive(Debug, Args)]
@@ -788,6 +858,13 @@ async fn runner(args: RunnerCommand) -> anyhow::Result<()> {
             )
             .await
         }
+        RunnerSubcommand::Status(args) => {
+            get_url(
+                &format!("{}/runners/status", args.registry_url.trim_end_matches('/')),
+                None,
+            )
+            .await
+        }
         RunnerSubcommand::Register(args) => {
             let registration: RunnerRegistration = read_json_file(&args.file)?;
             post_json_to_url(
@@ -853,6 +930,7 @@ fn init(args: InitArgs) -> anyhow::Result<()> {
 
 async fn goal(args: GoalCommand) -> anyhow::Result<()> {
     match args.command {
+        GoalSubcommand::Draft(args) => draft_goal(args),
         GoalSubcommand::Submit(args) => submit_goal(args).await,
         GoalSubcommand::Status(args) => {
             restate_post_without_body(&args.restate_ingress, args.goal_id, "status").await
@@ -869,6 +947,8 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             let directive: SteeringDirective = read_json_file(&args.file)?;
             restate_post_json(&args.restate_ingress, args.goal_id, "steer", &directive).await
         }
+        GoalSubcommand::SteerStandard(args) => steer_standard_goal(args).await,
+        GoalSubcommand::ReviewChecks => review_checks(),
         GoalSubcommand::Restart(args) => {
             let request: RestartRequest = read_json_file(&args.file)?;
             restate_post_json(&args.restate_ingress, args.goal_id, "restart", &request).await
@@ -891,6 +971,107 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             restate_post_json(&args.restate_ingress, args.goal_id, "cancel", &args.reason).await
         }
     }
+}
+
+fn draft_goal(args: DraftGoalArgs) -> anyhow::Result<()> {
+    let mut goal = GoalSpec::new(args.title, args.objective);
+    goal.repo = args.repo;
+    goal.authoring.intake_summary =
+        "Drafted by coat goal draft; review and refine before submit.".to_string();
+    goal.authoring.acceptance_evidence = args.acceptance_evidence;
+    goal.authoring.constraints = args.constraint;
+    goal.authoring.out_of_scope = args.out_of_scope;
+    goal.authoring.assumptions = args.assumption;
+    goal.authoring.open_questions = args.open_question;
+    goal.plan.summary = args
+        .plan_summary
+        .unwrap_or_else(|| "Structured goal draft; subgoals should be refined by the authoring critic before submit.".to_string());
+    goal.plan.subgoals = args
+        .subgoal
+        .iter()
+        .map(|raw| parse_subgoal_spec(raw))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    goal.initial_tasks = args
+        .initial_task
+        .iter()
+        .map(|raw| parse_initial_task_spec(raw))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    if args.human_steered {
+        goal.control_policy.mode = ControlLoopMode::HumanSteeredContinuous;
+    }
+    if args.enable_branching {
+        goal.branching_policy.enabled = true;
+    }
+    if args.strict_review || !args.review_preset.is_empty() {
+        let mut doctrine = if args.strict_review {
+            ReviewDoctrine::strict_engineering()
+        } else {
+            ReviewDoctrine::default()
+        };
+        doctrine.enabled = true;
+        if !args.review_preset.is_empty() {
+            doctrine.presets = args
+                .review_preset
+                .iter()
+                .map(|preset| {
+                    parse_json_enum::<ReviewDoctrinePreset>(preset, "ReviewDoctrinePreset")
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+        }
+        doctrine.coverage.require_objective_results = true;
+        doctrine.coverage.require_gate_results = true;
+        doctrine.coverage.require_required_evidence = true;
+        doctrine.coverage.min_objective_score = Some(0.85);
+        goal.review_policy.doctrine = doctrine;
+        goal.review_policy.min_reviews = goal.review_policy.min_reviews.max(1);
+        goal.review_policy.reviewer_roles = vec![
+            WorkerKind::Reviewer,
+            WorkerKind::Tester,
+            WorkerKind::FormalMethods,
+        ];
+    }
+
+    write_json_or_stdout(&goal, args.out.as_ref())
+}
+
+async fn steer_standard_goal(args: SteerStandardGoalArgs) -> anyhow::Result<()> {
+    let check: StandardReviewCheck = parse_json_enum(&args.check, "StandardReviewCheck")?;
+    let message = args
+        .message
+        .unwrap_or_else(|| format!("Request {}", check.title()));
+    let directive = SteeringDirective {
+        id: Uuid::new_v4(),
+        goal_id: args.goal_id,
+        task_id: args.task_id,
+        operator: args.operator,
+        message,
+        kind: SteeringDirectiveKind::RequestStandardReview {
+            check,
+            topic: args.topic,
+            reason: args.reason,
+        },
+    };
+    if args.emit_only || args.out.is_some() {
+        return write_json_or_stdout(&directive, args.out.as_ref());
+    }
+    restate_post_json(&args.restate_ingress, args.goal_id, "steer", &directive).await
+}
+
+fn review_checks() -> anyhow::Result<()> {
+    let checks: Vec<_> = StandardReviewCheck::all()
+        .iter()
+        .map(|check| {
+            serde_json::json!({
+                "check": check.as_str(),
+                "title": check.title(),
+                "worker_role": check.worker_role(),
+                "research_like": check.is_research_like(),
+            })
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&checks)?);
+    Ok(())
 }
 
 async fn submit_goal(args: SubmitGoalArgs) -> anyhow::Result<()> {
@@ -964,12 +1145,145 @@ fn task_query_from_args(args: &GoalTasksArgs) -> anyhow::Result<TaskQuery> {
     Ok(query)
 }
 
+fn parse_subgoal_spec(raw: &str) -> anyhow::Result<SubgoalSpec> {
+    let kv = parse_kv_spec(raw)?;
+    let role = match kv.get("role") {
+        Some(role) => parse_json_enum::<WorkerKind>(role, "WorkerKind")?,
+        None => WorkerKind::Codex,
+    };
+    let priority = match kv.get("priority") {
+        Some(priority) => parse_json_enum::<TaskPriority>(priority, "TaskPriority")?,
+        None => TaskPriority::Normal,
+    };
+    Ok(SubgoalSpec {
+        id: required_kv(&kv, "id")?,
+        title: required_kv(&kv, "title")?,
+        objective: required_kv(&kv, "objective")?,
+        owner_role: role,
+        priority,
+        dependencies: split_list(kv.get("dependencies")),
+        tags: split_list(kv.get("tags")),
+        acceptance_evidence: split_list(kv.get("acceptance_evidence")),
+    })
+}
+
+fn parse_initial_task_spec(raw: &str) -> anyhow::Result<ChildTaskRequest> {
+    let kv = parse_kv_spec(raw)?;
+    let role = match kv.get("role") {
+        Some(role) => parse_json_enum::<WorkerKind>(role, "WorkerKind")?,
+        None => WorkerKind::Codex,
+    };
+    let priority = match kv.get("priority") {
+        Some(priority) => parse_json_enum::<TaskPriority>(priority, "TaskPriority")?,
+        None => TaskPriority::Normal,
+    };
+    let prompt = required_kv(&kv, "prompt")?;
+    let purpose = match kv.get("purpose").map(String::as_str) {
+        Some("research") => Some(TaskPurpose::Research {
+            question: kv
+                .get("question")
+                .cloned()
+                .unwrap_or_else(|| prompt.clone()),
+        }),
+        Some("work") | None => {
+            if role == WorkerKind::Research {
+                Some(TaskPurpose::Research {
+                    question: kv
+                        .get("question")
+                        .cloned()
+                        .unwrap_or_else(|| prompt.clone()),
+                })
+            } else {
+                Some(TaskPurpose::Work)
+            }
+        }
+        Some(other) => bail!(
+            "unsupported initial task purpose '{other}'; use work or research for draft seeding"
+        ),
+    };
+    Ok(ChildTaskRequest {
+        role,
+        purpose,
+        title: kv.get("title").cloned(),
+        subgoal_id: kv.get("subgoal_id").or_else(|| kv.get("subgoal")).cloned(),
+        prompt,
+        reason: kv
+            .get("reason")
+            .cloned()
+            .unwrap_or_else(|| "seeded by coat goal draft".to_string()),
+        dependencies: Vec::new(),
+        budget: None,
+        sandbox: None,
+        done_criteria: None,
+        review_doctrine: None,
+        execution: None,
+        priority,
+        tags: split_list(kv.get("tags")),
+    })
+}
+
+fn parse_kv_spec(raw: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut kv = BTreeMap::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (key, value) = trimmed
+            .split_once('=')
+            .with_context(|| format!("expected key=value in '{trimmed}'"))?;
+        let key = key.trim();
+        if key.is_empty() {
+            bail!("empty key in '{trimmed}'");
+        }
+        kv.insert(key.to_string(), value.trim().to_string());
+    }
+    Ok(kv)
+}
+
+fn required_kv(kv: &BTreeMap<String, String>, key: &str) -> anyhow::Result<String> {
+    kv.get(key)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .with_context(|| format!("missing required key '{key}'"))
+}
+
+fn split_list(value: Option<&String>) -> Vec<String> {
+    value
+        .map(|value| {
+            value
+                .split('|')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_json_enum<T: serde::de::DeserializeOwned>(
     value: &str,
     type_name: &str,
 ) -> anyhow::Result<T> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
         .with_context(|| format!("parse {type_name} value '{value}'"))
+}
+
+fn write_json_or_stdout<T: serde::Serialize>(
+    value: &T,
+    out: Option<&PathBuf>,
+) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
+    if let Some(out) = out {
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(out, format!("{json}\n"))?;
+        println!("wrote {}", out.display());
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 async fn approve(args: ApproveArgs) -> anyhow::Result<()> {

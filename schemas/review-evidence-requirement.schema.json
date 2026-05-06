@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewEvidenceRequirement",
+  "type": "object",
+  "properties": {
+    "applies_to_objective_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifact_kinds": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactKind"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "description": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ReviewEvidenceKind"
+    },
+    "required": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "description",
+    "required"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ReviewEvidenceKind": {
+      "type": "string",
+      "enum": [
+        "compile",
+        "automated_tests",
+        "property_tests",
+        "type_check",
+        "formal_proof",
+        "static_analysis",
+        "code_inspection",
+        "architecture_review",
+        "style_review",
+        "security_scan",
+        "performance_benchmark",
+        "documentation_review",
+        "external_reference",
+        "custom"
+      ]
+    }
+  }
+}

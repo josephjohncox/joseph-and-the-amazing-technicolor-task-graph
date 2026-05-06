@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TestCommandEvidence",
+  "type": "object",
+  "properties": {
+    "artifact_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "command": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int32"
+    },
+    "notes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "stderr_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stdout_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "command",
+    "passed"
+  ]
+}

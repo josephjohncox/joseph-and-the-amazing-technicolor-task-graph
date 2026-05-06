@@ -1,108 +1,69 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ReviewPolicy",
+  "title": "ReviewDoctrine",
   "type": "object",
   "properties": {
-    "actor_critic": {
-      "$ref": "#/$defs/ActorCriticPolicy"
+    "coverage": {
+      "$ref": "#/$defs/ReviewDoctrineCoveragePolicy"
     },
-    "doctrine": {
-      "$ref": "#/$defs/ReviewDoctrine",
-      "default": {
-        "coverage": {
-          "allow_not_applicable": true,
-          "min_objective_score": null,
-          "require_gate_results": false,
-          "require_objective_results": false,
-          "require_required_evidence": false
-        },
-        "custom_evidence_requirements": [],
-        "custom_objectives": [],
-        "custom_style_doctrines": [],
-        "custom_subagents": [],
-        "custom_validation_gates": [],
-        "enabled": false,
-        "overrides": [],
-        "presets": [
-          "core_engineering"
-        ]
+    "custom_evidence_requirements": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReviewEvidenceRequirement"
+      }
+    },
+    "custom_objectives": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReviewObjective"
+      }
+    },
+    "custom_style_doctrines": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StyleDoctrine"
+      }
+    },
+    "custom_subagents": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReviewSubagentProfile"
+      }
+    },
+    "custom_validation_gates": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ValidationGate"
       }
     },
     "enabled": {
       "type": "boolean"
     },
-    "join_strategy": {
-      "$ref": "#/$defs/ReviewJoinStrategy"
-    },
-    "max_review_rounds": {
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0
-    },
-    "min_reviews": {
-      "type": "integer",
-      "format": "uint32",
-      "minimum": 0
-    },
-    "min_satisfaction_score": {
-      "type": "number",
-      "format": "float"
-    },
-    "require_unification": {
-      "type": "boolean"
-    },
-    "reviewer_roles": {
+    "overrides": {
       "type": "array",
       "default": [],
       "items": {
-        "$ref": "#/$defs/WorkerKind"
+        "$ref": "#/$defs/ReviewDoctrineOverride"
       }
     },
-    "unifier_role": {
-      "$ref": "#/$defs/WorkerKind"
+    "presets": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReviewDoctrinePreset"
+      }
     }
   },
   "required": [
     "enabled",
-    "min_reviews",
-    "max_review_rounds",
-    "join_strategy",
-    "require_unification",
-    "unifier_role",
-    "min_satisfaction_score",
-    "actor_critic"
+    "coverage"
   ],
   "$defs": {
-    "ActorCriticPolicy": {
-      "type": "object",
-      "properties": {
-        "actor_retry_role": {
-          "$ref": "#/$defs/WorkerKind"
-        },
-        "critic_role": {
-          "$ref": "#/$defs/WorkerKind"
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "max_actor_retries": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "reward_threshold": {
-          "type": "number",
-          "format": "float"
-        }
-      },
-      "required": [
-        "enabled",
-        "critic_role",
-        "actor_retry_role",
-        "max_actor_retries",
-        "reward_threshold"
-      ]
-    },
     "ArtifactKind": {
       "type": "string",
       "enum": [
@@ -132,70 +93,6 @@
         "reasoning",
         "embeddings",
         "local_weights"
-      ]
-    },
-    "ReviewDoctrine": {
-      "type": "object",
-      "properties": {
-        "coverage": {
-          "$ref": "#/$defs/ReviewDoctrineCoveragePolicy"
-        },
-        "custom_evidence_requirements": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/ReviewEvidenceRequirement"
-          }
-        },
-        "custom_objectives": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/ReviewObjective"
-          }
-        },
-        "custom_style_doctrines": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/StyleDoctrine"
-          }
-        },
-        "custom_subagents": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/ReviewSubagentProfile"
-          }
-        },
-        "custom_validation_gates": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/ValidationGate"
-          }
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "overrides": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/ReviewDoctrineOverride"
-          }
-        },
-        "presets": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/ReviewDoctrinePreset"
-          }
-        }
-      },
-      "required": [
-        "enabled",
-        "coverage"
       ]
     },
     "ReviewDoctrineCoveragePolicy": {
@@ -350,39 +247,6 @@
         "kind",
         "description",
         "required"
-      ]
-    },
-    "ReviewJoinStrategy": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "all_required",
-            "any_required"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
-            "quorum": {
-              "type": "object",
-              "properties": {
-                "min_passed": {
-                  "type": "integer",
-                  "format": "uint32",
-                  "minimum": 0
-                }
-              },
-              "required": [
-                "min_passed"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "quorum"
-          ]
-        }
       ]
     },
     "ReviewObjective": {

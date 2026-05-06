@@ -26,10 +26,18 @@ The sandbox runner uses `SANDBOX_WORKSPACE_ROOT=/workspaces` in Compose and writ
 
 ```sh
 cargo run -p coat-cli -- init
+cargo run -p coat-cli -- goal draft \
+  --title "Local strict review smoke" \
+  --objective "Create a strict-review goal draft with typed doctrine and a bounded initial frontier." \
+  --strict-review \
+  --human-steered \
+  --out examples/drafts/local-strict-review.json
+cargo run -p coat-cli -- goal review-checks
 cargo run -p coat-cli -- goal submit --title "Smoke" --objective "Run a registered stub sidecar task"
 cargo run -p coat-cli -- goal submit --file examples/goal-template-structured.json
 cargo run -p coat-cli -- runner register --file examples/runner-vllm.json
 cargo run -p coat-cli -- runner list
+cargo run -p coat-cli -- runner status
 cargo run -p coat-cli -- runner dispatch --file examples/dispatch-smoke.json
 cargo run -p coat-cli -- event register --file examples/event-source-calendar-schedule.json
 cargo run -p coat-cli -- event register --file examples/event-source-webhook-hmac.json
@@ -42,6 +50,17 @@ cargo run -p coat-cli -- event triggers
 cargo run -p coat-cli -- goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602 \
   --file examples/steering-request-research.json
+cargo run -p coat-cli -- goal steer \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
+  --file examples/steering-standard-abstraction.json
+cargo run -p coat-cli -- goal steer \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
+  --file examples/steering-standard-deep-research.json
+cargo run -p coat-cli -- goal steer-standard \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
+  --check abstraction \
+  --topic "durable coordinator task graph" \
+  --emit-only
 cargo run -p coat-cli -- goal branch \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/branch-request-root.json
@@ -149,7 +168,9 @@ cargo run -p coat-cli -- approve \
 
 The default `ApprovalGatePolicy` requires approval for open network, non-isolated runners, secret-bearing MCP contexts, brokered user auth, dangerous MCP tools, privileged runner labels/capabilities, and any approval-policy `never` task that is not isolated.
 
-Review output examples live under `examples/`. Runner implementations should return the same shape as `examples/review-output-changes-requested.json` when they need to block satisfaction and request an actor retry.
+Review output examples live under `examples/`. Runner implementations should return the same shape as `examples/review-output-changes-requested.json` when they need to block satisfaction and request an actor retry. Findings should include file, line, and priority when the issue is tied to code; high/critical findings and priority 0/1 findings block validation even if the reviewer accidentally returns `accept`.
+
+Tester and code-worker results should include `test_evidence` entries with command, exit code, pass/fail, duration, and stdout/stderr or artifact URIs whenever `done_criteria.tests_pass=true`. The validator treats missing or all-failing test evidence as incomplete for work-like and tester tasks.
 
 Research output examples live under `examples/research-output-memory-substrate.json`. A live research runner should replace stub sources with primary, official, or peer-reviewed sources and include a concrete information-use plan.
 

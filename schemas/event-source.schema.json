@@ -1156,7 +1156,8 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
-        "network_open"
+        "network_open",
+        "formal_verification"
       ]
     },
     "RunnerLocality": {
@@ -1313,6 +1314,28 @@
         "name"
       ]
     },
+    "StandardReviewCheck": {
+      "type": "string",
+      "enum": [
+        "abstraction",
+        "readability",
+        "compile",
+        "test_evidence",
+        "hypothesis_testing",
+        "type_soundness",
+        "formal_verification",
+        "clean_code",
+        "ddd",
+        "functional_ddd",
+        "denotational_semantics",
+        "canonical_style",
+        "library_fit",
+        "reference_search",
+        "web_search",
+        "deep_research",
+        "simplicity"
+      ]
+    },
     "SteeringDirective": {
       "type": "object",
       "properties": {
@@ -1426,6 +1449,32 @@
           "required": [
             "kind",
             "question",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "check": {
+              "$ref": "#/$defs/StandardReviewCheck"
+            },
+            "kind": {
+              "type": "string",
+              "const": "request_standard_review"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "topic": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "check",
             "reason"
           ]
         },
@@ -1558,6 +1607,7 @@
         "research",
         "reviewer",
         "tester",
+        "formal_methods",
         "validator",
         "patch_merger",
         "rust_tool"

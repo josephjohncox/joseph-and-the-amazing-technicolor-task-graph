@@ -817,6 +817,7 @@ fn blocked_result(
         artifacts: Vec::new(),
         git_result: None,
         object_artifacts: Vec::new(),
+        test_evidence: Vec::new(),
         child_requests: Vec::new(),
         confidence: 0.0,
         next_actions: vec![
@@ -851,6 +852,7 @@ fn timeout_result(
         artifacts: Vec::new(),
         git_result: None,
         object_artifacts: Vec::new(),
+        test_evidence: Vec::new(),
         child_requests: Vec::new(),
         confidence: 0.0,
         next_actions: vec![

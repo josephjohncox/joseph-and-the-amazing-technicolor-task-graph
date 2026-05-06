@@ -12,7 +12,14 @@ COAT should feel like it can keep working, but it must stay steerable. The durab
 - `monitor_until_cancelled`: return idle state instead of hard-blocking when no frontier is available.
 - `human_steered_continuous`: allow repeated operator steering, injected tasks, and research requests while budgets still apply.
 
-`SteeringDirective` is the operator control surface. It supports adding constraints, updating the objective, injecting bounded tasks, requesting research, pausing, resuming, and cancelling. The coordinator is still the only component that mutates the durable task tree.
+`SteeringDirective` is the operator control surface. It supports adding constraints, updating the objective, injecting bounded tasks, requesting research, requesting standard review checks, pausing, resuming, and cancelling. The coordinator is still the only component that mutates the durable task tree.
+
+`request_standard_review` maps common operator nudges to typed durable work:
+
+- abstraction, readability, clean-code, DDD, functional-DDD, denotational-semantics, canonical-style, and simplicity checks become reviewer tasks;
+- compile, test-evidence, and hypothesis-testing checks become tester tasks;
+- type-soundness and formal-verification checks become formal-methods tasks;
+- library-fit, reference-search, web-search, and deep-research checks become sourced research tasks with an information-use plan.
 
 ## Research Direction
 

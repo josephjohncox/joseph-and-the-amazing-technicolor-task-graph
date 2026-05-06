@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewObjectiveResult",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/ReviewObjectiveDecision"
+    },
+    "evidence": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "objective_id": {
+      "type": "string"
+    },
+    "score": {
+      "type": "number",
+      "format": "float"
+    }
+  },
+  "required": [
+    "objective_id",
+    "decision",
+    "score"
+  ],
+  "$defs": {
+    "ReviewObjectiveDecision": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "not_applicable",
+        "not_checked"
+      ]
+    }
+  }
+}

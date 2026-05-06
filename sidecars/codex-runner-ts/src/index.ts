@@ -9,6 +9,7 @@ type WorkerKind =
   | "research"
   | "reviewer"
   | "tester"
+  | "formal_methods"
   | "validator"
   | "patch_merger"
   | "rust_tool";
@@ -30,7 +31,8 @@ type RunnerCapability =
   | "vllm"
   | "open_ai_compatible"
   | "gpu"
-  | "network_open";
+  | "network_open"
+  | "formal_verification";
 
 type ModelProviderKind =
   | "codex"
@@ -107,6 +109,7 @@ type AgentRunRequest = {
     id: string;
     role: string;
     purpose?: unknown;
+    review_doctrine?: unknown;
     prompt: string;
     execution?: {
       model?: {
@@ -132,6 +135,7 @@ type AgentRunResult = {
   artifacts: Array<{ kind: string; uri: string; description: string; sha256?: string | null }>;
   git_result: unknown | null;
   object_artifacts: unknown[];
+  test_evidence: TestCommandEvidence[];
   child_requests: unknown[];
   confidence: number;
   next_actions: string[];
@@ -146,11 +150,44 @@ type ReviewOutput = {
     severity: "info" | "low" | "medium" | "high" | "critical";
     title: string;
     body: string;
+    file: string | null;
+    start_line: number | null;
+    end_line: number | null;
+    priority: number | null;
     evidence: string[];
     suggested_action: string | null;
   }>;
+  objective_results: ReviewObjectiveResult[];
+  gate_results: ValidationGateResult[];
   retry_recommended: boolean;
   unification_summary: string | null;
+};
+
+type ReviewObjectiveResult = {
+  objective_id: string;
+  decision: "pass" | "fail" | "not_applicable" | "not_checked";
+  score: number;
+  evidence: string[];
+  notes: string[];
+};
+
+type ValidationGateResult = {
+  gate_id: string;
+  passed: boolean;
+  score: number;
+  evidence: string[];
+  notes: string[];
+};
+
+type TestCommandEvidence = {
+  command: string;
+  exit_code: number | null;
+  passed: boolean;
+  duration_ms: number | null;
+  stdout_uri: string | null;
+  stderr_uri: string | null;
+  artifact_uri: string | null;
+  notes: string[];
 };
 
 type ResearchOutput = {
@@ -291,6 +328,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
       ],
       git_result: gitResult,
       object_artifacts: objectArtifacts,
+      test_evidence: testEvidence(request),
       child_requests: [],
       confidence: 0.9,
       next_actions: [],
@@ -309,13 +347,36 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
   }
 }
 
+function testEvidence(request: AgentRunRequest): TestCommandEvidence[] {
+  const purpose = taskPurposeKind(request.task.purpose);
+  if (purpose === "research" || purpose === "review" || purpose === "unification" || purpose === "branch_vote" || purpose === "branch_unification") {
+    return [];
+  }
+  return [
+    {
+      command: "stub codex test evidence",
+      exit_code: 0,
+      passed: true,
+      duration_ms: 0,
+      stdout_uri: `memory://codex-runner/test-evidence/${request.task.id}/stdout`,
+      stderr_uri: null,
+      artifact_uri: `memory://codex-runner/test-evidence/${request.task.id}`,
+      notes: ["Stub mode records the test evidence contract shape; live mode should include real command output."],
+    },
+  ];
+}
+
 function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
   const purpose = taskPurposeKind(request.task.purpose);
+  const objectiveResults = reviewObjectiveResults(request);
+  const gateResults = validationGateResults(request);
   if (purpose === "review") {
     return {
       decision: "accept",
       reward: 0.9,
       findings: [],
+      objective_results: objectiveResults,
+      gate_results: gateResults,
       retry_recommended: false,
       unification_summary: null,
     };
@@ -325,6 +386,8 @@ function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
       decision: "accept",
       reward: 0.9,
       findings: [],
+      objective_results: objectiveResults,
+      gate_results: gateResults,
       retry_recommended: false,
       unification_summary: "stub unifier accepted critic evidence",
     };
@@ -334,6 +397,8 @@ function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
       decision: "accept",
       reward: 0.8,
       findings: [],
+      objective_results: objectiveResults,
+      gate_results: gateResults,
       retry_recommended: false,
       unification_summary: "stub branch vote selected a candidate",
     };
@@ -343,11 +408,82 @@ function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
       decision: "accept",
       reward: 0.9,
       findings: [],
+      objective_results: objectiveResults,
+      gate_results: gateResults,
       retry_recommended: false,
       unification_summary: "stub branch unifier joined candidate votes",
     };
   }
   return null;
+}
+
+const PRESET_OBJECTIVES: Record<string, string[]> = {
+  core_engineering: ["correctness.behavior", "quality.maintainability", "abstraction.future_time"],
+  testing: ["testing.regression", "testing.hypothesis"],
+  formal_methods: ["formal.type_soundness", "formal.verification"],
+  functional_domain_driven_design: ["ddd.ubiquitous_language", "functional.core", "semantics.denotational"],
+  laziness_lost: ["simplicity.negative_code"],
+  security: ["security.boundaries"],
+  performance: ["performance.evidence"],
+};
+
+const PRESET_GATES: Record<string, string[]> = {
+  core_engineering: ["gate.compile"],
+  testing: ["gate.tests"],
+  formal_methods: ["gate.type_soundness"],
+  functional_domain_driven_design: ["gate.domain_model"],
+  laziness_lost: ["gate.simplicity"],
+  security: ["gate.security_boundaries"],
+  performance: [],
+};
+
+function reviewObjectiveResults(request: AgentRunRequest): ReviewObjectiveResult[] {
+  return requiredDoctrineIds(request.task.review_doctrine, "custom_objectives", PRESET_OBJECTIVES, "objective").map((id) => ({
+    objective_id: id,
+    decision: "pass",
+    score: 0.9,
+    evidence: [`memory://review-objective/${request.task.id}/${id}`],
+    notes: [`stub Codex review covered ${id}`],
+  }));
+}
+
+function validationGateResults(request: AgentRunRequest): ValidationGateResult[] {
+  return requiredDoctrineIds(request.task.review_doctrine, "custom_validation_gates", PRESET_GATES, "validation_gate").map((id) => ({
+    gate_id: id,
+    passed: true,
+    score: 0.9,
+    evidence: [`memory://validation-gate/${request.task.id}/${id}`],
+    notes: [`stub Codex gate covered ${id}`],
+  }));
+}
+
+function requiredDoctrineIds(
+  doctrine: unknown,
+  customKey: string,
+  presets: Record<string, string[]>,
+  overrideTarget: string,
+): string[] {
+  if (!isRecord(doctrine) || doctrine.enabled !== true) return [];
+  const ids = new Set<string>();
+  const presetNames = Array.isArray(doctrine.presets)
+    ? doctrine.presets.filter((preset): preset is string => typeof preset === "string")
+    : ["core_engineering"];
+  for (const preset of presetNames) {
+    for (const id of presets[preset] ?? []) ids.add(id);
+  }
+  const custom = doctrine[customKey];
+  if (Array.isArray(custom)) {
+    for (const item of custom) {
+      if (isRecord(item) && typeof item.id === "string" && item.required !== false) ids.add(item.id);
+    }
+  }
+  const overrides = Array.isArray(doctrine.overrides) ? doctrine.overrides : [];
+  for (const override of overrides) {
+    if (!isRecord(override) || override.target !== overrideTarget || typeof override.id !== "string") continue;
+    if (override.action === "disable" || override.action === "make_optional") ids.delete(override.id);
+    if (override.action === "require") ids.add(override.id);
+  }
+  return [...ids].sort();
 }
 
 function branchVoteOutput(request: AgentRunRequest): BranchVoteOutput | null {
@@ -751,6 +887,7 @@ function buildRegistration(): RunnerRegistration {
         "validator",
         "patch_merger",
         "research",
+        "formal_methods",
       ] satisfies WorkerKind[],
     ),
     capabilities: parseJsonEnv("RUNNER_CAPABILITIES_JSON", [
@@ -763,6 +900,7 @@ function buildRegistration(): RunnerRegistration {
       "git",
       "object_storage",
       "s3_compatible",
+      "formal_verification",
     ] satisfies RunnerCapability[]),
     models: parseJsonEnv("RUNNER_MODELS_JSON", [
       {

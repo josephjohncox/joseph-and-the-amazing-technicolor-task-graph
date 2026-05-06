@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StandardReviewCheck",
+  "type": "string",
+  "enum": [
+    "abstraction",
+    "readability",
+    "compile",
+    "test_evidence",
+    "hypothesis_testing",
+    "type_soundness",
+    "formal_verification",
+    "clean_code",
+    "ddd",
+    "functional_ddd",
+    "denotational_semantics",
+    "canonical_style",
+    "library_fit",
+    "reference_search",
+    "web_search",
+    "deep_research",
+    "simplicity"
+  ]
+}

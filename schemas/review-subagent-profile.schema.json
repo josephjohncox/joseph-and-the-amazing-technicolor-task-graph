@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewSubagentProfile",
+  "type": "object",
+  "properties": {
+    "evidence_requirement_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "id": {
+      "type": "string"
+    },
+    "inherited_by_default": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "objective_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "prompt_hints": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_capabilities": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RunnerCapability"
+      }
+    },
+    "required_model_features": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ModelFeature"
+      }
+    },
+    "role": {
+      "$ref": "#/$defs/WorkerKind"
+    },
+    "validation_gate_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "role",
+    "name",
+    "inherited_by_default"
+  ],
+  "$defs": {
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "test",
+        "review",
+        "mcp_tools",
+        "workspace_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "network_open",
+        "formal_verification"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "formal_methods",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

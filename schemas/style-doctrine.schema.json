@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StyleDoctrine",
+  "type": "object",
+  "properties": {
+    "anti_patterns": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "description": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "positive_indicators": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "references": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReviewReference"
+      }
+    },
+    "required": {
+      "type": "boolean"
+    },
+    "tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "description",
+    "required"
+  ],
+  "$defs": {
+    "ReviewReference": {
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "uri",
+        "note"
+      ]
+    }
+  }
+}

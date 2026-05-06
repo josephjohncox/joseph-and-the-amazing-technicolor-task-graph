@@ -40,6 +40,12 @@ cargo run -p coat-cli -- goal submit \
 For non-trivial work, author a full `GoalSpec` instead of relying on title/objective defaults:
 
 ```sh
+cargo run -p coat-cli -- goal draft \
+  --title "Strict review goal" \
+  --objective "Implement a bounded change with typed review doctrine, sourced research, passing tests, regenerated schemas, and reviewer acceptance." \
+  --strict-review \
+  --human-steered \
+  --out examples/drafts/strict-review-goal.json
 cargo run -p coat-cli -- goal lint --file examples/goal-clean-plan.json --strict
 cargo run -p coat-cli -- goal submit --file examples/goal-template-structured.json
 cargo run -p coat-cli -- goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
@@ -49,6 +55,19 @@ cargo run -p coat-cli -- goal tasks \
 ```
 
 See `docs/operations/goal-authoring.md` for the intake, memory preflight, research preflight, compiler, and critic loop used to turn vague operator requests into structured goals.
+
+Strict goals can opt in to a review-doctrine standard library for code quality, testing, formal-methods, DDD/functional-DDD, style, and simplicity checks:
+
+```sh
+cargo run -p coat-cli -- goal review-checks
+cargo run -p coat-cli -- goal lint --file examples/goal-review-doctrine.json --strict
+cargo run -p coat-cli -- goal steer-standard \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
+  --check deep_research \
+  --topic "state-of-the-art libraries and review doctrine"
+```
+
+The doctrine library is typed and extensible: use built-in presets, add custom objectives/evidence/gates/subagents, and apply overrides per goal. See `docs/design-docs/090-review-doctrine-stdlib.md`.
 
 Goals also carry restart, timeout, and branch-competition policy. Operators can restart a blocked/timed-out goal without creating a new workflow, branch a goal or subgoal into multiple candidate implementations, and select the winning branch after reviewer/tester votes:
 
@@ -137,6 +156,7 @@ Example local vLLM runner registration:
 ```sh
 cargo run -p coat-cli -- runner register --file examples/runner-vllm.json
 cargo run -p coat-cli -- runner list
+cargo run -p coat-cli -- runner status
 cargo run -p coat-cli -- runner dispatch --file examples/dispatch-smoke.json
 ```
 

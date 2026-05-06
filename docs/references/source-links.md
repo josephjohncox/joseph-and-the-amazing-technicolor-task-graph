@@ -35,6 +35,7 @@
 - MinIO container docs: https://min.io/docs/minio/container/index.html
 - MinIO Docker Compose examples: https://github.com/minio/minio/blob/master/docs/orchestration/docker-compose/docker-compose.yaml
 - AWS SDK for Rust Amazon S3 examples: https://docs.aws.amazon.com/sdk-for-rust/latest/dg/rust_s3_code_examples.html
+- Bryan Cantrill, "The peril of laziness lost": https://bcantrill.dtrace.org/2026/04/12/the-peril-of-laziness-lost/
 - Hugging Face Text Embeddings Inference: https://huggingface.co/docs/text-embeddings-inference/en/index
 - Hugging Face Text Embeddings Inference quick tour: https://huggingface.co/docs/text-embeddings-inference/en/quick_tour
 - LanceDB docs: https://docs.lancedb.com/

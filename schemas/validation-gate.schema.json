@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ValidationGate",
+  "type": "object",
+  "properties": {
+    "applies_to_roles": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorkerKind"
+      }
+    },
+    "description": {
+      "type": "string"
+    },
+    "evidence_requirement_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "failure_blocks": {
+      "type": "boolean"
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ValidationGateKind"
+    },
+    "min_score": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    },
+    "required": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "description",
+    "required",
+    "failure_blocks"
+  ],
+  "$defs": {
+    "ValidationGateKind": {
+      "type": "string",
+      "enum": [
+        "compile",
+        "test_suite",
+        "property_testing",
+        "type_soundness",
+        "formal_verification",
+        "static_analysis",
+        "code_review",
+        "architecture_review",
+        "style_review",
+        "security_review",
+        "performance_benchmark",
+        "documentation_review",
+        "custom"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "formal_methods",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

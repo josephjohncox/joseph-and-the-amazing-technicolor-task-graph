@@ -1,69 +1,44 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "RunnerRegistration",
+  "title": "RunnerStatus",
   "type": "object",
   "properties": {
-    "capabilities": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/RunnerCapability"
-      }
-    },
-    "endpoint": {
-      "type": "string"
-    },
-    "labels": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      },
-      "default": {}
-    },
-    "lease_ttl_seconds": {
-      "type": "integer",
-      "format": "uint64",
-      "minimum": 0
-    },
-    "max_concurrency": {
+    "capacity_remaining": {
       "type": "integer",
       "format": "uint32",
       "minimum": 0
     },
-    "mcp_servers": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/McpServerRef"
-      }
+    "dispatchable": {
+      "type": "boolean"
     },
-    "models": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ModelCandidate"
-      }
+    "full": {
+      "type": "boolean"
     },
-    "node_id": {
-      "type": "string"
+    "last_seen_age_seconds": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
     },
-    "roles": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/WorkerKind"
-      }
+    "registration": {
+      "$ref": "#/$defs/RunnerRegistration"
     },
-    "runner_id": {
-      "type": "string"
+    "running_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "stale": {
+      "type": "boolean"
     }
   },
   "required": [
-    "runner_id",
-    "node_id",
-    "endpoint",
-    "max_concurrency",
-    "lease_ttl_seconds"
+    "registration",
+    "running_tasks",
+    "capacity_remaining",
+    "last_seen_age_seconds",
+    "dispatchable",
+    "stale",
+    "full"
   ],
   "$defs": {
     "DeviceAuthProvider": {
@@ -345,6 +320,72 @@
         "gpu",
         "network_open",
         "formal_verification"
+      ]
+    },
+    "RunnerRegistration": {
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "lease_ttl_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mcp_servers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McpServerRef"
+          }
+        },
+        "models": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelCandidate"
+          }
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkerKind"
+          }
+        },
+        "runner_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runner_id",
+        "node_id",
+        "endpoint",
+        "max_concurrency",
+        "lease_ttl_seconds"
       ]
     },
     "SecretProvider": {

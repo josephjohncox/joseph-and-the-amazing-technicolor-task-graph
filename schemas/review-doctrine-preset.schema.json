@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewDoctrinePreset",
+  "type": "string",
+  "enum": [
+    "core_engineering",
+    "testing",
+    "formal_methods",
+    "functional_domain_driven_design",
+    "laziness_lost",
+    "security",
+    "performance"
+  ]
+}

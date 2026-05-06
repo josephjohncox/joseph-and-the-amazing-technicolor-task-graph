@@ -21,14 +21,18 @@ use coat_domain::{
     MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute, NotificationPolicy,
     NotificationRequest, ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind,
     ObjectStoreRef, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord,
-    RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewOutput, ReviewPolicy, ReviewRound,
-    RunnerDispatchCandidate, RunnerDispatchDecision, RunnerDispatchRejection,
-    RunnerDispatchRequest, RunnerRegistration, SandboxProfile, SatisfactionReport, ScheduleKind,
-    ScheduleSpec, SecretRef, SourceArtifact, SteeringDirective, SubgoalProgress, SubgoalSpec,
-    TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind, TaskQuery,
-    TaskRecord, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest, TriggeredGoalResponse,
-    TriggeredGoalStatus, ValidationReport, ValidationRequest, VectorMemoryPolicy, WebhookAuthKind,
-    WebhookAuthPolicy, WebhookEventSource,
+    RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewDoctrine,
+    ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride, ReviewDoctrinePreset,
+    ReviewEvidenceRequirement, ReviewFinding, ReviewObjective, ReviewObjectiveResult, ReviewOutput,
+    ReviewPolicy, ReviewRound, ReviewSubagentProfile, RunnerDispatchCandidate,
+    RunnerDispatchDecision, RunnerDispatchRejection, RunnerDispatchRequest, RunnerRegistration,
+    RunnerStatus, SandboxProfile, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
+    SourceArtifact, StandardReviewCheck, SteeringDirective, StyleDoctrine, SubgoalProgress,
+    SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind,
+    TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest,
+    TriggeredGoalResponse, TriggeredGoalStatus, ValidationGate, ValidationGateResult,
+    ValidationReport, ValidationRequest, VectorMemoryPolicy, WebhookAuthKind, WebhookAuthPolicy,
+    WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -304,8 +308,78 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "review-doctrine.schema.json",
+        schema_for!(ReviewDoctrine),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-doctrine-preset.schema.json",
+        schema_for!(ReviewDoctrinePreset),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-doctrine-coverage-policy.schema.json",
+        schema_for!(ReviewDoctrineCoveragePolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-doctrine-override.schema.json",
+        schema_for!(ReviewDoctrineOverride),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-objective.schema.json",
+        schema_for!(ReviewObjective),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-objective-result.schema.json",
+        schema_for!(ReviewObjectiveResult),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-evidence-requirement.schema.json",
+        schema_for!(ReviewEvidenceRequirement),
+    )?;
+    write_schema(
+        &out_dir,
+        "style-doctrine.schema.json",
+        schema_for!(StyleDoctrine),
+    )?;
+    write_schema(
+        &out_dir,
+        "validation-gate.schema.json",
+        schema_for!(ValidationGate),
+    )?;
+    write_schema(
+        &out_dir,
+        "validation-gate-result.schema.json",
+        schema_for!(ValidationGateResult),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-subagent-profile.schema.json",
+        schema_for!(ReviewSubagentProfile),
+    )?;
+    write_schema(
+        &out_dir,
+        "standard-review-check.schema.json",
+        schema_for!(StandardReviewCheck),
+    )?;
+    write_schema(
+        &out_dir,
         "review-output.schema.json",
         schema_for!(ReviewOutput),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-finding.schema.json",
+        schema_for!(ReviewFinding),
+    )?;
+    write_schema(
+        &out_dir,
+        "test-command-evidence.schema.json",
+        schema_for!(TestCommandEvidence),
     )?;
     write_schema(
         &out_dir,
@@ -603,6 +677,11 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "runner-registration.schema.json",
         schema_for!(RunnerRegistration),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-status.schema.json",
+        schema_for!(RunnerStatus),
     )?;
     write_schema(
         &out_dir,

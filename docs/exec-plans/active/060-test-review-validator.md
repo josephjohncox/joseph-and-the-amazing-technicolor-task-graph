@@ -11,7 +11,9 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 - Reviewer and unifier workers return `ReviewOutput` with decision, reward, findings, and retry recommendation.
 - Validator applies done criteria and returns `ValidationReport`.
 - Validation treats review task completion separately from review acceptance; `changes_requested`, `blocked`, or `inconclusive` decisions keep goal satisfaction false.
-- Patch merger combines only validated artifacts.
+- Validation requires passing `test_evidence` for work-like and tester tasks when `done_criteria.tests_pass=true`.
+- Validation blocks high/critical or priority 0/1 review findings even if the reviewer decision says `accept`.
+- Patch merger and branch-unifier votes can select only declared branch candidates that have already validated successfully.
 - Failed validation becomes retry, child-task request, blocked, or failed according to policy.
 
 ## Tests
@@ -19,7 +21,7 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 - Validator enforces artifact existence and minimum score.
 - Reviewer findings fail validation when priority is high.
 - Critic decisions block `SatisfactionReport.satisfied` even when reward is high.
-- Patch merger refuses unvalidated artifacts.
+- Patch merger refuses unknown or unvalidated branch candidates.
 
 ## Acceptance
 

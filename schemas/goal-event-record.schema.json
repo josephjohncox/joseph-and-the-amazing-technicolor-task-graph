@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalEventRecord",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/GoalEventKind"
+    },
+    "message": {
+      "type": "string"
+    },
+    "payload_json": {
+      "default": null
+    },
+    "sequence": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "event_id",
+    "goal_id",
+    "sequence",
+    "kind",
+    "message",
+    "idempotency_key"
+  ],
+  "$defs": {
+    "GoalEventKind": {
+      "type": "string",
+      "enum": [
+        "submitted",
+        "state_projected",
+        "task_started",
+        "task_completed",
+        "task_blocked",
+        "approval_requested",
+        "approval_decided",
+        "steering_applied",
+        "validation_recorded",
+        "artifact_recorded",
+        "cancelled",
+        "failed",
+        "other"
+      ]
+    }
+  }
+}

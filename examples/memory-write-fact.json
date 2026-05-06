@@ -1,0 +1,18 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+  "scope": "goal",
+  "key": "memory-substrate-default",
+  "episode": {
+    "title": "Default memory substrate decision",
+    "content": "Use Zep/Graphiti over MCP as the default semantic memory layer. Restate remains the durable execution journal.",
+    "source": {
+      "source_type": "unifier",
+      "uri": "memory://review-unifier/memory-substrate",
+      "actor": "patch_merger"
+    },
+    "artifacts": [],
+    "tags": ["memory", "graphiti", "zep", "fork-join"]
+  },
+  "store": null
+}

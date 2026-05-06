@@ -1,0 +1,9 @@
+{
+  "subgoal_id": "implement-progress-contract",
+  "statuses": ["runnable", "running", "needs_validation"],
+  "roles": ["codex", "planner"],
+  "purpose_kinds": ["work", "actor_retry"],
+  "tags": ["progress"],
+  "runnable_only": false,
+  "limit": 20
+}

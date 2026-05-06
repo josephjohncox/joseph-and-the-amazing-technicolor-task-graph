@@ -3,10 +3,71 @@
   "title": "GoalSpec",
   "type": "object",
   "properties": {
+    "approval_policy": {
+      "$ref": "#/$defs/ApprovalGatePolicy",
+      "default": {
+        "approval_timeout_seconds": 3600,
+        "enabled": true,
+        "never_policy_requires_isolation": true,
+        "require_for_brokered_user_auth": true,
+        "require_for_dangerous_mcp_tools": true,
+        "require_for_network_open": true,
+        "require_for_non_isolated_runner": true,
+        "require_for_privileged_runner_capabilities": true,
+        "require_for_secret_access": true,
+        "require_for_workspace_write_outside_isolation": true
+      }
+    },
+    "authoring": {
+      "$ref": "#/$defs/GoalAuthoringGuidance",
+      "default": {
+        "acceptance_evidence": [],
+        "assumptions": [],
+        "constraints": [],
+        "intake_summary": "",
+        "open_questions": [],
+        "out_of_scope": []
+      }
+    },
+    "control_policy": {
+      "$ref": "#/$defs/ControlLoopPolicy",
+      "default": {
+        "allow_goal_updates": true,
+        "allow_task_injection": true,
+        "human_steering_enabled": true,
+        "max_frontier_rounds": 128,
+        "max_idle_rounds": 4,
+        "max_steering_events": 128,
+        "mode": "bounded_until_satisfied",
+        "stop_conditions": [
+          "goal_satisfied",
+          "blocked",
+          "budget_exhausted",
+          "cancelled",
+          "human_paused"
+        ]
+      }
+    },
     "default_execution": {
       "$ref": "#/$defs/ExecutionProfile",
       "default": {
         "mcp": {
+          "auth_distribution": {
+            "allow_node_local_device_session": true,
+            "allow_secret_sync": false,
+            "allowed_materials": [
+              "api_token",
+              "mcp_bearer_token",
+              "oauth_access_token",
+              "oauth_refresh_token",
+              "workload_identity_token"
+            ],
+            "lease_ttl_seconds": 900,
+            "mode": "runner_resolves_refs",
+            "renewal": "manual_or_brokered",
+            "require_human_approval_for_brokered_user_auth": true,
+            "required_runner_labels": {}
+          },
           "context_id": null,
           "propagation": "coordinator_issued",
           "secret_refs": [],
@@ -52,6 +113,25 @@
           "name": "default",
           "risk_tolerance": "conservative"
         },
+        "results": {
+          "git": {
+            "base_ref": "HEAD",
+            "branch_prefix": "coat/task",
+            "enabled": false,
+            "include_patch_artifact": true,
+            "push_on_success": false,
+            "remote": "origin",
+            "require_clean_diff": true,
+            "worktree_root": "/worktrees"
+          },
+          "object_storage": {
+            "enabled": false,
+            "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+            "max_inline_bytes": 262144,
+            "require_manifest": true,
+            "store": null
+          }
+        },
         "runner": {
           "locality": "any_node",
           "required_capabilities": [],
@@ -75,14 +155,133 @@
         "$ref": "#/$defs/ChildTaskRequest"
       }
     },
+    "memory_policy": {
+      "$ref": "#/$defs/MemoryPolicy",
+      "default": {
+        "embedding": {
+          "batch_size": 64,
+          "dimensions": 3072,
+          "endpoint": "https://api.openai.com/v1/embeddings",
+          "model": "text-embedding-3-large",
+          "normalize": true,
+          "provider": "open_ai",
+          "secret_refs": [
+            {
+              "audience": "embedding-provider",
+              "key": null,
+              "name": "OPENAI_API_KEY",
+              "namespace": null,
+              "provider": "env"
+            }
+          ]
+        },
+        "enabled": true,
+        "fork_join": {
+          "inherit_parent_context": true,
+          "join_strategy": "unifier_curated",
+          "write_branch_memories": true
+        },
+        "retrieval": {
+          "fusion": "graph_then_vector",
+          "include_branch_memories": false,
+          "max_hits": 8,
+          "min_score": 0.20000000298023224,
+          "rerank": false,
+          "retrieve_before_task": true
+        },
+        "scopes": [
+          "goal",
+          "task",
+          "repo",
+          "persona"
+        ],
+        "store": {
+          "endpoint": "http://graphiti-mcp:8000/mcp/",
+          "kind": "zep_graphiti",
+          "mcp_server_name": "graphiti-memory",
+          "namespace": "coat",
+          "secret_refs": []
+        },
+        "vector": {
+          "collection": "coat_memory",
+          "enabled": true,
+          "hybrid_search": true,
+          "min_score": 0.20000000298023224,
+          "search_embeddings": true,
+          "store": {
+            "endpoint": "http://qdrant:6333",
+            "kind": "qdrant",
+            "mcp_server_name": "qdrant-memory",
+            "namespace": "coat_memory",
+            "secret_refs": []
+          },
+          "top_k": 8,
+          "write_embeddings": true
+        },
+        "write_policy": "reviewed_facts_only"
+      }
+    },
     "objective": {
       "type": "string"
+    },
+    "plan": {
+      "$ref": "#/$defs/GoalPlan",
+      "default": {
+        "distribution_notes": [],
+        "subgoals": [],
+        "summary": ""
+      }
     },
     "repo": {
       "type": [
         "string",
         "null"
       ]
+    },
+    "research_policy": {
+      "$ref": "#/$defs/ResearchPolicy",
+      "default": {
+        "allowed_providers": [
+          "web",
+          "docs",
+          "mcp",
+          "memory"
+        ],
+        "enabled": true,
+        "max_search_depth": 5,
+        "min_confidence": 0.75,
+        "question_first": true,
+        "require_sources": true,
+        "require_use_plan": true,
+        "source_quality_order": [
+          "primary",
+          "official_docs",
+          "peer_reviewed",
+          "reputable_secondary"
+        ]
+      }
+    },
+    "review_policy": {
+      "$ref": "#/$defs/ReviewPolicy",
+      "default": {
+        "actor_critic": {
+          "actor_retry_role": "planner",
+          "critic_role": "reviewer",
+          "enabled": true,
+          "max_actor_retries": 1,
+          "reward_threshold": 0.8500000238418579
+        },
+        "enabled": true,
+        "join_strategy": "all_required",
+        "max_review_rounds": 2,
+        "min_reviews": 1,
+        "min_satisfaction_score": 0.8500000238418579,
+        "require_unification": true,
+        "reviewer_roles": [
+          "reviewer"
+        ],
+        "unifier_role": "patch_merger"
+      }
     },
     "root_budget": {
       "$ref": "#/$defs/Budget"
@@ -99,12 +298,176 @@
     "done_criteria"
   ],
   "$defs": {
+    "ActorCriticPolicy": {
+      "type": "object",
+      "properties": {
+        "actor_retry_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "critic_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_actor_retries": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reward_threshold": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "enabled",
+        "critic_role",
+        "actor_retry_role",
+        "max_actor_retries",
+        "reward_threshold"
+      ]
+    },
+    "ApprovalGatePolicy": {
+      "type": "object",
+      "properties": {
+        "approval_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "never_policy_requires_isolation": {
+          "type": "boolean"
+        },
+        "require_for_brokered_user_auth": {
+          "type": "boolean",
+          "default": true
+        },
+        "require_for_dangerous_mcp_tools": {
+          "type": "boolean"
+        },
+        "require_for_network_open": {
+          "type": "boolean"
+        },
+        "require_for_non_isolated_runner": {
+          "type": "boolean"
+        },
+        "require_for_privileged_runner_capabilities": {
+          "type": "boolean"
+        },
+        "require_for_secret_access": {
+          "type": "boolean"
+        },
+        "require_for_workspace_write_outside_isolation": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "require_for_network_open",
+        "require_for_non_isolated_runner",
+        "require_for_secret_access",
+        "require_for_dangerous_mcp_tools",
+        "require_for_privileged_runner_capabilities",
+        "require_for_workspace_write_outside_isolation",
+        "never_policy_requires_isolation"
+      ]
+    },
     "ApprovalPolicy": {
       "type": "string",
       "enum": [
         "never",
         "on_request",
         "always"
+      ]
+    },
+    "AuthDistributionMode": {
+      "type": "string",
+      "enum": [
+        "runner_local_only",
+        "runner_resolves_refs",
+        "coordinator_issues_lease",
+        "workload_identity",
+        "oauth_device_broker",
+        "external_broker"
+      ]
+    },
+    "AuthDistributionPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_node_local_device_session": {
+          "type": "boolean"
+        },
+        "allow_secret_sync": {
+          "type": "boolean"
+        },
+        "allowed_materials": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AuthMaterialKind"
+          }
+        },
+        "lease_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthDistributionMode"
+        },
+        "renewal": {
+          "$ref": "#/$defs/AuthRenewalPolicy"
+        },
+        "require_human_approval_for_brokered_user_auth": {
+          "type": "boolean"
+        },
+        "required_runner_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "required": [
+        "mode",
+        "renewal",
+        "allow_node_local_device_session",
+        "allow_secret_sync",
+        "require_human_approval_for_brokered_user_auth"
+      ]
+    },
+    "AuthMaterialKind": {
+      "type": "string",
+      "enum": [
+        "api_token",
+        "mcp_bearer_token",
+        "oauth_access_token",
+        "oauth_refresh_token",
+        "device_auth_session",
+        "workload_identity_token",
+        "local_cli_session",
+        "service_account",
+        "other"
+      ]
+    },
+    "AuthRenewalPolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "manual_or_brokered",
+        "broker_can_refresh",
+        "runner_can_refresh"
       ]
     },
     "Budget": {
@@ -209,8 +572,22 @@
             }
           ]
         },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority",
+          "default": "normal"
+        },
         "prompt": {
           "type": "string"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskPurpose"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "reason": {
           "type": "string"
@@ -227,12 +604,112 @@
               "type": "null"
             }
           ]
+        },
+        "subgoal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "required": [
         "role",
         "prompt",
         "reason"
+      ]
+    },
+    "ControlLoopMode": {
+      "type": "string",
+      "enum": [
+        "bounded_until_satisfied",
+        "monitor_until_cancelled",
+        "human_steered_continuous"
+      ]
+    },
+    "ControlLoopPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_goal_updates": {
+          "type": "boolean"
+        },
+        "allow_task_injection": {
+          "type": "boolean"
+        },
+        "human_steering_enabled": {
+          "type": "boolean"
+        },
+        "max_frontier_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_idle_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_steering_events": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/ControlLoopMode"
+        },
+        "stop_conditions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ControlStopCondition"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "max_frontier_rounds",
+        "max_idle_rounds",
+        "human_steering_enabled",
+        "allow_goal_updates",
+        "allow_task_injection",
+        "max_steering_events"
+      ]
+    },
+    "ControlStopCondition": {
+      "type": "string",
+      "enum": [
+        "goal_satisfied",
+        "blocked",
+        "budget_exhausted",
+        "cancelled",
+        "human_paused",
+        "max_frontier_rounds"
+      ]
+    },
+    "DeviceAuthProvider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude_code",
+        "open_ai",
+        "anthropic",
+        "github",
+        "google",
+        "other"
       ]
     },
     "DoneCriteria": {
@@ -257,6 +734,64 @@
         "artifact_exists"
       ]
     },
+    "EmbeddingPolicy": {
+      "type": "object",
+      "properties": {
+        "batch_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "normalize": {
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/$defs/EmbeddingProviderKind"
+        },
+        "secret_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "dimensions",
+        "batch_size",
+        "normalize"
+      ]
+    },
+    "EmbeddingProviderKind": {
+      "type": "string",
+      "enum": [
+        "open_ai",
+        "open_ai_compatible",
+        "hugging_face_tei",
+        "sentence_transformers",
+        "voyage_ai",
+        "cohere",
+        "ollama",
+        "local_process",
+        "other"
+      ]
+    },
     "ExecutionProfile": {
       "type": "object",
       "properties": {
@@ -271,6 +806,28 @@
         },
         "persona": {
           "$ref": "#/$defs/PersonaSpec"
+        },
+        "results": {
+          "$ref": "#/$defs/ResultChannelPolicy",
+          "default": {
+            "git": {
+              "base_ref": "HEAD",
+              "branch_prefix": "coat/task",
+              "enabled": false,
+              "include_patch_artifact": true,
+              "push_on_success": false,
+              "remote": "origin",
+              "require_clean_diff": true,
+              "worktree_root": "/worktrees"
+            },
+            "object_storage": {
+              "enabled": false,
+              "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+              "max_inline_bytes": 262144,
+              "require_manifest": true,
+              "store": null
+            }
+          }
         },
         "runner": {
           "$ref": "#/$defs/RunnerSelector"
@@ -290,6 +847,118 @@
         "read_only",
         "workspace_write"
       ]
+    },
+    "GitResultPolicy": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_prefix": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "include_patch_artifact": {
+          "type": "boolean"
+        },
+        "push_on_success": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "require_clean_diff": {
+          "type": "boolean"
+        },
+        "worktree_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "branch_prefix",
+        "push_on_success",
+        "require_clean_diff",
+        "include_patch_artifact"
+      ]
+    },
+    "GoalAuthoringGuidance": {
+      "type": "object",
+      "properties": {
+        "acceptance_evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "intake_summary": {
+          "type": "string",
+          "default": ""
+        },
+        "open_questions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "out_of_scope": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "GoalPlan": {
+      "type": "object",
+      "properties": {
+        "distribution_notes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "subgoals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubgoalSpec"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "default": ""
+        }
+      }
     },
     "McpAuthRef": {
       "oneOf": [
@@ -342,7 +1011,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "const": "o_auth_delegation"
+              "const": "oauth_delegation"
             },
             "token_exchange_secret": {
               "$ref": "#/$defs/SecretRef"
@@ -352,6 +1021,67 @@
             "kind",
             "token_exchange_secret"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_auth_session"
+            },
+            "node_local": {
+              "type": "boolean",
+              "default": true
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "refresh_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session_ref": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "session_ref",
+            "provider"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "brokered_user_session"
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "provider"
+          ]
         }
       ]
     },
@@ -360,12 +1090,34 @@
       "enum": [
         "coordinator_issued",
         "runner_resolves_refs",
-        "workload_identity"
+        "workload_identity",
+        "runner_local_only",
+        "oauth_device_broker",
+        "external_broker"
       ]
     },
     "McpContextRef": {
       "type": "object",
       "properties": {
+        "auth_distribution": {
+          "$ref": "#/$defs/AuthDistributionPolicy",
+          "default": {
+            "allow_node_local_device_session": true,
+            "allow_secret_sync": false,
+            "allowed_materials": [
+              "api_token",
+              "mcp_bearer_token",
+              "oauth_access_token",
+              "oauth_refresh_token",
+              "workload_identity_token"
+            ],
+            "lease_ttl_seconds": 900,
+            "mode": "runner_resolves_refs",
+            "renewal": "manual_or_brokered",
+            "require_human_approval_for_brokered_user_auth": true,
+            "required_runner_labels": {}
+          }
+        },
         "context_id": {
           "type": [
             "string",
@@ -438,6 +1190,217 @@
         "stdio",
         "http",
         "sse"
+      ]
+    },
+    "MemoryForkJoinPolicy": {
+      "type": "object",
+      "properties": {
+        "inherit_parent_context": {
+          "type": "boolean"
+        },
+        "join_strategy": {
+          "$ref": "#/$defs/MemoryJoinStrategy"
+        },
+        "write_branch_memories": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "inherit_parent_context",
+        "write_branch_memories",
+        "join_strategy"
+      ]
+    },
+    "MemoryJoinStrategy": {
+      "type": "string",
+      "enum": [
+        "append_only",
+        "critic_curated",
+        "unifier_curated"
+      ]
+    },
+    "MemoryPolicy": {
+      "type": "object",
+      "properties": {
+        "embedding": {
+          "$ref": "#/$defs/EmbeddingPolicy",
+          "default": {
+            "batch_size": 64,
+            "dimensions": 3072,
+            "endpoint": "https://api.openai.com/v1/embeddings",
+            "model": "text-embedding-3-large",
+            "normalize": true,
+            "provider": "open_ai",
+            "secret_refs": [
+              {
+                "audience": "embedding-provider",
+                "key": null,
+                "name": "OPENAI_API_KEY",
+                "namespace": null,
+                "provider": "env"
+              }
+            ]
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "fork_join": {
+          "$ref": "#/$defs/MemoryForkJoinPolicy"
+        },
+        "retrieval": {
+          "$ref": "#/$defs/MemoryRetrievalPolicy",
+          "default": {
+            "fusion": "graph_then_vector",
+            "include_branch_memories": false,
+            "max_hits": 8,
+            "min_score": 0.20000000298023224,
+            "rerank": false,
+            "retrieve_before_task": true
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MemoryScope"
+          }
+        },
+        "store": {
+          "$ref": "#/$defs/MemoryStoreRef"
+        },
+        "vector": {
+          "$ref": "#/$defs/VectorMemoryPolicy",
+          "default": {
+            "collection": "coat_memory",
+            "enabled": true,
+            "hybrid_search": true,
+            "min_score": 0.20000000298023224,
+            "search_embeddings": true,
+            "store": {
+              "endpoint": "http://qdrant:6333",
+              "kind": "qdrant",
+              "mcp_server_name": "qdrant-memory",
+              "namespace": "coat_memory",
+              "secret_refs": []
+            },
+            "top_k": 8,
+            "write_embeddings": true
+          }
+        },
+        "write_policy": {
+          "$ref": "#/$defs/MemoryWritePolicy"
+        }
+      },
+      "required": [
+        "enabled",
+        "store",
+        "write_policy",
+        "fork_join"
+      ]
+    },
+    "MemoryRetrievalPolicy": {
+      "type": "object",
+      "properties": {
+        "fusion": {
+          "$ref": "#/$defs/RetrievalFusion"
+        },
+        "include_branch_memories": {
+          "type": "boolean"
+        },
+        "max_hits": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "rerank": {
+          "type": "boolean"
+        },
+        "retrieve_before_task": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "retrieve_before_task",
+        "max_hits",
+        "include_branch_memories",
+        "rerank",
+        "fusion"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "repo",
+        "persona",
+        "user",
+        "global"
+      ]
+    },
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    },
+    "MemoryStoreRef": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "mcp_server_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "MemoryWritePolicy": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "append_only",
+        "reviewed_facts_only",
+        "unifier_curated"
       ]
     },
     "ModelCandidate": {
@@ -667,6 +1630,99 @@
         "other"
       ]
     },
+    "ObjectStoragePolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "key_prefix_template": {
+          "type": "string"
+        },
+        "max_inline_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "require_manifest": {
+          "type": "boolean"
+        },
+        "store": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStoreRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "key_prefix_template",
+        "require_manifest",
+        "max_inline_bytes"
+      ]
+    },
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "ObjectStoreRef": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjectStoreKind"
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "bucket",
+        "force_path_style"
+      ]
+    },
     "PersonaSpec": {
       "type": "object",
       "properties": {
@@ -695,6 +1751,175 @@
         "risk_tolerance"
       ]
     },
+    "ResearchPolicy": {
+      "type": "object",
+      "properties": {
+        "allowed_providers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SearchProviderKind"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_search_depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_confidence": {
+          "type": "number",
+          "format": "float"
+        },
+        "question_first": {
+          "type": "boolean"
+        },
+        "require_sources": {
+          "type": "boolean"
+        },
+        "require_use_plan": {
+          "type": "boolean"
+        },
+        "source_quality_order": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SourceQuality"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "question_first",
+        "require_sources",
+        "require_use_plan",
+        "max_search_depth",
+        "min_confidence"
+      ]
+    },
+    "ResultChannelPolicy": {
+      "type": "object",
+      "properties": {
+        "git": {
+          "$ref": "#/$defs/GitResultPolicy",
+          "default": {
+            "base_ref": "HEAD",
+            "branch_prefix": "coat/task",
+            "enabled": false,
+            "include_patch_artifact": true,
+            "push_on_success": false,
+            "remote": "origin",
+            "require_clean_diff": true,
+            "worktree_root": "/worktrees"
+          }
+        },
+        "object_storage": {
+          "$ref": "#/$defs/ObjectStoragePolicy",
+          "default": {
+            "enabled": false,
+            "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+            "max_inline_bytes": 262144,
+            "require_manifest": true,
+            "store": null
+          }
+        }
+      }
+    },
+    "RetrievalFusion": {
+      "type": "string",
+      "enum": [
+        "dense_only",
+        "hybrid_rrf",
+        "graph_then_vector",
+        "vector_then_graph"
+      ]
+    },
+    "ReviewJoinStrategy": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "all_required",
+            "any_required"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "quorum": {
+              "type": "object",
+              "properties": {
+                "min_passed": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "min_passed"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "quorum"
+          ]
+        }
+      ]
+    },
+    "ReviewPolicy": {
+      "type": "object",
+      "properties": {
+        "actor_critic": {
+          "$ref": "#/$defs/ActorCriticPolicy"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "join_strategy": {
+          "$ref": "#/$defs/ReviewJoinStrategy"
+        },
+        "max_review_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_reviews": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_satisfaction_score": {
+          "type": "number",
+          "format": "float"
+        },
+        "require_unification": {
+          "type": "boolean"
+        },
+        "reviewer_roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkerKind"
+          }
+        },
+        "unifier_role": {
+          "$ref": "#/$defs/WorkerKind"
+        }
+      },
+      "required": [
+        "enabled",
+        "min_reviews",
+        "max_review_rounds",
+        "join_strategy",
+        "require_unification",
+        "unifier_role",
+        "min_satisfaction_score",
+        "actor_critic"
+      ]
+    },
     "RiskTolerance": {
       "type": "string",
       "enum": [
@@ -712,7 +1937,10 @@
         "review",
         "mcp_tools",
         "workspace_sandbox",
+        "git_worktree",
         "git",
+        "object_storage",
+        "s3_compatible",
         "browser",
         "notifications",
         "local_models",
@@ -795,6 +2023,19 @@
         "isolated_runner"
       ]
     },
+    "SearchProviderKind": {
+      "type": "string",
+      "enum": [
+        "web",
+        "docs",
+        "mcp",
+        "memory",
+        "repo",
+        "tracker",
+        "database",
+        "other"
+      ]
+    },
     "SecretProvider": {
       "type": "string",
       "enum": [
@@ -804,6 +2045,11 @@
         "aws_secrets_manager",
         "gcp_secret_manager",
         "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
         "local_file"
       ]
     },
@@ -838,6 +2084,223 @@
       "required": [
         "provider",
         "name"
+      ]
+    },
+    "SourceQuality": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "official_docs",
+        "peer_reviewed",
+        "reputable_secondary",
+        "community",
+        "unknown"
+      ]
+    },
+    "SubgoalSpec": {
+      "type": "object",
+      "properties": {
+        "acceptance_evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "owner_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority",
+          "default": "normal"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "objective",
+        "owner_role"
+      ]
+    },
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    },
+    "TaskPurpose": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "work"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "review"
+            },
+            "round": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "subject_id",
+            "round"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unification"
+            },
+            "round": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "subject_ids",
+            "round"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "actor_retry"
+            },
+            "round": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "subject_id",
+            "round"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "research"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "question"
+          ]
+        }
+      ]
+    },
+    "VectorMemoryPolicy": {
+      "type": "object",
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "hybrid_search": {
+          "type": "boolean"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "search_embeddings": {
+          "type": "boolean"
+        },
+        "store": {
+          "$ref": "#/$defs/MemoryStoreRef"
+        },
+        "top_k": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "write_embeddings": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "store",
+        "collection",
+        "write_embeddings",
+        "search_embeddings",
+        "hybrid_search",
+        "top_k"
       ]
     },
     "WorkerKind": {

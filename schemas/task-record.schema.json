@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskRecord",
+  "type": "object",
+  "properties": {
+    "attempts": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "depth": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "parent_task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "payload_json": {
+      "default": null
+    },
+    "priority": {
+      "$ref": "#/$defs/TaskPriority"
+    },
+    "priority_rank": {
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0
+    },
+    "purpose_kind": {
+      "$ref": "#/$defs/TaskPurposeKind"
+    },
+    "result_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "role": {
+      "$ref": "#/$defs/WorkerKind"
+    },
+    "runnable": {
+      "type": "boolean"
+    },
+    "status": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "subgoal_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "task_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "task_id",
+    "title",
+    "role",
+    "status",
+    "purpose_kind",
+    "depth",
+    "priority",
+    "priority_rank",
+    "attempts",
+    "runnable"
+  ],
+  "$defs": {
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    },
+    "TaskPurposeKind": {
+      "type": "string",
+      "enum": [
+        "work",
+        "review",
+        "unification",
+        "actor_retry",
+        "research"
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "needs_validation",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

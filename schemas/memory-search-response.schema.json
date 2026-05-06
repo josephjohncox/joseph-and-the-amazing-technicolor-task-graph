@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemorySearchResponse",
+  "type": "object",
+  "properties": {
+    "adapter_reports": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryAdapterReport"
+      }
+    },
+    "events": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryEvent"
+      }
+    },
+    "hits": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemorySearchHit"
+      }
+    }
+  },
+  "$defs": {
+    "MemoryAdapterReport": {
+      "type": "object",
+      "properties": {
+        "attempted": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "external_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "type": "string"
+        },
+        "store_kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "store_kind",
+        "operation",
+        "attempted",
+        "success"
+      ]
+    },
+    "MemoryEpisodeSource": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_type": {
+          "$ref": "#/$defs/MemoryEpisodeSourceType"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source_type"
+      ]
+    },
+    "MemoryEpisodeSourceType": {
+      "type": "string",
+      "enum": [
+        "actor",
+        "critic",
+        "unifier",
+        "research",
+        "human",
+        "tool",
+        "system"
+      ]
+    },
+    "MemoryEvent": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MemoryEventAction"
+        },
+        "key": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/MemoryScope"
+        },
+        "store_kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "scope",
+        "action",
+        "store_kind",
+        "key",
+        "summary"
+      ]
+    },
+    "MemoryEventAction": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "fork",
+        "join",
+        "invalidate"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "repo",
+        "persona",
+        "user",
+        "global"
+      ]
+    },
+    "MemorySearchHit": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/MemoryScope"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        },
+        "source": {
+          "$ref": "#/$defs/MemoryEpisodeSource"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "key",
+        "scope",
+        "score",
+        "summary",
+        "source"
+      ]
+    },
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    }
+  }
+}

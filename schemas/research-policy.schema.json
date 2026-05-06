@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResearchPolicy",
+  "type": "object",
+  "properties": {
+    "allowed_providers": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SearchProviderKind"
+      }
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "max_search_depth": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "min_confidence": {
+      "type": "number",
+      "format": "float"
+    },
+    "question_first": {
+      "type": "boolean"
+    },
+    "require_sources": {
+      "type": "boolean"
+    },
+    "require_use_plan": {
+      "type": "boolean"
+    },
+    "source_quality_order": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceQuality"
+      }
+    }
+  },
+  "required": [
+    "enabled",
+    "question_first",
+    "require_sources",
+    "require_use_plan",
+    "max_search_depth",
+    "min_confidence"
+  ],
+  "$defs": {
+    "SearchProviderKind": {
+      "type": "string",
+      "enum": [
+        "web",
+        "docs",
+        "mcp",
+        "memory",
+        "repo",
+        "tracker",
+        "database",
+        "other"
+      ]
+    },
+    "SourceQuality": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "official_docs",
+        "peer_reviewed",
+        "reputable_secondary",
+        "community",
+        "unknown"
+      ]
+    }
+  }
+}

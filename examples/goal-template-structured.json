@@ -1,0 +1,202 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756611",
+  "title": "Structured goal authoring and memory guidance",
+  "objective": "Add operator guidance for writing high-quality structured goals and for using distributed durable memory across workers. Success means docs exist, examples parse, schemas regenerate, and tests pass.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 200000,
+    "remaining_tokens": 200000,
+    "max_runtime_seconds": 900,
+    "remaining_runtime_seconds": 900,
+    "max_tool_calls": 60,
+    "remaining_tool_calls": 60,
+    "max_child_tasks": 8,
+    "remaining_child_tasks": 8,
+    "max_patch_size": 80000
+  },
+  "done_criteria": {
+    "tests_pass": true,
+    "artifact_exists": true,
+    "validator_score_min": 0.85
+  },
+  "review_policy": {
+    "enabled": true,
+    "min_reviews": 1,
+    "max_review_rounds": 2,
+    "join_strategy": "all_required",
+    "require_unification": true,
+    "reviewer_roles": ["reviewer"],
+    "unifier_role": "patch_merger",
+    "min_satisfaction_score": 0.85,
+    "actor_critic": {
+      "enabled": true,
+      "critic_role": "reviewer",
+      "actor_retry_role": "planner",
+      "max_actor_retries": 1,
+      "reward_threshold": 0.85
+    }
+  },
+  "control_policy": {
+    "mode": "human_steered_continuous",
+    "max_frontier_rounds": 64,
+    "max_idle_rounds": 4,
+    "human_steering_enabled": true,
+    "allow_goal_updates": true,
+    "allow_task_injection": true,
+    "max_steering_events": 64,
+    "stop_conditions": ["goal_satisfied", "blocked", "budget_exhausted", "cancelled", "human_paused"]
+  },
+  "research_policy": {
+    "enabled": true,
+    "question_first": true,
+    "require_sources": true,
+    "require_use_plan": true,
+    "max_search_depth": 3,
+    "min_confidence": 0.75,
+    "allowed_providers": ["web", "docs", "mcp", "memory", "repo"],
+    "source_quality_order": ["primary", "official_docs", "peer_reviewed", "reputable_secondary"]
+  },
+  "memory_policy": {
+    "enabled": true,
+    "store": {
+      "kind": "zep_graphiti",
+      "endpoint": "http://graphiti-mcp:8000/mcp/",
+      "namespace": "coat-goal-authoring",
+      "mcp_server_name": "graphiti-memory",
+      "secret_refs": []
+    },
+    "vector": {
+      "enabled": true,
+      "store": {
+        "kind": "qdrant",
+        "endpoint": "http://qdrant:6333",
+        "namespace": "coat_goal_authoring",
+        "mcp_server_name": "qdrant-memory",
+        "secret_refs": []
+      },
+      "collection": "coat_memory",
+      "write_embeddings": true,
+      "search_embeddings": true,
+      "hybrid_search": true,
+      "top_k": 8,
+      "min_score": 0.2
+    },
+    "embedding": {
+      "provider": "open_ai",
+      "model": "text-embedding-3-large",
+      "endpoint": "https://api.openai.com/v1/embeddings",
+      "dimensions": 3072,
+      "batch_size": 64,
+      "normalize": true,
+      "secret_refs": [
+        {
+          "provider": "env",
+          "name": "OPENAI_API_KEY",
+          "key": null,
+          "namespace": null,
+          "audience": "embedding-provider"
+        }
+      ]
+    },
+    "retrieval": {
+      "retrieve_before_task": true,
+      "max_hits": 8,
+      "min_score": 0.2,
+      "include_branch_memories": false,
+      "rerank": false,
+      "fusion": "graph_then_vector"
+    },
+    "write_policy": "unifier_curated",
+    "fork_join": {
+      "inherit_parent_context": true,
+      "write_branch_memories": true,
+      "join_strategy": "unifier_curated"
+    },
+    "scopes": ["goal", "task", "repo", "persona"]
+  },
+  "approval_policy": {
+    "enabled": true,
+    "require_for_network_open": true,
+    "require_for_non_isolated_runner": true,
+    "require_for_secret_access": true,
+    "require_for_brokered_user_auth": true,
+    "require_for_dangerous_mcp_tools": true,
+    "require_for_privileged_runner_capabilities": true,
+    "require_for_workspace_write_outside_isolation": true,
+    "never_policy_requires_isolation": true,
+    "approval_timeout_seconds": 3600
+  },
+  "default_execution": {
+    "runner": {
+      "worker": "planner",
+      "runner_id": null,
+      "required_capabilities": [],
+      "required_labels": {},
+      "locality": "any_node"
+    },
+    "model": {
+      "strategy": "first_available",
+      "required_features": ["tool_use", "json_schema"],
+      "candidates": [
+        {
+          "provider": "codex",
+          "model": "codex-default",
+          "endpoint": null,
+          "priority": 100,
+          "weight": 1,
+          "context_window": null,
+          "features": ["tool_use", "json_schema"],
+          "labels": {}
+        }
+      ],
+      "fallback": "allow_fallback"
+    },
+    "persona": {
+      "name": "planner",
+      "instructions_ref": "docs/operations/goal-authoring.md",
+      "inline_instructions": ["Prefer concrete objectives, measurable evidence, bounded budgets, and explicit approval risks."],
+      "risk_tolerance": "conservative"
+    },
+    "mcp": {
+      "context_id": "goal-authoring-context",
+      "servers": [
+        {
+          "name": "memory-gateway",
+          "transport": "http",
+          "uri": "http://memory-gateway:9087/mcp",
+          "allowed_tools": ["memory_context", "memory_search", "memory_write", "memory_join", "memory_repair"],
+          "auth": {
+            "kind": "none"
+          }
+        }
+      ],
+      "secret_refs": [],
+      "propagation": "runner_resolves_refs",
+      "token_ttl_seconds": 900,
+      "auth_distribution": {
+        "mode": "runner_resolves_refs",
+        "allowed_materials": ["mcp_bearer_token", "workload_identity_token"],
+        "required_runner_labels": {},
+        "lease_ttl_seconds": 900,
+        "renewal": "manual_or_brokered",
+        "allow_node_local_device_session": false,
+        "allow_secret_sync": false,
+        "require_human_approval_for_brokered_user_auth": true
+      }
+    },
+    "notifications": {
+      "events": ["approval_requested", "human_feedback_requested", "task_blocked", "goal_completed"],
+      "targets": [
+        {
+          "kind": "thread",
+          "address": "current-codex-thread",
+          "secret_ref": null,
+          "require_ack": false
+        }
+      ],
+      "feedback_thread_key": "goal-authoring",
+      "escalation_seconds": 1800
+    }
+  },
+  "initial_tasks": []
+}

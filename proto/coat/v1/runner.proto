@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package coat.v1;
+
+import "coat/v1/common.proto";
+import "coat/v1/goal_store.proto";
+
+message AgentRunnerServiceRunTaskRequest {
+  ProtocolMetadata metadata = 1;
+  string goal_id = 2;
+  TaskRecord task_index = 3;
+  JsonSchemaEnvelope task = 4;
+  repeated ArtifactRef context_artifacts = 5;
+  string coordinator_trace_id = 6;
+}
+
+message AgentRunnerServiceRunTaskResponse {
+  ProtocolMetadata metadata = 1;
+  string task_id = 2;
+  WorkerRunStatus status = 3;
+  string summary = 4;
+  string runner_id = 5;
+  ModelCandidate model_used = 6;
+  repeated ArtifactRef artifacts = 7;
+  GitResultRef git_result = 8;
+  repeated ObjectStorageArtifactRef object_artifacts = 9;
+  double confidence = 10;
+  repeated string next_actions = 11;
+  repeated string diagnostics = 12;
+  JsonSchemaEnvelope payload = 13;
+}
+
+message RunnerRegistrationEnvelope {
+  ProtocolMetadata metadata = 1;
+  string runner_id = 2;
+  string node_id = 3;
+  string endpoint = 4;
+  repeated WorkerKind roles = 5;
+  repeated string capabilities = 6;
+  repeated ModelCandidate models = 7;
+  map<string, string> labels = 8;
+  repeated JsonSchemaEnvelope mcp_servers = 9;
+  uint32 max_concurrency = 10;
+  uint32 lease_ttl_seconds = 11;
+  JsonSchemaEnvelope payload = 12;
+}
+
+message RunnerRegistryServiceRegisterRunnerRequest {
+  ProtocolMetadata metadata = 1;
+  RunnerRegistrationEnvelope registration = 2;
+}
+
+message RunnerRegistryServiceRegisterRunnerResponse {
+  ProtocolMetadata metadata = 1;
+  RunnerRegistrationEnvelope registration = 2;
+  bool accepted = 3;
+}
+
+message RunnerHeartbeatEnvelope {
+  string runner_id = 1;
+  uint32 running_tasks = 2;
+  uint32 capacity_remaining = 3;
+}
+
+message RunnerRegistryServiceHeartbeatRequest {
+  ProtocolMetadata metadata = 1;
+  RunnerHeartbeatEnvelope heartbeat = 2;
+}
+
+message RunnerRegistryServiceHeartbeatResponse {
+  ProtocolMetadata metadata = 1;
+  RunnerHeartbeatEnvelope heartbeat = 2;
+  bool known = 3;
+}
+
+message RunnerRegistryServiceDispatchRequest {
+  ProtocolMetadata metadata = 1;
+  string goal_id = 2;
+  TaskRecord task_index = 3;
+  JsonSchemaEnvelope task = 4;
+  string coordinator_node_id = 5;
+}
+
+message RunnerDispatchCandidateEnvelope {
+  string runner_id = 1;
+  string node_id = 2;
+  string runner_endpoint = 3;
+  ModelCandidate model = 4;
+  int64 score = 5;
+  repeated string reasons = 6;
+}
+
+message RunnerRegistryServiceDispatchResponse {
+  ProtocolMetadata metadata = 1;
+  string status = 2;
+  string runner_id = 3;
+  string runner_endpoint = 4;
+  ModelCandidate model = 5;
+  repeated RunnerDispatchCandidateEnvelope candidates = 6;
+  repeated string rejection_reasons = 7;
+  JsonSchemaEnvelope mcp_context = 8;
+}
+
+message AgentRunnerServiceCapabilitiesRequest {
+  string runner_id = 1;
+}
+
+message AgentRunnerServiceCapabilitiesResponse {
+  RunnerRegistrationEnvelope registration = 1;
+  uint32 running_tasks = 2;
+  uint32 capacity_remaining = 3;
+  repeated string result_channels = 4;
+}
+
+message RunnerRegistryServiceListRunnersRequest {
+  string filter = 1;
+}
+
+message RunnerRegistryServiceListRunnersResponse {
+  repeated RunnerRegistrationEnvelope runners = 1;
+}
+
+service AgentRunnerService {
+  rpc RunTask(AgentRunnerServiceRunTaskRequest) returns (AgentRunnerServiceRunTaskResponse);
+  rpc Capabilities(AgentRunnerServiceCapabilitiesRequest) returns (AgentRunnerServiceCapabilitiesResponse);
+}
+
+service RunnerRegistryService {
+  rpc RegisterRunner(RunnerRegistryServiceRegisterRunnerRequest) returns (RunnerRegistryServiceRegisterRunnerResponse);
+  rpc Heartbeat(RunnerRegistryServiceHeartbeatRequest) returns (RunnerRegistryServiceHeartbeatResponse);
+  rpc Dispatch(RunnerRegistryServiceDispatchRequest) returns (RunnerRegistryServiceDispatchResponse);
+  rpc ListRunners(RunnerRegistryServiceListRunnersRequest) returns (RunnerRegistryServiceListRunnersResponse);
+}

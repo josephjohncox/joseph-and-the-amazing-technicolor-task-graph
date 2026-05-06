@@ -12,20 +12,43 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  postgres:
+    image: pgvector/pgvector:pg16
+    profiles: ["db"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coat}
+      POSTGRES_USER: ${POSTGRES_USER:-coat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coat-local-secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
+
   coordinator:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
       args:
-        PACKAGE: jattg-coordinator
-        BIN: jattg-coordinator
+        PACKAGE: coat-coordinator
+        BIN: coat-coordinator
     environment:
       BIND_ADDR: 0.0.0.0:9080
-      RUST_LOG: jattg_coordinator=info,restate_sdk=info
+      RUST_LOG: coat_coordinator=info,restate_sdk=info
+      COAT_RUNNER_REGISTRY: http://runner-registry:9085
+      COAT_NOTIFIER_URL: http://notifier:9086
+      COAT_GOAL_STORE_URL: http://goal-store:9088
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
+      COAT_ALLOW_LOCAL_STUB_FALLBACK: "true"
     ports:
       - "9080:9080"
     depends_on:
       - restate
+      - runner-registry
+      - notifier
+      - goal-store
+      - memory-gateway
 
   restate-register:
     image: curlimages/curl:8.16.0
@@ -47,8 +70,8 @@ services:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
       args:
-        PACKAGE: jattg-validator
-        BIN: jattg-validator
+        PACKAGE: coat-validator
+        BIN: coat-validator
     environment:
       BIND_ADDR: 0.0.0.0:9082
     ports:
@@ -59,10 +82,11 @@ services:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
       args:
-        PACKAGE: jattg-sandbox-runner
-        BIN: jattg-sandbox-runner
+        PACKAGE: coat-sandbox-runner
+        BIN: coat-sandbox-runner
     environment:
       BIND_ADDR: 0.0.0.0:9083
+      SANDBOX_WORKSPACE_ROOT: /workspaces
     ports:
       - "9083:9083"
     volumes:
@@ -73,20 +97,24 @@ services:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
       args:
-        PACKAGE: jattg-tool-registry
-        BIN: jattg-tool-registry
+        PACKAGE: coat-tool-registry
+        BIN: coat-tool-registry
     environment:
       BIND_ADDR: 0.0.0.0:9084
+      TOOL_REGISTRY_WORKSPACE_ROOT: /workspace
+      MCP_TOOL_TOKEN: ${MCP_TOOL_TOKEN:-}
     ports:
       - "9084:9084"
+    volumes:
+      - ../..:/workspace:ro
 
   runner-registry:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
       args:
-        PACKAGE: jattg-runner-registry
-        BIN: jattg-runner-registry
+        PACKAGE: coat-runner-registry
+        BIN: coat-runner-registry
     environment:
       BIND_ADDR: 0.0.0.0:9085
     ports:
@@ -97,12 +125,115 @@ services:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
       args:
-        PACKAGE: jattg-notifier
-        BIN: jattg-notifier
+        PACKAGE: coat-notifier
+        BIN: coat-notifier
     environment:
       BIND_ADDR: 0.0.0.0:9086
     ports:
       - "9086:9086"
+
+  goal-store:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: coat-goal-store
+        BIN: coat-goal-store
+    environment:
+      BIND_ADDR: 0.0.0.0:9088
+      COAT_GOAL_STORE_BACKEND: ${COAT_GOAL_STORE_BACKEND:-jsonl}
+      COAT_GOAL_STORE_JOURNAL_PATH: /data/goal-store.jsonl
+      COAT_GOAL_STORE_DATABASE_URL: ${COAT_GOAL_STORE_DATABASE_URL:-postgres://coat:coat-local-secret@postgres:5432/coat}
+    ports:
+      - "9088:9088"
+    volumes:
+      - goal-store-data:/data
+
+  event-gateway:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: coat-event-gateway
+        BIN: coat-event-gateway
+    environment:
+      BIND_ADDR: 0.0.0.0:9089
+      COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_EVENT_GATEWAY_TOKEN: ${COAT_EVENT_GATEWAY_TOKEN:-}
+      COAT_REQUIRE_EVENT_SOURCE_APPROVAL: ${COAT_REQUIRE_EVENT_SOURCE_APPROVAL:-false}
+      COAT_EVENT_GATEWAY_JOURNAL_PATH: /data/event-gateway.jsonl
+    ports:
+      - "9089:9089"
+    depends_on:
+      - restate
+    volumes:
+      - event-gateway-data:/data
+
+  memory-gateway:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: coat-memory-gateway
+        BIN: coat-memory-gateway
+    environment:
+      BIND_ADDR: 0.0.0.0:9087
+      MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:-}
+      MEMORY_GATEWAY_JOURNAL_PATH: /data/memory-gateway.jsonl
+      MEMORY_GATEWAY_GRAPHITI_MCP_URL: ${MEMORY_GATEWAY_GRAPHITI_MCP_URL:-}
+      MEMORY_GATEWAY_GRAPHITI_GROUP_ID: ${MEMORY_GATEWAY_GRAPHITI_GROUP_ID:-coat}
+      MEMORY_GATEWAY_GRAPHITI_TOKEN: ${MEMORY_GATEWAY_GRAPHITI_TOKEN:-}
+      MEMORY_GATEWAY_QDRANT_URL: ${MEMORY_GATEWAY_QDRANT_URL:-http://qdrant:6333}
+      MEMORY_GATEWAY_QDRANT_COLLECTION: ${MEMORY_GATEWAY_QDRANT_COLLECTION:-coat_memory}
+      MEMORY_GATEWAY_QDRANT_TOKEN: ${MEMORY_GATEWAY_QDRANT_TOKEN:-}
+      MEMORY_GATEWAY_EMBEDDING_URL: ${MEMORY_GATEWAY_EMBEDDING_URL:-https://api.openai.com/v1/embeddings}
+      MEMORY_GATEWAY_EMBEDDING_MODEL: ${MEMORY_GATEWAY_EMBEDDING_MODEL:-text-embedding-3-large}
+      MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: ${MEMORY_GATEWAY_EMBEDDING_DIMENSIONS:-3072}
+      MEMORY_GATEWAY_EMBEDDING_TOKEN: ${MEMORY_GATEWAY_EMBEDDING_TOKEN:-}
+      MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: ${MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "9087:9087"
+    depends_on:
+      - qdrant
+    volumes:
+      - memory-gateway-data:/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  object-store:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-coat}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-coat-local-secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - object-store-data:/data
+
+  object-store-init:
+    image: minio/mc:latest
+    depends_on:
+      - object-store
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-coat}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-coat-local-secret}
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        mc alias set local http://object-store:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb -p "local/$$COAT_OBJECT_STORE_BUCKET"
+        mc anonymous set none "local/$$COAT_OBJECT_STORE_BUCKET"
 
   codex-runner:
     build:
@@ -113,8 +244,22 @@ services:
     environment:
       PORT: 9091
       CODEX_RUNNER_MODE: stub
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://codex-runner:9091
+      RUNNER_ID: codex-runner-ts
+      NODE_ID: compose-node
+      RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"env"}'
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
+      COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
     ports:
       - "9091:9091"
+    depends_on:
+      - runner-registry
+      - memory-gateway
+      - object-store
 
   staff-engineer-runner:
     build:
@@ -125,8 +270,25 @@ services:
     environment:
       PORT: 9092
       STAFF_ENGINEER_RUNNER_MODE: stub
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://staff-engineer-runner:9092
+      RUNNER_ID: staff-engineer-runner-ts
+      NODE_ID: compose-node
+      RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"env"}'
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      TRACKER_TOKEN: ${TRACKER_TOKEN:-}
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
+      COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
     ports:
       - "9092:9092"
+    depends_on:
+      - runner-registry
+      - memory-gateway
+      - object-store
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.140.0
@@ -140,3 +302,9 @@ services:
 volumes:
   restate-data:
   sandbox-workspaces:
+  memory-gateway-data:
+  goal-store-data:
+  event-gateway-data:
+  postgres-data:
+  qdrant-data:
+  object-store-data:

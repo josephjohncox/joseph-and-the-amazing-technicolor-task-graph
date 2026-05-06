@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewOutput",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/ReviewDecision"
+    },
+    "findings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ReviewFinding"
+      }
+    },
+    "retry_recommended": {
+      "type": "boolean"
+    },
+    "reward": {
+      "type": "number",
+      "format": "float"
+    },
+    "unification_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "decision",
+    "reward",
+    "retry_recommended"
+  ],
+  "$defs": {
+    "ReviewDecision": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "changes_requested",
+        "blocked",
+        "inconclusive"
+      ]
+    },
+    "ReviewFinding": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "severity": {
+          "$ref": "#/$defs/ReviewSeverity"
+        },
+        "suggested_action": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "title",
+        "body"
+      ]
+    },
+    "ReviewSeverity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  }
+}

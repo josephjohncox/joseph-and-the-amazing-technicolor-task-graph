@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScheduleSpec",
+  "type": "object",
+  "properties": {
+    "expression": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ScheduleKind"
+    },
+    "timezone": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "expression",
+    "timezone"
+  ],
+  "$defs": {
+    "ScheduleKind": {
+      "type": "string",
+      "enum": [
+        "cron",
+        "r_rule",
+        "interval_seconds"
+      ]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "parent_task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "branch_task_ids": [
+    "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+    "018f8f2f-1fd8-7688-bb12-8bfb6b756604"
+  ],
+  "unifier_task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756605",
+  "promote_keys": ["memory-substrate-default"],
+  "invalidate_keys": [],
+  "decision": "accept",
+  "reason": "Unifier accepted this memory after critic review.",
+  "store": null
+}

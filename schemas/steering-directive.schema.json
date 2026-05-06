@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SteeringDirective",
+  "type": "object",
+  "properties": {
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "$ref": "#/$defs/SteeringDirectiveKind"
+    },
+    "message": {
+      "type": "string"
+    },
+    "operator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "message",
+    "kind"
+  ],
+  "$defs": {
+    "SteeringDirectiveKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "constraint": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "add_constraint"
+            }
+          },
+          "required": [
+            "kind",
+            "constraint"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "update_objective"
+            },
+            "objective_delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "objective_delta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "inject_task"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/WorkerKind"
+            }
+          },
+          "required": [
+            "kind",
+            "role",
+            "prompt",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "request_research"
+            },
+            "question": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "question",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pause"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "resume"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cancel"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SubgoalProgress",
+  "type": "object",
+  "properties": {
+    "dependencies": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "open_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "owner_role": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runnable_tasks": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/SubgoalStatus"
+    },
+    "subgoal_id": {
+      "type": "string"
+    },
+    "terminal_ok_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "subgoal_id",
+    "status",
+    "total_tasks",
+    "open_tasks",
+    "terminal_ok_tasks"
+  ],
+  "$defs": {
+    "SubgoalStatus": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "open",
+        "running",
+        "done",
+        "blocked",
+        "failed"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ObjectStoreKind",
+  "type": "string",
+  "enum": [
+    "aws_s3",
+    "s3_compatible",
+    "minio",
+    "cloudflare_r2",
+    "gcs_s3",
+    "other"
+  ]
+}

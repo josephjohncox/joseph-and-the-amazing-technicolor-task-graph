@@ -1,0 +1,228 @@
+asyncapi: 2.6.0
+id: urn:coat:event-gateway
+info:
+  title: COAT Event Gateway
+  version: 0.1.0
+  description: |
+    Event gateway contract for webhooks, scheduled events, calendar polling,
+    repository events, and other real-world signals that create or steer
+    durable goals. Payloads should be compatible with CloudEvents where
+    upstream providers support it.
+servers:
+  local:
+    url: http://localhost:9089
+    protocol: http
+  kubernetes:
+    url: http://event-gateway.coat.svc.cluster.local:9089
+    protocol: http
+channels:
+  /event-sources:
+    publish:
+      operationId: registerEventSource
+      summary: Register or replace an event source and its routing policy.
+      message:
+        $ref: '#/components/messages/EventSource'
+  /events:
+    publish:
+      operationId: ingestExternalEvent
+      summary: Record an external event and optionally route it to a goal action.
+      message:
+        $ref: '#/components/messages/ExternalEvent'
+  /webhooks/{source_key}:
+    parameters:
+      source_key:
+        description: Stable event source key.
+        schema:
+          type: string
+    publish:
+      operationId: ingestWebhook
+      summary: Ingest a provider webhook using the auth policy registered on the event source.
+      message:
+        $ref: '#/components/messages/WebhookPayload'
+  /trigger:
+    publish:
+      operationId: triggerGoal
+      summary: Explicitly create, steer, or record a goal trigger from a previously ingested event.
+      message:
+        $ref: '#/components/messages/TriggeredGoalRequest'
+components:
+  messages:
+    EventSource:
+      payload:
+        $ref: '#/components/schemas/EventSource'
+    ExternalEvent:
+      payload:
+        $ref: '#/components/schemas/ExternalEvent'
+    WebhookPayload:
+      payload:
+        type: object
+        additionalProperties: true
+    TriggeredGoalRequest:
+      payload:
+        $ref: '#/components/schemas/TriggeredGoalRequest'
+  securitySchemes:
+    gatewayBearer:
+      type: httpApiKey
+      name: authorization
+      in: header
+      description: Bearer token from COAT_EVENT_GATEWAY_TOKEN.
+    webhookSignature:
+      type: httpApiKey
+      name: x-coat-signature-256
+      in: header
+      description: HMAC-SHA256 signature in sha256=<hex> format.
+  schemas:
+    Uuid:
+      type: string
+      format: uuid
+    EventSource:
+      type: object
+      required:
+        - id
+        - kind
+        - enabled
+        - description
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum:
+            - webhook
+            - cloud_events_webhook
+            - cron
+            - calendar_poll
+            - calendar_push
+            - queue
+            - pub_sub
+            - git_hub_webhook
+            - git_lab_webhook
+            - jira_webhook
+            - linear_webhook
+            - slack_event
+            - email
+            - object_storage
+            - kubernetes
+            - manual
+            - other
+        enabled:
+          type: boolean
+        description:
+          type: string
+        webhook:
+          $ref: '#/components/schemas/WebhookEventSource'
+        route:
+          $ref: '#/components/schemas/EventGoalRoute'
+    WebhookEventSource:
+      type: object
+      properties:
+        path:
+          type: string
+        auth:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum:
+                - none
+                - shared_secret_header
+                - hmac_sha256
+                - bearer_token
+                - basic
+                - mtls
+                - oidc_jwt
+            header_name:
+              type: string
+            secret_ref:
+              type: object
+              additionalProperties: true
+    EventGoalRoute:
+      type: object
+      required:
+        - mode
+      properties:
+        mode:
+          type: string
+          enum:
+            - record_only
+            - create_goal
+            - create_research_goal
+            - steer_goal
+            - human_review
+        target_goal_id:
+          $ref: '#/components/schemas/Uuid'
+        goal_template:
+          type: object
+          additionalProperties: true
+        steering_directive:
+          type: object
+          additionalProperties: true
+    ExternalEvent:
+      type: object
+      required:
+        - id
+        - source_id
+        - source_kind
+        - event_type
+        - dedupe_key
+        - payload
+      properties:
+        id:
+          type: string
+        source_id:
+          type: string
+        source_kind:
+          type: string
+        event_type:
+          type: string
+        subject:
+          type: string
+        dedupe_key:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+    TriggeredGoalRequest:
+      type: object
+      required:
+        - event
+        - route
+        - idempotency_key
+      properties:
+        event:
+          $ref: '#/components/schemas/ExternalEvent'
+        route:
+          $ref: '#/components/schemas/EventGoalRoute'
+        goal:
+          type: object
+          additionalProperties: true
+        idempotency_key:
+          type: string
+    TriggeredGoalResponse:
+      type: object
+      required:
+        - accepted
+        - status
+        - event_id
+        - deduped
+      properties:
+        accepted:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - recorded
+            - submitted
+            - awaiting_human_review
+            - deduped
+            - failed
+        event_id:
+          type: string
+        goal_id:
+          $ref: '#/components/schemas/Uuid'
+        deduped:
+          type: boolean
+        diagnostics:
+          type: array
+          items:
+            type: string

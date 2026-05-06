@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebhookEventSource",
+  "type": "object",
+  "properties": {
+    "accepts_cloudevents": {
+      "type": "boolean"
+    },
+    "auth": {
+      "$ref": "#/$defs/WebhookAuthPolicy"
+    },
+    "dedupe_header": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_payload_bytes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "auth",
+    "accepts_cloudevents",
+    "max_payload_bytes"
+  ],
+  "$defs": {
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "WebhookAuthKind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "shared_secret_header",
+        "hmac_sha256",
+        "bearer_token",
+        "basic",
+        "mtls",
+        "oidc_jwt"
+      ]
+    },
+    "WebhookAuthPolicy": {
+      "type": "object",
+      "properties": {
+        "header_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/WebhookAuthKind"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  }
+}

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryRepairResponse",
+  "type": "object",
+  "properties": {
+    "adapter_reports": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryAdapterReport"
+      }
+    },
+    "repaired": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "scanned": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "selected": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "skipped": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "scanned",
+    "selected",
+    "repaired",
+    "skipped"
+  ],
+  "$defs": {
+    "MemoryAdapterReport": {
+      "type": "object",
+      "properties": {
+        "attempted": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "external_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "type": "string"
+        },
+        "store_kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "store_kind",
+        "operation",
+        "attempted",
+        "success"
+      ]
+    },
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    }
+  }
+}

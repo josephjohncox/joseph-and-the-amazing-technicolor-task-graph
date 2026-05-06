@@ -1,0 +1,8 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "objective": "Implement the durable memory substrate with Graphiti, Qdrant, scoped retrieval, and adapter repair.",
+  "scopes": ["goal", "task", "repo", "persona"],
+  "limit": 8,
+  "store": null
+}

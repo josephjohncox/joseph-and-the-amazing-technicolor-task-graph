@@ -1,0 +1,53 @@
+{
+  "event": {
+    "id": "github-pr-review-123",
+    "source_id": "github-webhook",
+    "source_kind": "git_hub_webhook",
+    "event_type": "pull_request_review.submitted",
+    "subject": "Review comments require follow-up",
+    "dedupe_key": "github:webhook:pull_request_review:123",
+    "occurred_at": "2026-05-06T18:30:00Z",
+    "received_at": null,
+    "headers": {
+      "x-github-event": "pull_request_review",
+      "x-github-delivery": "github-pr-review-123"
+    },
+    "payload": {
+      "repository": "example/repo",
+      "pull_request": 123,
+      "action": "submitted"
+    }
+  },
+  "route": {
+    "mode": "create_goal",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": false,
+    "dedupe_window_seconds": 3600
+  },
+  "goal": {
+    "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
+    "title": "Respond to PR review comments",
+    "objective": "Inspect the pull request review event, identify actionable comments, implement safe fixes, run validation, and report evidence back to the coordinator.",
+    "repo": "example/repo",
+    "root_budget": {
+      "max_tokens": 200000,
+      "remaining_tokens": 200000,
+      "max_runtime_seconds": 1800,
+      "remaining_runtime_seconds": 1800,
+      "max_tool_calls": 80,
+      "remaining_tool_calls": 80,
+      "max_child_tasks": 8,
+      "remaining_child_tasks": 8,
+      "max_patch_size": 100000
+    },
+    "done_criteria": {
+      "tests_pass": true,
+      "artifact_exists": true,
+      "validator_score_min": 0.85
+    },
+    "initial_tasks": []
+  },
+  "idempotency_key": "github:webhook:pull_request_review:123"
+}

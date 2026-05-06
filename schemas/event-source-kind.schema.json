@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventSourceKind",
+  "type": "string",
+  "enum": [
+    "webhook",
+    "cloud_events_webhook",
+    "cron",
+    "calendar_poll",
+    "calendar_push",
+    "queue",
+    "pub_sub",
+    "git_hub_webhook",
+    "git_lab_webhook",
+    "jira_webhook",
+    "linear_webhook",
+    "slack_event",
+    "email",
+    "object_storage",
+    "kubernetes",
+    "manual",
+    "other"
+  ]
+}

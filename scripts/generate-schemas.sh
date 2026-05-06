@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 set -eu
 
-cargo run -p jattg-domain --bin generate-schemas -- "${1:-schemas}"
+cargo run -p coat-domain --bin generate-schemas -- "${1:-schemas}"

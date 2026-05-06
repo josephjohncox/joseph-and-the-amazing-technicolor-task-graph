@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventRouteMode",
+  "type": "string",
+  "enum": [
+    "record_only",
+    "create_goal",
+    "create_research_goal",
+    "steer_goal",
+    "human_review"
+  ]
+}

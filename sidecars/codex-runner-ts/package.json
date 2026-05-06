@@ -1,5 +1,5 @@
 {
-  "name": "@jattg/codex-runner-ts",
+  "name": "@coat/codex-runner-ts",
   "version": "0.1.0",
   "private": true,
   "type": "module",

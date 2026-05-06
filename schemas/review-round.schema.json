@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewRound",
+  "type": "object",
+  "properties": {
+    "reviewer_task_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "round": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "status": {
+      "$ref": "#/$defs/ReviewRoundStatus"
+    },
+    "subject_task_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "unification_task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "round",
+    "status"
+  ],
+  "$defs": {
+    "ReviewRoundStatus": {
+      "type": "string",
+      "enum": [
+        "reviews_spawned",
+        "ready_for_unification",
+        "unified"
+      ]
+    }
+  }
+}

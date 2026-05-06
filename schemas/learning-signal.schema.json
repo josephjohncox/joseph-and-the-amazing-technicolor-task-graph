@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LearningSignal",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "findings_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "notes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "reward": {
+      "type": "number",
+      "format": "float"
+    },
+    "source": {
+      "$ref": "#/$defs/LearningSignalSource"
+    },
+    "task_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "task_id",
+    "source",
+    "reward",
+    "findings_count"
+  ],
+  "$defs": {
+    "LearningSignalSource": {
+      "type": "string",
+      "enum": [
+        "actor_validation",
+        "critic_review",
+        "review_unification",
+        "actor_retry",
+        "research"
+      ]
+    },
+    "ReviewDecision": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "changes_requested",
+        "blocked",
+        "inconclusive"
+      ]
+    }
+  }
+}

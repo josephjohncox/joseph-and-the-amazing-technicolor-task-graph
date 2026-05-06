@@ -3,6 +3,25 @@
   "title": "McpContextRef",
   "type": "object",
   "properties": {
+    "auth_distribution": {
+      "$ref": "#/$defs/AuthDistributionPolicy",
+      "default": {
+        "allow_node_local_device_session": true,
+        "allow_secret_sync": false,
+        "allowed_materials": [
+          "api_token",
+          "mcp_bearer_token",
+          "oauth_access_token",
+          "oauth_refresh_token",
+          "workload_identity_token"
+        ],
+        "lease_ttl_seconds": 900,
+        "mode": "runner_resolves_refs",
+        "renewal": "manual_or_brokered",
+        "require_human_approval_for_brokered_user_auth": true,
+        "required_runner_labels": {}
+      }
+    },
     "context_id": {
       "type": [
         "string",
@@ -39,6 +58,101 @@
     "propagation"
   ],
   "$defs": {
+    "AuthDistributionMode": {
+      "type": "string",
+      "enum": [
+        "runner_local_only",
+        "runner_resolves_refs",
+        "coordinator_issues_lease",
+        "workload_identity",
+        "oauth_device_broker",
+        "external_broker"
+      ]
+    },
+    "AuthDistributionPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_node_local_device_session": {
+          "type": "boolean"
+        },
+        "allow_secret_sync": {
+          "type": "boolean"
+        },
+        "allowed_materials": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AuthMaterialKind"
+          }
+        },
+        "lease_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthDistributionMode"
+        },
+        "renewal": {
+          "$ref": "#/$defs/AuthRenewalPolicy"
+        },
+        "require_human_approval_for_brokered_user_auth": {
+          "type": "boolean"
+        },
+        "required_runner_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "required": [
+        "mode",
+        "renewal",
+        "allow_node_local_device_session",
+        "allow_secret_sync",
+        "require_human_approval_for_brokered_user_auth"
+      ]
+    },
+    "AuthMaterialKind": {
+      "type": "string",
+      "enum": [
+        "api_token",
+        "mcp_bearer_token",
+        "oauth_access_token",
+        "oauth_refresh_token",
+        "device_auth_session",
+        "workload_identity_token",
+        "local_cli_session",
+        "service_account",
+        "other"
+      ]
+    },
+    "AuthRenewalPolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "manual_or_brokered",
+        "broker_can_refresh",
+        "runner_can_refresh"
+      ]
+    },
+    "DeviceAuthProvider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude_code",
+        "open_ai",
+        "anthropic",
+        "github",
+        "google",
+        "other"
+      ]
+    },
     "McpAuthRef": {
       "oneOf": [
         {
@@ -90,7 +204,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "const": "o_auth_delegation"
+              "const": "oauth_delegation"
             },
             "token_exchange_secret": {
               "$ref": "#/$defs/SecretRef"
@@ -100,6 +214,67 @@
             "kind",
             "token_exchange_secret"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_auth_session"
+            },
+            "node_local": {
+              "type": "boolean",
+              "default": true
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "refresh_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session_ref": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "session_ref",
+            "provider"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "brokered_user_session"
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "provider"
+          ]
         }
       ]
     },
@@ -108,7 +283,10 @@
       "enum": [
         "coordinator_issued",
         "runner_resolves_refs",
-        "workload_identity"
+        "workload_identity",
+        "runner_local_only",
+        "oauth_device_broker",
+        "external_broker"
       ]
     },
     "McpServerRef": {
@@ -158,6 +336,11 @@
         "aws_secrets_manager",
         "gcp_secret_manager",
         "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
         "local_file"
       ]
     },

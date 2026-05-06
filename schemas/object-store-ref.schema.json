@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ObjectStoreRef",
+  "type": "object",
+  "properties": {
+    "bucket": {
+      "type": "string"
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "force_path_style": {
+      "type": "boolean"
+    },
+    "kind": {
+      "$ref": "#/$defs/ObjectStoreKind"
+    },
+    "prefix": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "region": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "secret_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SecretRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "bucket",
+    "force_path_style"
+  ],
+  "$defs": {
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+  "coordinator_node_id": "local-control-plane",
+  "task": {
+    "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+    "parent_id": null,
+    "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+    "depth": 0,
+    "status": "runnable",
+    "role": "planner",
+    "purpose": {
+      "kind": "work"
+    },
+    "execution": {
+      "runner": {
+        "worker": "planner",
+        "runner_id": null,
+        "required_capabilities": [],
+        "required_labels": {},
+        "locality": "any_node"
+      },
+      "model": {
+        "strategy": "first_available",
+        "required_features": ["tool_use", "json_schema"],
+        "candidates": [
+          {
+            "provider": "codex",
+            "model": "codex-default",
+            "endpoint": null,
+            "priority": 100,
+            "weight": 1,
+            "context_window": null,
+            "features": ["tool_use", "json_schema"],
+            "labels": {}
+          }
+        ],
+        "fallback": "allow_fallback"
+      },
+      "persona": {
+        "name": "planner",
+        "instructions_ref": null,
+        "inline_instructions": [],
+        "risk_tolerance": "conservative"
+      },
+      "mcp": {
+        "context_id": null,
+        "servers": [],
+        "secret_refs": [],
+        "propagation": "coordinator_issued",
+        "token_ttl_seconds": 900
+      },
+      "notifications": {
+        "events": ["task_blocked"],
+        "targets": [],
+        "feedback_thread_key": "smoke",
+        "escalation_seconds": 600
+      }
+    },
+    "prompt": "Prove a registered sidecar can be selected by the runner registry.",
+    "dependencies": [],
+    "children": [],
+    "budget": {
+      "max_tokens": 200000,
+      "remaining_tokens": 200000,
+      "max_runtime_seconds": 600,
+      "remaining_runtime_seconds": 600,
+      "max_tool_calls": 50,
+      "remaining_tool_calls": 50,
+      "max_child_tasks": 8,
+      "remaining_child_tasks": 8,
+      "max_patch_size": 50000
+    },
+    "sandbox": {
+      "filesystem": "workspace_write",
+      "network": "restricted",
+      "approval_policy": "on_request",
+      "isolated_runner": true
+    },
+    "done_criteria": {
+      "tests_pass": false,
+      "artifact_exists": true,
+      "validator_score_min": 0.85
+    },
+    "result": null,
+    "attempts": 0
+  },
+  "registered_runners": []
+}

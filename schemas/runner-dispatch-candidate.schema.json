@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunnerDispatchCandidate",
+  "type": "object",
+  "properties": {
+    "model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelCandidate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "node_id": {
+      "type": "string"
+    },
+    "reasons": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "runner_endpoint": {
+      "type": "string"
+    },
+    "runner_id": {
+      "type": "string"
+    },
+    "score": {
+      "type": "integer",
+      "format": "int64"
+    }
+  },
+  "required": [
+    "runner_id",
+    "node_id",
+    "runner_endpoint",
+    "score"
+  ],
+  "$defs": {
+    "ModelCandidate": {
+      "type": "object",
+      "properties": {
+        "context_window": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "model": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider": {
+          "$ref": "#/$defs/ModelProviderKind"
+        },
+        "weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "priority",
+        "weight"
+      ]
+    },
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights"
+      ]
+    },
+    "ModelProviderKind": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "open_ai",
+        "open_ai_compatible",
+        "vllm",
+        "ollama",
+        "llama_cpp",
+        "anthropic",
+        "hugging_face",
+        "local_process",
+        "other"
+      ]
+    }
+  }
+}

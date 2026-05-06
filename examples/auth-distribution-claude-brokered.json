@@ -1,0 +1,38 @@
+{
+  "context_id": "claude-brokered-user-auth",
+  "servers": [
+    {
+      "name": "claude-code",
+      "transport": "stdio",
+      "uri": "claude",
+      "allowed_tools": ["issue_to_pr", "review_comments", "ci_status"],
+      "auth": {
+        "kind": "brokered_user_session",
+        "broker": {
+          "provider": "external_broker",
+          "name": "human-auth-broker",
+          "key": "claude-code",
+          "namespace": "coat",
+          "audience": "claude-code"
+        },
+        "provider": "claude_code",
+        "requested_scopes": ["inference"]
+      }
+    }
+  ],
+  "secret_refs": [],
+  "propagation": "oauth_device_broker",
+  "token_ttl_seconds": 900,
+  "auth_distribution": {
+    "mode": "oauth_device_broker",
+    "allowed_materials": ["oauth_access_token", "oauth_refresh_token"],
+    "required_runner_labels": {
+      "auth.broker.claude": "true"
+    },
+    "lease_ttl_seconds": 900,
+    "renewal": "broker_can_refresh",
+    "allow_node_local_device_session": false,
+    "allow_secret_sync": false,
+    "require_human_approval_for_brokered_user_auth": true
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalStorePolicy",
+  "type": "object",
+  "properties": {
+    "event_backend": {
+      "$ref": "#/$defs/GoalEventBackend"
+    },
+    "projection_mode": {
+      "$ref": "#/$defs/GoalStoreProjectionMode"
+    },
+    "protocol_package": {
+      "type": "string"
+    },
+    "protocol_version": {
+      "type": "string"
+    },
+    "read_model_backend": {
+      "$ref": "#/$defs/GoalReadModelBackend"
+    },
+    "state_authority": {
+      "$ref": "#/$defs/GoalStateAuthority"
+    }
+  },
+  "required": [
+    "state_authority",
+    "read_model_backend",
+    "event_backend",
+    "projection_mode",
+    "protocol_package",
+    "protocol_version"
+  ],
+  "$defs": {
+    "GoalEventBackend": {
+      "type": "string",
+      "enum": [
+        "restate_journal",
+        "postgres_outbox",
+        "kafka",
+        "redpanda",
+        "nats",
+        "jsonl",
+        "other"
+      ]
+    },
+    "GoalReadModelBackend": {
+      "type": "string",
+      "enum": [
+        "postgres",
+        "postgres_pgvector",
+        "sqlite",
+        "jsonl",
+        "other"
+      ]
+    },
+    "GoalStateAuthority": {
+      "type": "string",
+      "enum": [
+        "restate_workflow",
+        "external_goal_store",
+        "other"
+      ]
+    },
+    "GoalStoreProjectionMode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "best_effort",
+        "required"
+      ]
+    }
+  }
+}

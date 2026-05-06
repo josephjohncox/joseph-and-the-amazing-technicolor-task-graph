@@ -1,34 +1,60 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: jattg
+  name: coat
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: jattg-config
-  namespace: jattg
+  name: coat-config
+  namespace: coat
 data:
   RUST_LOG: info
   CODEX_RUNNER_MODE: stub
   STAFF_ENGINEER_RUNNER_MODE: stub
+  COAT_GOAL_STORE_BACKEND: jsonl
+  COAT_EVENT_GATEWAY_BACKEND: jsonl
+  COAT_REQUIRE_EVENT_SOURCE_APPROVAL: "true"
+  COAT_MEMORY_MCP_URL: http://graphiti-mcp:8000/mcp/
+  MEMORY_GATEWAY_GRAPHITI_MCP_URL: ""
+  MEMORY_GATEWAY_GRAPHITI_GROUP_ID: coat
+  MEMORY_GATEWAY_QDRANT_URL: http://qdrant:6333
+  MEMORY_GATEWAY_QDRANT_COLLECTION: coat_memory
+  COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
+  COAT_OBJECT_STORE_BUCKET: coat-artifacts
+  MEMORY_GATEWAY_EMBEDDING_URL: https://api.openai.com/v1/embeddings
+  MEMORY_GATEWAY_EMBEDDING_MODEL: text-embedding-3-large
+  MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
+  MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: "false"
+  CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret"}'
+  STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret"}'
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: jattg-agent-secrets
-  namespace: jattg
+  name: coat-agent-secrets
+  namespace: coat
 type: Opaque
 stringData:
   OPENAI_API_KEY: replace-me
+  ANTHROPIC_API_KEY: replace-me
+  ANTHROPIC_AUTH_TOKEN: ""
+  CLAUDE_CODE_OAUTH_TOKEN: ""
   TRACKER_TOKEN: replace-me
   MCP_TOOL_TOKEN: replace-me
+  QDRANT_API_KEY: ""
+  EMBEDDING_API_KEY: replace-me
+  OBJECT_STORE_ACCESS_KEY: coat
+  OBJECT_STORE_SECRET_KEY: coat-local-secret
+  EVENT_GATEWAY_TOKEN: ""
+  POSTGRES_PASSWORD: coat-local-secret
+  COAT_GOAL_STORE_DATABASE_URL: postgresql://coat:coat-local-secret@postgres:5432/coat
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: restate
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -68,7 +94,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: restate
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: restate
@@ -84,7 +110,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: coordinator
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -97,15 +123,40 @@ spec:
     spec:
       containers:
         - name: coordinator
-          image: jattg/coordinator:local
+          image: coat/coordinator:local
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:9080
+            - name: COAT_RUNNER_REGISTRY
+              value: http://runner-registry:9085
+            - name: COAT_NOTIFIER_URL
+              value: http://notifier:9086
+            - name: COAT_GOAL_STORE_URL
+              value: http://goal-store:9088
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_MEMORY_MCP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_MEMORY_MCP_URL
+            - name: COAT_OBJECT_STORE_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_ENDPOINT
+            - name: COAT_OBJECT_STORE_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_BUCKET
+            - name: COAT_ALLOW_LOCAL_STUB_FALLBACK
+              value: "true"
             - name: RUST_LOG
               valueFrom:
                 configMapKeyRef:
-                  name: jattg-config
+                  name: coat-config
                   key: RUST_LOG
           ports:
             - containerPort: 9080
@@ -122,7 +173,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: coordinator
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: coordinator
@@ -134,7 +185,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: restate-register-coordinator
-  namespace: jattg
+  namespace: coat
 spec:
   template:
     spec:
@@ -155,7 +206,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: validator
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -168,7 +219,7 @@ spec:
     spec:
       containers:
         - name: validator
-          image: jattg/validator:local
+          image: coat/validator:local
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -188,7 +239,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: validator
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: validator
@@ -200,7 +251,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sandbox-runner
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -213,11 +264,13 @@ spec:
     spec:
       containers:
         - name: sandbox-runner
-          image: jattg/sandbox-runner:local
+          image: coat/sandbox-runner:local
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:9083
+            - name: SANDBOX_WORKSPACE_ROOT
+              value: /workspaces
           ports:
             - containerPort: 9083
               name: http
@@ -239,7 +292,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: sandbox-runner
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: sandbox-runner
@@ -251,7 +304,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tool-registry
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -264,11 +317,16 @@ spec:
     spec:
       containers:
         - name: tool-registry
-          image: jattg/tool-registry:local
+          image: coat/tool-registry:local
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:9084
+            - name: MCP_TOOL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: MCP_TOOL_TOKEN
           ports:
             - containerPort: 9084
               name: http
@@ -284,7 +342,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: tool-registry
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: tool-registry
@@ -296,7 +354,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: runner-registry
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -309,7 +367,7 @@ spec:
     spec:
       containers:
         - name: runner-registry
-          image: jattg/runner-registry:local
+          image: coat/runner-registry:local
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -329,7 +387,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: runner-registry
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: runner-registry
@@ -341,7 +399,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: notifier
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -354,7 +412,7 @@ spec:
     spec:
       containers:
         - name: notifier
-          image: jattg/notifier:local
+          image: coat/notifier:local
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -374,7 +432,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: notifier
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: notifier
@@ -385,8 +443,404 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: goal-store
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: goal-store
+  template:
+    metadata:
+      labels:
+        app: goal-store
+    spec:
+      containers:
+        - name: goal-store
+          image: coat/goal-store:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9088
+            - name: COAT_GOAL_STORE_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_GOAL_STORE_BACKEND
+            - name: COAT_GOAL_STORE_JOURNAL_PATH
+              value: /data/goal-store.jsonl
+            - name: COAT_GOAL_STORE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: COAT_GOAL_STORE_DATABASE_URL
+          ports:
+            - containerPort: 9088
+              name: http
+          volumeMounts:
+            - name: goal-store-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: goal-store-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: goal-store
+  namespace: coat
+spec:
+  selector:
+    app: goal-store
+  ports:
+    - port: 9088
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-gateway
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: event-gateway
+  template:
+    metadata:
+      labels:
+        app: event-gateway
+    spec:
+      containers:
+        - name: event-gateway
+          image: coat/event-gateway:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9089
+            - name: COAT_RESTATE_INGRESS
+              value: http://restate:8080
+            - name: COAT_EVENT_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: EVENT_GATEWAY_TOKEN
+                  optional: true
+            - name: COAT_EVENT_GATEWAY_JOURNAL_PATH
+              value: /data/event-gateway.jsonl
+            - name: COAT_REQUIRE_EVENT_SOURCE_APPROVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_REQUIRE_EVENT_SOURCE_APPROVAL
+          ports:
+            - containerPort: 9089
+              name: http
+          volumeMounts:
+            - name: event-gateway-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: event-gateway-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-gateway
+  namespace: coat
+spec:
+  selector:
+    app: event-gateway
+  ports:
+    - port: 9089
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-gateway
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: memory-gateway
+  template:
+    metadata:
+      labels:
+        app: memory-gateway
+    spec:
+      containers:
+        - name: memory-gateway
+          image: coat/memory-gateway:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9087
+            - name: MEMORY_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: MCP_TOOL_TOKEN
+            - name: MEMORY_GATEWAY_JOURNAL_PATH
+              value: /data/memory-gateway.jsonl
+            - name: MEMORY_GATEWAY_GRAPHITI_MCP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_GRAPHITI_MCP_URL
+            - name: MEMORY_GATEWAY_GRAPHITI_GROUP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_GRAPHITI_GROUP_ID
+            - name: MEMORY_GATEWAY_QDRANT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_QDRANT_URL
+            - name: MEMORY_GATEWAY_QDRANT_COLLECTION
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_QDRANT_COLLECTION
+            - name: MEMORY_GATEWAY_QDRANT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: QDRANT_API_KEY
+                  optional: true
+            - name: MEMORY_GATEWAY_EMBEDDING_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_EMBEDDING_URL
+            - name: MEMORY_GATEWAY_EMBEDDING_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_EMBEDDING_MODEL
+            - name: MEMORY_GATEWAY_EMBEDDING_DIMENSIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_EMBEDDING_DIMENSIONS
+            - name: MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS
+            - name: MEMORY_GATEWAY_EMBEDDING_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: EMBEDDING_API_KEY
+                  optional: true
+          ports:
+            - containerPort: 9087
+              name: http
+          volumeMounts:
+            - name: memory-gateway-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: memory-gateway-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-gateway
+  namespace: coat
+spec:
+  selector:
+    app: memory-gateway
+  ports:
+    - port: 9087
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.15.5
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+          volumeMounts:
+            - name: qdrant-data
+              mountPath: /qdrant/storage
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: qdrant-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: coat
+spec:
+  selector:
+    app: qdrant
+  ports:
+    - name: http
+      port: 6333
+      targetPort: http
+    - name: grpc
+      port: 6334
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: object-store
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: object-store
+  template:
+    metadata:
+      labels:
+        app: object-store
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: OBJECT_STORE_ACCESS_KEY
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+          ports:
+            - containerPort: 9000
+              name: s3
+            - containerPort: 9001
+              name: console
+          volumeMounts:
+            - name: object-store-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: object-store-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: object-store
+  namespace: coat
+spec:
+  selector:
+    app: object-store
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+    - name: console
+      port: 9001
+      targetPort: console
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: object-store-init
+  namespace: coat
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: OBJECT_STORE_ACCESS_KEY
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: OBJECT_STORE_SECRET_KEY
+            - name: COAT_OBJECT_STORE_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_BUCKET
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              until mc alias set local http://object-store:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do sleep 2; done
+              mc mb -p "local/$COAT_OBJECT_STORE_BUCKET"
+              mc anonymous set none "local/$COAT_OBJECT_STORE_BUCKET"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
   name: codex-runner
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -399,7 +853,7 @@ spec:
     spec:
       containers:
         - name: codex-runner
-          image: jattg/codex-runner:local
+          image: coat/codex-runner:local
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -407,13 +861,47 @@ spec:
             - name: CODEX_RUNNER_MODE
               valueFrom:
                 configMapKeyRef:
-                  name: jattg-config
+                  name: coat-config
                   key: CODEX_RUNNER_MODE
+            - name: RUNNER_REGISTRY_URL
+              value: http://runner-registry:9085
+            - name: RUNNER_ENDPOINT
+              value: http://codex-runner:9091
+            - name: RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RUNNER_LABELS_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: CODEX_RUNNER_LABELS_JSON
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: jattg-agent-secrets
+                  name: coat-agent-secrets
                   key: OPENAI_API_KEY
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_MEMORY_MCP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_MEMORY_MCP_URL
+            - name: COAT_OBJECT_STORE_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_ENDPOINT
+            - name: COAT_OBJECT_STORE_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_BUCKET
           ports:
             - containerPort: 9091
               name: http
@@ -429,7 +917,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: codex-runner
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: codex-runner
@@ -441,7 +929,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: staff-engineer-runner
-  namespace: jattg
+  namespace: coat
 spec:
   replicas: 1
   selector:
@@ -454,7 +942,7 @@ spec:
     spec:
       containers:
         - name: staff-engineer-runner
-          image: jattg/staff-engineer-runner:local
+          image: coat/staff-engineer-runner:local
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -462,13 +950,55 @@ spec:
             - name: STAFF_ENGINEER_RUNNER_MODE
               valueFrom:
                 configMapKeyRef:
-                  name: jattg-config
+                  name: coat-config
                   key: STAFF_ENGINEER_RUNNER_MODE
+            - name: RUNNER_REGISTRY_URL
+              value: http://runner-registry:9085
+            - name: RUNNER_ENDPOINT
+              value: http://staff-engineer-runner:9092
+            - name: RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RUNNER_LABELS_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: STAFF_ENGINEER_RUNNER_LABELS_JSON
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: ANTHROPIC_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: ANTHROPIC_AUTH_TOKEN
+                  optional: true
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: CLAUDE_CODE_OAUTH_TOKEN
+                  optional: true
             - name: TRACKER_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: jattg-agent-secrets
+                  name: coat-agent-secrets
                   key: TRACKER_TOKEN
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_MEMORY_MCP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_MEMORY_MCP_URL
           ports:
             - containerPort: 9092
               name: http
@@ -484,7 +1014,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: staff-engineer-runner
-  namespace: jattg
+  namespace: coat
 spec:
   selector:
     app: staff-engineer-runner
@@ -495,8 +1025,8 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-jattg-internal
-  namespace: jattg
+  name: allow-coat-internal
+  namespace: coat
 spec:
   podSelector: {}
   policyTypes:

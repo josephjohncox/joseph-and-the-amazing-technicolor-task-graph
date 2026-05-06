@@ -1,0 +1,41 @@
+{
+  "id": "calendar-daily-brief",
+  "kind": "calendar_poll",
+  "enabled": true,
+  "description": "Poll the operator calendar and create reviewed daily-planning events.",
+  "namespace": "coat",
+  "webhook": null,
+  "schedule": {
+    "schedule": {
+      "kind": "cron",
+      "expression": "0 8 * * 1-5",
+      "timezone": "America/Los_Angeles"
+    },
+    "missed_run_policy": "fire_once",
+    "jitter_seconds": 60,
+    "max_catch_up_runs": 1
+  },
+  "calendar": {
+    "provider": "google_calendar",
+    "calendar_id": "primary",
+    "watch_channel_id": null,
+    "sync_token_ref": {
+      "provider": "kubernetes_secret",
+      "name": "coat-agent-secrets",
+      "key": "GOOGLE_CALENDAR_SYNC_TOKEN",
+      "namespace": "coat",
+      "audience": "calendar-poller"
+    },
+    "lookahead_seconds": 86400,
+    "poll_interval_seconds": 3600,
+    "mcp_context": null
+  },
+  "route": {
+    "mode": "human_review",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": true,
+    "dedupe_window_seconds": 86400
+  }
+}

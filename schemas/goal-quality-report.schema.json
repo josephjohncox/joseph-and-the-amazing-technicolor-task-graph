@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalQualityReport",
+  "type": "object",
+  "properties": {
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "missing": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "ready": {
+      "type": "boolean"
+    },
+    "score": {
+      "type": "number",
+      "format": "float"
+    },
+    "suggested_next_actions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "goal_id",
+    "ready",
+    "score"
+  ]
+}

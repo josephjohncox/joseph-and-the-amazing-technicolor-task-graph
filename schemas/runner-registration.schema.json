@@ -66,6 +66,18 @@
     "lease_ttl_seconds"
   ],
   "$defs": {
+    "DeviceAuthProvider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude_code",
+        "open_ai",
+        "anthropic",
+        "github",
+        "google",
+        "other"
+      ]
+    },
     "McpAuthRef": {
       "oneOf": [
         {
@@ -117,7 +129,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "const": "o_auth_delegation"
+              "const": "oauth_delegation"
             },
             "token_exchange_secret": {
               "$ref": "#/$defs/SecretRef"
@@ -126,6 +138,67 @@
           "required": [
             "kind",
             "token_exchange_secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_auth_session"
+            },
+            "node_local": {
+              "type": "boolean",
+              "default": true
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "refresh_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session_ref": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "session_ref",
+            "provider"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "brokered_user_session"
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "provider"
           ]
         }
       ]
@@ -260,7 +333,10 @@
         "review",
         "mcp_tools",
         "workspace_sandbox",
+        "git_worktree",
         "git",
+        "object_storage",
+        "s3_compatible",
         "browser",
         "notifications",
         "local_models",
@@ -279,6 +355,11 @@
         "aws_secrets_manager",
         "gcp_secret_manager",
         "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
         "local_file"
       ]
     },

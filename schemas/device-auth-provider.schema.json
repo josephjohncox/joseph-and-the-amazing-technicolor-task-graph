@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceAuthProvider",
+  "type": "string",
+  "enum": [
+    "codex",
+    "claude_code",
+    "open_ai",
+    "anthropic",
+    "github",
+    "google",
+    "other"
+  ]
+}

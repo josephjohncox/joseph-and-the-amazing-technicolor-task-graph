@@ -1,0 +1,34 @@
+{
+  "id": "github-review-webhook",
+  "kind": "git_hub_webhook",
+  "enabled": true,
+  "description": "Example signed webhook source for PR review events.",
+  "namespace": "coat",
+  "webhook": {
+    "path": "/webhooks/github-review-webhook",
+    "auth": {
+      "kind": "hmac_sha256",
+      "secret_ref": {
+        "provider": "env",
+        "name": "COAT_GITHUB_WEBHOOK_SECRET",
+        "key": "COAT_GITHUB_WEBHOOK_SECRET",
+        "namespace": null,
+        "audience": "event-gateway"
+      },
+      "header_name": "x-hub-signature-256"
+    },
+    "accepts_cloudevents": false,
+    "max_payload_bytes": 1048576,
+    "dedupe_header": "x-github-delivery"
+  },
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "human_review",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": true,
+    "dedupe_window_seconds": 3600
+  }
+}

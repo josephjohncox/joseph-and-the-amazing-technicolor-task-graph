@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExternalEvent",
+  "type": "object",
+  "properties": {
+    "dedupe_key": {
+      "type": "string"
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    },
+    "id": {
+      "type": "string"
+    },
+    "occurred_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload": {
+      "default": null
+    },
+    "received_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "source_kind": {
+      "$ref": "#/$defs/EventSourceKind"
+    },
+    "subject": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "source_id",
+    "source_kind",
+    "event_type",
+    "dedupe_key"
+  ],
+  "$defs": {
+    "EventSourceKind": {
+      "type": "string",
+      "enum": [
+        "webhook",
+        "cloud_events_webhook",
+        "cron",
+        "calendar_poll",
+        "calendar_push",
+        "queue",
+        "pub_sub",
+        "git_hub_webhook",
+        "git_lab_webhook",
+        "jira_webhook",
+        "linear_webhook",
+        "slack_event",
+        "email",
+        "object_storage",
+        "kubernetes",
+        "manual",
+        "other"
+      ]
+    }
+  }
+}

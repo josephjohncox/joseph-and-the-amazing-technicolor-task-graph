@@ -12,6 +12,14 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 - Persist thread IDs and artifact manifests in worker diagnostics/artifacts.
 - Map task sandbox profiles to runner filesystem, network, and approval settings.
 
+## Implemented
+
+- Stub mode returns structured actor, critic, unifier, and research-shaped results.
+- Sidecar auto-registers with the runner registry and reports capabilities/model routes.
+- `/verify` reports Codex CLI availability, declared `@openai/codex-sdk` dependency, App Server configuration, and optional MCP/App Server probes.
+- MCP and App Server verification probes are gated by `CODEX_VERIFY_MCP=1` and `CODEX_VERIFY_APP_SERVER=1`.
+- Result refs include git branch/worktree and object-storage manifest locations without uploading blobs.
+
 ## Tests
 
 - Stub mode returns a valid `AgentRunResult`.

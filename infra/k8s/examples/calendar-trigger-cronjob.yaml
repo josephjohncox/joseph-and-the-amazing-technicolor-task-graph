@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: coat-calendar-trigger-poll
+  namespace: coat
+  labels:
+    app.kubernetes.io/name: coat
+    app.kubernetes.io/component: event-trigger
+spec:
+  schedule: "*/15 * * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: coat
+            app.kubernetes.io/component: event-trigger
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: curlimages/curl:8.16.0
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: COAT_EVENT_GATEWAY_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: coat-agent-secrets
+                      key: EVENT_GATEWAY_TOKEN
+                      optional: true
+              command:
+                - /bin/sh
+                - -lc
+                - |
+                  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  curl -fsS -X POST http://event-gateway:9089/events \
+                    -H "content-type: application/json" \
+                    -H "authorization: Bearer ${COAT_EVENT_GATEWAY_TOKEN}" \
+                    -d "{
+                      \"source_id\":\"calendar-daily-brief\",
+                      \"source_kind\":\"calendar_poll\",
+                      \"event_type\":\"coat.calendar.poll_due\",
+                      \"subject\":\"calendar polling window\",
+                      \"dedupe_key\":\"calendar-poll-${now}\",
+                      \"payload\":{\"window_started_at\":\"${now}\"}
+                    }"
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 100m
+                  memory: 128Mi

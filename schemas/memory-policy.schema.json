@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryPolicy",
+  "type": "object",
+  "properties": {
+    "embedding": {
+      "$ref": "#/$defs/EmbeddingPolicy",
+      "default": {
+        "batch_size": 64,
+        "dimensions": 3072,
+        "endpoint": "https://api.openai.com/v1/embeddings",
+        "model": "text-embedding-3-large",
+        "normalize": true,
+        "provider": "open_ai",
+        "secret_refs": [
+          {
+            "audience": "embedding-provider",
+            "key": null,
+            "name": "OPENAI_API_KEY",
+            "namespace": null,
+            "provider": "env"
+          }
+        ]
+      }
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "fork_join": {
+      "$ref": "#/$defs/MemoryForkJoinPolicy"
+    },
+    "retrieval": {
+      "$ref": "#/$defs/MemoryRetrievalPolicy",
+      "default": {
+        "fusion": "graph_then_vector",
+        "include_branch_memories": false,
+        "max_hits": 8,
+        "min_score": 0.20000000298023224,
+        "rerank": false,
+        "retrieve_before_task": true
+      }
+    },
+    "scopes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryScope"
+      }
+    },
+    "store": {
+      "$ref": "#/$defs/MemoryStoreRef"
+    },
+    "vector": {
+      "$ref": "#/$defs/VectorMemoryPolicy",
+      "default": {
+        "collection": "coat_memory",
+        "enabled": true,
+        "hybrid_search": true,
+        "min_score": 0.20000000298023224,
+        "search_embeddings": true,
+        "store": {
+          "endpoint": "http://qdrant:6333",
+          "kind": "qdrant",
+          "mcp_server_name": "qdrant-memory",
+          "namespace": "coat_memory",
+          "secret_refs": []
+        },
+        "top_k": 8,
+        "write_embeddings": true
+      }
+    },
+    "write_policy": {
+      "$ref": "#/$defs/MemoryWritePolicy"
+    }
+  },
+  "required": [
+    "enabled",
+    "store",
+    "write_policy",
+    "fork_join"
+  ],
+  "$defs": {
+    "EmbeddingPolicy": {
+      "type": "object",
+      "properties": {
+        "batch_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "dimensions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "normalize": {
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/$defs/EmbeddingProviderKind"
+        },
+        "secret_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "dimensions",
+        "batch_size",
+        "normalize"
+      ]
+    },
+    "EmbeddingProviderKind": {
+      "type": "string",
+      "enum": [
+        "open_ai",
+        "open_ai_compatible",
+        "hugging_face_tei",
+        "sentence_transformers",
+        "voyage_ai",
+        "cohere",
+        "ollama",
+        "local_process",
+        "other"
+      ]
+    },
+    "MemoryForkJoinPolicy": {
+      "type": "object",
+      "properties": {
+        "inherit_parent_context": {
+          "type": "boolean"
+        },
+        "join_strategy": {
+          "$ref": "#/$defs/MemoryJoinStrategy"
+        },
+        "write_branch_memories": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "inherit_parent_context",
+        "write_branch_memories",
+        "join_strategy"
+      ]
+    },
+    "MemoryJoinStrategy": {
+      "type": "string",
+      "enum": [
+        "append_only",
+        "critic_curated",
+        "unifier_curated"
+      ]
+    },
+    "MemoryRetrievalPolicy": {
+      "type": "object",
+      "properties": {
+        "fusion": {
+          "$ref": "#/$defs/RetrievalFusion"
+        },
+        "include_branch_memories": {
+          "type": "boolean"
+        },
+        "max_hits": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "rerank": {
+          "type": "boolean"
+        },
+        "retrieve_before_task": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "retrieve_before_task",
+        "max_hits",
+        "include_branch_memories",
+        "rerank",
+        "fusion"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "repo",
+        "persona",
+        "user",
+        "global"
+      ]
+    },
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    },
+    "MemoryStoreRef": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "mcp_server_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "MemoryWritePolicy": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "append_only",
+        "reviewed_facts_only",
+        "unifier_curated"
+      ]
+    },
+    "RetrievalFusion": {
+      "type": "string",
+      "enum": [
+        "dense_only",
+        "hybrid_rrf",
+        "graph_then_vector",
+        "vector_then_graph"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "VectorMemoryPolicy": {
+      "type": "object",
+      "properties": {
+        "collection": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "hybrid_search": {
+          "type": "boolean"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "search_embeddings": {
+          "type": "boolean"
+        },
+        "store": {
+          "$ref": "#/$defs/MemoryStoreRef"
+        },
+        "top_k": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "write_embeddings": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "store",
+        "collection",
+        "write_embeddings",
+        "search_embeddings",
+        "hybrid_search",
+        "top_k"
+      ]
+    }
+  }
+}

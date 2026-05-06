@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbeddingPolicy",
+  "type": "object",
+  "properties": {
+    "batch_size": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "dimensions": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": "string"
+    },
+    "normalize": {
+      "type": "boolean"
+    },
+    "provider": {
+      "$ref": "#/$defs/EmbeddingProviderKind"
+    },
+    "secret_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SecretRef"
+      }
+    }
+  },
+  "required": [
+    "provider",
+    "model",
+    "dimensions",
+    "batch_size",
+    "normalize"
+  ],
+  "$defs": {
+    "EmbeddingProviderKind": {
+      "type": "string",
+      "enum": [
+        "open_ai",
+        "open_ai_compatible",
+        "hugging_face_tei",
+        "sentence_transformers",
+        "voyage_ai",
+        "cohere",
+        "ollama",
+        "local_process",
+        "other"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

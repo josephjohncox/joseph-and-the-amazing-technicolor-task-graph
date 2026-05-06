@@ -1,13 +1,15 @@
 [package]
-name = "jattg-coordinator"
+name = "coat-coordinator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-jattg-domain = { path = "../domain" }
+coat-domain = { path = "../domain" }
+reqwest.workspace = true
 restate-sdk.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

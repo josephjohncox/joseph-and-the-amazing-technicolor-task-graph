@@ -1,11 +1,34 @@
 use std::{fs, path::PathBuf};
 
 use anyhow::Context;
-use jattg_domain::{
-    AgentRunRequest, AgentRunResult, ChildTaskRequest, ExecutionProfile, GoalSpec, GoalState,
-    HumanApproval, HumanFeedback, McpContextRef, ModelRoute, NotificationPolicy,
-    NotificationRequest, RunnerDispatchDecision, RunnerDispatchRequest, RunnerRegistration,
-    SandboxProfile, TaskNode, ValidationReport, ValidationRequest,
+use coat_domain::{
+    AgentRunRequest, AgentRunResult, ApprovalEvaluation, ApprovalGatePolicy, ApprovalRecord,
+    ApprovalRequest, AuthDistributionPolicy, BranchGroup, BranchRequest, BranchSelectionRequest,
+    BranchVoteOutput, BranchVoteRecord, BranchingPolicy, CalendarEventSource, CalendarProvider,
+    ChildTaskRequest, ControlLoopPolicy, DeviceAuthProvider, EmbeddingPolicy,
+    EmbeddingProviderKind, EventGoalRoute, EventRouteMode, EventSource, EventSourceKind,
+    ExecutionProfile, ExternalEvent, GitResultPolicy, GitResultRef, GoalArtifactRecord,
+    GoalAuthoringGuidance, GoalEventBackend, GoalEventKind, GoalEventRecord, GoalPlan,
+    GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord, GoalSpec, GoalState,
+    GoalStateAuthority, GoalStoreArtifactListResponse, GoalStoreEventAppendRequest,
+    GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
+    GoalStorePolicy, GoalStoreProjectionMode, GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest,
+    GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse, GoalTriggerTemplate, HumanApproval,
+    HumanFeedback, InformationUsePlan, LearningSignal, McpAuthRef, McpContextRef,
+    MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse, MemoryEpisode, MemoryEvent,
+    MemoryJoinRequest, MemoryJoinResponse, MemoryPolicy, MemoryRepairRequest, MemoryRepairResponse,
+    MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse, MemoryStoreRef,
+    MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute, NotificationPolicy,
+    NotificationRequest, ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind,
+    ObjectStoreRef, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy,
+    RestartRecord, RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewOutput,
+    ReviewPolicy, ReviewRound, RunnerDispatchCandidate, RunnerDispatchDecision,
+    RunnerDispatchRejection, RunnerDispatchRequest, RunnerRegistration, SandboxProfile,
+    SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef, SourceArtifact, SteeringDirective,
+    SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose,
+    TaskPurposeKind, TaskQuery, TaskRecord, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest,
+    TriggeredGoalResponse, TriggeredGoalStatus, ValidationReport, ValidationRequest,
+    VectorMemoryPolicy, WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -18,7 +41,237 @@ fn main() -> anyhow::Result<()> {
 
     write_schema(&out_dir, "goal-spec.schema.json", schema_for!(GoalSpec))?;
     write_schema(&out_dir, "goal-state.schema.json", schema_for!(GoalState))?;
+    write_schema(
+        &out_dir,
+        "goal-authoring-guidance.schema.json",
+        schema_for!(GoalAuthoringGuidance),
+    )?;
+    write_schema(&out_dir, "goal-plan.schema.json", schema_for!(GoalPlan))?;
+    write_schema(
+        &out_dir,
+        "subgoal-spec.schema.json",
+        schema_for!(SubgoalSpec),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-quality-report.schema.json",
+        schema_for!(GoalQualityReport),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-progress.schema.json",
+        schema_for!(GoalProgress),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-policy.schema.json",
+        schema_for!(GoalStorePolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "protocol-metadata.schema.json",
+        schema_for!(ProtocolMetadata),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source.schema.json",
+        schema_for!(EventSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source-kind.schema.json",
+        schema_for!(EventSourceKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "webhook-event-source.schema.json",
+        schema_for!(WebhookEventSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "webhook-auth-policy.schema.json",
+        schema_for!(WebhookAuthPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "webhook-auth-kind.schema.json",
+        schema_for!(WebhookAuthKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "schedule-spec.schema.json",
+        schema_for!(ScheduleSpec),
+    )?;
+    write_schema(
+        &out_dir,
+        "schedule-kind.schema.json",
+        schema_for!(ScheduleKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "missed-run-policy.schema.json",
+        schema_for!(MissedRunPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "calendar-event-source.schema.json",
+        schema_for!(CalendarEventSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "calendar-provider.schema.json",
+        schema_for!(CalendarProvider),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-goal-route.schema.json",
+        schema_for!(EventGoalRoute),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-route-mode.schema.json",
+        schema_for!(EventRouteMode),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-trigger-template.schema.json",
+        schema_for!(GoalTriggerTemplate),
+    )?;
+    write_schema(
+        &out_dir,
+        "external-event.schema.json",
+        schema_for!(ExternalEvent),
+    )?;
+    write_schema(
+        &out_dir,
+        "triggered-goal-request.schema.json",
+        schema_for!(TriggeredGoalRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "triggered-goal-response.schema.json",
+        schema_for!(TriggeredGoalResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "triggered-goal-status.schema.json",
+        schema_for!(TriggeredGoalStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-state-authority.schema.json",
+        schema_for!(GoalStateAuthority),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-read-model-backend.schema.json",
+        schema_for!(GoalReadModelBackend),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-event-backend.schema.json",
+        schema_for!(GoalEventBackend),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-projection-mode.schema.json",
+        schema_for!(GoalStoreProjectionMode),
+    )?;
+    write_schema(&out_dir, "goal-record.schema.json", schema_for!(GoalRecord))?;
+    write_schema(&out_dir, "task-record.schema.json", schema_for!(TaskRecord))?;
+    write_schema(
+        &out_dir,
+        "goal-event-kind.schema.json",
+        schema_for!(GoalEventKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-event-record.schema.json",
+        schema_for!(GoalEventRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "approval-record.schema.json",
+        schema_for!(ApprovalRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-artifact-record.schema.json",
+        schema_for!(GoalArtifactRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-snapshot.schema.json",
+        schema_for!(GoalStoreSnapshot),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-snapshot-upsert-request.schema.json",
+        schema_for!(GoalStoreSnapshotUpsertRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-snapshot-upsert-response.schema.json",
+        schema_for!(GoalStoreSnapshotUpsertResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-event-append-request.schema.json",
+        schema_for!(GoalStoreEventAppendRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-event-append-response.schema.json",
+        schema_for!(GoalStoreEventAppendResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-goal-response.schema.json",
+        schema_for!(GoalStoreGoalResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-task-list-response.schema.json",
+        schema_for!(GoalStoreTaskListResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-event-list-response.schema.json",
+        schema_for!(GoalStoreEventListResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-artifact-list-response.schema.json",
+        schema_for!(GoalStoreArtifactListResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "subgoal-progress.schema.json",
+        schema_for!(SubgoalProgress),
+    )?;
+    write_schema(
+        &out_dir,
+        "task-progress.schema.json",
+        schema_for!(TaskProgress),
+    )?;
+    write_schema(&out_dir, "task-query.schema.json", schema_for!(TaskQuery))?;
+    write_schema(&out_dir, "task-list.schema.json", schema_for!(TaskList))?;
     write_schema(&out_dir, "task-node.schema.json", schema_for!(TaskNode))?;
+    write_schema(
+        &out_dir,
+        "task-purpose.schema.json",
+        schema_for!(TaskPurpose),
+    )?;
+    write_schema(
+        &out_dir,
+        "task-purpose-kind.schema.json",
+        schema_for!(TaskPurposeKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "task-priority.schema.json",
+        schema_for!(TaskPriority),
+    )?;
     write_schema(
         &out_dir,
         "agent-run-request.schema.json",
@@ -46,6 +299,227 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "review-policy.schema.json",
+        schema_for!(ReviewPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-output.schema.json",
+        schema_for!(ReviewOutput),
+    )?;
+    write_schema(
+        &out_dir,
+        "review-round.schema.json",
+        schema_for!(ReviewRound),
+    )?;
+    write_schema(
+        &out_dir,
+        "satisfaction-report.schema.json",
+        schema_for!(SatisfactionReport),
+    )?;
+    write_schema(
+        &out_dir,
+        "learning-signal.schema.json",
+        schema_for!(LearningSignal),
+    )?;
+    write_schema(
+        &out_dir,
+        "control-loop-policy.schema.json",
+        schema_for!(ControlLoopPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "restart-policy.schema.json",
+        schema_for!(RestartPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "restart-request.schema.json",
+        schema_for!(RestartRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "restart-record.schema.json",
+        schema_for!(RestartRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "timeout-policy.schema.json",
+        schema_for!(TimeoutPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "timeout-event.schema.json",
+        schema_for!(TimeoutEvent),
+    )?;
+    write_schema(
+        &out_dir,
+        "branching-policy.schema.json",
+        schema_for!(BranchingPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "branch-request.schema.json",
+        schema_for!(BranchRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "branch-selection-request.schema.json",
+        schema_for!(BranchSelectionRequest),
+    )?;
+    write_schema(&out_dir, "branch-group.schema.json", schema_for!(BranchGroup))?;
+    write_schema(
+        &out_dir,
+        "branch-vote-output.schema.json",
+        schema_for!(BranchVoteOutput),
+    )?;
+    write_schema(
+        &out_dir,
+        "branch-vote-record.schema.json",
+        schema_for!(BranchVoteRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "approval-gate-policy.schema.json",
+        schema_for!(ApprovalGatePolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "approval-evaluation.schema.json",
+        schema_for!(ApprovalEvaluation),
+    )?;
+    write_schema(
+        &out_dir,
+        "approval-request.schema.json",
+        schema_for!(ApprovalRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "steering-directive.schema.json",
+        schema_for!(SteeringDirective),
+    )?;
+    write_schema(
+        &out_dir,
+        "research-policy.schema.json",
+        schema_for!(ResearchPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "research-output.schema.json",
+        schema_for!(ResearchOutput),
+    )?;
+    write_schema(
+        &out_dir,
+        "source-artifact.schema.json",
+        schema_for!(SourceArtifact),
+    )?;
+    write_schema(
+        &out_dir,
+        "information-use-plan.schema.json",
+        schema_for!(InformationUsePlan),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-policy.schema.json",
+        schema_for!(MemoryPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "vector-memory-policy.schema.json",
+        schema_for!(VectorMemoryPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "embedding-policy.schema.json",
+        schema_for!(EmbeddingPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "embedding-provider-kind.schema.json",
+        schema_for!(EmbeddingProviderKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-retrieval-policy.schema.json",
+        schema_for!(MemoryRetrievalPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "retrieval-fusion.schema.json",
+        schema_for!(RetrievalFusion),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-store-ref.schema.json",
+        schema_for!(MemoryStoreRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-event.schema.json",
+        schema_for!(MemoryEvent),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-episode.schema.json",
+        schema_for!(MemoryEpisode),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-write-request.schema.json",
+        schema_for!(MemoryWriteRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-write-response.schema.json",
+        schema_for!(MemoryWriteResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-search-request.schema.json",
+        schema_for!(MemorySearchRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-search-response.schema.json",
+        schema_for!(MemorySearchResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-context-request.schema.json",
+        schema_for!(MemoryContextRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-context-response.schema.json",
+        schema_for!(MemoryContextResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-join-request.schema.json",
+        schema_for!(MemoryJoinRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-join-response.schema.json",
+        schema_for!(MemoryJoinResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-repair-request.schema.json",
+        schema_for!(MemoryRepairRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-repair-response.schema.json",
+        schema_for!(MemoryRepairResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-adapter-report.schema.json",
+        schema_for!(MemoryAdapterReport),
+    )?;
+    write_schema(
+        &out_dir,
         "sandbox-profile.schema.json",
         schema_for!(SandboxProfile),
     )?;
@@ -54,12 +528,63 @@ fn main() -> anyhow::Result<()> {
         "execution-profile.schema.json",
         schema_for!(ExecutionProfile),
     )?;
+    write_schema(
+        &out_dir,
+        "result-channel-policy.schema.json",
+        schema_for!(ResultChannelPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "git-result-policy.schema.json",
+        schema_for!(GitResultPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "git-result-ref.schema.json",
+        schema_for!(GitResultRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "object-storage-policy.schema.json",
+        schema_for!(ObjectStoragePolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "object-store-ref.schema.json",
+        schema_for!(ObjectStoreRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "object-store-kind.schema.json",
+        schema_for!(ObjectStoreKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "object-storage-artifact-ref.schema.json",
+        schema_for!(ObjectStorageArtifactRef),
+    )?;
     write_schema(&out_dir, "model-route.schema.json", schema_for!(ModelRoute))?;
     write_schema(
         &out_dir,
         "mcp-context.schema.json",
         schema_for!(McpContextRef),
     )?;
+    write_schema(
+        &out_dir,
+        "auth-distribution-policy.schema.json",
+        schema_for!(AuthDistributionPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "mcp-auth-ref.schema.json",
+        schema_for!(McpAuthRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "device-auth-provider.schema.json",
+        schema_for!(DeviceAuthProvider),
+    )?;
+    write_schema(&out_dir, "secret-ref.schema.json", schema_for!(SecretRef))?;
     write_schema(
         &out_dir,
         "notification-policy.schema.json",
@@ -84,6 +609,16 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "runner-dispatch-decision.schema.json",
         schema_for!(RunnerDispatchDecision),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-dispatch-candidate.schema.json",
+        schema_for!(RunnerDispatchCandidate),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-dispatch-rejection.schema.json",
+        schema_for!(RunnerDispatchRejection),
     )?;
     write_schema(
         &out_dir,

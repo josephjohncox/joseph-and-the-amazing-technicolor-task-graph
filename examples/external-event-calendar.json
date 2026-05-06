@@ -1,0 +1,17 @@
+{
+  "id": "calendar-window-2026-05-07",
+  "source_id": "calendar-daily-brief",
+  "source_kind": "calendar_poll",
+  "event_type": "calendar.daily_window_due",
+  "subject": "Prepare daily execution plan",
+  "dedupe_key": "calendar-daily-brief:2026-05-07",
+  "occurred_at": "2026-05-07T15:00:00Z",
+  "received_at": null,
+  "headers": {},
+  "payload": {
+    "calendar_id": "primary",
+    "window_start": "2026-05-07T08:00:00-07:00",
+    "window_end": "2026-05-07T18:00:00-07:00",
+    "requested_action": "research_schedule_and_prepare"
+  }
+}

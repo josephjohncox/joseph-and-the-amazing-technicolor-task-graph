@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskProgress",
+  "type": "object",
+  "properties": {
+    "attempts": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "blocked_by": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "child_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "dependency_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "depth": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "priority": {
+      "$ref": "#/$defs/TaskPriority"
+    },
+    "purpose_kind": {
+      "$ref": "#/$defs/TaskPurposeKind"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "role": {
+      "$ref": "#/$defs/WorkerKind"
+    },
+    "runnable": {
+      "type": "boolean"
+    },
+    "status": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "subgoal_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "task_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "title",
+    "status",
+    "role",
+    "purpose_kind",
+    "depth",
+    "priority",
+    "attempts",
+    "dependency_count",
+    "child_count",
+    "runnable"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    },
+    "TaskPurposeKind": {
+      "type": "string",
+      "enum": [
+        "work",
+        "review",
+        "unification",
+        "actor_retry",
+        "research"
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "needs_validation",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryEvent",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/MemoryEventAction"
+    },
+    "key": {
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/MemoryScope"
+    },
+    "store_kind": {
+      "$ref": "#/$defs/MemoryStoreKind"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "scope",
+    "action",
+    "store_kind",
+    "key",
+    "summary"
+  ],
+  "$defs": {
+    "MemoryEventAction": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "fork",
+        "join",
+        "invalidate"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "repo",
+        "persona",
+        "user",
+        "global"
+      ]
+    },
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    }
+  }
+}

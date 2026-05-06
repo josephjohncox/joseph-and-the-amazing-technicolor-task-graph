@@ -1,6 +1,6 @@
 # Design Doc: System Shape
 
-JATTG is a durable control plane, not a monolithic agent.
+COAT is a durable control plane, not a monolithic agent.
 
 The coordinator stores the task tree and chooses the next runnable frontier. Workers receive bounded tasks and return structured results. The validator translates those results into state transitions. Human approvals are workflow signals, not ad hoc chat messages.
 

@@ -2,8 +2,8 @@
   "runner_id": "vllm-coder-a",
   "node_id": "gpu-node-1",
   "endpoint": "http://vllm-coder-a:9099",
-  "roles": ["codex", "tester", "reviewer", "research"],
-  "capabilities": ["code", "test", "review", "mcp_tools", "workspace_sandbox", "local_models", "vllm", "open_ai_compatible", "gpu"],
+  "roles": ["planner", "codex", "tester", "reviewer", "validator", "patch_merger", "research"],
+  "capabilities": ["code", "test", "review", "mcp_tools", "workspace_sandbox", "git_worktree", "git", "object_storage", "s3_compatible", "local_models", "vllm", "open_ai_compatible", "gpu"],
   "models": [
     {
       "provider": "vllm",
@@ -15,7 +15,10 @@
       "features": ["tool_use", "json_schema", "streaming", "long_context", "local_weights"],
       "labels": {
         "gpu": "a100",
-        "region": "local"
+        "region": "local",
+        "quality_tier": "high",
+        "latency_ms": "900",
+        "cost_microusd_per_1k": "0"
       }
     },
     {
@@ -27,7 +30,10 @@
       "context_window": 32768,
       "features": ["tool_use", "json_schema", "streaming"],
       "labels": {
-        "tier": "fast"
+        "tier": "fast",
+        "quality_tier": "medium",
+        "latency_ms": "150",
+        "cost_microusd_per_1k": "0"
       }
     }
   ],
@@ -45,9 +51,9 @@
         "kind": "secret",
         "secret": {
           "provider": "kubernetes_secret",
-          "name": "jattg-agent-secrets",
+          "name": "coat-agent-secrets",
           "key": "MCP_TOOL_TOKEN",
-          "namespace": "jattg",
+          "namespace": "coat",
           "audience": "tool-registry"
         }
       }

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryRepairRequest",
+  "type": "object",
+  "properties": {
+    "dry_run": {
+      "type": "boolean",
+      "default": false
+    },
+    "goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "include_invalidated": {
+      "type": "boolean",
+      "default": false
+    },
+    "keys": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "store_kinds": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryStoreKind"
+      }
+    }
+  },
+  "$defs": {
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    }
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpAuthRef",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "none"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "secret"
+        },
+        "secret": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "required": [
+        "kind",
+        "secret"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "workload_identity"
+        }
+      },
+      "required": [
+        "kind",
+        "audience"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "oauth_delegation"
+        },
+        "token_exchange_secret": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "required": [
+        "kind",
+        "token_exchange_secret"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "device_auth_session"
+        },
+        "node_local": {
+          "type": "boolean",
+          "default": true
+        },
+        "provider": {
+          "$ref": "#/$defs/DeviceAuthProvider"
+        },
+        "refresh_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_ref": {
+          "$ref": "#/$defs/SecretRef"
+        }
+      },
+      "required": [
+        "kind",
+        "session_ref",
+        "provider"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "broker": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "kind": {
+          "type": "string",
+          "const": "brokered_user_session"
+        },
+        "provider": {
+          "$ref": "#/$defs/DeviceAuthProvider"
+        },
+        "requested_scopes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "broker",
+        "provider"
+      ]
+    }
+  ],
+  "$defs": {
+    "DeviceAuthProvider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude_code",
+        "open_ai",
+        "anthropic",
+        "github",
+        "google",
+        "other"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

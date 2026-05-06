@@ -1,5 +1,5 @@
 [package]
-name = "jattg-domain"
+name = "coat-domain"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

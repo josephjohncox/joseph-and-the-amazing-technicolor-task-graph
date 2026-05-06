@@ -2,9 +2,44 @@
 
 - OpenAI harness engineering: https://openai.com/index/harness-engineering/
 - Codex App Server harness: https://openai.com/index/unlocking-the-codex-harness/
+- OpenAI Codex App Server README: https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md
+- OpenAI Codex CLI README: https://github.com/openai/codex/blob/main/README.md
 - OpenAI Agents SDK sandbox guide: https://openai.github.io/openai-agents-python/sandbox/guide/
 - OpenAI Agents SDK MCP guide: https://openai.github.io/openai-agents-python/mcp/
+- OpenAI embeddings guide: https://platform.openai.com/docs/guides/embeddings
+- OpenAI text-embedding-3-large model docs: https://platform.openai.com/docs/models/text-embedding-3-large
 - Restate workflows: https://docs.restate.dev/tour/workflows
 - Restate Rust SDK: https://docs.rs/restate-sdk/latest/restate_sdk/
+- Buf CLI configuration: https://buf.build/docs/configuration/v2/buf-yaml/
+- Buf code generation: https://buf.build/docs/generate/
+- Buf generated Rust SDKs for Cargo: https://buf.build/docs/bsr/generated-sdks/cargo/
+- CloudEvents CNCF project: https://www.cncf.io/projects/cloudevents/
+- CloudEvents spec repository: https://github.com/cloudevents/spec
+- AsyncAPI docs: https://www.asyncapi.com/docs
+- Kubernetes CronJob docs: https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
+- Google Calendar push notifications: https://developers.google.com/workspace/calendar/api/guides/push
+- Google Calendar events watch API: https://developers.google.com/calendar/api/v3/reference/events/watch
+- Claude Code authentication: https://code.claude.com/docs/en/iam
+- Claude Code settings: https://code.claude.com/docs/en/settings
+- Zep concepts: https://help.getzep.com/concepts
+- Zep Knowledge Graph MCP: https://www.getzep.com/product/knowledge-graph-mcp/
+- Graphiti MCP getting started: https://help.getzep.com/graphiti/getting-started/mcp-server
+- Graphiti MCP server: https://github.com/getzep/graphiti/tree/main/mcp_server
+- FalkorDB Graphiti MCP Server: https://docs.falkordb.com/agentic-memory/graphiti-mcp-server.html
+- Neo4j GraphRAG Python package: https://neo4j.com/docs/neo4j-graphrag-python/current/
+- pgvector: https://github.com/pgvector/pgvector
+- Qdrant API and SDKs: https://qdrant.tech/documentation/interfaces/
+- Qdrant collections: https://qdrant.tech/documentation/concepts/collections/
+- Qdrant points: https://qdrant.tech/documentation/manage-data/points/
+- Qdrant search: https://qdrant.tech/documentation/search/search/
+- MinIO container docs: https://min.io/docs/minio/container/index.html
+- MinIO Docker Compose examples: https://github.com/minio/minio/blob/master/docs/orchestration/docker-compose/docker-compose.yaml
+- AWS SDK for Rust Amazon S3 examples: https://docs.aws.amazon.com/sdk-for-rust/latest/dg/rust_s3_code_examples.html
+- Hugging Face Text Embeddings Inference: https://huggingface.co/docs/text-embeddings-inference/en/index
+- Hugging Face Text Embeddings Inference quick tour: https://huggingface.co/docs/text-embeddings-inference/en/quick_tour
+- LanceDB docs: https://docs.lancedb.com/
+- LanceDB SDK reference: https://docs.lancedb.com/api-reference/
+- Tantivy: https://github.com/quickwit-oss/tantivy
+- Zep temporal knowledge graph paper: https://arxiv.org/abs/2501.13956
 
 Use these as background references. Verify live API details before implementing non-stub integrations.

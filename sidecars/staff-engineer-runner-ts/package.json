@@ -1,5 +1,5 @@
 {
-  "name": "@jattg/staff-engineer-runner-ts",
+  "name": "@coat/staff-engineer-runner-ts",
   "version": "0.1.0",
   "private": true,
   "type": "module",

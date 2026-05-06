@@ -1,0 +1,188 @@
+syntax = "proto3";
+
+package coat.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message JsonSchemaEnvelope {
+  string schema_name = 1;
+  string schema_version = 2;
+  google.protobuf.Struct value = 3;
+}
+
+message SecretRef {
+  string provider = 1;
+  string name = 2;
+  string key = 3;
+  string namespace = 4;
+  string audience = 5;
+}
+
+message GoalRef {
+  string goal_id = 1;
+}
+
+message TaskRef {
+  string goal_id = 1;
+  string task_id = 2;
+  string parent_task_id = 3;
+  string subgoal_id = 4;
+}
+
+enum GoalStatus {
+  GOAL_STATUS_UNSPECIFIED = 0;
+  GOAL_STATUS_RUNNING = 1;
+  GOAL_STATUS_WAITING_APPROVAL = 2;
+  GOAL_STATUS_PAUSED = 3;
+  GOAL_STATUS_DONE = 4;
+  GOAL_STATUS_BLOCKED = 5;
+  GOAL_STATUS_FAILED = 6;
+  GOAL_STATUS_CANCELLED = 7;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING = 1;
+  TASK_STATUS_RUNNABLE = 2;
+  TASK_STATUS_RUNNING = 3;
+  TASK_STATUS_NEEDS_VALIDATION = 4;
+  TASK_STATUS_WAITING_APPROVAL = 5;
+  TASK_STATUS_DONE = 6;
+  TASK_STATUS_BLOCKED = 7;
+  TASK_STATUS_FAILED = 8;
+  TASK_STATUS_CANCELLED = 9;
+}
+
+enum WorkerKind {
+  WORKER_KIND_UNSPECIFIED = 0;
+  WORKER_KIND_PLANNER = 1;
+  WORKER_KIND_CODEX = 2;
+  WORKER_KIND_STAFF_ENGINEER_CLAUDE = 3;
+  WORKER_KIND_RESEARCH = 4;
+  WORKER_KIND_REVIEWER = 5;
+  WORKER_KIND_TESTER = 6;
+  WORKER_KIND_VALIDATOR = 7;
+  WORKER_KIND_PATCH_MERGER = 8;
+  WORKER_KIND_RUST_TOOL = 9;
+}
+
+enum TaskPurposeKind {
+  TASK_PURPOSE_KIND_UNSPECIFIED = 0;
+  TASK_PURPOSE_KIND_WORK = 1;
+  TASK_PURPOSE_KIND_REVIEW = 2;
+  TASK_PURPOSE_KIND_UNIFICATION = 3;
+  TASK_PURPOSE_KIND_ACTOR_RETRY = 4;
+  TASK_PURPOSE_KIND_RESEARCH = 5;
+}
+
+enum WorkerRunStatus {
+  WORKER_RUN_STATUS_UNSPECIFIED = 0;
+  WORKER_RUN_STATUS_DONE = 1;
+  WORKER_RUN_STATUS_PARTIAL = 2;
+  WORKER_RUN_STATUS_BLOCKED = 3;
+  WORKER_RUN_STATUS_FAILED = 4;
+}
+
+enum ArtifactKind {
+  ARTIFACT_KIND_UNSPECIFIED = 0;
+  ARTIFACT_KIND_PATCH = 1;
+  ARTIFACT_KIND_TEST_RESULT = 2;
+  ARTIFACT_KIND_REPORT = 3;
+  ARTIFACT_KIND_PULL_REQUEST = 4;
+  ARTIFACT_KIND_WORKSPACE_SNAPSHOT = 5;
+  ARTIFACT_KIND_GIT_BRANCH = 6;
+  ARTIFACT_KIND_GIT_COMMIT = 7;
+  ARTIFACT_KIND_GIT_WORKTREE = 8;
+  ARTIFACT_KIND_OBJECT_STORAGE_OBJECT = 9;
+  ARTIFACT_KIND_OBJECT_STORAGE_PREFIX = 10;
+  ARTIFACT_KIND_ARTIFACT_MANIFEST = 11;
+  ARTIFACT_KIND_SCHEMA = 12;
+  ARTIFACT_KIND_OTHER = 13;
+}
+
+message ArtifactRef {
+  ArtifactKind kind = 1;
+  string uri = 2;
+  string description = 3;
+  string sha256 = 4;
+}
+
+message GitResultRef {
+  string repo = 1;
+  string remote = 2;
+  string base_ref = 3;
+  string branch = 4;
+  string worktree_path = 5;
+  string commit = 6;
+  bool pushed = 7;
+  string pull_request_url = 8;
+  string diff_uri = 9;
+}
+
+enum ObjectStoreKind {
+  OBJECT_STORE_KIND_UNSPECIFIED = 0;
+  OBJECT_STORE_KIND_S3 = 1;
+  OBJECT_STORE_KIND_S3_COMPATIBLE = 2;
+  OBJECT_STORE_KIND_MINIO = 3;
+  OBJECT_STORE_KIND_GCS = 4;
+  OBJECT_STORE_KIND_AZURE_BLOB = 5;
+  OBJECT_STORE_KIND_OTHER = 6;
+}
+
+message ObjectStoreRef {
+  ObjectStoreKind kind = 1;
+  string bucket = 2;
+  string region = 3;
+  string endpoint = 4;
+  string namespace = 5;
+  string mcp_server_name = 6;
+  repeated SecretRef secret_refs = 7;
+}
+
+message ObjectStorageArtifactRef {
+  ObjectStoreRef store = 1;
+  string key = 2;
+  string uri = 3;
+  string content_type = 4;
+  uint64 size_bytes = 5;
+  string sha256 = 6;
+  string description = 7;
+}
+
+message ModelCandidate {
+  string provider = 1;
+  string model = 2;
+  string endpoint = 3;
+  string route_label = 4;
+  double weight = 5;
+}
+
+message Budget {
+  uint64 max_tokens = 1;
+  uint64 max_runtime_seconds = 2;
+  uint64 max_tool_calls = 3;
+  uint32 max_child_tasks = 4;
+  uint64 max_patch_bytes = 5;
+  uint64 remaining_tokens = 6;
+  uint64 remaining_runtime_seconds = 7;
+  uint64 remaining_tool_calls = 8;
+  uint32 remaining_child_tasks = 9;
+  uint64 remaining_patch_bytes = 10;
+}
+
+message DoneCriteria {
+  bool tests_pass = 1;
+  bool artifact_exists = 2;
+  double validator_score_min = 3;
+  repeated string required_artifact_kinds = 4;
+}
+
+message ProtocolMetadata {
+  string protocol_version = 1;
+  string idempotency_key = 2;
+  string trace_id = 3;
+  string causation_id = 4;
+  string correlation_id = 5;
+  google.protobuf.Timestamp created_at = 6;
+}

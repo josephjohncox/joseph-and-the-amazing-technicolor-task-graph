@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TriggeredGoalResponse",
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "deduped": {
+      "type": "boolean"
+    },
+    "diagnostics": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "status": {
+      "$ref": "#/$defs/TriggeredGoalStatus"
+    }
+  },
+  "required": [
+    "accepted",
+    "status",
+    "event_id",
+    "deduped"
+  ],
+  "$defs": {
+    "TriggeredGoalStatus": {
+      "type": "string",
+      "enum": [
+        "recorded",
+        "submitted",
+        "awaiting_human_review",
+        "deduped",
+        "failed"
+      ]
+    }
+  }
+}

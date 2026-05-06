@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RetrievalFusion",
+  "type": "string",
+  "enum": [
+    "dense_only",
+    "hybrid_rrf",
+    "graph_then_vector",
+    "vector_then_graph"
+  ]
+}

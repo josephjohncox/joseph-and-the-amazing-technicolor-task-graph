@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalReadModelBackend",
+  "type": "string",
+  "enum": [
+    "postgres",
+    "postgres_pgvector",
+    "sqlite",
+    "jsonl",
+    "other"
+  ]
+}

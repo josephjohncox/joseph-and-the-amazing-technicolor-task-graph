@@ -1,17 +1,18 @@
 [package]
-name = "jattg-sandbox-runner"
+name = "coat-sandbox-runner"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-jattg-domain = { path = "../domain" }
+coat-domain = { path = "../domain" }
 anyhow.workspace = true
 axum.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true

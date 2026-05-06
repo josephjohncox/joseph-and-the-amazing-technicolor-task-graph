@@ -1,0 +1,783 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalStoreSnapshotUpsertRequest",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "$ref": "#/$defs/ProtocolMetadata"
+    },
+    "projection_reason": {
+      "type": "string"
+    },
+    "snapshot": {
+      "$ref": "#/$defs/GoalStoreSnapshot"
+    }
+  },
+  "required": [
+    "metadata",
+    "projection_reason",
+    "snapshot"
+  ],
+  "$defs": {
+    "ApprovalRecord": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requested_action": {
+          "type": "string"
+        },
+        "risk": {
+          "$ref": "#/$defs/ApprovalRisk"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "approval_id",
+        "goal_id",
+        "status",
+        "risk",
+        "reason",
+        "requested_action"
+      ]
+    },
+    "ApprovalRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "GitResultRef": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pushed": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "pushed"
+      ]
+    },
+    "GoalArtifactRecord": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitResultRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "object_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStorageArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payload_json": {
+          "default": null
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "goal_id",
+        "artifact"
+      ]
+    },
+    "GoalEventKind": {
+      "type": "string",
+      "enum": [
+        "submitted",
+        "state_projected",
+        "task_started",
+        "task_completed",
+        "task_blocked",
+        "approval_requested",
+        "approval_decided",
+        "steering_applied",
+        "validation_recorded",
+        "artifact_recorded",
+        "cancelled",
+        "failed",
+        "other"
+      ]
+    },
+    "GoalEventRecord": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/GoalEventKind"
+        },
+        "message": {
+          "type": "string"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "event_id",
+        "goal_id",
+        "sequence",
+        "kind",
+        "message",
+        "idempotency_key"
+      ]
+    },
+    "GoalRecord": {
+      "type": "object",
+      "properties": {
+        "blocked_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failed_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "open_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "payload_json": {
+          "default": null
+        },
+        "percent_done": {
+          "type": "number",
+          "format": "float"
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root_task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "satisfaction_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "total_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "goal_id",
+        "title",
+        "objective",
+        "status",
+        "total_tasks",
+        "open_tasks",
+        "blocked_tasks",
+        "failed_tasks",
+        "percent_done",
+        "satisfied"
+      ]
+    },
+    "GoalStatus": {
+      "type": "string",
+      "enum": [
+        "running",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "paused",
+        "cancelled"
+      ]
+    },
+    "GoalStoreSnapshot": {
+      "type": "object",
+      "properties": {
+        "approvals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ApprovalRecord"
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GoalArtifactRecord"
+          }
+        },
+        "events": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GoalEventRecord"
+          }
+        },
+        "full_state_json": {
+          "default": null
+        },
+        "goal": {
+          "$ref": "#/$defs/GoalRecord"
+        },
+        "tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskRecord"
+          }
+        }
+      },
+      "required": [
+        "goal"
+      ]
+    },
+    "ObjectStorageArtifactRef": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "store": {
+          "$ref": "#/$defs/ObjectStoreRef"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "key",
+        "uri",
+        "description"
+      ]
+    },
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "ObjectStoreRef": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjectStoreKind"
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "bucket",
+        "force_path_style"
+      ]
+    },
+    "ProtocolMetadata": {
+      "type": "object",
+      "properties": {
+        "causation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "protocol_version": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "protocol_version",
+        "idempotency_key"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    },
+    "TaskPurposeKind": {
+      "type": "string",
+      "enum": [
+        "work",
+        "review",
+        "unification",
+        "actor_retry",
+        "research"
+      ]
+    },
+    "TaskRecord": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "parent_task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "priority_rank": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "purpose_kind": {
+          "$ref": "#/$defs/TaskPurposeKind"
+        },
+        "result_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "runnable": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "subgoal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "goal_id",
+        "task_id",
+        "title",
+        "role",
+        "status",
+        "purpose_kind",
+        "depth",
+        "priority",
+        "priority_rank",
+        "attempts",
+        "runnable"
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "needs_validation",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

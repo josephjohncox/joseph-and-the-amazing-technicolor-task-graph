@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryEpisode",
+  "type": "object",
+  "properties": {
+    "artifacts": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      }
+    },
+    "content": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/MemoryEpisodeSource"
+    },
+    "tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "content",
+    "source"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "MemoryEpisodeSource": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_type": {
+          "$ref": "#/$defs/MemoryEpisodeSourceType"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source_type"
+      ]
+    },
+    "MemoryEpisodeSourceType": {
+      "type": "string",
+      "enum": [
+        "actor",
+        "critic",
+        "unifier",
+        "research",
+        "human",
+        "tool",
+        "system"
+      ]
+    }
+  }
+}

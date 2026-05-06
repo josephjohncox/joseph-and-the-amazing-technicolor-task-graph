@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebhookAuthKind",
+  "type": "string",
+  "enum": [
+    "none",
+    "shared_secret_header",
+    "hmac_sha256",
+    "bearer_token",
+    "basic",
+    "mtls",
+    "oidc_jwt"
+  ]
+}

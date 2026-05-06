@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunnerDispatchRejection",
+  "type": "object",
+  "properties": {
+    "node_id": {
+      "type": "string"
+    },
+    "reasons": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "runner_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "runner_id",
+    "node_id"
+  ]
+}

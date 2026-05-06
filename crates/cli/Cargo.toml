@@ -1,16 +1,16 @@
 [package]
-name = "jattg-cli"
+name = "coat-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "jattg"
+name = "coat"
 path = "src/main.rs"
 
 [dependencies]
-jattg-domain = { path = "../domain" }
+coat-domain = { path = "../domain" }
 anyhow.workspace = true
 clap.workspace = true
 reqwest.workspace = true

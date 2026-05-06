@@ -1,0 +1,7 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "keys": [],
+  "store_kinds": ["zep_graphiti", "qdrant"],
+  "include_invalidated": false,
+  "dry_run": true
+}

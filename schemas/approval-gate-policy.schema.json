@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalGatePolicy",
+  "type": "object",
+  "properties": {
+    "approval_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "never_policy_requires_isolation": {
+      "type": "boolean"
+    },
+    "require_for_brokered_user_auth": {
+      "type": "boolean",
+      "default": true
+    },
+    "require_for_dangerous_mcp_tools": {
+      "type": "boolean"
+    },
+    "require_for_network_open": {
+      "type": "boolean"
+    },
+    "require_for_non_isolated_runner": {
+      "type": "boolean"
+    },
+    "require_for_privileged_runner_capabilities": {
+      "type": "boolean"
+    },
+    "require_for_secret_access": {
+      "type": "boolean"
+    },
+    "require_for_workspace_write_outside_isolation": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "enabled",
+    "require_for_network_open",
+    "require_for_non_isolated_runner",
+    "require_for_secret_access",
+    "require_for_dangerous_mcp_tools",
+    "require_for_privileged_runner_capabilities",
+    "require_for_workspace_write_outside_isolation",
+    "never_policy_requires_isolation"
+  ]
+}

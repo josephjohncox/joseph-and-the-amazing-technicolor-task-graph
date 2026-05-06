@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+package coat.v1;
+
+import "coat/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+message GoalRecord {
+  string goal_id = 1;
+  string title = 2;
+  string objective = 3;
+  string repo = 4;
+  GoalStatus status = 5;
+  uint32 total_tasks = 6;
+  uint32 open_tasks = 7;
+  uint32 blocked_tasks = 8;
+  uint32 failed_tasks = 9;
+  double percent_done = 10;
+  string root_task_id = 11;
+  bool satisfied = 12;
+  double satisfaction_score = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  JsonSchemaEnvelope payload = 15;
+}
+
+message TaskRecord {
+  string goal_id = 1;
+  string task_id = 2;
+  string parent_task_id = 3;
+  string subgoal_id = 4;
+  string title = 5;
+  WorkerKind role = 6;
+  TaskStatus status = 7;
+  TaskPurposeKind purpose_kind = 8;
+  uint32 depth = 9;
+  uint32 priority_rank = 10;
+  uint32 attempts = 11;
+  bool runnable = 12;
+  repeated string tags = 13;
+  string result_uri = 14;
+  JsonSchemaEnvelope payload = 15;
+}
+
+enum GoalEventKind {
+  GOAL_EVENT_KIND_UNSPECIFIED = 0;
+  GOAL_EVENT_KIND_SUBMITTED = 1;
+  GOAL_EVENT_KIND_STATE_PROJECTED = 2;
+  GOAL_EVENT_KIND_TASK_STARTED = 3;
+  GOAL_EVENT_KIND_TASK_COMPLETED = 4;
+  GOAL_EVENT_KIND_TASK_BLOCKED = 5;
+  GOAL_EVENT_KIND_APPROVAL_REQUESTED = 6;
+  GOAL_EVENT_KIND_APPROVAL_DECIDED = 7;
+  GOAL_EVENT_KIND_STEERING_APPLIED = 8;
+  GOAL_EVENT_KIND_VALIDATION_RECORDED = 9;
+  GOAL_EVENT_KIND_ARTIFACT_RECORDED = 10;
+  GOAL_EVENT_KIND_CANCELLED = 11;
+  GOAL_EVENT_KIND_FAILED = 12;
+}
+
+message GoalEventRecord {
+  string event_id = 1;
+  string goal_id = 2;
+  string task_id = 3;
+  uint64 sequence = 4;
+  GoalEventKind kind = 5;
+  string message = 6;
+  string actor = 7;
+  string idempotency_key = 8;
+  google.protobuf.Timestamp created_at = 9;
+  JsonSchemaEnvelope payload = 10;
+}
+
+message ApprovalRecord {
+  string approval_id = 1;
+  string goal_id = 2;
+  string task_id = 3;
+  string status = 4;
+  string risk = 5;
+  string reason = 6;
+  string requested_action = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  JsonSchemaEnvelope payload = 9;
+}
+
+message GoalStoreSnapshot {
+  GoalRecord goal = 1;
+  repeated TaskRecord tasks = 2;
+  repeated ArtifactRef artifacts = 3;
+  repeated GitResultRef git_results = 4;
+  repeated ObjectStorageArtifactRef object_artifacts = 5;
+  repeated ApprovalRecord approvals = 6;
+  JsonSchemaEnvelope full_state = 7;
+}
+
+message UpsertGoalSnapshotRequest {
+  ProtocolMetadata metadata = 1;
+  string projection_reason = 2;
+  GoalStoreSnapshot snapshot = 3;
+}
+
+message UpsertGoalSnapshotResponse {
+  bool accepted = 1;
+  GoalRecord goal = 2;
+  uint32 task_count = 3;
+}
+
+message AppendGoalEventRequest {
+  ProtocolMetadata metadata = 1;
+  GoalEventRecord event = 2;
+}
+
+message AppendGoalEventResponse {
+  bool accepted = 1;
+  uint64 sequence = 2;
+}
+
+message GetGoalRequest {
+  string goal_id = 1;
+  bool include_payload = 2;
+}
+
+message GetGoalResponse {
+  bool found = 1;
+  GoalRecord goal = 2;
+}
+
+message ListGoalTasksRequest {
+  string goal_id = 1;
+  repeated TaskStatus statuses = 2;
+  repeated WorkerKind roles = 3;
+  string subgoal_id = 4;
+  bool runnable_only = 5;
+  uint32 limit = 6;
+}
+
+message ListGoalTasksResponse {
+  repeated TaskRecord tasks = 1;
+}
+
+message ListGoalEventsRequest {
+  string goal_id = 1;
+  string task_id = 2;
+  uint64 after_sequence = 3;
+  uint32 limit = 4;
+}
+
+message ListGoalEventsResponse {
+  repeated GoalEventRecord events = 1;
+}
+
+message RecordArtifactRequest {
+  ProtocolMetadata metadata = 1;
+  string goal_id = 2;
+  string task_id = 3;
+  repeated ArtifactRef artifacts = 4;
+  repeated GitResultRef git_results = 5;
+  repeated ObjectStorageArtifactRef object_artifacts = 6;
+}
+
+message RecordArtifactResponse {
+  bool accepted = 1;
+  uint32 artifact_count = 2;
+}
+
+message GoalStoreServiceHealthRequest {
+  string client_id = 1;
+}
+
+message GoalStoreServiceHealthResponse {
+  string status = 1;
+  string backend = 2;
+  string authority = 3;
+}
+
+service GoalStoreService {
+  rpc UpsertGoalSnapshot(UpsertGoalSnapshotRequest) returns (UpsertGoalSnapshotResponse);
+  rpc AppendGoalEvent(AppendGoalEventRequest) returns (AppendGoalEventResponse);
+  rpc GetGoal(GetGoalRequest) returns (GetGoalResponse);
+  rpc ListGoalTasks(ListGoalTasksRequest) returns (ListGoalTasksResponse);
+  rpc ListGoalEvents(ListGoalEventsRequest) returns (ListGoalEventsResponse);
+  rpc RecordArtifact(RecordArtifactRequest) returns (RecordArtifactResponse);
+  rpc Health(GoalStoreServiceHealthRequest) returns (GoalStoreServiceHealthResponse);
+}

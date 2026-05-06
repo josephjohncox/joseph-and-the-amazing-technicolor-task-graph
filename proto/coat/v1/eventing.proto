@@ -1,0 +1,229 @@
+syntax = "proto3";
+
+package coat.v1;
+
+import "coat/v1/common.proto";
+import "google/protobuf/struct.proto";
+
+enum EventSourceKind {
+  EVENT_SOURCE_KIND_UNSPECIFIED = 0;
+  EVENT_SOURCE_KIND_WEBHOOK = 1;
+  EVENT_SOURCE_KIND_CLOUD_EVENTS_WEBHOOK = 2;
+  EVENT_SOURCE_KIND_CRON = 3;
+  EVENT_SOURCE_KIND_CALENDAR_POLL = 4;
+  EVENT_SOURCE_KIND_CALENDAR_PUSH = 5;
+  EVENT_SOURCE_KIND_QUEUE = 6;
+  EVENT_SOURCE_KIND_PUB_SUB = 7;
+  EVENT_SOURCE_KIND_GITHUB_WEBHOOK = 8;
+  EVENT_SOURCE_KIND_GITLAB_WEBHOOK = 9;
+  EVENT_SOURCE_KIND_JIRA_WEBHOOK = 10;
+  EVENT_SOURCE_KIND_LINEAR_WEBHOOK = 11;
+  EVENT_SOURCE_KIND_SLACK_EVENT = 12;
+  EVENT_SOURCE_KIND_EMAIL = 13;
+  EVENT_SOURCE_KIND_OBJECT_STORAGE = 14;
+  EVENT_SOURCE_KIND_KUBERNETES = 15;
+  EVENT_SOURCE_KIND_MANUAL = 16;
+  EVENT_SOURCE_KIND_OTHER = 17;
+}
+
+enum WebhookAuthKind {
+  WEBHOOK_AUTH_KIND_UNSPECIFIED = 0;
+  WEBHOOK_AUTH_KIND_NONE = 1;
+  WEBHOOK_AUTH_KIND_SHARED_SECRET_HEADER = 2;
+  WEBHOOK_AUTH_KIND_HMAC_SHA256 = 3;
+  WEBHOOK_AUTH_KIND_BEARER_TOKEN = 4;
+  WEBHOOK_AUTH_KIND_BASIC = 5;
+  WEBHOOK_AUTH_KIND_MTLS = 6;
+  WEBHOOK_AUTH_KIND_OIDC_JWT = 7;
+}
+
+message WebhookAuthPolicy {
+  WebhookAuthKind kind = 1;
+  SecretRef secret_ref = 2;
+  string header_name = 3;
+}
+
+message WebhookEventSource {
+  string path = 1;
+  WebhookAuthPolicy auth = 2;
+  bool accepts_cloudevents = 3;
+  uint64 max_payload_bytes = 4;
+  string dedupe_header = 5;
+}
+
+enum ScheduleKind {
+  SCHEDULE_KIND_UNSPECIFIED = 0;
+  SCHEDULE_KIND_CRON = 1;
+  SCHEDULE_KIND_RRULE = 2;
+  SCHEDULE_KIND_INTERVAL_SECONDS = 3;
+}
+
+message ScheduleSpec {
+  ScheduleKind kind = 1;
+  string expression = 2;
+  string timezone = 3;
+}
+
+enum MissedRunPolicy {
+  MISSED_RUN_POLICY_UNSPECIFIED = 0;
+  MISSED_RUN_POLICY_SKIP = 1;
+  MISSED_RUN_POLICY_FIRE_ONCE = 2;
+  MISSED_RUN_POLICY_CATCH_UP_BOUNDED = 3;
+}
+
+message ScheduledEventSource {
+  ScheduleSpec schedule = 1;
+  MissedRunPolicy missed_run_policy = 2;
+  uint64 jitter_seconds = 3;
+  uint32 max_catch_up_runs = 4;
+}
+
+enum CalendarProvider {
+  CALENDAR_PROVIDER_UNSPECIFIED = 0;
+  CALENDAR_PROVIDER_GOOGLE_CALENDAR = 1;
+  CALENDAR_PROVIDER_OUTLOOK_CALENDAR = 2;
+  CALENDAR_PROVIDER_CAL_DAV = 3;
+  CALENDAR_PROVIDER_OTHER = 4;
+}
+
+message CalendarEventSource {
+  CalendarProvider provider = 1;
+  string calendar_id = 2;
+  string watch_channel_id = 3;
+  SecretRef sync_token_ref = 4;
+  uint64 lookahead_seconds = 5;
+  uint64 poll_interval_seconds = 6;
+  JsonSchemaEnvelope mcp_context = 7;
+}
+
+enum EventRouteMode {
+  EVENT_ROUTE_MODE_UNSPECIFIED = 0;
+  EVENT_ROUTE_MODE_RECORD_ONLY = 1;
+  EVENT_ROUTE_MODE_CREATE_GOAL = 2;
+  EVENT_ROUTE_MODE_CREATE_RESEARCH_GOAL = 3;
+  EVENT_ROUTE_MODE_STEER_GOAL = 4;
+  EVENT_ROUTE_MODE_HUMAN_REVIEW = 5;
+}
+
+message GoalTriggerTemplate {
+  string title_template = 1;
+  string objective_template = 2;
+  string repo = 3;
+  WorkerKind worker_role = 4;
+  DoneCriteria done_criteria = 5;
+  Budget budget = 6;
+  JsonSchemaEnvelope execution = 7;
+  repeated string tags = 8;
+}
+
+message EventGoalRoute {
+  EventRouteMode mode = 1;
+  GoalTriggerTemplate goal_template = 2;
+  string target_goal_id = 3;
+  JsonSchemaEnvelope steering_directive = 4;
+  bool require_approval = 5;
+  uint64 dedupe_window_seconds = 6;
+}
+
+message EventSource {
+  string id = 1;
+  EventSourceKind kind = 2;
+  bool enabled = 3;
+  string description = 4;
+  string namespace = 5;
+  WebhookEventSource webhook = 6;
+  ScheduledEventSource schedule = 7;
+  CalendarEventSource calendar = 8;
+  EventGoalRoute route = 9;
+}
+
+message ExternalEvent {
+  string id = 1;
+  string source_id = 2;
+  EventSourceKind source_kind = 3;
+  string event_type = 4;
+  string subject = 5;
+  string dedupe_key = 6;
+  string occurred_at = 7;
+  string received_at = 8;
+  map<string, string> headers = 9;
+  google.protobuf.Struct payload = 10;
+}
+
+message TriggeredGoalRequest {
+  ProtocolMetadata metadata = 1;
+  ExternalEvent event = 2;
+  EventGoalRoute route = 3;
+  JsonSchemaEnvelope goal = 4;
+}
+
+message EventGatewayServiceTriggerGoalRequest {
+  TriggeredGoalRequest trigger = 1;
+}
+
+enum TriggeredGoalStatus {
+  TRIGGERED_GOAL_STATUS_UNSPECIFIED = 0;
+  TRIGGERED_GOAL_STATUS_RECORDED = 1;
+  TRIGGERED_GOAL_STATUS_SUBMITTED = 2;
+  TRIGGERED_GOAL_STATUS_AWAITING_HUMAN_REVIEW = 3;
+  TRIGGERED_GOAL_STATUS_DEDUPED = 4;
+  TRIGGERED_GOAL_STATUS_FAILED = 5;
+}
+
+message TriggeredGoalResponse {
+  bool accepted = 1;
+  TriggeredGoalStatus status = 2;
+  string event_id = 3;
+  string goal_id = 4;
+  bool deduped = 5;
+  repeated string diagnostics = 6;
+}
+
+message EventGatewayServiceTriggerGoalResponse {
+  TriggeredGoalResponse trigger = 1;
+}
+
+message RegisterEventSourceRequest {
+  EventSource source = 1;
+}
+
+message RegisterEventSourceResponse {
+  EventSource source = 1;
+  bool accepted = 2;
+}
+
+message ListEventSourcesRequest {
+  string namespace = 1;
+}
+
+message ListEventSourcesResponse {
+  repeated EventSource sources = 1;
+}
+
+message IngestEventRequest {
+  ProtocolMetadata metadata = 1;
+  ExternalEvent event = 2;
+}
+
+message IngestEventResponse {
+  bool accepted = 1;
+  string event_id = 2;
+  bool deduped = 3;
+}
+
+message ListEventsRequest {
+  string source_id = 1;
+  uint32 limit = 2;
+}
+
+message ListEventsResponse {
+  repeated ExternalEvent events = 1;
+}
+
+service EventGatewayService {
+  rpc RegisterEventSource(RegisterEventSourceRequest) returns (RegisterEventSourceResponse);
+  rpc ListEventSources(ListEventSourcesRequest) returns (ListEventSourcesResponse);
+  rpc IngestEvent(IngestEventRequest) returns (IngestEventResponse);
+  rpc TriggerGoal(EventGatewayServiceTriggerGoalRequest) returns (EventGatewayServiceTriggerGoalResponse);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+}

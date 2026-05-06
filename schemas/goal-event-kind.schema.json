@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalEventKind",
+  "type": "string",
+  "enum": [
+    "submitted",
+    "state_projected",
+    "task_started",
+    "task_completed",
+    "task_blocked",
+    "approval_requested",
+    "approval_decided",
+    "steering_applied",
+    "validation_recorded",
+    "artifact_recorded",
+    "cancelled",
+    "failed",
+    "other"
+  ]
+}

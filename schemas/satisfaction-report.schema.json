@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SatisfactionReport",
+  "type": "object",
+  "properties": {
+    "all_tasks_terminal": {
+      "type": "boolean"
+    },
+    "latest_decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "open_findings": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "open_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "reasons": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "reviews_passed": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "reviews_required": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "satisfied": {
+      "type": "boolean"
+    },
+    "score": {
+      "type": "number",
+      "format": "float"
+    },
+    "unification_done": {
+      "type": "boolean"
+    },
+    "work_done": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "satisfied",
+    "score",
+    "work_done",
+    "reviews_required",
+    "reviews_passed",
+    "unification_done",
+    "all_tasks_terminal",
+    "open_tasks",
+    "open_findings"
+  ],
+  "$defs": {
+    "ReviewDecision": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "changes_requested",
+        "blocked",
+        "inconclusive"
+      ]
+    }
+  }
+}

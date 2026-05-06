@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskQuery",
+  "type": "object",
+  "properties": {
+    "limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint",
+      "minimum": 0
+    },
+    "purpose_kinds": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TaskPurposeKind"
+      }
+    },
+    "roles": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WorkerKind"
+      }
+    },
+    "runnable_only": {
+      "type": "boolean",
+      "default": false
+    },
+    "statuses": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TaskStatus"
+      }
+    },
+    "subgoal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "TaskPurposeKind": {
+      "type": "string",
+      "enum": [
+        "work",
+        "review",
+        "unification",
+        "actor_retry",
+        "research"
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "needs_validation",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

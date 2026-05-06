@@ -1,0 +1,54 @@
+{
+  "question": "Which purpose-built memory database or graph memory layer should COAT use for durable agent memories across distributed fork/join workflows?",
+  "answer": "Use Zep/Graphiti as the default purpose-built agent memory layer, exposed through MCP, and mirror reviewed memory into Qdrant for embedded retrieval. Keep Restate as the execution journal and Postgres/pgvector as an optional query/audit index.",
+  "sources": [
+    {
+      "title": "Zep Key Concepts",
+      "uri": "https://help.getzep.com/concepts",
+      "quality": "official_docs",
+      "captured_at": "2026-05-05",
+      "quote": "Zep combines Graph RAG, agent memory, and context assembly capabilities",
+      "summary": "Zep documents a knowledge graph, context block, fact invalidation, graph search, and agentic tool use for memory retrieval.",
+      "confidence": 0.9
+    },
+    {
+      "title": "Graphiti MCP Server",
+      "uri": "https://github.com/getzep/graphiti/tree/main/mcp_server",
+      "quality": "primary",
+      "captured_at": "2026-05-05",
+      "quote": "Graphiti is a framework for building and querying temporally-aware knowledge graphs",
+      "summary": "Graphiti exposes temporal graph memory over MCP with HTTP transport and supports FalkorDB or Neo4j backends.",
+      "confidence": 0.9
+    },
+    {
+      "title": "Qdrant API and SDKs",
+      "uri": "https://qdrant.tech/documentation/interfaces/",
+      "quality": "official_docs",
+      "captured_at": "2026-05-06",
+      "quote": "Qdrant supports these official clients",
+      "summary": "Qdrant documents official SDKs, REST and gRPC APIs, and Rust client support for production vector memory.",
+      "confidence": 0.88
+    }
+  ],
+  "confidence": 0.86,
+  "use_plan": {
+    "facts_to_use": [
+      "Default memory_policy.store.kind should be zep_graphiti.",
+      "Default memory_policy.vector.store.kind should be qdrant for embedded RAG retrieval.",
+      "Expose Graphiti as an MCP memory server rather than embedding memory logic inside the coordinator.",
+      "Use unifier-curated memory joins so branch memories are reviewed before becoming shared durable facts."
+    ],
+    "facts_to_avoid": [
+      "Do not treat vector-only storage as sufficient for temporal fork/join agent memory.",
+      "Do not copy auth tokens into task state; memory access must use SecretRef or workload identity."
+    ],
+    "proposed_task_updates": [],
+    "validation_checks": [
+      "A research task must include source artifacts.",
+      "A memory write must record scope, provenance, and whether it came from actor, critic, or unifier output."
+    ]
+  },
+  "open_questions": [
+    "Should production use Graphiti with FalkorDB for simple local deployment or Neo4j for a more full-featured graph backend?"
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalStoreSnapshotUpsertResponse",
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "goal": {
+      "$ref": "#/$defs/GoalRecord"
+    },
+    "task_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "accepted",
+    "goal",
+    "task_count"
+  ],
+  "$defs": {
+    "GoalRecord": {
+      "type": "object",
+      "properties": {
+        "blocked_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failed_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "open_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "payload_json": {
+          "default": null
+        },
+        "percent_done": {
+          "type": "number",
+          "format": "float"
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root_task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "satisfaction_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "total_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "goal_id",
+        "title",
+        "objective",
+        "status",
+        "total_tasks",
+        "open_tasks",
+        "blocked_tasks",
+        "failed_tasks",
+        "percent_done",
+        "satisfied"
+      ]
+    },
+    "GoalStatus": {
+      "type": "string",
+      "enum": [
+        "running",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "paused",
+        "cancelled"
+      ]
+    }
+  }
+}

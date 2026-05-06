@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryRetrievalPolicy",
+  "type": "object",
+  "properties": {
+    "fusion": {
+      "$ref": "#/$defs/RetrievalFusion"
+    },
+    "include_branch_memories": {
+      "type": "boolean"
+    },
+    "max_hits": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "min_score": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    },
+    "rerank": {
+      "type": "boolean"
+    },
+    "retrieve_before_task": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "retrieve_before_task",
+    "max_hits",
+    "include_branch_memories",
+    "rerank",
+    "fusion"
+  ],
+  "$defs": {
+    "RetrievalFusion": {
+      "type": "string",
+      "enum": [
+        "dense_only",
+        "hybrid_rrf",
+        "graph_then_vector",
+        "vector_then_graph"
+      ]
+    }
+  }
+}

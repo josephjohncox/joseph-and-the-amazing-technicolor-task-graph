@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryAdapterReport",
+  "type": "object",
+  "properties": {
+    "attempted": {
+      "type": "boolean"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "external_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "operation": {
+      "type": "string"
+    },
+    "store_kind": {
+      "$ref": "#/$defs/MemoryStoreKind"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "store_kind",
+    "operation",
+    "attempted",
+    "success"
+  ],
+  "$defs": {
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    }
+  }
+}

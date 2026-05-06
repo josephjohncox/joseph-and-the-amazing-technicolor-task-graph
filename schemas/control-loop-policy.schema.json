@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ControlLoopPolicy",
+  "type": "object",
+  "properties": {
+    "allow_goal_updates": {
+      "type": "boolean"
+    },
+    "allow_task_injection": {
+      "type": "boolean"
+    },
+    "human_steering_enabled": {
+      "type": "boolean"
+    },
+    "max_frontier_rounds": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_idle_rounds": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_steering_events": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "mode": {
+      "$ref": "#/$defs/ControlLoopMode"
+    },
+    "stop_conditions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ControlStopCondition"
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "max_frontier_rounds",
+    "max_idle_rounds",
+    "human_steering_enabled",
+    "allow_goal_updates",
+    "allow_task_injection",
+    "max_steering_events"
+  ],
+  "$defs": {
+    "ControlLoopMode": {
+      "type": "string",
+      "enum": [
+        "bounded_until_satisfied",
+        "monitor_until_cancelled",
+        "human_steered_continuous"
+      ]
+    },
+    "ControlStopCondition": {
+      "type": "string",
+      "enum": [
+        "goal_satisfied",
+        "blocked",
+        "budget_exhausted",
+        "cancelled",
+        "human_paused",
+        "max_frontier_rounds"
+      ]
+    }
+  }
+}

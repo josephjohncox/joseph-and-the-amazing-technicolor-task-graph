@@ -97,6 +97,11 @@
         "aws_secrets_manager",
         "gcp_secret_manager",
         "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
         "local_file"
       ]
     },

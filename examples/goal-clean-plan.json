@@ -1,0 +1,103 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+  "title": "Clean goal and task distribution contract",
+  "objective": "Implement a clean goal authoring and progress contract. Success means initial subgoals become durable tasks, progress is queryable, task lookup supports subgoal filters, schemas regenerate, and tests pass.",
+  "repo": null,
+  "authoring": {
+    "intake_summary": "The operator wants goal authoring, progress, and subgoal distribution to be easy for the coordinator and workers.",
+    "acceptance_evidence": [
+      "GoalSpec parses with plan and initial tasks",
+      "GoalState progress reports subgoal status",
+      "TaskQuery can find runnable work by subgoal"
+    ],
+    "constraints": [
+      "Do not let workers own the global plan",
+      "Keep all auth references by SecretRef or brokered lease"
+    ],
+    "out_of_scope": ["Live model execution"],
+    "assumptions": ["The coordinator remains the source of truth"],
+    "open_questions": []
+  },
+  "plan": {
+    "summary": "Create research, implementation, and review subgoals with explicit ownership.",
+    "subgoals": [
+      {
+        "id": "research-current-contract",
+        "title": "Research current contract needs",
+        "objective": "Find current constraints that affect the goal/task contract.",
+        "owner_role": "research",
+        "priority": "high",
+        "dependencies": [],
+        "tags": ["research", "preflight"],
+        "acceptance_evidence": ["ResearchOutput has sources and an InformationUsePlan"]
+      },
+      {
+        "id": "implement-progress-contract",
+        "title": "Implement progress and task query contract",
+        "objective": "Add structured progress and subgoal lookup to domain and coordinator APIs.",
+        "owner_role": "codex",
+        "priority": "critical",
+        "dependencies": ["research-current-contract"],
+        "tags": ["implementation", "progress"],
+        "acceptance_evidence": ["cargo test --workspace passes"]
+      },
+      {
+        "id": "review-satisfaction",
+        "title": "Review satisfaction evidence",
+        "objective": "Critic verifies the goal evidence and satisfaction criteria.",
+        "owner_role": "reviewer",
+        "priority": "high",
+        "dependencies": ["implement-progress-contract"],
+        "tags": ["review"],
+        "acceptance_evidence": ["ReviewOutput decision is accept"]
+      }
+    ],
+    "distribution_notes": [
+      "The coordinator creates initial tasks only from structured requests.",
+      "Subagents may request child tasks, but only the coordinator approves them."
+    ]
+  },
+  "root_budget": {
+    "max_tokens": 100000,
+    "remaining_tokens": 100000,
+    "max_runtime_seconds": 900,
+    "remaining_runtime_seconds": 900,
+    "max_tool_calls": 50,
+    "remaining_tool_calls": 50,
+    "max_child_tasks": 8,
+    "remaining_child_tasks": 8,
+    "max_patch_size": 60000
+  },
+  "done_criteria": {
+    "tests_pass": true,
+    "artifact_exists": true,
+    "validator_score_min": 0.85
+  },
+  "initial_tasks": [
+    {
+      "role": "research",
+      "purpose": {
+        "kind": "research",
+        "question": "What constraints should shape clean goal authoring and task distribution?"
+      },
+      "title": "Research goal contract constraints",
+      "subgoal_id": "research-current-contract",
+      "prompt": "Answer the research question with sources, confidence, and an information-use plan.",
+      "reason": "Current facts and constraints should be captured before implementation.",
+      "priority": "high",
+      "tags": ["research", "preflight"]
+    },
+    {
+      "role": "codex",
+      "purpose": {
+        "kind": "work"
+      },
+      "title": "Implement progress contract",
+      "subgoal_id": "implement-progress-contract",
+      "prompt": "Implement structured goal progress, task lookup, and initial task distribution.",
+      "reason": "The coordinator needs durable task state that can be queried by subgoal.",
+      "priority": "critical",
+      "tags": ["implementation", "progress"]
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 use axum::{Json, Router, routing::get, routing::post};
-use jattg_domain::{ValidationReport, ValidationRequest};
+use coat_domain::{ValidationReport, ValidationRequest};
 use tower_http::trace::TraceLayer;
 
 #[tokio::main]
@@ -7,7 +7,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "jattg_validator=info,tower_http=info".to_string()),
+                .unwrap_or_else(|_| "coat_validator=info,tower_http=info".to_string()),
         )
         .init();
 

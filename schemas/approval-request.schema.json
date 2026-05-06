@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalRequest",
+  "type": "object",
+  "properties": {
+    "attempt": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "notification_reports": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/NotificationDeliveryReport"
+      }
+    },
+    "reason": {
+      "type": "string"
+    },
+    "reason_codes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ApprovalReasonCode"
+      }
+    },
+    "requested_action": {
+      "type": "string"
+    },
+    "risk": {
+      "$ref": "#/$defs/ApprovalRisk"
+    },
+    "sandbox": {
+      "$ref": "#/$defs/SandboxProfile"
+    },
+    "status": {
+      "$ref": "#/$defs/ApprovalStatus"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "attempt",
+    "reason",
+    "status",
+    "risk",
+    "sandbox",
+    "requested_action"
+  ],
+  "$defs": {
+    "ApprovalPolicy": {
+      "type": "string",
+      "enum": [
+        "never",
+        "on_request",
+        "always"
+      ]
+    },
+    "ApprovalReasonCode": {
+      "type": "string",
+      "enum": [
+        "sandbox_policy_always",
+        "never_policy_outside_isolation",
+        "network_open",
+        "non_isolated_runner",
+        "workspace_write_outside_isolation",
+        "secret_access",
+        "brokered_user_auth",
+        "dangerous_mcp_tool",
+        "privileged_runner_capability"
+      ]
+    },
+    "ApprovalRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected"
+      ]
+    },
+    "FilesystemAccess": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "workspace_write"
+      ]
+    },
+    "NetworkAccess": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "restricted",
+        "open"
+      ]
+    },
+    "NotificationDeliveryReport": {
+      "type": "object",
+      "properties": {
+        "delivered": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "external_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotificationTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "delivered"
+      ]
+    },
+    "NotificationTarget": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NotificationTargetKind"
+        },
+        "require_ack": {
+          "type": "boolean"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "address",
+        "require_ack"
+      ]
+    },
+    "NotificationTargetKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "webhook",
+        "slack",
+        "email",
+        "git_hub",
+        "linear",
+        "jira",
+        "pager_duty",
+        "other"
+      ]
+    },
+    "SandboxProfile": {
+      "type": "object",
+      "properties": {
+        "approval_policy": {
+          "$ref": "#/$defs/ApprovalPolicy"
+        },
+        "filesystem": {
+          "$ref": "#/$defs/FilesystemAccess"
+        },
+        "isolated_runner": {
+          "type": "boolean"
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkAccess"
+        }
+      },
+      "required": [
+        "filesystem",
+        "network",
+        "approval_policy",
+        "isolated_runner"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourceArtifact",
+  "type": "object",
+  "properties": {
+    "captured_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "format": "float"
+    },
+    "quality": {
+      "$ref": "#/$defs/SourceQuality"
+    },
+    "quote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "uri": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "uri",
+    "quality",
+    "summary",
+    "confidence"
+  ],
+  "$defs": {
+    "SourceQuality": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "official_docs",
+        "peer_reviewed",
+        "reputable_secondary",
+        "community",
+        "unknown"
+      ]
+    }
+  }
+}

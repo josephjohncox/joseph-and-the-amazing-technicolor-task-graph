@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalEvaluation",
+  "type": "object",
+  "properties": {
+    "reason": {
+      "type": "string"
+    },
+    "reason_codes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ApprovalReasonCode"
+      }
+    },
+    "required": {
+      "type": "boolean"
+    },
+    "risk": {
+      "$ref": "#/$defs/ApprovalRisk"
+    }
+  },
+  "required": [
+    "required",
+    "risk",
+    "reason"
+  ],
+  "$defs": {
+    "ApprovalReasonCode": {
+      "type": "string",
+      "enum": [
+        "sandbox_policy_always",
+        "never_policy_outside_isolation",
+        "network_open",
+        "non_isolated_runner",
+        "workspace_write_outside_isolation",
+        "secret_access",
+        "brokered_user_auth",
+        "dangerous_mcp_tool",
+        "privileged_runner_capability"
+      ]
+    },
+    "ApprovalRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  }
+}

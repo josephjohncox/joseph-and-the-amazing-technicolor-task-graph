@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalStoreArtifactListResponse",
+  "type": "object",
+  "properties": {
+    "artifacts": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GoalArtifactRecord"
+      }
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "goal_id"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "GitResultRef": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pushed": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "pushed"
+      ]
+    },
+    "GoalArtifactRecord": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitResultRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "object_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStorageArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payload_json": {
+          "default": null
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "goal_id",
+        "artifact"
+      ]
+    },
+    "ObjectStorageArtifactRef": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "store": {
+          "$ref": "#/$defs/ObjectStoreRef"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "key",
+        "uri",
+        "description"
+      ]
+    },
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "ObjectStoreRef": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjectStoreKind"
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "bucket",
+        "force_path_style"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

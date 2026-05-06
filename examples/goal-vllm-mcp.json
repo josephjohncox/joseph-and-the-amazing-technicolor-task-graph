@@ -19,18 +19,125 @@
     "artifact_exists": true,
     "validator_score_min": 0.85
   },
+  "review_policy": {
+    "enabled": true,
+    "min_reviews": 2,
+    "max_review_rounds": 2,
+    "join_strategy": "all_required",
+    "require_unification": true,
+    "reviewer_roles": ["reviewer", "tester"],
+    "unifier_role": "patch_merger",
+    "min_satisfaction_score": 0.85,
+    "actor_critic": {
+      "enabled": true,
+      "critic_role": "reviewer",
+      "actor_retry_role": "planner",
+      "max_actor_retries": 1,
+      "reward_threshold": 0.85
+    }
+  },
+  "control_policy": {
+    "mode": "human_steered_continuous",
+    "max_frontier_rounds": 128,
+    "max_idle_rounds": 4,
+    "human_steering_enabled": true,
+    "allow_goal_updates": true,
+    "allow_task_injection": true,
+    "max_steering_events": 128,
+    "stop_conditions": ["goal_satisfied", "blocked", "budget_exhausted", "cancelled", "human_paused"]
+  },
+  "research_policy": {
+    "enabled": true,
+    "question_first": true,
+    "require_sources": true,
+    "require_use_plan": true,
+    "max_search_depth": 5,
+    "min_confidence": 0.75,
+    "allowed_providers": ["web", "docs", "mcp", "memory", "repo"],
+    "source_quality_order": ["primary", "official_docs", "peer_reviewed", "reputable_secondary"]
+  },
+  "memory_policy": {
+    "enabled": true,
+    "store": {
+      "kind": "zep_graphiti",
+      "endpoint": "http://graphiti-mcp:8000/mcp/",
+      "namespace": "coat-local-model-coding-smoke",
+      "mcp_server_name": "graphiti-memory",
+      "secret_refs": [
+        {
+          "provider": "env",
+          "name": "OPENAI_API_KEY",
+          "key": null,
+          "namespace": null,
+          "audience": "graphiti-memory"
+        }
+      ]
+    },
+    "vector": {
+      "enabled": true,
+      "store": {
+        "kind": "qdrant",
+        "endpoint": "http://qdrant:6333",
+        "namespace": "coat_local_model_coding_smoke",
+        "mcp_server_name": "qdrant-memory",
+        "secret_refs": []
+      },
+      "collection": "coat_memory",
+      "write_embeddings": true,
+      "search_embeddings": true,
+      "hybrid_search": true,
+      "top_k": 8,
+      "min_score": 0.2
+    },
+    "embedding": {
+      "provider": "hugging_face_tei",
+      "model": "BAAI/bge-m3",
+      "endpoint": "http://tei:80/v1/embeddings",
+      "dimensions": 1024,
+      "batch_size": 64,
+      "normalize": true,
+      "secret_refs": []
+    },
+    "retrieval": {
+      "retrieve_before_task": true,
+      "max_hits": 8,
+      "min_score": 0.2,
+      "include_branch_memories": true,
+      "rerank": false,
+      "fusion": "graph_then_vector"
+    },
+    "write_policy": "reviewed_facts_only",
+    "fork_join": {
+      "inherit_parent_context": true,
+      "write_branch_memories": true,
+      "join_strategy": "unifier_curated"
+    },
+    "scopes": ["goal", "task", "repo", "persona"]
+  },
+  "approval_policy": {
+    "enabled": true,
+    "require_for_network_open": true,
+    "require_for_non_isolated_runner": true,
+    "require_for_secret_access": true,
+    "require_for_brokered_user_auth": true,
+    "require_for_dangerous_mcp_tools": true,
+    "require_for_privileged_runner_capabilities": true,
+    "require_for_workspace_write_outside_isolation": true,
+    "never_policy_requires_isolation": true,
+    "approval_timeout_seconds": 3600
+  },
   "default_execution": {
     "runner": {
       "worker": "codex",
       "runner_id": null,
-      "required_capabilities": ["code", "mcp_tools", "workspace_sandbox", "local_models", "vllm"],
+      "required_capabilities": ["code", "mcp_tools", "workspace_sandbox", "git_worktree", "object_storage", "s3_compatible", "local_models", "vllm"],
       "required_labels": {
         "pool": "local-gpu"
       },
       "locality": "any_node"
     },
     "model": {
-      "strategy": "first_available",
+      "strategy": "weighted",
       "required_features": ["tool_use", "json_schema"],
       "candidates": [
         {
@@ -38,11 +145,25 @@
           "model": "qwen3-coder-30b",
           "endpoint": "http://vllm:8000/v1",
           "priority": 10,
-          "weight": 1,
+          "weight": 3,
           "context_window": 131072,
           "features": ["tool_use", "json_schema", "streaming", "long_context", "local_weights"],
           "labels": {
-            "gpu": "a100"
+            "gpu": "a100",
+            "quality_tier": "high"
+          }
+        },
+        {
+          "provider": "open_ai_compatible",
+          "model": "local-small-fast",
+          "endpoint": "http://router:8000/v1",
+          "priority": 50,
+          "weight": 1,
+          "context_window": 32768,
+          "features": ["tool_use", "json_schema", "streaming"],
+          "labels": {
+            "tier": "fast",
+            "quality_tier": "medium"
           }
         }
       ],
@@ -58,6 +179,22 @@
       "context_id": "local-dev-tools",
       "servers": [
         {
+          "name": "graphiti-memory",
+          "transport": "http",
+          "uri": "http://graphiti-mcp:8000/mcp/",
+          "allowed_tools": ["add_episode", "search_nodes", "search_facts"],
+          "auth": {
+            "kind": "secret",
+            "secret": {
+              "provider": "env",
+              "name": "OPENAI_API_KEY",
+              "key": null,
+              "namespace": null,
+              "audience": "graphiti-memory"
+            }
+          }
+        },
+        {
           "name": "tool-registry",
           "transport": "http",
           "uri": "http://tool-registry:9084/mcp",
@@ -66,9 +203,9 @@
             "kind": "secret",
             "secret": {
               "provider": "kubernetes_secret",
-              "name": "jattg-agent-secrets",
+              "name": "coat-agent-secrets",
               "key": "MCP_TOOL_TOKEN",
-              "namespace": "jattg",
+              "namespace": "coat",
               "audience": "tool-registry"
             }
           }
@@ -76,7 +213,17 @@
       ],
       "secret_refs": [],
       "propagation": "runner_resolves_refs",
-      "token_ttl_seconds": 900
+      "token_ttl_seconds": 900,
+      "auth_distribution": {
+        "mode": "runner_resolves_refs",
+        "allowed_materials": ["mcp_bearer_token", "workload_identity_token"],
+        "required_runner_labels": {},
+        "lease_ttl_seconds": 900,
+        "renewal": "manual_or_brokered",
+        "allow_node_local_device_session": false,
+        "allow_secret_sync": false,
+        "require_human_approval_for_brokered_user_auth": true
+      }
     },
     "notifications": {
       "events": ["approval_requested", "human_feedback_requested", "task_blocked", "goal_completed"],
@@ -90,6 +237,39 @@
       ],
       "feedback_thread_key": "local-model-coding-smoke",
       "escalation_seconds": 3600
+    },
+    "results": {
+      "git": {
+        "enabled": true,
+        "remote": "origin",
+        "base_ref": "HEAD",
+        "branch_prefix": "coat/task",
+        "worktree_root": "/worktrees",
+        "push_on_success": false,
+        "require_clean_diff": true,
+        "include_patch_artifact": true
+      },
+      "object_storage": {
+        "enabled": true,
+        "store": {
+          "kind": "minio",
+          "bucket": "coat-artifacts",
+          "prefix": null,
+          "endpoint": "http://object-store:9000",
+          "region": "us-east-1",
+          "force_path_style": true,
+          "secret_ref": {
+            "provider": "kubernetes_secret",
+            "name": "coat-agent-secrets",
+            "key": "OBJECT_STORE_SECRET_KEY",
+            "namespace": "coat",
+            "audience": "object-store"
+          }
+        },
+        "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+        "require_manifest": true,
+        "max_inline_bytes": 262144
+      }
     }
   },
   "initial_tasks": []

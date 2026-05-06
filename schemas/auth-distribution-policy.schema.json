@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthDistributionPolicy",
+  "type": "object",
+  "properties": {
+    "allow_node_local_device_session": {
+      "type": "boolean"
+    },
+    "allow_secret_sync": {
+      "type": "boolean"
+    },
+    "allowed_materials": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/AuthMaterialKind"
+      }
+    },
+    "lease_ttl_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "mode": {
+      "$ref": "#/$defs/AuthDistributionMode"
+    },
+    "renewal": {
+      "$ref": "#/$defs/AuthRenewalPolicy"
+    },
+    "require_human_approval_for_brokered_user_auth": {
+      "type": "boolean"
+    },
+    "required_runner_labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    }
+  },
+  "required": [
+    "mode",
+    "renewal",
+    "allow_node_local_device_session",
+    "allow_secret_sync",
+    "require_human_approval_for_brokered_user_auth"
+  ],
+  "$defs": {
+    "AuthDistributionMode": {
+      "type": "string",
+      "enum": [
+        "runner_local_only",
+        "runner_resolves_refs",
+        "coordinator_issues_lease",
+        "workload_identity",
+        "oauth_device_broker",
+        "external_broker"
+      ]
+    },
+    "AuthMaterialKind": {
+      "type": "string",
+      "enum": [
+        "api_token",
+        "mcp_bearer_token",
+        "oauth_access_token",
+        "oauth_refresh_token",
+        "device_auth_session",
+        "workload_identity_token",
+        "local_cli_session",
+        "service_account",
+        "other"
+      ]
+    },
+    "AuthRenewalPolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "manual_or_brokered",
+        "broker_can_refresh",
+        "runner_can_refresh"
+      ]
+    }
+  }
+}

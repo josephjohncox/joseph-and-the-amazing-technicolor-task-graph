@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MissedRunPolicy",
+  "type": "string",
+  "enum": [
+    "skip",
+    "fire_once",
+    "catch_up_bounded"
+  ]
+}

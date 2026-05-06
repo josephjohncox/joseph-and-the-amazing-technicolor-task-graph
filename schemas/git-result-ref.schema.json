@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GitResultRef",
+  "type": "object",
+  "properties": {
+    "base_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "commit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "diff_uri": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pull_request_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pushed": {
+      "type": "boolean"
+    },
+    "remote": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "repo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "worktree_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "branch",
+    "pushed"
+  ]
+}

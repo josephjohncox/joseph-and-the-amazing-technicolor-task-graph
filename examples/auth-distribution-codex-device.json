@@ -1,0 +1,40 @@
+{
+  "context_id": "codex-device-node-a",
+  "servers": [
+    {
+      "name": "codex-app-server",
+      "transport": "http",
+      "uri": "http://codex-runner-node-a:9091/app-server",
+      "allowed_tools": ["thread.start", "thread.resume", "task.run"],
+      "auth": {
+        "kind": "device_auth_session",
+        "session_ref": {
+          "provider": "local_file",
+          "name": "/var/lib/coat/codex/auth.json",
+          "key": null,
+          "namespace": "node-a",
+          "audience": "codex"
+        },
+        "refresh_ref": null,
+        "provider": "codex",
+        "node_local": true
+      }
+    }
+  ],
+  "secret_refs": [],
+  "propagation": "runner_local_only",
+  "token_ttl_seconds": 900,
+  "auth_distribution": {
+    "mode": "runner_local_only",
+    "allowed_materials": ["device_auth_session", "local_cli_session"],
+    "required_runner_labels": {
+      "auth.codex.device": "true",
+      "node.auth.zone": "node-a"
+    },
+    "lease_ttl_seconds": null,
+    "renewal": "manual_or_brokered",
+    "allow_node_local_device_session": true,
+    "allow_secret_sync": false,
+    "require_human_approval_for_brokered_user_auth": true
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryWriteResponse",
+  "type": "object",
+  "properties": {
+    "adapter_reports": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryAdapterReport"
+      }
+    },
+    "event": {
+      "$ref": "#/$defs/MemoryEvent"
+    },
+    "external_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "key": {
+      "type": "string"
+    },
+    "stored_locally": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "event",
+    "key",
+    "stored_locally"
+  ],
+  "$defs": {
+    "MemoryAdapterReport": {
+      "type": "object",
+      "properties": {
+        "attempted": {
+          "type": "boolean"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "external_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "type": "string"
+        },
+        "store_kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "store_kind",
+        "operation",
+        "attempted",
+        "success"
+      ]
+    },
+    "MemoryEvent": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MemoryEventAction"
+        },
+        "key": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/MemoryScope"
+        },
+        "store_kind": {
+          "$ref": "#/$defs/MemoryStoreKind"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "scope",
+        "action",
+        "store_kind",
+        "key",
+        "summary"
+      ]
+    },
+    "MemoryEventAction": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "fork",
+        "join",
+        "invalidate"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "repo",
+        "persona",
+        "user",
+        "global"
+      ]
+    },
+    "MemoryStoreKind": {
+      "type": "string",
+      "enum": [
+        "zep_graphiti",
+        "letta",
+        "postgres_pgvector",
+        "qdrant",
+        "lance_db",
+        "sqlite",
+        "other"
+      ]
+    }
+  }
+}

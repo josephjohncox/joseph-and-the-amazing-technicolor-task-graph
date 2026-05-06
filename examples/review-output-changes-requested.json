@@ -1,0 +1,15 @@
+{
+  "decision": "changes_requested",
+  "reward": 0.72,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Missing validation evidence",
+      "body": "The actor output does not include enough test or artifact evidence to satisfy the goal.",
+      "evidence": ["memory://task/example-review"],
+      "suggested_action": "Run a bounded actor retry that adds validation evidence."
+    }
+  ],
+  "retry_recommended": true,
+  "unification_summary": null
+}

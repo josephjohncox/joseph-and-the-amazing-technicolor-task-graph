@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbeddingProviderKind",
+  "type": "string",
+  "enum": [
+    "open_ai",
+    "open_ai_compatible",
+    "hugging_face_tei",
+    "sentence_transformers",
+    "voyage_ai",
+    "cohere",
+    "ollama",
+    "local_process",
+    "other"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756710",
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Before more implementation, find the best current memory substrate for distributed fork/join agents.",
+  "kind": {
+    "kind": "request_research",
+    "question": "Which purpose-built memory database or graph memory layer should COAT use for durable agent memories across distributed fork/join workflows?",
+    "reason": "The coordinator needs sourced memory guidance before productionizing cross-agent learning."
+  }
+}

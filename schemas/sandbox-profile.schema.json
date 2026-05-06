@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxProfile",
+  "type": "object",
+  "properties": {
+    "approval_policy": {
+      "$ref": "#/$defs/ApprovalPolicy"
+    },
+    "filesystem": {
+      "$ref": "#/$defs/FilesystemAccess"
+    },
+    "isolated_runner": {
+      "type": "boolean"
+    },
+    "network": {
+      "$ref": "#/$defs/NetworkAccess"
+    }
+  },
+  "required": [
+    "filesystem",
+    "network",
+    "approval_policy",
+    "isolated_runner"
+  ],
+  "$defs": {
+    "ApprovalPolicy": {
+      "type": "string",
+      "enum": [
+        "never",
+        "on_request",
+        "always"
+      ]
+    },
+    "FilesystemAccess": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "workspace_write"
+      ]
+    },
+    "NetworkAccess": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "restricted",
+        "open"
+      ]
+    }
+  }
+}

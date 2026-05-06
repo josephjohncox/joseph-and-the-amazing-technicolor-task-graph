@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpContextRef",
+  "type": "object",
+  "properties": {
+    "context_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "propagation": {
+      "$ref": "#/$defs/McpContextPropagation"
+    },
+    "secret_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SecretRef"
+      }
+    },
+    "servers": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/McpServerRef"
+      }
+    },
+    "token_ttl_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "propagation"
+  ],
+  "$defs": {
+    "McpAuthRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "secret"
+            },
+            "secret": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "workload_identity"
+            }
+          },
+          "required": [
+            "kind",
+            "audience"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "o_auth_delegation"
+            },
+            "token_exchange_secret": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "token_exchange_secret"
+          ]
+        }
+      ]
+    },
+    "McpContextPropagation": {
+      "type": "string",
+      "enum": [
+        "coordinator_issued",
+        "runner_resolves_refs",
+        "workload_identity"
+      ]
+    },
+    "McpServerRef": {
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "$ref": "#/$defs/McpAuthRef"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transport": {
+          "$ref": "#/$defs/McpTransport"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "uri",
+        "auth"
+      ]
+    },
+    "McpTransport": {
+      "type": "string",
+      "enum": [
+        "stdio",
+        "http",
+        "sse"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

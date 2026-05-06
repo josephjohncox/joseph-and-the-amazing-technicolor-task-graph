@@ -1,0 +1,19 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "approval_requested",
+  "message": "A runner requested approval for a network-open sandbox.",
+  "policy": {
+    "events": ["approval_requested", "human_feedback_requested", "task_blocked"],
+    "targets": [
+      {
+        "kind": "thread",
+        "address": "current-codex-thread",
+        "secret_ref": null,
+        "require_ack": true
+      }
+    ],
+    "feedback_thread_key": "approval-loop",
+    "escalation_seconds": 1800
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+  "title": "Smoke goal",
+  "objective": "Prove the durable task tree can accept and validate a stub task.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 200000,
+    "remaining_tokens": 200000,
+    "max_runtime_seconds": 600,
+    "remaining_runtime_seconds": 600,
+    "max_tool_calls": 50,
+    "remaining_tool_calls": 50,
+    "max_child_tasks": 8,
+    "remaining_child_tasks": 8,
+    "max_patch_size": 50000
+  },
+  "done_criteria": {
+    "tests_pass": false,
+    "artifact_exists": true,
+    "validator_score_min": 0.85
+  },
+  "initial_tasks": []
+}

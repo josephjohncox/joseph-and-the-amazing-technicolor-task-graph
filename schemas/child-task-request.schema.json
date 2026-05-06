@@ -1,0 +1,759 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChildTaskRequest",
+  "type": "object",
+  "properties": {
+    "budget": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Budget"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dependencies": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "done_criteria": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DoneCriteria"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "execution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExecutionProfile"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "role": {
+      "$ref": "#/$defs/WorkerKind"
+    },
+    "sandbox": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SandboxProfile"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "role",
+    "prompt",
+    "reason"
+  ],
+  "$defs": {
+    "ApprovalPolicy": {
+      "type": "string",
+      "enum": [
+        "never",
+        "on_request",
+        "always"
+      ]
+    },
+    "Budget": {
+      "type": "object",
+      "properties": {
+        "max_child_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_patch_size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remaining_child_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "remaining_runtime_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remaining_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remaining_tool_calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "max_tokens",
+        "remaining_tokens",
+        "max_runtime_seconds",
+        "remaining_runtime_seconds",
+        "max_tool_calls",
+        "remaining_tool_calls",
+        "max_child_tasks",
+        "remaining_child_tasks",
+        "max_patch_size"
+      ]
+    },
+    "DoneCriteria": {
+      "type": "object",
+      "properties": {
+        "artifact_exists": {
+          "type": "boolean"
+        },
+        "tests_pass": {
+          "type": "boolean"
+        },
+        "validator_score_min": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "tests_pass",
+        "artifact_exists"
+      ]
+    },
+    "ExecutionProfile": {
+      "type": "object",
+      "properties": {
+        "mcp": {
+          "$ref": "#/$defs/McpContextRef"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        },
+        "notifications": {
+          "$ref": "#/$defs/NotificationPolicy"
+        },
+        "persona": {
+          "$ref": "#/$defs/PersonaSpec"
+        },
+        "runner": {
+          "$ref": "#/$defs/RunnerSelector"
+        }
+      },
+      "required": [
+        "runner",
+        "model",
+        "persona",
+        "mcp",
+        "notifications"
+      ]
+    },
+    "FilesystemAccess": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "workspace_write"
+      ]
+    },
+    "McpAuthRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "secret"
+            },
+            "secret": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "workload_identity"
+            }
+          },
+          "required": [
+            "kind",
+            "audience"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "o_auth_delegation"
+            },
+            "token_exchange_secret": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "token_exchange_secret"
+          ]
+        }
+      ]
+    },
+    "McpContextPropagation": {
+      "type": "string",
+      "enum": [
+        "coordinator_issued",
+        "runner_resolves_refs",
+        "workload_identity"
+      ]
+    },
+    "McpContextRef": {
+      "type": "object",
+      "properties": {
+        "context_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "propagation": {
+          "$ref": "#/$defs/McpContextPropagation"
+        },
+        "secret_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        },
+        "servers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McpServerRef"
+          }
+        },
+        "token_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "propagation"
+      ]
+    },
+    "McpServerRef": {
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "$ref": "#/$defs/McpAuthRef"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transport": {
+          "$ref": "#/$defs/McpTransport"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "uri",
+        "auth"
+      ]
+    },
+    "McpTransport": {
+      "type": "string",
+      "enum": [
+        "stdio",
+        "http",
+        "sse"
+      ]
+    },
+    "ModelCandidate": {
+      "type": "object",
+      "properties": {
+        "context_window": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "model": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider": {
+          "$ref": "#/$defs/ModelProviderKind"
+        },
+        "weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "priority",
+        "weight"
+      ]
+    },
+    "ModelFallbackPolicy": {
+      "type": "string",
+      "enum": [
+        "disallow_fallback",
+        "allow_fallback",
+        "allow_lower_tier_local"
+      ]
+    },
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights"
+      ]
+    },
+    "ModelProviderKind": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "open_ai",
+        "open_ai_compatible",
+        "vllm",
+        "ollama",
+        "llama_cpp",
+        "anthropic",
+        "hugging_face",
+        "local_process",
+        "other"
+      ]
+    },
+    "ModelRoute": {
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelCandidate"
+          }
+        },
+        "fallback": {
+          "$ref": "#/$defs/ModelFallbackPolicy"
+        },
+        "required_features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "strategy": {
+          "$ref": "#/$defs/ModelRoutingStrategy"
+        }
+      },
+      "required": [
+        "strategy",
+        "fallback"
+      ]
+    },
+    "ModelRoutingStrategy": {
+      "type": "string",
+      "enum": [
+        "first_available",
+        "lowest_latency",
+        "lowest_cost",
+        "highest_quality",
+        "weighted",
+        "sticky_per_goal"
+      ]
+    },
+    "NetworkAccess": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "restricted",
+        "open"
+      ]
+    },
+    "NotificationEvent": {
+      "type": "string",
+      "enum": [
+        "human_feedback_requested",
+        "approval_requested",
+        "task_blocked",
+        "task_failed",
+        "goal_completed",
+        "budget_warning",
+        "runner_lost"
+      ]
+    },
+    "NotificationPolicy": {
+      "type": "object",
+      "properties": {
+        "escalation_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotificationEvent"
+          }
+        },
+        "feedback_thread_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotificationTarget"
+          }
+        }
+      }
+    },
+    "NotificationTarget": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NotificationTargetKind"
+        },
+        "require_ack": {
+          "type": "boolean"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "address",
+        "require_ack"
+      ]
+    },
+    "NotificationTargetKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "webhook",
+        "slack",
+        "email",
+        "git_hub",
+        "linear",
+        "jira",
+        "pager_duty",
+        "other"
+      ]
+    },
+    "PersonaSpec": {
+      "type": "object",
+      "properties": {
+        "inline_instructions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "instructions_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "risk_tolerance": {
+          "$ref": "#/$defs/RiskTolerance"
+        }
+      },
+      "required": [
+        "name",
+        "risk_tolerance"
+      ]
+    },
+    "RiskTolerance": {
+      "type": "string",
+      "enum": [
+        "conservative",
+        "balanced",
+        "aggressive"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "test",
+        "review",
+        "mcp_tools",
+        "workspace_sandbox",
+        "git",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "network_open"
+      ]
+    },
+    "RunnerLocality": {
+      "type": "string",
+      "enum": [
+        "any_node",
+        "same_node",
+        "local_only",
+        "remote_only"
+      ]
+    },
+    "RunnerSelector": {
+      "type": "object",
+      "properties": {
+        "locality": {
+          "$ref": "#/$defs/RunnerLocality"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "runner_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "locality"
+      ]
+    },
+    "SandboxProfile": {
+      "type": "object",
+      "properties": {
+        "approval_policy": {
+          "$ref": "#/$defs/ApprovalPolicy"
+        },
+        "filesystem": {
+          "$ref": "#/$defs/FilesystemAccess"
+        },
+        "isolated_runner": {
+          "type": "boolean"
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkAccess"
+        }
+      },
+      "required": [
+        "filesystem",
+        "network",
+        "approval_policy",
+        "isolated_runner"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

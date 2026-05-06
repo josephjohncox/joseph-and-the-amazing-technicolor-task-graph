@@ -1,0 +1,517 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jattg
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jattg-config
+  namespace: jattg
+data:
+  RUST_LOG: info
+  CODEX_RUNNER_MODE: stub
+  STAFF_ENGINEER_RUNNER_MODE: stub
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jattg-agent-secrets
+  namespace: jattg
+type: Opaque
+stringData:
+  OPENAI_API_KEY: replace-me
+  TRACKER_TOKEN: replace-me
+  MCP_TOOL_TOKEN: replace-me
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restate
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restate
+  template:
+    metadata:
+      labels:
+        app: restate
+    spec:
+      containers:
+        - name: restate
+          image: docker.restate.dev/restatedev/restate:latest
+          args: ["--node-name=restate-1"]
+          ports:
+            - containerPort: 8080
+              name: ingress
+            - containerPort: 9070
+              name: admin
+            - containerPort: 5122
+              name: node
+          volumeMounts:
+            - name: restate-data
+              mountPath: /restate-data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: restate-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: restate
+  namespace: jattg
+spec:
+  selector:
+    app: restate
+  ports:
+    - name: ingress
+      port: 8080
+      targetPort: ingress
+    - name: admin
+      port: 9070
+      targetPort: admin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coordinator
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coordinator
+  template:
+    metadata:
+      labels:
+        app: coordinator
+    spec:
+      containers:
+        - name: coordinator
+          image: jattg/coordinator:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9080
+            - name: RUST_LOG
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: RUST_LOG
+          ports:
+            - containerPort: 9080
+              name: http
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator
+  namespace: jattg
+spec:
+  selector:
+    app: coordinator
+  ports:
+    - port: 9080
+      targetPort: http
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restate-register-coordinator
+  namespace: jattg
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register
+          image: curlimages/curl:8.16.0
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              sleep 5
+              curl -fsS -X POST http://restate:9070/deployments \
+                -H 'content-type: application/json' \
+                -d '{"uri":"http://coordinator:9080"}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: validator
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: validator
+  template:
+    metadata:
+      labels:
+        app: validator
+    spec:
+      containers:
+        - name: validator
+          image: jattg/validator:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9082
+          ports:
+            - containerPort: 9082
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: validator
+  namespace: jattg
+spec:
+  selector:
+    app: validator
+  ports:
+    - port: 9082
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-runner
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-runner
+  template:
+    metadata:
+      labels:
+        app: sandbox-runner
+    spec:
+      containers:
+        - name: sandbox-runner
+          image: jattg/sandbox-runner:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9083
+          ports:
+            - containerPort: 9083
+              name: http
+          volumeMounts:
+            - name: workspaces
+              mountPath: /workspaces
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: workspaces
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-runner
+  namespace: jattg
+spec:
+  selector:
+    app: sandbox-runner
+  ports:
+    - port: 9083
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tool-registry
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tool-registry
+  template:
+    metadata:
+      labels:
+        app: tool-registry
+    spec:
+      containers:
+        - name: tool-registry
+          image: jattg/tool-registry:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9084
+          ports:
+            - containerPort: 9084
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tool-registry
+  namespace: jattg
+spec:
+  selector:
+    app: tool-registry
+  ports:
+    - port: 9084
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runner-registry
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: runner-registry
+  template:
+    metadata:
+      labels:
+        app: runner-registry
+    spec:
+      containers:
+        - name: runner-registry
+          image: jattg/runner-registry:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9085
+          ports:
+            - containerPort: 9085
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runner-registry
+  namespace: jattg
+spec:
+  selector:
+    app: runner-registry
+  ports:
+    - port: 9085
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifier
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifier
+  template:
+    metadata:
+      labels:
+        app: notifier
+    spec:
+      containers:
+        - name: notifier
+          image: jattg/notifier:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9086
+          ports:
+            - containerPort: 9086
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifier
+  namespace: jattg
+spec:
+  selector:
+    app: notifier
+  ports:
+    - port: 9086
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-runner
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codex-runner
+  template:
+    metadata:
+      labels:
+        app: codex-runner
+    spec:
+      containers:
+        - name: codex-runner
+          image: jattg/codex-runner:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "9091"
+            - name: CODEX_RUNNER_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: CODEX_RUNNER_MODE
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: OPENAI_API_KEY
+          ports:
+            - containerPort: 9091
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codex-runner
+  namespace: jattg
+spec:
+  selector:
+    app: codex-runner
+  ports:
+    - port: 9091
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: staff-engineer-runner
+  namespace: jattg
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: staff-engineer-runner
+  template:
+    metadata:
+      labels:
+        app: staff-engineer-runner
+    spec:
+      containers:
+        - name: staff-engineer-runner
+          image: jattg/staff-engineer-runner:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "9092"
+            - name: STAFF_ENGINEER_RUNNER_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: STAFF_ENGINEER_RUNNER_MODE
+            - name: TRACKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: TRACKER_TOKEN
+          ports:
+            - containerPort: 9092
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: staff-engineer-runner
+  namespace: jattg
+spec:
+  selector:
+    app: staff-engineer-runner
+  ports:
+    - port: 9092
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-jattg-internal
+  namespace: jattg
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

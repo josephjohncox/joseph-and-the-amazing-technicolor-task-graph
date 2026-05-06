@@ -1,0 +1,58 @@
+{
+  "runner_id": "vllm-coder-a",
+  "node_id": "gpu-node-1",
+  "endpoint": "http://vllm-coder-a:9099",
+  "roles": ["codex", "tester", "reviewer", "research"],
+  "capabilities": ["code", "test", "review", "mcp_tools", "workspace_sandbox", "local_models", "vllm", "open_ai_compatible", "gpu"],
+  "models": [
+    {
+      "provider": "vllm",
+      "model": "qwen3-coder-30b",
+      "endpoint": "http://vllm:8000/v1",
+      "priority": 10,
+      "weight": 1,
+      "context_window": 131072,
+      "features": ["tool_use", "json_schema", "streaming", "long_context", "local_weights"],
+      "labels": {
+        "gpu": "a100",
+        "region": "local"
+      }
+    },
+    {
+      "provider": "open_ai_compatible",
+      "model": "local-small-fast",
+      "endpoint": "http://router:8000/v1",
+      "priority": 50,
+      "weight": 2,
+      "context_window": 32768,
+      "features": ["tool_use", "json_schema", "streaming"],
+      "labels": {
+        "tier": "fast"
+      }
+    }
+  ],
+  "labels": {
+    "pool": "local-gpu",
+    "region": "local"
+  },
+  "mcp_servers": [
+    {
+      "name": "tool-registry",
+      "transport": "http",
+      "uri": "http://tool-registry:9084/mcp",
+      "allowed_tools": ["repo_status", "test_command", "artifact_manifest"],
+      "auth": {
+        "kind": "secret",
+        "secret": {
+          "provider": "kubernetes_secret",
+          "name": "jattg-agent-secrets",
+          "key": "MCP_TOOL_TOKEN",
+          "namespace": "jattg",
+          "audience": "tool-registry"
+        }
+      }
+    }
+  ],
+  "max_concurrency": 2,
+  "lease_ttl_seconds": 300
+}

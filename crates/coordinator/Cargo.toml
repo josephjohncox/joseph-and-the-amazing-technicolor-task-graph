@@ -1,0 +1,13 @@
+[package]
+name = "jattg-coordinator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jattg-domain = { path = "../domain" }
+restate-sdk.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

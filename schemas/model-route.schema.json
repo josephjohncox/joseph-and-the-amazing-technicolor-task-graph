@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelRoute",
+  "type": "object",
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ModelCandidate"
+      }
+    },
+    "fallback": {
+      "$ref": "#/$defs/ModelFallbackPolicy"
+    },
+    "required_features": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ModelFeature"
+      }
+    },
+    "strategy": {
+      "$ref": "#/$defs/ModelRoutingStrategy"
+    }
+  },
+  "required": [
+    "strategy",
+    "fallback"
+  ],
+  "$defs": {
+    "ModelCandidate": {
+      "type": "object",
+      "properties": {
+        "context_window": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "model": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider": {
+          "$ref": "#/$defs/ModelProviderKind"
+        },
+        "weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "priority",
+        "weight"
+      ]
+    },
+    "ModelFallbackPolicy": {
+      "type": "string",
+      "enum": [
+        "disallow_fallback",
+        "allow_fallback",
+        "allow_lower_tier_local"
+      ]
+    },
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights"
+      ]
+    },
+    "ModelProviderKind": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "open_ai",
+        "open_ai_compatible",
+        "vllm",
+        "ollama",
+        "llama_cpp",
+        "anthropic",
+        "hugging_face",
+        "local_process",
+        "other"
+      ]
+    },
+    "ModelRoutingStrategy": {
+      "type": "string",
+      "enum": [
+        "first_available",
+        "lowest_latency",
+        "lowest_cost",
+        "highest_quality",
+        "weighted",
+        "sticky_per_goal"
+      ]
+    }
+  }
+}

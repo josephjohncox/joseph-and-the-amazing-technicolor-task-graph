@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NotificationRequest",
+  "type": "object",
+  "properties": {
+    "event": {
+      "$ref": "#/$defs/NotificationEvent"
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "message": {
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "#/$defs/NotificationPolicy"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "goal_id",
+    "event",
+    "message",
+    "policy"
+  ],
+  "$defs": {
+    "NotificationEvent": {
+      "type": "string",
+      "enum": [
+        "human_feedback_requested",
+        "approval_requested",
+        "task_blocked",
+        "task_failed",
+        "goal_completed",
+        "budget_warning",
+        "runner_lost"
+      ]
+    },
+    "NotificationPolicy": {
+      "type": "object",
+      "properties": {
+        "escalation_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotificationEvent"
+          }
+        },
+        "feedback_thread_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotificationTarget"
+          }
+        }
+      }
+    },
+    "NotificationTarget": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NotificationTargetKind"
+        },
+        "require_ack": {
+          "type": "boolean"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "address",
+        "require_ack"
+      ]
+    },
+    "NotificationTargetKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "webhook",
+        "slack",
+        "email",
+        "git_hub",
+        "linear",
+        "jira",
+        "pager_duty",
+        "other"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

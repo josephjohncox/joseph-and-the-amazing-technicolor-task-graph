@@ -1,0 +1,25 @@
+# 030 Codex Worker
+
+## Objective
+
+Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> AgentRunResult` contract.
+
+## Implementation
+
+- Keep `stub` mode as the default local path.
+- Add Codex App Server mode for rich local thread/session control.
+- Add Codex MCP mode for callable-tool workflows.
+- Persist thread IDs and artifact manifests in worker diagnostics/artifacts.
+- Map task sandbox profiles to runner filesystem, network, and approval settings.
+
+## Tests
+
+- Stub mode returns a valid `AgentRunResult`.
+- MCP health-check mode fails clearly when `codex mcp-server` is unavailable.
+- Live App Server tests are gated by `CODEX_APP_SERVER_URL`.
+
+## Acceptance
+
+- Sidecar starts with `npm run dev`.
+- `/healthz` and `/run-task` return JSON.
+- Live modes never run unless explicit environment gates are set.

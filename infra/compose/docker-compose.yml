@@ -1,0 +1,142 @@
+services:
+  restate:
+    image: docker.restate.dev/restatedev/restate:latest
+    command: ["--node-name=restate-1"]
+    ports:
+      - "8080:8080"
+      - "9070:9070"
+      - "9071:9071"
+      - "5122:5122"
+    volumes:
+      - restate-data:/restate-data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  coordinator:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: jattg-coordinator
+        BIN: jattg-coordinator
+    environment:
+      BIND_ADDR: 0.0.0.0:9080
+      RUST_LOG: jattg_coordinator=info,restate_sdk=info
+    ports:
+      - "9080:9080"
+    depends_on:
+      - restate
+
+  restate-register:
+    image: curlimages/curl:8.16.0
+    depends_on:
+      - restate
+      - coordinator
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        sleep 5
+        curl -fsS -X POST http://restate:9070/deployments \
+          -H 'content-type: application/json' \
+          -d '{"uri":"http://coordinator:9080"}'
+    restart: "no"
+
+  validator:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: jattg-validator
+        BIN: jattg-validator
+    environment:
+      BIND_ADDR: 0.0.0.0:9082
+    ports:
+      - "9082:9082"
+
+  sandbox-runner:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: jattg-sandbox-runner
+        BIN: jattg-sandbox-runner
+    environment:
+      BIND_ADDR: 0.0.0.0:9083
+    ports:
+      - "9083:9083"
+    volumes:
+      - sandbox-workspaces:/workspaces
+
+  tool-registry:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: jattg-tool-registry
+        BIN: jattg-tool-registry
+    environment:
+      BIND_ADDR: 0.0.0.0:9084
+    ports:
+      - "9084:9084"
+
+  runner-registry:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: jattg-runner-registry
+        BIN: jattg-runner-registry
+    environment:
+      BIND_ADDR: 0.0.0.0:9085
+    ports:
+      - "9085:9085"
+
+  notifier:
+    build:
+      context: ../..
+      dockerfile: infra/containers/rust-service.Dockerfile
+      args:
+        PACKAGE: jattg-notifier
+        BIN: jattg-notifier
+    environment:
+      BIND_ADDR: 0.0.0.0:9086
+    ports:
+      - "9086:9086"
+
+  codex-runner:
+    build:
+      context: ../..
+      dockerfile: infra/containers/node-sidecar.Dockerfile
+      args:
+        SIDECAR_DIR: sidecars/codex-runner-ts
+    environment:
+      PORT: 9091
+      CODEX_RUNNER_MODE: stub
+    ports:
+      - "9091:9091"
+
+  staff-engineer-runner:
+    build:
+      context: ../..
+      dockerfile: infra/containers/node-sidecar.Dockerfile
+      args:
+        SIDECAR_DIR: sidecars/staff-engineer-runner-ts
+    environment:
+      PORT: 9092
+      STAFF_ENGINEER_RUNNER_MODE: stub
+    ports:
+      - "9092:9092"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+
+volumes:
+  restate-data:
+  sandbox-workspaces:

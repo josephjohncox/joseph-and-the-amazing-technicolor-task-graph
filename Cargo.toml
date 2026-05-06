@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/cli",
+    "crates/coordinator",
+    "crates/domain",
+    "crates/notifier",
+    "crates/runner-registry",
+    "crates/sandbox-runner",
+    "crates/tool-registry",
+    "crates/validator",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.90"
+authors = ["Joseph <joseph@example.com>"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+restate-sdk = { version = "0.10.0", features = ["schemars"] }
+schemars = { version = "1.1", features = ["uuid1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.23"
+thiserror = "2.0"
+tokio = { version = "1.52", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.19", features = ["v4", "serde"] }
+
+[workspace.metadata.jattg]
+name = "Joseph and the Amazing Technicolor Task Graph"
+short_name = "jattg"

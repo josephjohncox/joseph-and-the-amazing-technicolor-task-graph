@@ -1,0 +1,15 @@
+/target/
+/.cache/
+/.uv-cache/
+/.env
+/.env.*
+!/examples/.env.example
+/node_modules/
+/**/node_modules/
+/dist/
+/**/dist/
+/.DS_Store
+/tmp/
+/infra/k8s/rendered.yaml
+/.idea/
+/.vscode/

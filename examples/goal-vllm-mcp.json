@@ -1,0 +1,96 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "title": "Local model coding smoke",
+  "objective": "Route a bounded coding task to a local vLLM-compatible runner with MCP tools and notification hooks.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 200000,
+    "remaining_tokens": 200000,
+    "max_runtime_seconds": 600,
+    "remaining_runtime_seconds": 600,
+    "max_tool_calls": 50,
+    "remaining_tool_calls": 50,
+    "max_child_tasks": 8,
+    "remaining_child_tasks": 8,
+    "max_patch_size": 50000
+  },
+  "done_criteria": {
+    "tests_pass": false,
+    "artifact_exists": true,
+    "validator_score_min": 0.85
+  },
+  "default_execution": {
+    "runner": {
+      "worker": "codex",
+      "runner_id": null,
+      "required_capabilities": ["code", "mcp_tools", "workspace_sandbox", "local_models", "vllm"],
+      "required_labels": {
+        "pool": "local-gpu"
+      },
+      "locality": "any_node"
+    },
+    "model": {
+      "strategy": "first_available",
+      "required_features": ["tool_use", "json_schema"],
+      "candidates": [
+        {
+          "provider": "vllm",
+          "model": "qwen3-coder-30b",
+          "endpoint": "http://vllm:8000/v1",
+          "priority": 10,
+          "weight": 1,
+          "context_window": 131072,
+          "features": ["tool_use", "json_schema", "streaming", "long_context", "local_weights"],
+          "labels": {
+            "gpu": "a100"
+          }
+        }
+      ],
+      "fallback": "allow_fallback"
+    },
+    "persona": {
+      "name": "staff-coding-worker",
+      "instructions_ref": "docs/personas/staff-coding-worker.md",
+      "inline_instructions": ["Prefer small patches with explicit validation evidence."],
+      "risk_tolerance": "conservative"
+    },
+    "mcp": {
+      "context_id": "local-dev-tools",
+      "servers": [
+        {
+          "name": "tool-registry",
+          "transport": "http",
+          "uri": "http://tool-registry:9084/mcp",
+          "allowed_tools": ["repo_status", "test_command", "artifact_manifest"],
+          "auth": {
+            "kind": "secret",
+            "secret": {
+              "provider": "kubernetes_secret",
+              "name": "jattg-agent-secrets",
+              "key": "MCP_TOOL_TOKEN",
+              "namespace": "jattg",
+              "audience": "tool-registry"
+            }
+          }
+        }
+      ],
+      "secret_refs": [],
+      "propagation": "runner_resolves_refs",
+      "token_ttl_seconds": 900
+    },
+    "notifications": {
+      "events": ["approval_requested", "human_feedback_requested", "task_blocked", "goal_completed"],
+      "targets": [
+        {
+          "kind": "thread",
+          "address": "current-codex-thread",
+          "secret_ref": null,
+          "require_ack": false
+        }
+      ],
+      "feedback_thread_key": "local-model-coding-smoke",
+      "escalation_seconds": 3600
+    }
+  },
+  "initial_tasks": []
+}

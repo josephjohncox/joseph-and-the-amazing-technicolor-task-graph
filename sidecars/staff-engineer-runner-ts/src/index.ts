@@ -129,14 +129,16 @@ type AgentRunRequest = {
       results?: unknown;
     };
   };
+  timeout_seconds?: number | null;
 };
 
 type AgentRunResult = {
   task_id: string;
-  status: "done" | "partial" | "blocked" | "failed";
+  status: "done" | "partial" | "blocked" | "failed" | "timed_out";
   summary: string;
   review: ReviewOutput | null;
   research: ResearchOutput | null;
+  branch_vote: BranchVoteOutput | null;
   runner_id: string | null;
   model_used: unknown | null;
   mcp_context_used: unknown | null;
@@ -184,6 +186,14 @@ type ResearchOutput = {
     validation_checks: string[];
   };
   open_questions: string[];
+};
+
+type BranchVoteOutput = {
+  group_id: string;
+  selected_task_id: string;
+  ranked_task_ids: string[];
+  confidence: number;
+  rationale: string;
 };
 
 type MemoryContextResponse = {
@@ -281,6 +291,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
       summary: taskSummary(request),
       review: reviewOutput(request),
       research: researchOutput(request, memoryContext),
+      branch_vote: branchVoteOutput(request),
       runner_id: runnerId,
       model_used: request.task.execution?.model?.candidates?.[0] ?? null,
       mcp_context_used: request.task.execution?.mcp ?? null,
@@ -319,7 +330,13 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
 
 function taskStatus(request: AgentRunRequest): "done" | "blocked" {
   const purpose = taskPurposeKind(request.task.purpose);
-  return purpose === "review" || purpose === "unification" || purpose === "research" ? "done" : "blocked";
+  return purpose === "review" ||
+    purpose === "unification" ||
+    purpose === "branch_vote" ||
+    purpose === "branch_unification" ||
+    purpose === "research"
+    ? "done"
+    : "blocked";
 }
 
 function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
@@ -358,7 +375,63 @@ function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
       unification_summary: "stub unification is inconclusive",
     };
   }
+  if (purpose === "branch_vote") {
+    return {
+      decision: "inconclusive",
+      reward: 0.7,
+      findings: [
+        {
+          severity: "medium",
+          title: "Live branch voting is disabled",
+          body: "The stub runner returned a branch vote contract but did not run Claude Code or inspect real candidate artifacts.",
+          evidence: [`mode=${mode}`],
+          suggested_action: "Enable live staff-engineer mode before treating this branch vote as production evidence.",
+        },
+      ],
+      retry_recommended: true,
+      unification_summary: "stub branch vote is inconclusive",
+    };
+  }
+  if (purpose === "branch_unification") {
+    return {
+      decision: "inconclusive",
+      reward: 0.75,
+      findings: [
+        {
+          severity: "medium",
+          title: "Live branch unification is disabled",
+          body: "The stub runner returned a branch unification vote but did not reconcile real candidate branches or review evidence.",
+          evidence: [`mode=${mode}`],
+          suggested_action: "Enable live staff-engineer mode before treating this branch unification as production evidence.",
+        },
+      ],
+      retry_recommended: true,
+      unification_summary: "stub branch unification is inconclusive",
+    };
+  }
   return null;
+}
+
+function branchVoteOutput(request: AgentRunRequest): BranchVoteOutput | null {
+  const purpose = request.task.purpose;
+  if (!isRecord(purpose)) return null;
+  if (purpose.kind !== "branch_vote" && purpose.kind !== "branch_unification") return null;
+  const candidateTaskIds = Array.isArray(purpose.candidate_task_ids)
+    ? purpose.candidate_task_ids.filter((candidate): candidate is string => typeof candidate === "string")
+    : [];
+  const groupId = typeof purpose.group_id === "string" ? purpose.group_id : null;
+  const selectedTaskId = candidateTaskIds[0] ?? null;
+  if (!groupId || !selectedTaskId) return null;
+  return {
+    group_id: groupId,
+    selected_task_id: selectedTaskId,
+    ranked_task_ids: candidateTaskIds,
+    confidence: purpose.kind === "branch_unification" ? 0.75 : 0.7,
+    rationale:
+      purpose.kind === "branch_unification"
+        ? "stub branch unifier selected the first candidate; live reconciliation is disabled"
+        : "stub branch voter selected the first candidate; live candidate review is disabled",
+  };
 }
 
 function researchOutput(request: AgentRunRequest, memoryContext: MemoryContextResponse | null): ResearchOutput | null {
@@ -538,6 +611,12 @@ function taskSummary(request: AgentRunRequest): string {
   }
   if (purpose === "unification") {
     return `staff-engineer unification contract accepted ${request.task.id}; live Claude Code review merge is not enabled`;
+  }
+  if (purpose === "branch_vote") {
+    return `staff-engineer branch-vote contract accepted ${request.task.id}; live candidate review is not enabled`;
+  }
+  if (purpose === "branch_unification") {
+    return `staff-engineer branch-unification contract accepted ${request.task.id}; live candidate merge review is not enabled`;
   }
   if (purpose === "research") {
     return `staff-engineer research contract accepted ${request.task.id}; live source gathering is not enabled`;

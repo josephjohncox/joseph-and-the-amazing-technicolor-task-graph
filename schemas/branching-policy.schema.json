@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BranchingPolicy",
+  "type": "object",
+  "properties": {
+    "branch_on_root": {
+      "type": "boolean"
+    },
+    "branch_on_subgoals": {
+      "type": "boolean"
+    },
+    "cancel_original_on_branch": {
+      "type": "boolean"
+    },
+    "default_selection_strategy": {
+      "$ref": "#/$defs/BranchSelectionStrategy"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "max_branch_groups": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_candidates_per_group": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "require_model_diversity": {
+      "type": "boolean"
+    },
+    "voting": {
+      "$ref": "#/$defs/BranchVotingPolicy"
+    }
+  },
+  "required": [
+    "enabled",
+    "max_branch_groups",
+    "max_candidates_per_group",
+    "branch_on_root",
+    "branch_on_subgoals",
+    "cancel_original_on_branch",
+    "require_model_diversity",
+    "default_selection_strategy",
+    "voting"
+  ],
+  "$defs": {
+    "BranchSelectionStrategy": {
+      "type": "string",
+      "enum": [
+        "human",
+        "voter_quorum",
+        "highest_score",
+        "unifier_decision"
+      ]
+    },
+    "BranchVotingPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "min_votes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "require_unification": {
+          "type": "boolean"
+        },
+        "unifier_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "voter_roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkerKind"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "min_votes",
+        "require_unification",
+        "unifier_role"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

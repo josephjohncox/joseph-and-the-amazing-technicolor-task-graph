@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BranchGroup",
+  "type": "object",
+  "properties": {
+    "candidate_task_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "operator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "original_task_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "selected_task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "selection_strategy": {
+      "$ref": "#/$defs/BranchSelectionStrategy"
+    },
+    "status": {
+      "$ref": "#/$defs/BranchGroupStatus"
+    },
+    "subgoal_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "unification_task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "voter_task_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "original_task_id",
+    "reason",
+    "selection_strategy",
+    "status"
+  ],
+  "$defs": {
+    "BranchGroupStatus": {
+      "type": "string",
+      "enum": [
+        "candidates_spawned",
+        "voting_spawned",
+        "ready_for_unification",
+        "ready_for_selection",
+        "selected",
+        "cancelled"
+      ]
+    },
+    "BranchSelectionStrategy": {
+      "type": "string",
+      "enum": [
+        "human",
+        "voter_quorum",
+        "highest_score",
+        "unifier_decision"
+      ]
+    }
+  }
+}

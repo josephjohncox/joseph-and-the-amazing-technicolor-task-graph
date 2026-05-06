@@ -158,6 +158,12 @@ Include concrete edits when changes are requested.
 
 `control_policy`: Use `human_steered_continuous` for long-running initiatives that need operator steering. Use explicit stop conditions; do not rely on a free-running loop.
 
+`restart_policy`: Enable for work that may be resumed after runner loss, timeouts, config repair, model changes, or operator steering. Keep max restart counts finite. Use `scope = task` for a single failed task, `scope = blocked` for all blocked tasks, and `scope = goal` only when the whole frontier should be requeued.
+
+`timeout_policy`: Set task and runner-call timeouts so sidecars cannot hold a durable frontier forever. The coordinator records timed-out tasks as structured worker results, then applies `on_task_timeout`; the default is `restart_if_allowed`.
+
+`branching_policy`: Enable when two or more implementations should compete. Use branch groups for high-risk code paths, model bakeoffs, ambiguous designs, or places where you want different personas to solve the same subgoal. Candidate branches should return artifacts; vote tasks return `BranchVoteOutput`; optional unifier tasks turn votes into one selected implementation.
+
 `event_sources`: For recurring or real-world-triggered work, author an event source and route instead of asking an agent to sleep, poll, or watch forever. Event routes can create a new goal, create a research goal, steer an existing goal, or pause for human review. Schedule and webhook activation should go through approval when it introduces external callbacks, calendar access, or recurring spend.
 
 `research_policy`: Enable when answers may change or when external claims affect implementation. Require sources and use plans.

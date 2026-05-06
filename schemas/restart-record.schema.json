@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RestartRecord",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "message": {
+      "type": "string"
+    },
+    "operator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "$ref": "#/$defs/RestartReason"
+    },
+    "restarted_task_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "scope": {
+      "$ref": "#/$defs/RestartScope"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "id",
+    "scope",
+    "reason",
+    "message"
+  ],
+  "$defs": {
+    "RestartReason": {
+      "type": "string",
+      "enum": [
+        "operator_requested",
+        "runner_lost",
+        "task_timed_out",
+        "goal_timed_out",
+        "config_changed",
+        "model_changed",
+        "review_rejected",
+        "other"
+      ]
+    },
+    "RestartScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "failed",
+        "blocked",
+        "timed_out"
+      ]
+    }
+  }
+}

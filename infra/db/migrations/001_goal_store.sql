@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS coat.tasks (
         'review',
         'unification',
         'actor_retry',
+        'candidate_branch',
+        'branch_vote',
+        'branch_unification',
         'research'
     ))
 );

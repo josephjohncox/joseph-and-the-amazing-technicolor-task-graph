@@ -10,6 +10,20 @@
         "$ref": "#/$defs/ApprovalRequest"
       }
     },
+    "branch_groups": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BranchGroup"
+      }
+    },
+    "branch_votes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BranchVoteRecord"
+      }
+    },
     "events": {
       "type": "array",
       "default": [],
@@ -39,6 +53,13 @@
       "default": [],
       "items": {
         "$ref": "#/$defs/MemoryEvent"
+      }
+    },
+    "restart_history": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RestartRecord"
       }
     },
     "review_rounds": {
@@ -73,6 +94,13 @@
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/TaskNode"
+      }
+    },
+    "timeout_events": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/TimeoutEvent"
       }
     }
   },
@@ -390,6 +418,207 @@
         "manual_or_brokered",
         "broker_can_refresh",
         "runner_can_refresh"
+      ]
+    },
+    "BranchGroup": {
+      "type": "object",
+      "properties": {
+        "candidate_task_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "operator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "original_task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "selected_task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "selection_strategy": {
+          "$ref": "#/$defs/BranchSelectionStrategy"
+        },
+        "status": {
+          "$ref": "#/$defs/BranchGroupStatus"
+        },
+        "subgoal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unification_task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "voter_task_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "original_task_id",
+        "reason",
+        "selection_strategy",
+        "status"
+      ]
+    },
+    "BranchGroupStatus": {
+      "type": "string",
+      "enum": [
+        "candidates_spawned",
+        "voting_spawned",
+        "ready_for_unification",
+        "ready_for_selection",
+        "selected",
+        "cancelled"
+      ]
+    },
+    "BranchSelectionStrategy": {
+      "type": "string",
+      "enum": [
+        "human",
+        "voter_quorum",
+        "highest_score",
+        "unifier_decision"
+      ]
+    },
+    "BranchVoteRecord": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "type": "number",
+          "format": "float"
+        },
+        "group_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "selected_task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "voter_task_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "voter_task_id",
+        "group_id",
+        "selected_task_id",
+        "confidence",
+        "rationale"
+      ]
+    },
+    "BranchVotingPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "min_votes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "require_unification": {
+          "type": "boolean"
+        },
+        "unifier_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "voter_roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkerKind"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "min_votes",
+        "require_unification",
+        "unifier_role"
+      ]
+    },
+    "BranchingPolicy": {
+      "type": "object",
+      "properties": {
+        "branch_on_root": {
+          "type": "boolean"
+        },
+        "branch_on_subgoals": {
+          "type": "boolean"
+        },
+        "cancel_original_on_branch": {
+          "type": "boolean"
+        },
+        "default_selection_strategy": {
+          "$ref": "#/$defs/BranchSelectionStrategy"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_branch_groups": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_candidates_per_group": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "require_model_diversity": {
+          "type": "boolean"
+        },
+        "voting": {
+          "$ref": "#/$defs/BranchVotingPolicy"
+        }
+      },
+      "required": [
+        "enabled",
+        "max_branch_groups",
+        "max_candidates_per_group",
+        "branch_on_root",
+        "branch_on_subgoals",
+        "cancel_original_on_branch",
+        "require_model_diversity",
+        "default_selection_strategy",
+        "voting"
       ]
     },
     "Budget": {
@@ -911,6 +1140,29 @@
             "out_of_scope": []
           }
         },
+        "branching_policy": {
+          "$ref": "#/$defs/BranchingPolicy",
+          "default": {
+            "branch_on_root": true,
+            "branch_on_subgoals": true,
+            "cancel_original_on_branch": true,
+            "default_selection_strategy": "human",
+            "enabled": false,
+            "max_branch_groups": 8,
+            "max_candidates_per_group": 4,
+            "require_model_diversity": false,
+            "voting": {
+              "enabled": true,
+              "min_votes": 2,
+              "require_unification": true,
+              "unifier_role": "patch_merger",
+              "voter_roles": [
+                "reviewer",
+                "tester"
+              ]
+            }
+          }
+        },
         "control_policy": {
           "$ref": "#/$defs/ControlLoopPolicy",
           "default": {
@@ -1143,6 +1395,28 @@
             ]
           }
         },
+        "restart_policy": {
+          "$ref": "#/$defs/RestartPolicy",
+          "default": {
+            "allowed_reasons": [
+              "operator_requested",
+              "runner_lost",
+              "task_timed_out",
+              "goal_timed_out",
+              "config_changed"
+            ],
+            "allowed_scopes": [
+              "goal",
+              "task",
+              "blocked"
+            ],
+            "enabled": true,
+            "max_goal_restarts": 3,
+            "max_task_restarts": 5,
+            "preserve_artifacts": true,
+            "reset_attempts_on_restart": false
+          }
+        },
         "review_policy": {
           "$ref": "#/$defs/ReviewPolicy",
           "default": {
@@ -1167,6 +1441,20 @@
         },
         "root_budget": {
           "$ref": "#/$defs/Budget"
+        },
+        "timeout_policy": {
+          "$ref": "#/$defs/TimeoutPolicy",
+          "default": {
+            "approval_timeout_seconds": 3600,
+            "enabled": true,
+            "goal_timeout_seconds": 14400,
+            "idle_timeout_seconds": 900,
+            "on_goal_timeout": "block_and_notify",
+            "on_task_timeout": "restart_if_allowed",
+            "runner_call_timeout_seconds": 3600,
+            "runner_dispatch_timeout_seconds": 30,
+            "task_run_timeout_seconds": 3600
+          }
         },
         "title": {
           "type": "string"
@@ -2162,6 +2450,119 @@
         "min_confidence"
       ]
     },
+    "RestartPolicy": {
+      "type": "object",
+      "properties": {
+        "allowed_reasons": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RestartReason"
+          }
+        },
+        "allowed_scopes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RestartScope"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_goal_restarts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_task_restarts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "preserve_artifacts": {
+          "type": "boolean"
+        },
+        "reset_attempts_on_restart": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "max_goal_restarts",
+        "max_task_restarts",
+        "reset_attempts_on_restart",
+        "preserve_artifacts"
+      ]
+    },
+    "RestartReason": {
+      "type": "string",
+      "enum": [
+        "operator_requested",
+        "runner_lost",
+        "task_timed_out",
+        "goal_timed_out",
+        "config_changed",
+        "model_changed",
+        "review_rejected",
+        "other"
+      ]
+    },
+    "RestartRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message": {
+          "type": "string"
+        },
+        "operator": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/RestartReason"
+        },
+        "restarted_task_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "scope": {
+          "$ref": "#/$defs/RestartScope"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "id",
+        "scope",
+        "reason",
+        "message"
+      ]
+    },
+    "RestartScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "failed",
+        "blocked",
+        "timed_out"
+      ]
+    },
     "ResultChannelPolicy": {
       "type": "object",
       "properties": {
@@ -3034,6 +3435,92 @@
         {
           "type": "object",
           "properties": {
+            "candidate_index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "candidate_branch"
+            },
+            "original_task_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "original_task_id",
+            "candidate_index"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "branch_vote"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "candidate_task_ids"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "branch_unification"
+            },
+            "voter_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "candidate_task_ids",
+            "voter_task_ids"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "research"
@@ -3061,6 +3548,120 @@
         "blocked",
         "failed",
         "cancelled"
+      ]
+    },
+    "TimeoutAction": {
+      "type": "string",
+      "enum": [
+        "block_and_notify",
+        "fail",
+        "restart_if_allowed",
+        "request_human_approval"
+      ]
+    },
+    "TimeoutEvent": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TimeoutAction"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "action",
+        "timeout_seconds",
+        "message"
+      ]
+    },
+    "TimeoutPolicy": {
+      "type": "object",
+      "properties": {
+        "approval_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "goal_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "idle_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "on_goal_timeout": {
+          "$ref": "#/$defs/TimeoutAction"
+        },
+        "on_task_timeout": {
+          "$ref": "#/$defs/TimeoutAction"
+        },
+        "runner_call_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "runner_dispatch_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "task_run_timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "enabled",
+        "on_goal_timeout",
+        "on_task_timeout"
       ]
     },
     "VectorMemoryPolicy": {

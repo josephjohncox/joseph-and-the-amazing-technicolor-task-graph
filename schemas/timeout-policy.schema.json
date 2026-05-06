@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TimeoutPolicy",
+  "type": "object",
+  "properties": {
+    "approval_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "goal_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "idle_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "on_goal_timeout": {
+      "$ref": "#/$defs/TimeoutAction"
+    },
+    "on_task_timeout": {
+      "$ref": "#/$defs/TimeoutAction"
+    },
+    "runner_call_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "runner_dispatch_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "task_run_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "enabled",
+    "on_goal_timeout",
+    "on_task_timeout"
+  ],
+  "$defs": {
+    "TimeoutAction": {
+      "type": "string",
+      "enum": [
+        "block_and_notify",
+        "fail",
+        "restart_if_allowed",
+        "request_human_approval"
+      ]
+    }
+  }
+}

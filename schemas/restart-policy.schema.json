@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RestartPolicy",
+  "type": "object",
+  "properties": {
+    "allowed_reasons": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RestartReason"
+      }
+    },
+    "allowed_scopes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RestartScope"
+      }
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "max_goal_restarts": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_task_restarts": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "preserve_artifacts": {
+      "type": "boolean"
+    },
+    "reset_attempts_on_restart": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "enabled",
+    "max_goal_restarts",
+    "max_task_restarts",
+    "reset_attempts_on_restart",
+    "preserve_artifacts"
+  ],
+  "$defs": {
+    "RestartReason": {
+      "type": "string",
+      "enum": [
+        "operator_requested",
+        "runner_lost",
+        "task_timed_out",
+        "goal_timed_out",
+        "config_changed",
+        "model_changed",
+        "review_rejected",
+        "other"
+      ]
+    },
+    "RestartScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "failed",
+        "blocked",
+        "timed_out"
+      ]
+    }
+  }
+}

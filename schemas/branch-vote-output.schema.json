@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BranchVoteOutput",
+  "type": "object",
+  "properties": {
+    "confidence": {
+      "type": "number",
+      "format": "float"
+    },
+    "group_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "ranked_task_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "selected_task_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "group_id",
+    "selected_task_id",
+    "confidence",
+    "rationale"
+  ]
+}

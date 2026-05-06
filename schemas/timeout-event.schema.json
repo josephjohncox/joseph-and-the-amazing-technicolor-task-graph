@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TimeoutEvent",
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/TimeoutAction"
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "message": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "action",
+    "timeout_seconds",
+    "message"
+  ],
+  "$defs": {
+    "TimeoutAction": {
+      "type": "string",
+      "enum": [
+        "block_and_notify",
+        "fail",
+        "restart_if_allowed",
+        "request_human_approval"
+      ]
+    }
+  }
+}

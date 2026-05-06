@@ -11,6 +11,7 @@ Goals should enter the durable system as clean work contracts, not as vague prom
 - `authoring`: operator intent, assumptions, open questions, constraints, acceptance evidence, and out-of-scope work.
 - `plan.subgoals`: stable subgoal records with ID, title, owner, expected artifacts, acceptance evidence, dependencies, and tags.
 - `initial_tasks`: known first-frontier `ChildTaskRequest`s with matching `subgoal_id`, role, budget, sandbox, execution profile, and done criteria.
+- `restart_policy`, `timeout_policy`, and `branching_policy`: operational controls for retrying goals, bounding runner calls, and splitting the same subgoal across multiple candidate implementations.
 
 `GoalState::new` creates the root planner task and materializes each `initial_tasks` entry as a child `TaskNode`. The root remains the global planner; seeded tasks become normal durable tasks that runner selection can dispatch immediately.
 
@@ -48,7 +49,10 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 3. Submit the goal.
 4. Inspect durable status with `coat goal progress`.
 5. Find distributable subgoal work with `coat goal tasks`.
-6. Apply changes through `coat goal steer`, not by editing workflow state.
+6. Branch risky or high-value work with `coat goal branch --file examples/branch-request-root.json`.
+7. Select a winning branch with `coat goal select-branch` after vote/unifier evidence is available.
+8. Restart blocked or timed-out work with `coat goal restart --file examples/restart-request-task.json`.
+9. Apply changes through `coat goal steer`, not by editing workflow state.
 
 ## Design Rules
 
@@ -57,3 +61,5 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 - Subgoal IDs must be stable and human-readable enough for dashboards and notifications.
 - A task without a subgoal is allowed only for root planning, global review, unification, or operator-injected emergency work.
 - Progress must be calculated from durable state and validation reports, not sidecar-local thread state.
+- Branching is a durable task-tree operation: the original target task, candidate tasks, vote tasks, unifier task, and final selection are all queryable state.
+- Timeouts and restarts are policy-controlled. A timed-out runner call may restart a task only if `RestartPolicy` allows the reason and scope.

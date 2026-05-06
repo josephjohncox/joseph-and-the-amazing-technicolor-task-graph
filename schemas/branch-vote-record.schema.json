@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BranchVoteRecord",
+  "type": "object",
+  "properties": {
+    "confidence": {
+      "type": "number",
+      "format": "float"
+    },
+    "group_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "selected_task_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "voter_task_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "voter_task_id",
+    "group_id",
+    "selected_task_id",
+    "confidence",
+    "rationale"
+  ]
+}

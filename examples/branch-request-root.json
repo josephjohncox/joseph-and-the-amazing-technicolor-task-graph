@@ -1,0 +1,12 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
+  "target_task_id": null,
+  "subgoal_id": null,
+  "reason": "Run competing implementations with different models and choose one by vote.",
+  "candidate_count": 2,
+  "candidate_roles": ["codex", "codex"],
+  "candidate_executions": [],
+  "prompt_overrides": [],
+  "selection_strategy": "voter_quorum",
+  "operator": "joseph"
+}

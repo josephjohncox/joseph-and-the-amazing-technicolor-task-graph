@@ -10,6 +10,17 @@
         "$ref": "#/$defs/ArtifactRef"
       }
     },
+    "branch_vote": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BranchVoteOutput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "child_requests": {
       "type": "array",
       "default": [],
@@ -258,6 +269,40 @@
         "manual_or_brokered",
         "broker_can_refresh",
         "runner_can_refresh"
+      ]
+    },
+    "BranchVoteOutput": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "type": "number",
+          "format": "float"
+        },
+        "group_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ranked_task_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "selected_task_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "group_id",
+        "selected_task_id",
+        "confidence",
+        "rationale"
       ]
     },
     "Budget": {
@@ -1757,6 +1802,92 @@
         {
           "type": "object",
           "properties": {
+            "candidate_index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "candidate_branch"
+            },
+            "original_task_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "original_task_id",
+            "candidate_index"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "branch_vote"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "candidate_task_ids"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "branch_unification"
+            },
+            "voter_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "candidate_task_ids",
+            "voter_task_ids"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "research"
@@ -1792,7 +1923,8 @@
         "done",
         "partial",
         "blocked",
-        "failed"
+        "failed",
+        "timed_out"
       ]
     }
   }

@@ -879,7 +879,13 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
         }
         GoalSubcommand::SelectBranch(args) => {
             let request: BranchSelectionRequest = read_json_file(&args.file)?;
-            restate_post_json(&args.restate_ingress, args.goal_id, "select_branch", &request).await
+            restate_post_json(
+                &args.restate_ingress,
+                args.goal_id,
+                "select_branch",
+                &request,
+            )
+            .await
         }
         GoalSubcommand::Cancel(args) => {
             restate_post_json(&args.restate_ingress, args.goal_id, "cancel", &args.reason).await

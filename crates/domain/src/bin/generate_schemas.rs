@@ -20,15 +20,15 @@ use coat_domain::{
     MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse, MemoryStoreRef,
     MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute, NotificationPolicy,
     NotificationRequest, ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind,
-    ObjectStoreRef, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy,
-    RestartRecord, RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewOutput,
-    ReviewPolicy, ReviewRound, RunnerDispatchCandidate, RunnerDispatchDecision,
-    RunnerDispatchRejection, RunnerDispatchRequest, RunnerRegistration, SandboxProfile,
-    SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef, SourceArtifact, SteeringDirective,
-    SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskRecord, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest,
-    TriggeredGoalResponse, TriggeredGoalStatus, ValidationReport, ValidationRequest,
-    VectorMemoryPolicy, WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
+    ObjectStoreRef, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord,
+    RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewOutput, ReviewPolicy, ReviewRound,
+    RunnerDispatchCandidate, RunnerDispatchDecision, RunnerDispatchRejection,
+    RunnerDispatchRequest, RunnerRegistration, SandboxProfile, SatisfactionReport, ScheduleKind,
+    ScheduleSpec, SecretRef, SourceArtifact, SteeringDirective, SubgoalProgress, SubgoalSpec,
+    TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind, TaskQuery,
+    TaskRecord, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest, TriggeredGoalResponse,
+    TriggeredGoalStatus, ValidationReport, ValidationRequest, VectorMemoryPolicy, WebhookAuthKind,
+    WebhookAuthPolicy, WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -367,7 +367,11 @@ fn main() -> anyhow::Result<()> {
         "branch-selection-request.schema.json",
         schema_for!(BranchSelectionRequest),
     )?;
-    write_schema(&out_dir, "branch-group.schema.json", schema_for!(BranchGroup))?;
+    write_schema(
+        &out_dir,
+        "branch-group.schema.json",
+        schema_for!(BranchGroup),
+    )?;
     write_schema(
         &out_dir,
         "branch-vote-output.schema.json",

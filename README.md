@@ -48,6 +48,21 @@ cargo run -p coat-cli -- goal tasks \
 
 See `docs/operations/goal-authoring.md` for the intake, memory preflight, research preflight, compiler, and critic loop used to turn vague operator requests into structured goals.
 
+Goals also carry restart, timeout, and branch-competition policy. Operators can restart a blocked/timed-out goal without creating a new workflow, branch a goal or subgoal into multiple candidate implementations, and select the winning branch after reviewer/tester votes:
+
+```sh
+cargo run -p coat-cli -- goal submit --file examples/goal-branching-competition.json
+cargo run -p coat-cli -- goal branch \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/branch-request-root.json
+cargo run -p coat-cli -- goal select-branch \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/branch-selection.json
+cargo run -p coat-cli -- goal restart \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/restart-request-task.json
+```
+
 ## Services
 
 - `coat-coordinator`: Restate workflow, distributed runner handoff, local stub fallback, validation handler.
@@ -113,7 +128,7 @@ The public event contract is documented in `docs/api/event-gateway.asyncapi.yaml
 
 ## Distributed Runners
 
-Each durable task has an execution profile with runner selection, model candidates, persona, MCP context refs, and notification policy.
+Each durable task has an execution profile with runner selection, model candidates, persona, MCP context refs, timeout budget, result channels, and notification policy.
 
 Example local vLLM runner registration:
 
@@ -126,6 +141,8 @@ cargo run -p coat-cli -- runner dispatch --file examples/dispatch-smoke.json
 The bundled Codex and staff-engineer sidecars auto-register when `RUNNER_REGISTRY_URL` and `RUNNER_ENDPOINT` are set, which Compose and Kubernetes do by default.
 
 Dispatch returns ranked candidates and rejected runners with reasons. Model routes can prefer first available, lowest latency, lowest cost, highest quality, weighted, or sticky-per-goal selection across Codex, hosted, and local OpenAI-compatible providers.
+
+Branch competition uses the same routing layer: candidate tasks can use different personas, runner labels, or model routes, then branch-vote tasks and an optional unifier choose one implementation. The coordinator owns the branch group and selection record; workers only return structured evidence and votes.
 
 Sidecars expose `/capabilities` for operator inspection and `/verify` for non-mutating dependency checks. The response includes roles, model candidates, MCP propagation support, active capacity, review-contract support, and live-mode readiness without exposing secret values.
 

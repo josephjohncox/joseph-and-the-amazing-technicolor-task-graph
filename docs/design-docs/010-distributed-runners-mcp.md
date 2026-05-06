@@ -13,9 +13,17 @@ Every `TaskNode` has an `ExecutionProfile`:
 - `PersonaSpec`: task-local persona and instruction references.
 - `McpContextRef`: MCP servers, allowed tools, secret refs, and propagation mode.
 - `NotificationPolicy`: events and targets for feedback and approvals.
-- `TaskPurpose`: actor work, critic review, review unification, or actor retry.
+- `TaskPurpose`: actor work, candidate branch, branch vote, branch unification, critic review, review unification, actor retry, or research.
 
 Child tasks inherit the parent execution profile unless they request an override.
+
+## Branch Competition
+
+`GoalSpec.branching_policy` lets the coordinator create a `BranchGroup` for a root task, subgoal task, or explicit task ID. The target task can be cancelled, then multiple `candidate_branch` tasks run against the same prompt and dependencies. Each candidate may override role, execution profile, persona, model route, or prompt.
+
+When candidates validate, the coordinator spawns `branch_vote` tasks using the configured voter roles. If `require_unification` is enabled, it then spawns one `branch_unification` task. The winning implementation is recorded through `BranchSelectionRequest` or by automatic policy such as `voter_quorum` or `highest_score`.
+
+This is how COAT allows multiple subagents or models to solve the same goal without losing control of global state: candidates produce artifacts, voters produce structured `BranchVoteOutput`, and the coordinator records the selected task ID.
 
 ## Runner Registry
 
@@ -25,7 +33,7 @@ Runners POST `RunnerRegistration` to `/runners`, send `/runners/heartbeat`, and 
 
 The registry is in-memory in this scaffold. It filters dispatch candidates by heartbeat lease and remaining capacity, but production should move runner state into Restate virtual objects or an indexed backing store.
 
-The coordinator's Restate `AgentRunner` calls `/dispatch` as a journaled side effect, then invokes the matched runner's `/run-task` endpoint with `AgentRunRequest`. In local development, `COAT_ALLOW_LOCAL_STUB_FALLBACK=true` lets unmatched or unavailable runners fall back to a local stub. Production deployments should set this to `false` so unmatched tasks block and notify humans instead of pretending work ran.
+The coordinator's Restate `AgentRunner` calls `/dispatch` as a journaled side effect, then invokes the matched runner's `/run-task` endpoint with `AgentRunRequest`. `AgentRunRequest.timeout_seconds` is derived from `GoalSpec.timeout_policy` and task budget, so slow or wedged runners produce a structured timeout result instead of blocking the control loop indefinitely. In local development, `COAT_ALLOW_LOCAL_STUB_FALLBACK=true` lets unmatched or unavailable runners fall back to a local stub. Production deployments should set this to `false` so unmatched tasks block and notify humans instead of pretending work ran.
 
 Dispatch decisions include:
 

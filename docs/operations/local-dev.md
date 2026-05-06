@@ -42,6 +42,15 @@ cargo run -p coat-cli -- event triggers
 cargo run -p coat-cli -- goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602 \
   --file examples/steering-request-research.json
+cargo run -p coat-cli -- goal branch \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/branch-request-root.json
+cargo run -p coat-cli -- goal select-branch \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/branch-selection.json
+cargo run -p coat-cli -- goal restart \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/restart-request-task.json
 cargo run -p coat-cli -- notify --file examples/notification-approval.json
 cargo run -p coat-cli -- notify --threads
 cargo run -p coat-cli -- notify --thread-key local-model-coding-smoke

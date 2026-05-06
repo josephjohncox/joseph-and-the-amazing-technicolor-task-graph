@@ -116,14 +116,16 @@ type AgentRunRequest = {
       results?: unknown;
     };
   };
+  timeout_seconds?: number | null;
 };
 
 type AgentRunResult = {
   task_id: string;
-  status: "done" | "partial" | "blocked" | "failed";
+  status: "done" | "partial" | "blocked" | "failed" | "timed_out";
   summary: string;
   review: ReviewOutput | null;
   research: ResearchOutput | null;
+  branch_vote: BranchVoteOutput | null;
   runner_id: string | null;
   model_used: unknown | null;
   mcp_context_used: unknown | null;
@@ -171,6 +173,14 @@ type ResearchOutput = {
     validation_checks: string[];
   };
   open_questions: string[];
+};
+
+type BranchVoteOutput = {
+  group_id: string;
+  selected_task_id: string;
+  ranked_task_ids: string[];
+  confidence: number;
+  rationale: string;
 };
 
 type MemoryContextResponse = {
@@ -265,6 +275,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
       summary: taskSummary(request),
       review: reviewOutput(request),
       research: researchOutput(request, memoryContext),
+      branch_vote: branchVoteOutput(request),
       runner_id: runnerId,
       model_used: request.task.execution?.model?.candidates?.[0] ?? null,
       mcp_context_used: request.task.execution?.mcp ?? null,
@@ -318,7 +329,47 @@ function reviewOutput(request: AgentRunRequest): ReviewOutput | null {
       unification_summary: "stub unifier accepted critic evidence",
     };
   }
+  if (purpose === "branch_vote") {
+    return {
+      decision: "accept",
+      reward: 0.8,
+      findings: [],
+      retry_recommended: false,
+      unification_summary: "stub branch vote selected a candidate",
+    };
+  }
+  if (purpose === "branch_unification") {
+    return {
+      decision: "accept",
+      reward: 0.9,
+      findings: [],
+      retry_recommended: false,
+      unification_summary: "stub branch unifier joined candidate votes",
+    };
+  }
   return null;
+}
+
+function branchVoteOutput(request: AgentRunRequest): BranchVoteOutput | null {
+  const purpose = request.task.purpose;
+  if (!isRecord(purpose)) return null;
+  if (purpose.kind !== "branch_vote" && purpose.kind !== "branch_unification") return null;
+  const candidateTaskIds = Array.isArray(purpose.candidate_task_ids)
+    ? purpose.candidate_task_ids.filter((candidate): candidate is string => typeof candidate === "string")
+    : [];
+  const groupId = typeof purpose.group_id === "string" ? purpose.group_id : null;
+  const selectedTaskId = candidateTaskIds[0] ?? null;
+  if (!groupId || !selectedTaskId) return null;
+  return {
+    group_id: groupId,
+    selected_task_id: selectedTaskId,
+    ranked_task_ids: candidateTaskIds,
+    confidence: purpose.kind === "branch_unification" ? 0.82 : 0.75,
+    rationale:
+      purpose.kind === "branch_unification"
+        ? "stub branch unifier selected the first validated candidate"
+        : "stub branch voter selected the first candidate",
+  };
 }
 
 function researchOutput(request: AgentRunRequest, memoryContext: MemoryContextResponse | null): ResearchOutput | null {
@@ -498,6 +549,15 @@ function taskSummary(request: AgentRunRequest): string {
   }
   if (purpose === "unification") {
     return `stub Codex unifier joined critic branches for task ${request.task.id}`;
+  }
+  if (purpose === "branch_vote") {
+    return `stub Codex voter compared branch candidates for task ${request.task.id}`;
+  }
+  if (purpose === "branch_unification") {
+    return `stub Codex branch unifier selected a candidate for task ${request.task.id}`;
+  }
+  if (purpose === "candidate_branch") {
+    return `stub Codex branch candidate implemented alternate path ${request.task.id}`;
   }
   if (purpose === "research") {
     return `stub Codex researcher answered ${request.task.id} with placeholder source capture`;

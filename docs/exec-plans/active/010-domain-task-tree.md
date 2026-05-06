@@ -9,6 +9,7 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 - Define `GoalSpec`, `GoalState`, `TaskNode`, `TaskStatus`, `WorkerKind`, `Budget`, `SandboxProfile`, `DoneCriteria`, and `ArtifactRef`.
 - Define worker and validator I/O contracts.
 - Implement frontier selection, budget exhaustion checks, spawn policy, cancellation, and validation state transitions.
+- Add `RestartPolicy`, `TimeoutPolicy`, `BranchingPolicy`, `BranchGroup`, `BranchVoteOutput`, and branch selection contracts.
 - Generate JSON schemas into `schemas/`.
 
 ## Tests
@@ -16,6 +17,9 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 - New goal creates a runnable planner root.
 - Spawn policy rejects depth and child-count overflow.
 - Validation enforces artifact and score criteria.
+- Restart requests requeue blocked tasks under policy.
+- Timeout policy can restart a task after a timed-out runner result.
+- Branch groups spawn candidate tasks, vote tasks, and durable selections.
 - Schema generation round-trips all public contracts.
 
 ## Acceptance

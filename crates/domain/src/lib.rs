@@ -104,8 +104,9 @@ impl GoalSpec {
             warnings.push("restart policy is enabled but max_goal_restarts is zero".to_string());
         }
         if self.branching_policy.enabled && self.branching_policy.max_candidates_per_group < 2 {
-            warnings
-                .push("branching policy is enabled but max_candidates_per_group is below two".to_string());
+            warnings.push(
+                "branching policy is enabled but max_candidates_per_group is below two".to_string(),
+            );
         }
         if self.branching_policy.enabled
             && self.branching_policy.voting.enabled
@@ -115,6 +116,27 @@ impl GoalSpec {
         }
         if self.review_policy.enabled && self.review_policy.min_reviews == 0 {
             warnings.push("review policy is enabled but min_reviews is zero".to_string());
+        }
+        if self.review_policy.doctrine.enabled
+            && self.review_policy.doctrine.resolved_objectives().is_empty()
+        {
+            missing.push(
+                "review doctrine is enabled but no review objectives are selected".to_string(),
+            );
+        }
+        if self.review_policy.doctrine.enabled
+            && self.review_policy.doctrine.coverage.require_gate_results
+            && self.review_policy.doctrine.resolved_validation_gates().is_empty()
+        {
+            missing.push(
+                "review doctrine requires gate results but no validation gates are selected"
+                    .to_string(),
+            );
+        }
+        if !self.review_policy.doctrine.enabled {
+            warnings.push(
+                "review doctrine is disabled; opt in for typed quality, testing, style, and formal-methods review goals".to_string(),
+            );
         }
         if !self.review_policy.enabled {
             warnings.push(
@@ -320,6 +342,7 @@ impl GoalState {
             budget: goal.root_budget.clone(),
             sandbox: SandboxProfile::default(),
             done_criteria: goal.done_criteria.clone(),
+            review_doctrine: goal.review_policy.doctrine.clone(),
             priority: TaskPriority::High,
             tags: vec!["root".to_string()],
             result: None,
@@ -1535,9 +1558,12 @@ impl GoalState {
             original_task_id: target.id,
             subgoal_id: target.subgoal_id.clone(),
             reason: request.reason,
-            selection_strategy: request
-                .selection_strategy
-                .unwrap_or_else(|| self.goal.branching_policy.default_selection_strategy.clone()),
+            selection_strategy: request.selection_strategy.unwrap_or_else(|| {
+                self.goal
+                    .branching_policy
+                    .default_selection_strategy
+                    .clone()
+            }),
             candidate_task_ids,
             voter_task_ids: Vec::new(),
             unification_task_id: None,
@@ -2075,7 +2101,7 @@ impl GoalState {
                         left.1
                             .0
                             .cmp(&right.1.0)
-                            .then_with(|| left.1 .1.total_cmp(&right.1 .1))
+                            .then_with(|| left.1.1.total_cmp(&right.1.1))
                     })
                     .map(|(task_id, _)| task_id)
             }
@@ -2095,7 +2121,10 @@ impl GoalState {
     }
 
     fn tasks_terminal_ok(&self, task_ids: &[TaskId]) -> bool {
-        !task_ids.is_empty() && task_ids.iter().all(|task_id| self.task_terminal_ok(*task_id))
+        !task_ids.is_empty()
+            && task_ids
+                .iter()
+                .all(|task_id| self.task_terminal_ok(*task_id))
     }
 
     fn task_terminal_ok(&self, task_id: TaskId) -> bool {
@@ -2230,6 +2259,8 @@ pub struct TaskNode {
     pub sandbox: SandboxProfile,
     pub done_criteria: DoneCriteria,
     #[serde(default)]
+    pub review_doctrine: ReviewDoctrine,
+    #[serde(default)]
     pub priority: TaskPriority,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -2269,6 +2300,9 @@ impl TaskNode {
             done_criteria: req
                 .done_criteria
                 .unwrap_or_else(|| parent.done_criteria.clone()),
+            review_doctrine: req
+                .review_doctrine
+                .unwrap_or_else(|| parent.review_doctrine.clone()),
             priority: req.priority,
             tags: req.tags,
             result: None,
@@ -3074,7 +3108,11 @@ impl Default for RestartPolicy {
             max_task_restarts: 5,
             reset_attempts_on_restart: false,
             preserve_artifacts: true,
-            allowed_scopes: vec![RestartScope::Goal, RestartScope::Task, RestartScope::Blocked],
+            allowed_scopes: vec![
+                RestartScope::Goal,
+                RestartScope::Task,
+                RestartScope::Blocked,
+            ],
             allowed_reasons: vec![
                 RestartReason::OperatorRequested,
                 RestartReason::RunnerLost,
@@ -5604,6 +5642,8 @@ pub struct ChildTaskRequest {
     pub budget: Option<Budget>,
     pub sandbox: Option<SandboxProfile>,
     pub done_criteria: Option<DoneCriteria>,
+    #[serde(default)]
+    pub review_doctrine: Option<ReviewDoctrine>,
     pub execution: Option<ExecutionProfile>,
     #[serde(default)]
     pub priority: TaskPriority,
@@ -7857,6 +7897,22 @@ mod tests {
         .expect("goal-template-structured example parses");
         serde_json::from_str::<GoalSpec>(include_str!("../../../examples/goal-clean-plan.json"))
             .expect("goal-clean-plan example parses");
+        serde_json::from_str::<GoalSpec>(include_str!(
+            "../../../examples/goal-branching-competition.json"
+        ))
+        .expect("goal-branching-competition example parses");
+        serde_json::from_str::<RestartRequest>(include_str!(
+            "../../../examples/restart-request-task.json"
+        ))
+        .expect("restart-request example parses");
+        serde_json::from_str::<BranchRequest>(include_str!(
+            "../../../examples/branch-request-root.json"
+        ))
+        .expect("branch-request example parses");
+        serde_json::from_str::<BranchSelectionRequest>(include_str!(
+            "../../../examples/branch-selection.json"
+        ))
+        .expect("branch-selection example parses");
         serde_json::from_str::<TaskQuery>(include_str!(
             "../../../examples/task-query-subgoal.json"
         ))

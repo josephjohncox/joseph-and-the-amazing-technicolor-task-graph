@@ -628,14 +628,14 @@ async fn call_runner(
     let timeout_seconds = request.timeout_seconds.unwrap_or(3_600).max(1);
     let call = async {
         let response = client
-        .post(format!(
-            "{}/run-task",
-            runner_endpoint.trim_end_matches('/')
-        ))
-        .json(request)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+            .post(format!(
+                "{}/run-task",
+                runner_endpoint.trim_end_matches('/')
+            ))
+            .json(request)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();

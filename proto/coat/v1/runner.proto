@@ -12,6 +12,15 @@ message AgentRunnerServiceRunTaskRequest {
   JsonSchemaEnvelope task = 4;
   repeated ArtifactRef context_artifacts = 5;
   string coordinator_trace_id = 6;
+  uint64 timeout_seconds = 7;
+}
+
+message BranchVoteOutputEnvelope {
+  string group_id = 1;
+  string selected_task_id = 2;
+  repeated string ranked_task_ids = 3;
+  double confidence = 4;
+  string rationale = 5;
 }
 
 message AgentRunnerServiceRunTaskResponse {
@@ -28,6 +37,7 @@ message AgentRunnerServiceRunTaskResponse {
   repeated string next_actions = 11;
   repeated string diagnostics = 12;
   JsonSchemaEnvelope payload = 13;
+  BranchVoteOutputEnvelope branch_vote = 14;
 }
 
 message RunnerRegistrationEnvelope {

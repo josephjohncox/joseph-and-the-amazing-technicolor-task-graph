@@ -86,6 +86,7 @@
         "test",
         "review",
         "mcp_tools",
+        "durable_child_tasks",
         "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",

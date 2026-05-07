@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AgentRunRequest",
-  "description": "Input contract passed from the coordinator to a bounded worker run.\n\nIt contains exactly the assigned task plus scoped artifacts and timeout\nmetadata. A runner should not discover global work from prose or mutate\ncoordinator state directly.",
+  "description": "Input contract passed from the coordinator to a bounded worker run.\n\nIt contains exactly the assigned task plus scoped artifacts and timeout\nmetadata. A runner should not discover global work from prose or mutate\ncoordinator state directly. When the task or persona mentions \"subagents,\"\nthe runner must initialize its local context from\n`ExecutionProfile.subagents` and return proposed durable children through\n`AgentRunResult.child_requests` instead of native in-runner subagent spawns.",
   "type": "object",
   "properties": {
     "context_artifacts": {
@@ -237,6 +237,12 @@
         "max_patch_size"
       ]
     },
+    "ChildTaskRequestChannel": {
+      "type": "string",
+      "enum": [
+        "agent_run_result_child_requests"
+      ]
+    },
     "DeviceAuthProvider": {
       "type": "string",
       "enum": [
@@ -327,6 +333,15 @@
         },
         "runner": {
           "$ref": "#/$defs/RunnerSelector"
+        },
+        "subagents": {
+          "$ref": "#/$defs/SubagentDelegationPolicy",
+          "default": {
+            "child_request_channel": "agent_run_result_child_requests",
+            "inject_runner_context": true,
+            "mode": "coordinator_durable_tasks",
+            "native_spawn": "disabled"
+          }
         }
       },
       "required": [
@@ -888,6 +903,14 @@
         "highest_quality",
         "weighted",
         "sticky_per_goal"
+      ]
+    },
+    "NativeSubagentSpawnPolicy": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "requires_approval",
+        "allowed"
       ]
     },
     "NetworkAccess": {
@@ -1613,6 +1636,7 @@
         "test",
         "review",
         "mcp_tools",
+        "durable_child_tasks",
         "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",
@@ -1943,6 +1967,37 @@
         "name",
         "description",
         "required"
+      ]
+    },
+    "SubagentDelegationMode": {
+      "type": "string",
+      "enum": [
+        "coordinator_durable_tasks",
+        "disabled"
+      ]
+    },
+    "SubagentDelegationPolicy": {
+      "description": "Task-local rule for interpreting \"subagent\" inside runner contexts.\n\nCOAT subagents are durable `TaskNode`s created by the coordinator and picked\nup through runner dispatch. Codex, Claude Code, MCP clients, and local model\nrunners must not turn a prompt mention of \"subagent\" into native in-process\ndelegation unless this policy is explicitly changed and approved.",
+      "type": "object",
+      "properties": {
+        "child_request_channel": {
+          "$ref": "#/$defs/ChildTaskRequestChannel"
+        },
+        "inject_runner_context": {
+          "type": "boolean",
+          "default": true
+        },
+        "mode": {
+          "$ref": "#/$defs/SubagentDelegationMode"
+        },
+        "native_spawn": {
+          "$ref": "#/$defs/NativeSubagentSpawnPolicy"
+        }
+      },
+      "required": [
+        "mode",
+        "native_spawn",
+        "child_request_channel"
       ]
     },
     "TaskNode": {

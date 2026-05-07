@@ -113,6 +113,10 @@ fn tool_descriptors() -> Vec<ToolDescriptor> {
             name: "artifact_manifest",
             description: "List artifacts produced by a task.",
         },
+        ToolDescriptor {
+            name: "subagent_policy",
+            description: "Return COAT's durable subagent delegation policy for MCP clients.",
+        },
     ]
 }
 
@@ -238,6 +242,15 @@ fn mcp_tools() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        serde_json::json!({
+            "name": "subagent_policy",
+            "description": "Explain that subagents are coordinator-owned durable child tasks and native runner subagent spawning is disabled.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }
+        }),
     ]
 }
 
@@ -246,8 +259,32 @@ async fn call_tool(state: &AppState, params: ToolCallParams) -> anyhow::Result<s
         "repo_status" => repo_status(state, &params.arguments),
         "test_command" => test_command(state, &params.arguments).await,
         "artifact_manifest" => artifact_manifest(state, &params.arguments).await,
+        "subagent_policy" => Ok(subagent_policy()),
         other => anyhow::bail!("unknown tool: {other}"),
     }
+}
+
+fn subagent_policy() -> serde_json::Value {
+    serde_json::json!({
+        "content": [
+            {
+                "type": "text",
+                "text": "COAT subagents are durable child tasks created by the coordinator; MCP clients and runners must not spawn native in-process subagents."
+            }
+        ],
+        "structuredContent": {
+            "mode": "coordinator_durable_tasks",
+            "native_subagent_spawn": "disabled",
+            "child_request_channel": "AgentRunResult.child_requests",
+            "durable_queue": "coat coordinator task tree",
+            "runner_context_requirements": [
+                "initialize Codex, Claude Code, SDK, or local-model contexts with this rule",
+                "return proposed child work as ChildTaskRequest objects",
+                "let the coordinator apply budget, approval, runner routing, memory, and sandbox policy"
+            ]
+        },
+        "isError": false
+    })
 }
 
 fn repo_status(
@@ -631,7 +668,9 @@ fn mcp_error(id: Option<serde_json::Value>, code: i64, message: String) -> serde
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
-    use super::{AppState, artifact_manifest, authorize, resolve_repo_path, test_command};
+    use super::{
+        AppState, artifact_manifest, authorize, resolve_repo_path, subagent_policy, test_command,
+    };
 
     #[test]
     fn bearer_auth_is_required_when_token_is_configured() {
@@ -683,6 +722,24 @@ mod tests {
         assert_eq!(
             result["structuredContent"]["next_service"],
             "sandbox-runner"
+        );
+    }
+
+    #[test]
+    fn subagent_policy_reports_durable_child_task_channel() {
+        let result = subagent_policy();
+        assert_eq!(result["isError"], false);
+        assert_eq!(
+            result["structuredContent"]["mode"],
+            "coordinator_durable_tasks"
+        );
+        assert_eq!(
+            result["structuredContent"]["native_subagent_spawn"],
+            "disabled"
+        );
+        assert_eq!(
+            result["structuredContent"]["child_request_channel"],
+            "AgentRunResult.child_requests"
         );
     }
 

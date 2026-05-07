@@ -184,6 +184,27 @@ Rust tool workers:
 - Expose deterministic repo, test, artifact, and policy tools through the tool registry.
 - Keep side effects behind sandbox and approval policy checks.
 
+## Subagent Authority
+
+In COAT, "subagent" is a control-plane word. It means a durable child
+`TaskNode` created by the coordinator, queued through runner dispatch, and
+validated like any other task. It does not mean a Codex, Claude Code, Agents
+SDK, MCP client, or local model process may spawn hidden native subagents inside
+one runner invocation.
+
+`ExecutionProfile.subagents` is injected into runner contexts and defaults to:
+
+- `mode = coordinator_durable_tasks`;
+- `native_spawn = disabled`;
+- `child_request_channel = AgentRunResult.child_requests`.
+
+Workers can still ask for decomposition. They do it by returning
+`ChildTaskRequest` objects. The coordinator then applies `SpawnPolicy`, budget,
+approval policy, memory policy, MCP auth policy, sandbox policy, runner
+selection, and model routing before any child work starts. The tool registry
+and control gateway expose MCP tools that restate this policy for agent/chat
+clients.
+
 ## Result Channels
 
 Workers communicate durable results through structured refs. Code changes should use git worktrees and task branches, returning `AgentRunResult.git_result` with branch, worktree path, commit, push status, optional PR URL, and optional diff URI. Large outputs should use S3-compatible object storage, returning `AgentRunResult.object_artifacts` with bucket/key/URI/hash metadata.
@@ -192,7 +213,7 @@ The coordinator stores these refs and treats them as artifact evidence. It does 
 
 ## Approval Policies
 
-Approval is evaluated before a runnable task is dispatched. `SandboxProfile.approval_policy` expresses the task-local posture (`never`, `on_request`, or `always`), while `GoalSpec.approval_policy` defines the control-plane risk rules. The default gate requests approval for open network, non-isolated runners, secret-bearing MCP contexts, dangerous MCP tools, privileged runner capabilities, any `never` policy outside an isolated runner, and any `never` policy that lacks strong sandbox attestation.
+Approval is evaluated before a runnable task is dispatched. `SandboxProfile.approval_policy` expresses the task-local posture (`never`, `on_request`, or `always`), while `GoalSpec.approval_policy` defines the control-plane risk rules. The default gate requests approval for open network, non-isolated runners, secret-bearing MCP contexts, dangerous MCP tools, privileged runner capabilities, any native subagent spawning policy, any `never` policy outside an isolated runner, and any `never` policy that lacks strong sandbox attestation.
 
 When approval is required, the coordinator creates an `ApprovalRequest`, marks the task `waiting_approval`, stores notification delivery reports, and emits an `approval_requested` notification. `coat approve --goal-id ... --approval-id ...` updates durable state; accepted approvals resume the frontier loop, rejected approvals block the task.
 

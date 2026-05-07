@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NativeSubagentSpawnPolicy",
+  "type": "string",
+  "enum": [
+    "disabled",
+    "requires_approval",
+    "allowed"
+  ]
+}

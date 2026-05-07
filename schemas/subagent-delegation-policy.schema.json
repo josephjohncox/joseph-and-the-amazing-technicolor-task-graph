@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SubagentDelegationPolicy",
+  "description": "Task-local rule for interpreting \"subagent\" inside runner contexts.\n\nCOAT subagents are durable `TaskNode`s created by the coordinator and picked\nup through runner dispatch. Codex, Claude Code, MCP clients, and local model\nrunners must not turn a prompt mention of \"subagent\" into native in-process\ndelegation unless this policy is explicitly changed and approved.",
+  "type": "object",
+  "properties": {
+    "child_request_channel": {
+      "$ref": "#/$defs/ChildTaskRequestChannel"
+    },
+    "inject_runner_context": {
+      "type": "boolean",
+      "default": true
+    },
+    "mode": {
+      "$ref": "#/$defs/SubagentDelegationMode"
+    },
+    "native_spawn": {
+      "$ref": "#/$defs/NativeSubagentSpawnPolicy"
+    }
+  },
+  "required": [
+    "mode",
+    "native_spawn",
+    "child_request_channel"
+  ],
+  "$defs": {
+    "ChildTaskRequestChannel": {
+      "type": "string",
+      "enum": [
+        "agent_run_result_child_requests"
+      ]
+    },
+    "NativeSubagentSpawnPolicy": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "requires_approval",
+        "allowed"
+      ]
+    },
+    "SubagentDelegationMode": {
+      "type": "string",
+      "enum": [
+        "coordinator_durable_tasks",
+        "disabled"
+      ]
+    }
+  }
+}

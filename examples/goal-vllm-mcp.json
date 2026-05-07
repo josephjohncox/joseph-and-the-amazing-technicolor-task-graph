@@ -130,7 +130,7 @@
     "runner": {
       "worker": "codex",
       "runner_id": null,
-      "required_capabilities": ["code", "mcp_tools", "workspace_sandbox", "git_worktree", "object_storage", "s3_compatible", "local_models", "vllm"],
+      "required_capabilities": ["code", "mcp_tools", "durable_child_tasks", "workspace_sandbox", "git_worktree", "object_storage", "s3_compatible", "local_models", "vllm"],
       "required_labels": {
         "pool": "local-gpu"
       },

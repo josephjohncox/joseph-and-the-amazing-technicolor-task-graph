@@ -13,6 +13,7 @@
         "never_policy_requires_strong_sandbox": true,
         "require_for_brokered_user_auth": true,
         "require_for_dangerous_mcp_tools": true,
+        "require_for_native_subagent_spawn": true,
         "require_for_network_open": true,
         "require_for_non_isolated_runner": true,
         "require_for_privileged_runner_capabilities": true,
@@ -179,6 +180,12 @@
           "required_labels": {},
           "runner_id": null,
           "worker": null
+        },
+        "subagents": {
+          "child_request_channel": "agent_run_result_child_requests",
+          "inject_runner_context": true,
+          "mode": "coordinator_durable_tasks",
+          "native_spawn": "disabled"
         }
       }
     },
@@ -451,6 +458,10 @@
         },
         "require_for_dangerous_mcp_tools": {
           "type": "boolean"
+        },
+        "require_for_native_subagent_spawn": {
+          "type": "boolean",
+          "default": true
         },
         "require_for_network_open": {
           "type": "boolean"
@@ -742,6 +753,7 @@
       ]
     },
     "ChildTaskRequest": {
+      "description": "Only worker-to-coordinator channel for requesting subagent work.\n\nA `ChildTaskRequest` is a proposal. The coordinator owns budget checks,\napproval gates, execution-profile inheritance, durable task materialization,\nand runner dispatch.",
       "type": "object",
       "properties": {
         "budget": {
@@ -852,6 +864,12 @@
         "role",
         "prompt",
         "reason"
+      ]
+    },
+    "ChildTaskRequestChannel": {
+      "type": "string",
+      "enum": [
+        "agent_run_result_child_requests"
       ]
     },
     "ControlLoopMode": {
@@ -1069,6 +1087,15 @@
         },
         "runner": {
           "$ref": "#/$defs/RunnerSelector"
+        },
+        "subagents": {
+          "$ref": "#/$defs/SubagentDelegationPolicy",
+          "default": {
+            "child_request_channel": "agent_run_result_child_requests",
+            "inject_runner_context": true,
+            "mode": "coordinator_durable_tasks",
+            "native_spawn": "disabled"
+          }
         }
       },
       "required": [
@@ -1908,6 +1935,14 @@
         "highest_quality",
         "weighted",
         "sticky_per_goal"
+      ]
+    },
+    "NativeSubagentSpawnPolicy": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "requires_approval",
+        "allowed"
       ]
     },
     "NetworkAccess": {
@@ -2864,6 +2899,7 @@
         "test",
         "review",
         "mcp_tools",
+        "durable_child_tasks",
         "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",
@@ -3218,6 +3254,37 @@
         "name",
         "description",
         "required"
+      ]
+    },
+    "SubagentDelegationMode": {
+      "type": "string",
+      "enum": [
+        "coordinator_durable_tasks",
+        "disabled"
+      ]
+    },
+    "SubagentDelegationPolicy": {
+      "description": "Task-local rule for interpreting \"subagent\" inside runner contexts.\n\nCOAT subagents are durable `TaskNode`s created by the coordinator and picked\nup through runner dispatch. Codex, Claude Code, MCP clients, and local model\nrunners must not turn a prompt mention of \"subagent\" into native in-process\ndelegation unless this policy is explicitly changed and approved.",
+      "type": "object",
+      "properties": {
+        "child_request_channel": {
+          "$ref": "#/$defs/ChildTaskRequestChannel"
+        },
+        "inject_runner_context": {
+          "type": "boolean",
+          "default": true
+        },
+        "mode": {
+          "$ref": "#/$defs/SubagentDelegationMode"
+        },
+        "native_spawn": {
+          "$ref": "#/$defs/NativeSubagentSpawnPolicy"
+        }
+      },
+      "required": [
+        "mode",
+        "native_spawn",
+        "child_request_channel"
       ]
     },
     "SubgoalSpec": {

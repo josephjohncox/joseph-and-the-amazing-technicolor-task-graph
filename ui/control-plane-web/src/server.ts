@@ -659,6 +659,11 @@ function mcpTools(): unknown[] {
       },
     },
     {
+      name: "coat_subagent_policy",
+      description: "Return the COAT rule that subagents are durable coordinator-owned child tasks, not native runner subagents.",
+      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    },
+    {
       name: "coat_memory_search",
       description: "Search the memory gateway using the standard MemorySearchRequest payload.",
       inputSchema: { type: "object", additionalProperties: true },
@@ -725,6 +730,18 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       throw new Error("goal_id is required");
     }
     return workflowPost(goalId, "steer", args.directive ?? {});
+  }
+  if (name === "coat_subagent_policy") {
+    return {
+      mode: "coordinator_durable_tasks",
+      native_subagent_spawn: "disabled",
+      child_request_channel: "AgentRunResult.child_requests",
+      runner_context_requirements: [
+        "initialize Codex, Claude Code, SDK, MCP-client, or local-model contexts with this rule",
+        "return proposed child work as ChildTaskRequest objects",
+        "let the coordinator apply budget, approval, runner routing, memory, and sandbox policy",
+      ],
+    };
   }
   if (name === "coat_memory_search") {
     return proxyJson(memoryGatewayUrl, "/memory/search", {

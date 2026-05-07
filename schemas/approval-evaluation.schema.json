@@ -38,7 +38,8 @@
         "secret_access",
         "brokered_user_auth",
         "dangerous_mcp_tool",
-        "privileged_runner_capability"
+        "privileged_runner_capability",
+        "native_subagent_spawn"
       ]
     },
     "ApprovalRisk": {

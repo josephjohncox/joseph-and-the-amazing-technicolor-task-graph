@@ -190,6 +190,8 @@ Include concrete edits when changes are requested.
 
 `initial_tasks`: Add only known first-frontier tasks. Set `title`, `role`, `subgoal_id`, `priority`, `tags`, `done_criteria`, `budget`, `sandbox`, and `execution` enough for a runner to pick up the work without reading the entire goal prose.
 
+`execution.subagents`: Leave this at the default for almost every goal. In COAT, "subagent" means a durable child task created by the coordinator and routed through the runner registry. Do not write goals that ask Codex, Claude Code, an SDK harness, or an MCP client to spawn its own hidden subagents. Workers request more help by returning `ChildTaskRequest` values in `AgentRunResult.child_requests`.
+
 `done_criteria`: Set `tests_pass = true` when code paths change. Set `artifact_exists = true` for reports, plans, PRs, generated schemas, or deployment manifests. Use `validator_score_min` for review-quality thresholds.
 
 `review_policy`: Keep enabled for any task that changes code, deployment, policy, memory promotion, or user-visible behavior. Use at least one critic and a unifier when multiple branches or agents contribute.

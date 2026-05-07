@@ -11,11 +11,37 @@ Every `TaskNode` has an `ExecutionProfile`:
 - `RunnerSelector`: worker role, capabilities, labels, locality, and optional runner ID.
 - `ModelRoute`: model candidates, provider kinds, routing strategy, required features, and fallback policy.
 - `PersonaSpec`: task-local persona and instruction references.
+- `SubagentDelegationPolicy`: runner-context rule for durable child tasks vs native runner-local delegation.
 - `McpContextRef`: MCP servers, allowed tools, secret refs, and propagation mode.
 - `NotificationPolicy`: events and targets for feedback and approvals.
 - `TaskPurpose`: actor work, candidate branch, branch vote, branch unification, critic review, review unification, actor retry, or research.
 
 Child tasks inherit the parent execution profile unless they request an override.
+
+## Subagent Delegation
+
+COAT does not let worker processes create hidden subagent trees. The word
+"subagent" means a coordinator-owned durable child task unless a future policy
+explicitly states otherwise.
+
+Default task behavior:
+
+- `ExecutionProfile.subagents.mode = coordinator_durable_tasks`
+- `ExecutionProfile.subagents.native_spawn = disabled`
+- `ExecutionProfile.subagents.child_request_channel = agent_run_result_child_requests`
+
+Runner initialization must inject this rule into Codex, Claude Code, OpenAI
+Agents SDK, MCP client, and local-model contexts. If a worker decides more
+agents are needed, it returns `ChildTaskRequest` values in
+`AgentRunResult.child_requests`. The coordinator alone applies `SpawnPolicy`,
+budget, approvals, memory context, MCP auth, sandbox profile, runner dispatch,
+and model routing.
+
+The bundled sidecars expose this through `/capabilities.subagents` and include
+redacted diagnostics in every `/run-task` result. The Rust tool registry exposes
+`subagent_policy` over MCP, and the control gateway exposes
+`coat_subagent_policy`, so external chat/agent surfaces can initialize their
+skill or system context with the same rule.
 
 ## Branch Competition
 
@@ -98,6 +124,7 @@ Currently implemented MCP methods:
 - `tools/call` with `repo_status`
 - `tools/call` with `test_command`, which reports that execution must go through the sandbox runner
 - `tools/call` with `artifact_manifest`
+- `tools/call` with `subagent_policy`, which returns the durable child-task rule for MCP client initialization
 
 ## Notifications
 

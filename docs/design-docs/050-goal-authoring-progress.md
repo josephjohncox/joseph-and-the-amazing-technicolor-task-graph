@@ -60,6 +60,7 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 ## Design Rules
 
 - Workers may request children, but only the coordinator creates child task nodes.
+- Goal prompts and reviewer doctrines should say "subagent" only when they mean a COAT durable child task. Do not ask a runner to use Codex, Claude Code, SDK, or MCP-native subagents directly.
 - Workers should receive only their task, scoped memory context, MCP references, and relevant subgoal metadata.
 - Subgoal IDs must be stable and human-readable enough for dashboards and notifications.
 - A task without a subgoal is allowed only for root planning, global review, unification, or operator-injected emergency work.

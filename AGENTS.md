@@ -22,6 +22,7 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Architecture: `ARCHITECTURE.md`
 - Documentation map: `docs/README.md`
 - Goal authoring guide: `docs/operations/goal-authoring.md`
+- Runner context initialization guide: `docs/operations/runner-context-initialization.md`
 - Distributed memory guide: `docs/design-docs/030-distributed-memory-knowledgebases.md`
 - Multi-user OIDC MCP guide: `docs/design-docs/130-multi-user-oidc-mcp.md`
 - Result channels guide: `docs/design-docs/060-result-channels-git-object-storage.md`
@@ -48,6 +49,11 @@ Update docs when behavior or public contracts change.
 - Keep the harness separate from model execution.
 - Keep durable state in the coordinator, not in worker prompts.
 - Workers may request child tasks, but only the coordinator may create them.
+- Any prompt, skill, MCP tool, runner context, or worker output that says
+  "subagent" means a COAT durable child task unless explicitly stated otherwise.
+- Codex, Claude Code, Agents SDK, MCP clients, and local-model runners must not
+  spawn native in-process subagents. They return `ChildTaskRequest` values in
+  `AgentRunResult.child_requests`; the coordinator queues and routes them.
 - Every worker response must use the structured result contract.
 - Every task must have a budget, sandbox profile, role, and done criteria.
 - Every dangerous operation needs an explicit approval path.
@@ -121,6 +127,9 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Sandbox-capable runners should advertise backend capabilities and labels such as `sandbox.backend`, `sandbox.runtime_class`, and `network.egress`.
 - Local workspace sandboxing is for trusted development only; production untrusted execution should use container hardening, gVisor, Kata, Firecracker, Kubernetes Jobs, or provider-backed sandboxes.
 - Personas are task-local. Do not infer persona only from worker role.
+- `ExecutionProfile.subagents` is the runner-context source of truth for
+  subagent behavior. Default mode is `coordinator_durable_tasks`; default native
+  subagent spawning is `disabled`.
 - MCP context is distributed as server refs and secret refs, never raw tokens.
 - Default access mode is `single_user`; multi-user OIDC is an opt-in extension through `McpContextRef.access_mode=multi_user_oidc`.
 - Runners resolve MCP auth through env, Kubernetes Secret, Vault, cloud secret stores, 1Password, Bitwarden, Doppler, SOPS, workload identity, external brokers, or OAuth delegation.

@@ -205,6 +205,8 @@ The public event contract is documented in `docs/api/event-gateway.asyncapi.yaml
 
 Each durable task has an execution profile with runner selection, model candidates, persona, MCP context refs, timeout budget, result channels, and notification policy.
 
+Subagents are durable COAT child tasks. Runner contexts, skills, MCP clients, Codex, Claude Code, and local model adapters should treat the word "subagent" as `AgentRunResult.child_requests`, not as native in-process agent spawning. The coordinator owns the durable queue, budget checks, approvals, routing, memory context, and sandbox policy for every requested child. See `docs/operations/runner-context-initialization.md`.
+
 Example local vLLM runner registration:
 
 ```sh
@@ -222,7 +224,7 @@ Branch competition uses the same routing layer: candidate tasks can use differen
 
 Model and executor clusters are described in `docs/operations/model-runner-clusters.md`, including GB10/DGX Spark nodes, Mac mini runners, vLLM, Ollama, embedding services, and mixed sandbox fleets. Runners should register real capabilities and labels instead of relying on prompt convention.
 
-Sidecars expose `/capabilities` for operator inspection and `/verify` for non-mutating dependency checks. The response includes roles, model candidates, MCP propagation support, active capacity, review-contract support, and live-mode readiness without exposing secret values.
+Sidecars expose `/capabilities` for operator inspection and `/verify` for non-mutating dependency checks. The response includes roles, model candidates, MCP propagation support, subagent delegation policy, active capacity, review-contract support, and live-mode readiness without exposing secret values.
 
 When `COAT_MEMORY_GATEWAY_URL` is set, sidecars call `memory_context` before `/run-task` work and include a `memory_context` artifact plus redacted diagnostics in `AgentRunResult`. Context lookup failures do not fail the task; they are reported as diagnostics so a coordinator, reviewer, or operator can decide whether to continue, research, or repair memory adapters.
 
@@ -230,7 +232,7 @@ MCP auth is passed by reference, not by value. Runners resolve `SecretRef` entri
 
 The default MCP access mode is `single_user`. Multi-user OIDC is opt-in: set `McpContextRef.access_mode=multi_user_oidc`, include a `UserPrincipalRef`, configure `OidcDelegationPolicy`, and route only to runners advertising `oidc_user_delegation` plus tenant/user labels. MCP servers authenticate as the user through short-lived brokered OIDC access tokens or leases; raw user tokens never enter task state. See `docs/design-docs/130-multi-user-oidc-mcp.md` and `examples/mcp-context-multi-user-oidc.json`.
 
-The tool registry exposes `/mcp` and requires `Authorization: Bearer ...` whenever `MCP_TOOL_TOKEN` is configured.
+The tool registry exposes `/mcp` and requires `Authorization: Bearer ...` whenever `MCP_TOOL_TOKEN` is configured. Its `subagent_policy` tool returns the same durable-child-task rule for MCP clients. The control gateway exposes `coat_subagent_policy` for chat and dashboard surfaces.
 
 The notifier records local in-memory feedback threads. Operators can inspect them with:
 

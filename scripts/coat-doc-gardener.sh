@@ -11,6 +11,7 @@ README.md
 docs/README.md
 docs/product-specs/coat-v1.md
 docs/operations/goal-authoring.md
+docs/operations/runner-context-initialization.md
 docs/design-docs/030-distributed-memory-knowledgebases.md
 docs/design-docs/060-result-channels-git-object-storage.md
 docs/design-docs/070-protobuf-goal-store-protocols.md

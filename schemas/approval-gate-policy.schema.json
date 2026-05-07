@@ -28,6 +28,10 @@
     "require_for_dangerous_mcp_tools": {
       "type": "boolean"
     },
+    "require_for_native_subagent_spawn": {
+      "type": "boolean",
+      "default": true
+    },
     "require_for_network_open": {
       "type": "boolean"
     },

@@ -22,6 +22,7 @@ COAT builds a durable task-tree control plane for long-running agent work. The c
 3. `../ARCHITECTURE.md`: durable coordinator, service boundaries, and authority model.
 4. `product-specs/coat-v1.md`: product intent, non-goals, and success criteria.
 5. `operations/local-dev.md`: local validation and smoke workflows.
+6. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
 
 ## Design Docs
 

@@ -192,6 +192,12 @@
         "max_patch_size"
       ]
     },
+    "ChildTaskRequestChannel": {
+      "type": "string",
+      "enum": [
+        "agent_run_result_child_requests"
+      ]
+    },
     "DeviceAuthProvider": {
       "type": "string",
       "enum": [
@@ -282,6 +288,15 @@
         },
         "runner": {
           "$ref": "#/$defs/RunnerSelector"
+        },
+        "subagents": {
+          "$ref": "#/$defs/SubagentDelegationPolicy",
+          "default": {
+            "child_request_channel": "agent_run_result_child_requests",
+            "inject_runner_context": true,
+            "mode": "coordinator_durable_tasks",
+            "native_spawn": "disabled"
+          }
         }
       },
       "required": [
@@ -838,6 +853,14 @@
         "sticky_per_goal"
       ]
     },
+    "NativeSubagentSpawnPolicy": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "requires_approval",
+        "allowed"
+      ]
+    },
     "NotificationEvent": {
       "type": "string",
       "enum": [
@@ -1164,6 +1187,7 @@
         "test",
         "review",
         "mcp_tools",
+        "durable_child_tasks",
         "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",
@@ -1285,6 +1309,37 @@
       "required": [
         "provider",
         "name"
+      ]
+    },
+    "SubagentDelegationMode": {
+      "type": "string",
+      "enum": [
+        "coordinator_durable_tasks",
+        "disabled"
+      ]
+    },
+    "SubagentDelegationPolicy": {
+      "description": "Task-local rule for interpreting \"subagent\" inside runner contexts.\n\nCOAT subagents are durable `TaskNode`s created by the coordinator and picked\nup through runner dispatch. Codex, Claude Code, MCP clients, and local model\nrunners must not turn a prompt mention of \"subagent\" into native in-process\ndelegation unless this policy is explicitly changed and approved.",
+      "type": "object",
+      "properties": {
+        "child_request_channel": {
+          "$ref": "#/$defs/ChildTaskRequestChannel"
+        },
+        "inject_runner_context": {
+          "type": "boolean",
+          "default": true
+        },
+        "mode": {
+          "$ref": "#/$defs/SubagentDelegationMode"
+        },
+        "native_spawn": {
+          "$ref": "#/$defs/NativeSubagentSpawnPolicy"
+        }
+      },
+      "required": [
+        "mode",
+        "native_spawn",
+        "child_request_channel"
       ]
     },
     "UserPrincipalRef": {

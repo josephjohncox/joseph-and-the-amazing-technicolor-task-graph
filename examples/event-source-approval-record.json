@@ -1,0 +1,16 @@
+{
+  "record_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "approval_ref": "approval-123",
+  "source_id": "ci-events",
+  "source_kind": "ci",
+  "status": "provided",
+  "risky": true,
+  "reason": "event source ci-events was registered enabled and required activation approval",
+  "operator": "local-operator",
+  "recorded_at": "1715000000",
+  "payload_json": {
+    "source_enabled": true,
+    "route_mode": "human_review",
+    "route_requires_approval": true
+  }
+}

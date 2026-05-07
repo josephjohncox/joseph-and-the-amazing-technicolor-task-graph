@@ -51,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_goals_record_gin
 
 CREATE TABLE IF NOT EXISTS coat.plans (
     id uuid PRIMARY KEY,
+    source_plan_id uuid,
     title text NOT NULL,
     objective text NOT NULL,
     repo text,
@@ -90,6 +91,10 @@ CREATE INDEX IF NOT EXISTS idx_plans_repo_status
 CREATE INDEX IF NOT EXISTS idx_plans_compiled_goal
     ON coat.plans(compiled_goal_id)
     WHERE compiled_goal_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_plans_source_plan
+    ON coat.plans(source_plan_id, projected_at DESC)
+    WHERE source_plan_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_plans_record_gin
     ON coat.plans USING gin(record_json);
@@ -207,6 +212,31 @@ CREATE INDEX IF NOT EXISTS idx_approvals_goal_status
 CREATE INDEX IF NOT EXISTS idx_approvals_task
     ON coat.approvals(task_id)
     WHERE task_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS coat.event_source_approvals (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    approval_ref text NOT NULL,
+    source_id text NOT NULL,
+    source_kind text NOT NULL,
+    status text NOT NULL,
+    risky boolean NOT NULL DEFAULT true,
+    reason text NOT NULL,
+    operator text,
+    recorded_at_text text,
+    payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    record_json jsonb NOT NULL,
+    recorded_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (status IN ('provided'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_source_approvals_ref_source
+    ON coat.event_source_approvals(approval_ref, source_id);
+
+CREATE INDEX IF NOT EXISTS idx_event_source_approvals_source
+    ON coat.event_source_approvals(source_id, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_event_source_approvals_record_gin
+    ON coat.event_source_approvals USING gin(record_json);
 
 CREATE TABLE IF NOT EXISTS coat.artifacts (
     id uuid PRIMARY KEY,

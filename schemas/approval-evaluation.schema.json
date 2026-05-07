@@ -38,8 +38,10 @@
         "secret_access",
         "brokered_user_auth",
         "dangerous_mcp_tool",
+        "local_tool_execution",
         "privileged_runner_capability",
-        "native_subagent_spawn"
+        "native_subagent_spawn",
+        "ephemeral_capacity_provisioning"
       ]
     },
     "ApprovalRisk": {

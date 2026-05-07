@@ -16,7 +16,11 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 - Add `memory_context` so workers can fetch bounded context packs with deterministic `InformationUsePlan` guidance.
 - Add a best-effort Qdrant vector adapter using an OpenAI-compatible embedding endpoint.
 - Add `memory_repair` so operators can replay local journal records into Graphiti or Qdrant after adapter outages.
+- Add `memory_retract` so operators and unifiers can invalidate stale or superseded facts without abusing the fork/join endpoint.
+- Add `memory_edit` so operators can retract old keys and write a linked replacement fact in one reviewed operation.
+- Add `memory_edit_preview` so operators can inspect replacement diffs before mutating durable memory.
 - Add `coat memory` CLI commands and deployment wiring.
+- Expose memory search, context, write, join, retract, edit, edit-preview, repair, event reads, and research-output application through the control gateway SPA and MCP surface.
 
 ## Tests
 
@@ -25,14 +29,18 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 - Memory gateway can write and search a local memory record.
 - Memory gateway can return a task context pack from local memory hits.
 - Memory gateway can build Qdrant filters and parse Qdrant query/search hits.
+- Memory gateway can retract selected local memory records and replay the retraction from the JSONL journal.
+- Memory gateway can edit memory by retracting old keys and writing a replacement record.
+- Memory gateway can preview memory replacement diffs before committing an edit.
 - Memory gateway dry-run repair counts selected records and adapter operations.
+- Control gateway exposes memory join, retract, edit, edit-preview, repair, event reads, and research-output steering helpers.
 - Examples parse against the domain contracts.
 - Schemas include control, steering, research, and memory contracts.
 
 ## Follow-Ups
 
 - Add live Graphiti/Zep and Qdrant adapter tests gated by service URLs and credentials.
-- Add UI and MCP workflows for editing memory entries, repairing adapter drift, and applying research findings back into durable goals.
+- Add rendered side-by-side diff tables for memory replacement history once browser-level dashboard tests exist.
 
 ## Acceptance
 

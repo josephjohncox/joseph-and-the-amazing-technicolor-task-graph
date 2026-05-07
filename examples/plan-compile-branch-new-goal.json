@@ -1,0 +1,9 @@
+{
+  "plan_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756710",
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756711",
+  "title_override": "Local model runner branch goal",
+  "objective_override": "Execute the branched durable planning-mode path for vLLM-first local model runner integration while preserving the source plan and prior compiled goal history.",
+  "strict_review": true,
+  "human_steered": true,
+  "enable_branching": true
+}

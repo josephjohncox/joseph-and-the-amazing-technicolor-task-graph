@@ -68,6 +68,7 @@
       "enum": [
         "compile",
         "automated_tests",
+        "behavioral_tests",
         "property_tests",
         "type_check",
         "formal_proof",

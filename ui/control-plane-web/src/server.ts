@@ -28,6 +28,27 @@ type ProxyResult = {
   data: unknown;
 };
 
+type SteeringDirective = {
+  id: string;
+  goal_id: string;
+  task_id: string | null;
+  operator: string | null;
+  message: string;
+  kind: JsonMap;
+};
+
+type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+type FollowUpItem = {
+  plan: string;
+  path: string;
+  index: number;
+  text: string;
+};
+
 const port = Number(process.env.PORT ?? "9090");
 const host = process.env.HOST ?? "0.0.0.0";
 const gatewayToken = process.env.COAT_CONTROL_GATEWAY_TOKEN ?? "";
@@ -44,6 +65,11 @@ const runnerRegistryUrl = trimSlash(
 const memoryGatewayUrl = trimSlash(process.env.COAT_MEMORY_GATEWAY_URL ?? "http://localhost:9087");
 const memoryGatewayToken = process.env.COAT_MEMORY_GATEWAY_TOKEN ?? process.env.MEMORY_GATEWAY_TOKEN ?? "";
 const controlMcpToken = process.env.COAT_CONTROL_MCP_TOKEN ?? gatewayToken;
+const chatCompletionsUrl = process.env.COAT_CONTROL_CHAT_COMPLETIONS_URL
+  ?? (process.env.OPENAI_API_KEY && process.env.COAT_CONTROL_CHAT_MODEL ? "https://api.openai.com/v1/chat/completions" : "");
+const chatModel = process.env.COAT_CONTROL_CHAT_MODEL ?? "";
+const chatApiKey = process.env.COAT_CONTROL_CHAT_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+const chatTemperature = Number(process.env.COAT_CONTROL_CHAT_TEMPERATURE ?? "0.2");
 const executionPlanDirs = process.env.COAT_EXEC_PLAN_DIR
   ? [process.env.COAT_EXEC_PLAN_DIR]
   : ["docs/exec-plans/active", "../../docs/exec-plans/active", "/app/docs/exec-plans/active"];
@@ -71,7 +97,7 @@ const services: ServiceRef[] = [
   { name: "memory-gateway", baseUrl: memoryGatewayUrl, healthPath: "/healthz" },
 ];
 
-const clientScriptUrl = new URL("./client.js", import.meta.url);
+const staticRootUrl = new URL("./public/", import.meta.url);
 
 function trimSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -93,12 +119,68 @@ function sendJson(res: any, status: number, body: unknown): void {
   res.end(JSON.stringify(body, null, 2));
 }
 
-function sendText(res: any, status: number, body: string, contentType = "text/plain; charset=utf-8"): void {
+function sendBytes(res: any, status: number, body: Uint8Array, contentType: string, immutable = false): void {
   res.writeHead(status, {
     "content-type": contentType,
-    "cache-control": "no-store",
+    "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
   });
   res.end(body);
+}
+
+async function serveSpa(req: any, res: any, url: URL): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    sendJson(res, 405, { error: "method not allowed" });
+    return;
+  }
+  const assetPath = url.pathname === "/" ? "/index.html" : url.pathname;
+  const fileUrl = staticFileUrl(assetPath);
+  if (fileUrl) {
+    try {
+      const body = await readFile(fileUrl);
+      sendBytes(res, 200, body, contentTypeFor(assetPath), assetPath.startsWith("/assets/"));
+      return;
+    } catch {
+      // Fall through to the SPA shell so client-side routes work.
+    }
+  }
+  try {
+    const shell = await readFile(new URL("index.html", staticRootUrl));
+    sendBytes(res, 200, shell, "text/html; charset=utf-8");
+  } catch (error) {
+    sendJson(res, 500, {
+      error: "control SPA assets are missing; run `npm run --prefix ui/control-plane-web build`",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function staticFileUrl(pathname: string): URL | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (decoded.includes("\0") || decoded.split("/").includes("..")) {
+    return null;
+  }
+  const relative = decoded.replace(/^\/+/, "");
+  if (!relative || relative.endsWith("/")) {
+    return null;
+  }
+  return new URL(relative, staticRootUrl);
+}
+
+function contentTypeFor(pathname: string): string {
+  if (pathname.endsWith(".html")) return "text/html; charset=utf-8";
+  if (pathname.endsWith(".js") || pathname.endsWith(".mjs")) return "text/javascript; charset=utf-8";
+  if (pathname.endsWith(".css")) return "text/css; charset=utf-8";
+  if (pathname.endsWith(".svg")) return "image/svg+xml";
+  if (pathname.endsWith(".png")) return "image/png";
+  if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) return "image/jpeg";
+  if (pathname.endsWith(".ico")) return "image/x-icon";
+  if (pathname.endsWith(".json")) return "application/json; charset=utf-8";
+  return "application/octet-stream";
 }
 
 function isAuthorized(req: any, mcp = false): boolean {
@@ -241,6 +323,7 @@ async function executionPlanFollowUps(planDirs: string[], includeEmpty: boolean)
     checked_plan_dirs: planDirs,
     plan_count: 0,
     follow_up_count: 0,
+    items: [],
     plans: [],
     error: errors.map((item) => `${item.plan_dir}: ${item.error}`).join("; "),
     errors,
@@ -256,15 +339,20 @@ async function readExecutionPlanFollowUps(planDir: string, includeEmpty: boolean
       .map((entry) => `${normalizedDir}/${entry.name}`)
       .sort();
     const plans: JsonMap[] = [];
+    const items: FollowUpItem[] = [];
     let followUpCount = 0;
     for (const file of files) {
       const text = await readFile(file, "utf8");
       const followUps = extractFollowUps(text);
+      const title = extractMarkdownTitle(text) ?? file;
       followUpCount += followUps.length;
+      followUps.forEach((item, index) => {
+        items.push({ plan: title, path: file, index, text: item });
+      });
       if (includeEmpty || followUps.length > 0) {
         plans.push({
           path: file,
-          title: extractMarkdownTitle(text) ?? file,
+          title,
           follow_ups: followUps,
         });
       }
@@ -273,6 +361,7 @@ async function readExecutionPlanFollowUps(planDir: string, includeEmpty: boolean
       plan_dir: normalizedDir,
       plan_count: plans.length,
       follow_up_count: followUpCount,
+      items,
       plans,
     };
   } catch (error) {
@@ -280,6 +369,7 @@ async function readExecutionPlanFollowUps(planDir: string, includeEmpty: boolean
       plan_dir: normalizedDir,
       plan_count: 0,
       follow_up_count: 0,
+      items: [],
       plans: [],
       error: error instanceof Error ? error.message : String(error),
     };
@@ -316,6 +406,42 @@ function extractFollowUps(text: string): string[] {
     }
   }
   return items;
+}
+
+function followUpDraftPlan(payload: unknown): JsonMap {
+  const item = followUpItemFromPayload(payload);
+  return {
+    mode: "draft_plan",
+    item,
+    prompt: followUpDraftPrompt(item),
+  };
+}
+
+function followUpItemFromPayload(payload: unknown): FollowUpItem {
+  const body = asRecord(payload);
+  const source = Object.keys(asRecord(body.item)).length > 0 ? asRecord(body.item) : body;
+  const text = String(source.text ?? source.follow_up ?? source.followup ?? "").trim();
+  if (!text) {
+    throw new Error("follow-up text is required");
+  }
+  const rawIndex = Number(source.index ?? source.follow_up_index ?? 0);
+  return {
+    plan: String(source.plan ?? source.title ?? source.source_plan ?? "Execution plan"),
+    path: String(source.path ?? source.source_path ?? ""),
+    index: Number.isFinite(rawIndex) && rawIndex >= 0 ? Math.floor(rawIndex) : 0,
+    text,
+  };
+}
+
+function followUpDraftPrompt(item: FollowUpItem): string {
+  return `<task>
+  <mode>draft_durable_plan</mode>
+  <instruction>MUST turn this execution-plan follow-up into a concrete durable plan draft for COAT. MUST preserve the source plan and path. MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates, and next implementation steps. MUST identify any questions that block execution.</instruction>
+  <source_plan>${escapeXml(item.plan)}</source_plan>
+  <source_path>${escapeXml(item.path)}</source_path>
+  <follow_up_index>${item.index}</follow_up_index>
+  <follow_up>${escapeXml(item.text)}</follow_up>
+</task>`;
 }
 
 async function goalSnapshot(goalId: string): Promise<JsonMap> {
@@ -594,6 +720,79 @@ async function workflowReadPost(goalId: string, handler: string, body: unknown):
   return normalizeWorkflowReadResult(await workflowPost(goalId, handler, body), handler);
 }
 
+async function applyResearchOutput(goalId: string, payload: unknown): Promise<JsonMap> {
+  if (!goalId) {
+    throw new Error("goal_id is required");
+  }
+  const body = asRecord(payload);
+  const operator = String(body.operator ?? "control-gateway");
+  const researchOutput = asRecord(body.research_output ?? body.research ?? body);
+  const usePlan = asRecord(researchOutput.use_plan ?? body.use_plan ?? body);
+  const directives = researchUsePlanDirectives(goalId, operator, usePlan);
+  if (!directives.length) {
+    throw new Error("research output did not contain facts_to_use, proposed_goal_updates, or proposed_task_updates");
+  }
+  const results: unknown[] = [];
+  for (const directive of directives) {
+    results.push(await workflowPost(goalId, "steer", directive));
+  }
+  return {
+    goal_id: goalId,
+    applied_directives: directives,
+    responses: results,
+  };
+}
+
+function researchUsePlanDirectives(goalId: string, operator: string, usePlan: JsonMap): SteeringDirective[] {
+  const directives: SteeringDirective[] = [];
+  const factsToUse = arrayField(usePlan, "facts_to_use").map((value) => String(value)).filter(Boolean);
+  if (factsToUse.length) {
+    directives.push(steeringDirective(goalId, operator, "Apply sourced research facts to future work.", {
+      kind: "add_constraint",
+      constraint: `Use these sourced research facts unless superseded by newer evidence: ${factsToUse.join(" ")}`,
+    }));
+  }
+  for (const update of arrayField(usePlan, "proposed_goal_updates")) {
+    const record = asRecord(update);
+    const recommendation = String(record.recommendation ?? "");
+    if (!recommendation) {
+      continue;
+    }
+    const target = String(record.target ?? "goal");
+    const path = String(record.path ?? "");
+    const reason = String(record.reason ?? "research recommendation");
+    directives.push(steeringDirective(goalId, operator, `Apply research recommendation for ${target}.`, {
+      kind: "add_constraint",
+      constraint: `Research recommendation${path ? ` at ${path}` : ""}: ${recommendation} Reason: ${reason}`,
+    }));
+  }
+  for (const task of arrayField(usePlan, "proposed_task_updates")) {
+    const record = asRecord(task);
+    const prompt = String(record.prompt ?? "");
+    if (!prompt) {
+      continue;
+    }
+    directives.push(steeringDirective(goalId, operator, String(record.title ?? "Inject research follow-up task."), {
+      kind: "inject_task",
+      role: String(record.role ?? "research"),
+      prompt,
+      reason: String(record.reason ?? "research use plan proposed a follow-up task"),
+    }));
+  }
+  return directives;
+}
+
+function steeringDirective(goalId: string, operator: string, message: string, kind: JsonMap): SteeringDirective {
+  return {
+    id: crypto.randomUUID(),
+    goal_id: goalId,
+    task_id: null,
+    operator,
+    message,
+    kind,
+  };
+}
+
 function normalizeWorkflowReadResult(result: ProxyResult, handler: string): ProxyResult {
   if (result.status !== 404) {
     return result;
@@ -608,6 +807,317 @@ function normalizeWorkflowReadResult(result: ProxyResult, handler: string): Prox
       restate_response: result.data,
     },
   };
+}
+
+async function controlChat(payload: unknown): Promise<JsonMap> {
+  const request = asRecord(payload);
+  const mode = String(request.mode ?? "general");
+  const goalId = String(request.goal_id ?? "");
+  const messages = chatMessagesFrom(request.messages);
+  if (!messages.length) {
+    throw new Error("chat request requires at least one message");
+  }
+  const context = await chatContext(goalId);
+  if (chatCompletionsUrl && chatModel) {
+    return callChatModel(mode, messages, context);
+  }
+  return stubChat(mode, messages, context);
+}
+
+function chatMessagesFrom(value: unknown): ChatMessage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => asRecord(item))
+    .map((item) => ({
+      role: chatRole(String(item.role ?? "user")),
+      content: String(item.content ?? "").trim(),
+    }))
+    .filter((item) => item.content);
+}
+
+function chatRole(value: string): ChatMessage["role"] {
+  return value === "assistant" || value === "system" ? value : "user";
+}
+
+async function chatContext(goalId: string): Promise<JsonMap> {
+  const context: JsonMap = {
+    goal_id: goalId || null,
+    engine_boundary: "The chat assistant drafts and explains. Durable mutations still require explicit workflow, plan, memory, or approval API calls.",
+    available_actions: [
+      "draft_plan",
+      "draft_goal",
+      "draft_steering_directive",
+      "explain_goal_state",
+      "summarize_next_actions",
+    ],
+  };
+  if (!goalId) {
+    return context;
+  }
+  try {
+    context.goal_snapshot = await goalSnapshot(goalId);
+  } catch (error) {
+    context.goal_snapshot_error = error instanceof Error ? error.message : String(error);
+  }
+  return context;
+}
+
+async function callChatModel(mode: string, messages: ChatMessage[], context: JsonMap): Promise<JsonMap> {
+  const response = await fetch(chatCompletionsUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(chatApiKey ? { authorization: `Bearer ${chatApiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: chatModel,
+      temperature: chatTemperature,
+      messages: [
+        {
+          role: "system",
+          content: controlChatSystemPrompt(mode, context),
+        },
+        ...messages,
+      ],
+    }),
+  });
+  const text = await response.text();
+  const data = text ? safeJsonValue(text) : {};
+  if (!response.ok) {
+    throw new Error(`chat model request failed with ${response.status}: ${text}`);
+  }
+  const content = String(atRecord(data, ["choices", "0", "message", "content"]) ?? "");
+  const parsed = parseChatAssistantPayload(content);
+  return {
+    provider: "openai_compatible",
+    model: chatModel,
+    mode,
+    assistant: parsed.assistant,
+    drafts: parsed.drafts,
+    raw_model_response: parsed.raw_model_response,
+    context,
+  };
+}
+
+function controlChatSystemPrompt(mode: string, context: JsonMap): string {
+  return [
+    "<coat_chat_assistant>",
+    "  <role>You are the COAT control-plane chat assistant.</role>",
+    "  <mission>Help the operator author goals, durable plans, steering directives, memory notes, and review requests.</mission>",
+    "  <authority>",
+    "    <rule>You MUST NOT claim that durable state changed unless the caller provides a successful backend result.</rule>",
+    "    <rule>You MUST treat all mutations as requiring explicit backend forms, API calls, or MCP tools.</rule>",
+    "    <rule>You MUST treat any subagent request as a COAT durable child-task request, not native model delegation.</rule>",
+    "  </authority>",
+    "  <output_contract>",
+    "    <rule>You MUST return one JSON object.</rule>",
+    "    <rule>The JSON object MUST have keys: assistant string, drafts object.</rule>",
+    "    <rule>Draft payloads MUST be valid JSON under drafts.</rule>",
+    "    <rule>Assistant prose MUST be concise and operational.</rule>",
+    "  </output_contract>",
+    "  <drafting_rules>",
+    "    <rule>Goals MUST include objective, evidence, constraints, budget, done criteria, execution, memory, research, approval, and stop conditions when known.</rule>",
+    "    <rule>Steering drafts MUST be explicit about goal_id, task_id when known, operator intent, directive kind, and approval risk.</rule>",
+    "    <rule>Memory drafts MUST preserve provenance and MUST NOT write unreviewed branch conclusions as durable facts.</rule>",
+    "  </drafting_rules>",
+    `  <requested_mode>${escapeXml(mode)}</requested_mode>`,
+    `  <context_json>${escapeXml(JSON.stringify(context).slice(0, 12_000))}</context_json>`,
+    "</coat_chat_assistant>",
+  ].join("\n");
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function parseChatAssistantPayload(content: string): JsonMap {
+  const parsed = extractJsonObject(content);
+  if (parsed) {
+    return {
+      assistant: String(parsed.assistant ?? content),
+      drafts: asRecord(parsed.drafts),
+      raw_model_response: content,
+    };
+  }
+  return {
+    assistant: content || "The model returned an empty response.",
+    drafts: {},
+    raw_model_response: content,
+  };
+}
+
+function extractJsonObject(content: string): JsonMap | null {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : content;
+  const first = candidate.indexOf("{");
+  const last = candidate.lastIndexOf("}");
+  if (first < 0 || last <= first) {
+    return null;
+  }
+  const parsed = safeJsonValue(candidate.slice(first, last + 1));
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as JsonMap : null;
+}
+
+function stubChat(mode: string, messages: ChatMessage[], context: JsonMap): JsonMap {
+  const latest = messages[messages.length - 1]?.content ?? "";
+  const drafts = stubDrafts(mode, latest, context);
+  const assistant = [
+    "I can help draft the structured control-plane payloads from plain language.",
+    chatCompletionsUrl && !chatModel
+      ? "A chat completions URL is configured, but COAT_CONTROL_CHAT_MODEL is missing, so this response used the local stub."
+      : "No live chat model is configured, so this response used the local stub.",
+    "Review any draft, then use the existing form buttons to submit or steer durable work.",
+  ].join(" ");
+  return {
+    provider: "stub",
+    model: null,
+    mode,
+    assistant,
+    drafts,
+    context,
+  };
+}
+
+function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
+  if (mode === "draft_goal") {
+    return { goal_spec: goalSpecDraft(prompt) };
+  }
+  if (mode === "draft_plan") {
+    return { plan_draft: planDraft(prompt) };
+  }
+  if (mode === "draft_steering") {
+    return { steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")) };
+  }
+  if (mode === "explain_state") {
+    return {};
+  }
+  return {
+    plan_draft: planDraft(prompt),
+    steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")),
+  };
+}
+
+function goalSpecDraft(prompt: string): JsonMap {
+  const objective = prompt || "Define the objective in concrete, testable terms.";
+  return {
+    title: shortTitle(objective),
+    objective,
+    repo: null,
+    authoring: {
+      intake_summary: objective,
+      acceptance_evidence: ["operator reviewed the generated GoalSpec", "validator can determine completion"],
+      constraints: [],
+      out_of_scope: [],
+      assumptions: [],
+      open_questions: [],
+    },
+    plan: {
+      summary: "Chat-authored goal draft; revise before submission.",
+      subgoals: [],
+      distribution_notes: ["Coordinator owns task creation; workers may only request child tasks."],
+    },
+    root_budget: defaultBudget(),
+    done_criteria: { tests_pass: true, artifact_exists: true, validator_score_min: 0.85 },
+    initial_tasks: [
+      {
+        role: "planner",
+        prompt: `Turn this objective into the next durable task frontier: ${objective}`,
+        reason: "Seed coordinator-owned decomposition from the chat-authored goal.",
+      },
+    ],
+  };
+}
+
+function planDraft(prompt: string): JsonMap {
+  const objective = prompt || "Refine this rough request into a durable plan.";
+  return {
+    title: shortTitle(objective),
+    objective,
+    repo: null,
+    prompt: objective,
+    mode: "interactive",
+    author: "operator",
+    authoring: {
+      intake_summary: objective,
+      acceptance_evidence: ["plan can compile into a GoalSpec", "initial tasks are coordinator-owned"],
+      constraints: [],
+      out_of_scope: [],
+      assumptions: [],
+      open_questions: [],
+    },
+    plan: {
+      summary: "Chat-authored durable plan draft.",
+      subgoals: [],
+      distribution_notes: ["Use the coordinator task tree for subagents and fork/join work."],
+    },
+    initial_tasks: [],
+    questions: [],
+    decisions: [],
+  };
+}
+
+function steeringDraft(prompt: string, goalId: string): JsonMap {
+  return {
+    id: crypto.randomUUID(),
+    goal_id: goalId || undefined,
+    task_id: null,
+    operator: "operator",
+    message: prompt || "Steer the goal based on operator chat guidance.",
+    kind: {
+      kind: "add_constraint",
+      constraint: prompt || "Clarify the desired steering constraint before sending.",
+    },
+  };
+}
+
+function defaultBudget(): JsonMap {
+  return {
+    max_tokens: 2_000_000,
+    remaining_tokens: 2_000_000,
+    max_runtime_seconds: 14_400,
+    remaining_runtime_seconds: 14_400,
+    max_tool_calls: 2_000,
+    remaining_tool_calls: 2_000,
+    max_child_tasks: 64,
+    remaining_child_tasks: 64,
+    max_patch_size: 500_000,
+  };
+}
+
+function shortTitle(value: string): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (!cleaned) {
+    return "Chat Authored Goal";
+  }
+  return cleaned.length <= 64 ? cleaned : `${cleaned.slice(0, 61)}...`;
+}
+
+function safeJsonValue(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function atRecord(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (Array.isArray(current) && /^\d+$/.test(key)) {
+      current = current[Number(key)];
+      continue;
+    }
+    if (!current || typeof current !== "object") {
+      return null;
+    }
+    current = (current as JsonMap)[key];
+  }
+  return current;
 }
 
 async function routeApi(req: any, res: any, url: URL): Promise<void> {
@@ -641,9 +1151,19 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/chat") {
+    sendJson(res, 200, await controlChat(await readJson(req)));
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/follow-ups") {
     const includeEmpty = url.searchParams.get("include_empty") === "true";
     sendJson(res, 200, await executionPlanFollowUps(executionPlanDirs, includeEmpty));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/follow-ups/draft-plan") {
+    sendJson(res, 200, followUpDraftPlan(await readJson(req)));
     return;
   }
 
@@ -708,13 +1228,8 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
   }
 
   if (req.method === "POST" && url.pathname === "/api/goals/submit") {
-    const body = await readJson(req);
-    const goalId = goalIdFromSpec(body);
-    if (!goalId) {
-      sendJson(res, 400, { error: "goal spec requires id or goal_id" });
-      return;
-    }
-    sendJson(res, 200, await workflowPost(goalId, "run", body));
+    const { goalId, spec } = goalSpecWithId(await readJson(req));
+    sendJson(res, 200, await workflowPost(goalId, "run", spec));
     return;
   }
 
@@ -737,6 +1252,14 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
       sendJson(res, 200, result);
       return;
     }
+  }
+
+  if (req.method === "POST" && segments[0] === "api" && segments[1] === "research" && segments[2] === "apply") {
+    const body = await readJson(req);
+    const record = asRecord(body);
+    const goalId = String(record.goal_id ?? "");
+    sendJson(res, 200, await applyResearchOutput(goalId, body));
+    return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/human/threads") {
@@ -835,6 +1358,9 @@ async function proxyMemoryRoute(req: any, res: any, segments: string[]): Promise
     search: "/memory/search",
     context: "/memory/context",
     join: "/memory/join",
+    retract: "/memory/retract",
+    edit: "/memory/edit",
+    "edit-preview": "/memory/edit/preview",
     repair: "/memory/repair",
   };
   const path = pathByAction[action];
@@ -857,6 +1383,15 @@ function goalIdFromSpec(body: unknown): string | null {
   const record = body as Record<string, unknown>;
   const value = record.goal_id ?? record.id;
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function goalSpecWithId(body: unknown): { goalId: string; spec: unknown } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("goal spec must be a JSON object");
+  }
+  const record = body as Record<string, unknown>;
+  const goalId = goalIdFromSpec(record) ?? crypto.randomUUID();
+  return { goalId, spec: { ...record, id: goalId } };
 }
 
 async function routeMcp(req: any, res: any): Promise<void> {
@@ -944,6 +1479,11 @@ function mcpTools(): unknown[] {
       inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1 } } },
     },
     {
+      name: "coat_plan_draft",
+      description: "Create or store a durable planning-mode draft through the goal-store plan surface.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
       name: "coat_plan_get",
       description: "Read one durable plan by plan_id.",
       inputSchema: {
@@ -956,6 +1496,16 @@ function mcpTools(): unknown[] {
     {
       name: "coat_plan_compile",
       description: "Compile a durable plan into a GoalSpec without submitting it.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["plan_id"],
+        properties: { plan_id: { type: "string" } },
+      },
+    },
+    {
+      name: "coat_plan_revise",
+      description: "Append a revision to an existing durable planning-mode draft.",
       inputSchema: {
         type: "object",
         additionalProperties: true,
@@ -983,6 +1533,21 @@ function mcpTools(): unknown[] {
       },
     },
     {
+      name: "coat_follow_up_draft_plan",
+      description: "Turn one execution-plan follow-up item into the standard structured draft-plan prompt without mutating durable state.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text"],
+        properties: {
+          plan: { type: "string" },
+          path: { type: "string" },
+          index: { type: "number" },
+          text: { type: "string" },
+        },
+      },
+    },
+    {
       name: "coat_steer_goal",
       description: "Submit a SteeringDirective to GoalWorkflow/steer.",
       inputSchema: {
@@ -990,6 +1555,40 @@ function mcpTools(): unknown[] {
         additionalProperties: false,
         required: ["goal_id", "directive"],
         properties: { goal_id: { type: "string" }, directive: { type: "object" } },
+      },
+    },
+    {
+      name: "coat_goal_submit",
+      description: "Submit a GoalSpec to GoalWorkflow/run. If id is omitted, the gateway assigns one before submission.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_approve_goal",
+      description: "Approve or reject a durable HumanApproval request for a goal.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["goal_id", "approval_id", "approved"],
+        properties: {
+          goal_id: { type: "string" },
+          approval_id: { type: "string" },
+          approved: { type: "boolean" },
+          note: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "coat_chat_assist",
+      description: "Ask the control-plane chat assistant to explain state or draft a GoalSpec, plan, or steering directive without mutating durable state.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["messages"],
+        properties: {
+          mode: { type: "string" },
+          goal_id: { type: "string" },
+          messages: { type: "array" },
+        },
       },
     },
     {
@@ -1008,9 +1607,74 @@ function mcpTools(): unknown[] {
       },
     },
     {
+      name: "coat_runner_list",
+      description: "List registered runners and status from the runner registry.",
+      inputSchema: { type: "object", additionalProperties: false, properties: { status: { type: "boolean" } } },
+    },
+    {
+      name: "coat_runner_register",
+      description: "Register a non-local runner endpoint with the runner registry using the RunnerRegistration payload.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
       name: "coat_memory_search",
       description: "Search the memory gateway using the standard MemorySearchRequest payload.",
       inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_context",
+      description: "Fetch a scoped memory context pack using the standard MemoryContextRequest payload.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_write",
+      description: "Write a reviewed memory event through the memory gateway using the standard MemoryWriteRequest payload.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_join",
+      description: "Promote or invalidate branch memories after unifier review using the standard MemoryJoinRequest payload.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_retract",
+      description: "Retract selected memory records after operator or unifier review using the standard MemoryRetractRequest payload.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_edit",
+      description: "Retract old memory keys and write a linked replacement using the standard MemoryEditRequest payload.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_edit_preview",
+      description: "Preview existing memory keys versus a replacement before committing the edit.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_repair",
+      description: "Replay selected memory events into configured adapters after Graphiti, Qdrant, or embedding credentials recover.",
+      inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_memory_events",
+      description: "Read memory events projected for one goal.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["goal_id"],
+        properties: { goal_id: { type: "string" } },
+      },
+    },
+    {
+      name: "coat_apply_research_output",
+      description: "Convert a ResearchOutput or InformationUsePlan into coordinator-owned SteeringDirective calls.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["goal_id"],
+        properties: { goal_id: { type: "string" }, research_output: { type: "object" }, use_plan: { type: "object" } },
+      },
     },
     {
       name: "coat_event_sources",
@@ -1050,6 +1714,13 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
     const limit = typeof args.limit === "number" ? args.limit : 25;
     return proxyJson(goalStoreUrl, `/goal-store/plans?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
   }
+  if (name === "coat_plan_draft") {
+    return proxyJson(goalStoreUrl, "/goal-store/plans", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    });
+  }
   if (name === "coat_plan_get") {
     const planId = String(args.plan_id ?? "");
     if (!planId) {
@@ -1068,6 +1739,17 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       body: JSON.stringify({ ...args, plan_id: planId }),
     });
   }
+  if (name === "coat_plan_revise") {
+    const planId = String(args.plan_id ?? "");
+    if (!planId) {
+      throw new Error("plan_id is required");
+    }
+    return proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}/revisions`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    });
+  }
   if (name === "coat_plan_continuity") {
     const planId = String(args.plan_id ?? "");
     if (!planId) {
@@ -1078,12 +1760,34 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
   if (name === "coat_follow_ups") {
     return executionPlanFollowUps(executionPlanDirs, args.include_empty === true);
   }
+  if (name === "coat_follow_up_draft_plan") {
+    return followUpDraftPlan(args);
+  }
   if (name === "coat_steer_goal") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
     }
     return workflowPost(goalId, "steer", args.directive ?? {});
+  }
+  if (name === "coat_goal_submit") {
+    const { goalId, spec } = goalSpecWithId(args);
+    return workflowPost(goalId, "run", spec);
+  }
+  if (name === "coat_approve_goal") {
+    const goalId = String(args.goal_id ?? "");
+    const approvalId = String(args.approval_id ?? "");
+    if (!goalId || !approvalId) {
+      throw new Error("goal_id and approval_id are required");
+    }
+    return workflowPost(goalId, "approve", {
+      approval_id: approvalId,
+      approved: args.approved === true,
+      note: typeof args.note === "string" ? args.note : null,
+    });
+  }
+  if (name === "coat_chat_assist") {
+    return controlChat(args);
   }
   if (name === "coat_subagent_policy") {
     return {
@@ -1104,6 +1808,16 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
     }
     return proxyJson(goalStoreUrl, `/goal-store/goals/${encodeURIComponent(goalId)}/checkpoints`, { method: "GET" });
   }
+  if (name === "coat_runner_list") {
+    return proxyJson(runnerRegistryUrl, args.status === false ? "/runners" : "/runners/status", { method: "GET" });
+  }
+  if (name === "coat_runner_register") {
+    return proxyJson(runnerRegistryUrl, "/runners", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    });
+  }
   if (name === "coat_memory_search") {
     return proxyJson(memoryGatewayUrl, "/memory/search", {
       method: "POST",
@@ -1111,472 +1825,70 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       body: JSON.stringify(args),
     }, bearer(memoryGatewayToken));
   }
+  if (name === "coat_memory_context") {
+    return proxyJson(memoryGatewayUrl, "/memory/context", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_write") {
+    return proxyJson(memoryGatewayUrl, "/memory/write", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_join") {
+    return proxyJson(memoryGatewayUrl, "/memory/join", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_retract") {
+    return proxyJson(memoryGatewayUrl, "/memory/retract", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_edit") {
+    return proxyJson(memoryGatewayUrl, "/memory/edit", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_edit_preview") {
+    return proxyJson(memoryGatewayUrl, "/memory/edit/preview", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_repair") {
+    return proxyJson(memoryGatewayUrl, "/memory/repair", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(args),
+    }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_memory_events") {
+    const goalId = String(args.goal_id ?? "");
+    if (!goalId) {
+      throw new Error("goal_id is required");
+    }
+    return proxyJson(memoryGatewayUrl, `/memory/events/${encodeURIComponent(goalId)}`, { method: "GET" }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_apply_research_output") {
+    const goalId = String(args.goal_id ?? "");
+    return applyResearchOutput(goalId, args);
+  }
   if (name === "coat_event_sources") {
     return proxyJson(eventGatewayUrl, "/event-sources", { method: "GET" }, bearer(eventGatewayToken));
   }
   throw new Error(`unknown tool: ${name}`);
-}
-
-function appHtml(): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>COAT Control Plane</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #f6f7f8;
-      --surface: #ffffff;
-      --surface-2: #eef1f3;
-      --text: #172026;
-      --muted: #53616a;
-      --line: #cad1d6;
-      --accent: #0d6b5f;
-      --accent-2: #8b3d58;
-      --bad: #a13a2f;
-      --warn: #9b6500;
-      --good: #24714a;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      display: grid;
-      grid-template-columns: minmax(220px, 1fr) auto;
-      gap: 16px;
-      align-items: center;
-      padding: 12px 18px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255,255,255,0.96);
-      backdrop-filter: blur(8px);
-    }
-    h1 {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 680;
-      letter-spacing: 0;
-    }
-    h2 {
-      margin: 0 0 10px;
-      font-size: 14px;
-      font-weight: 680;
-      letter-spacing: 0;
-    }
-    h3 {
-      margin: 12px 0 8px;
-      font-size: 13px;
-      font-weight: 680;
-      letter-spacing: 0;
-    }
-    main {
-      display: grid;
-      grid-template-columns: 260px minmax(0, 1fr);
-      min-height: calc(100vh - 58px);
-    }
-    nav {
-      border-right: 1px solid var(--line);
-      background: var(--surface);
-      padding: 14px;
-    }
-    nav button {
-      width: 100%;
-      display: block;
-      margin: 0 0 6px;
-      text-align: left;
-    }
-    section {
-      display: none;
-      padding: 16px;
-    }
-    section.active { display: block; }
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .grid.three {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-    .panel {
-      min-width: 0;
-      border: 1px solid var(--line);
-      background: var(--surface);
-      border-radius: 6px;
-      padding: 12px;
-    }
-    .wide { grid-column: 1 / -1; }
-    label {
-      display: grid;
-      gap: 5px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 600;
-    }
-    input, textarea, select, button {
-      font: inherit;
-      letter-spacing: 0;
-    }
-    input, textarea, select {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 5px;
-      background: #fff;
-      color: var(--text);
-      padding: 8px 9px;
-    }
-    textarea {
-      min-height: 160px;
-      resize: vertical;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-      line-height: 1.4;
-    }
-    button {
-      border: 1px solid #9aa6ad;
-      border-radius: 5px;
-      background: #fff;
-      color: var(--text);
-      padding: 7px 10px;
-      cursor: pointer;
-      min-height: 34px;
-    }
-    button.primary {
-      border-color: var(--accent);
-      background: var(--accent);
-      color: #fff;
-    }
-    button.warn {
-      border-color: var(--warn);
-      color: var(--warn);
-    }
-    .status-strip {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      min-height: 24px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--surface-2);
-      color: var(--muted);
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .pill.good { color: var(--good); border-color: #9dc7ad; background: #eef8f1; }
-    .pill.bad { color: var(--bad); border-color: #dfaea8; background: #fff1ef; }
-    .pill.warn { color: var(--warn); border-color: #d7bd7a; background: #fff8df; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-    th, td {
-      border-bottom: 1px solid var(--line);
-      padding: 6px;
-      text-align: left;
-      vertical-align: top;
-      word-break: break-word;
-    }
-    th { color: var(--muted); font-weight: 680; }
-    .color-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      white-space: nowrap;
-      color: var(--muted);
-    }
-    .color-dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 999px;
-      border: 1px solid rgba(0,0,0,0.24);
-      flex: 0 0 auto;
-    }
-    pre {
-      overflow: auto;
-      max-height: 460px;
-      margin: 0;
-      border: 1px solid var(--line);
-      border-radius: 5px;
-      background: #11171c;
-      color: #e6eef3;
-      padding: 10px;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .muted { color: var(--muted); }
-    .split {
-      display: grid;
-      grid-template-columns: minmax(260px, 390px) minmax(0, 1fr);
-      gap: 12px;
-    }
-    @media (max-width: 920px) {
-      header { grid-template-columns: 1fr; }
-      main { grid-template-columns: 1fr; }
-      nav {
-        border-right: 0;
-        border-bottom: 1px solid var(--line);
-        display: flex;
-        gap: 6px;
-        overflow-x: auto;
-      }
-      nav button { width: auto; white-space: nowrap; }
-      .grid, .grid.three, .split { grid-template-columns: 1fr; }
-      section { padding: 12px; }
-      .status-strip { justify-content: flex-start; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <div>
-      <h1>COAT Control Plane</h1>
-      <div class="muted">Joseph and the Amazing Technicolor Task Graph</div>
-    </div>
-    <div id="serviceStrip" class="status-strip"></div>
-  </header>
-  <main>
-    <nav>
-      <button data-tab="overview" class="primary">Overview</button>
-      <button data-tab="plans">Plans</button>
-      <button data-tab="followups">Follow-Ups</button>
-      <button data-tab="agents">Agents</button>
-      <button data-tab="goal">Goals</button>
-      <button data-tab="human">Human Queue</button>
-      <button data-tab="events">Events</button>
-      <button data-tab="memory">Memory</button>
-      <button data-tab="mcp">MCP</button>
-    </nav>
-    <div>
-      <section id="overview" class="active">
-        <div class="toolbar">
-          <button id="refreshOverview" class="primary">Refresh</button>
-          <label style="max-width: 300px;">Gateway token <input id="apiToken" type="password" autocomplete="off"></label>
-        </div>
-        <div class="grid three">
-          <div class="panel"><h2>Services</h2><div id="servicesView"></div></div>
-          <div class="panel"><h2>Runners</h2><div id="runnersView"></div></div>
-          <div class="panel"><h2>Human Threads</h2><div id="threadsSummary"></div></div>
-          <div class="panel wide"><h2>Approval Queue</h2><div id="approvalsOverview"></div></div>
-          <div class="panel wide"><h2>Durable Plans</h2><div id="plansOverview"></div></div>
-          <div class="panel wide"><h2>Execution Plan Follow-Ups</h2><div id="followUpsOverview"></div></div>
-          <div class="panel wide"><h2>Goal List</h2><div id="goalsView"></div></div>
-          <div class="panel wide"><h2>Agent Activity</h2><div id="agentsOverview"></div></div>
-          <div class="panel wide"><h2>Overview JSON</h2><pre id="overviewJson"></pre></div>
-        </div>
-      </section>
-      <section id="plans">
-        <div class="split">
-          <div class="panel">
-            <h2>Planning Mode</h2>
-            <div class="toolbar">
-              <button id="refreshPlans" class="primary">Refresh Plans</button>
-              <label>Plan ID <input id="planId" placeholder="plan UUID"></label>
-              <button id="loadPlan">Load</button>
-            </div>
-            <h3>Draft Plan</h3>
-            <textarea id="planDraftJson" spellcheck="false">{
-  "title": "Durable planning draft",
-  "objective": "Turn a rough operator request into a typed, durable plan.",
-  "repo": null,
-  "prompt": "Capture the planning conversation, questions, decisions, subgoals, and first task frontier.",
-  "mode": "interactive",
-  "author": "operator",
-  "authoring": {
-    "intake_summary": "Initial planning-mode draft.",
-    "acceptance_evidence": ["plan can compile into a GoalSpec"],
-    "constraints": [],
-    "out_of_scope": [],
-    "assumptions": [],
-    "open_questions": []
-  },
-  "plan": {
-    "summary": "Draft before compilation.",
-    "subgoals": [],
-    "distribution_notes": []
-  },
-  "initial_tasks": [],
-  "questions": [],
-  "decisions": []
-}</textarea>
-            <div class="toolbar"><button id="draftPlan" class="primary">Create Durable Plan</button></div>
-            <h3>Revise Plan</h3>
-            <textarea id="planRevisionJson" spellcheck="false">{
-  "author": "operator",
-  "summary": "Refine plan from planning-mode discussion.",
-  "operator_message": "Update subgoals, questions, and first task frontier.",
-  "status": "ready_for_review"
-}</textarea>
-            <div class="toolbar">
-              <button id="revisePlan">Revise</button>
-              <button id="compilePlan">Compile GoalSpec</button>
-            </div>
-          </div>
-          <div class="panel">
-            <h2>Plan State</h2>
-            <div id="plansView"></div>
-            <h3>Plan Continuity</h3>
-            <div id="planContinuityView"><p class="muted">Load a plan to inspect continuity state.</p></div>
-            <h3>Plan JSON</h3>
-            <pre id="planJson"></pre>
-          </div>
-        </div>
-      </section>
-      <section id="followups">
-        <div class="toolbar">
-          <button id="refreshFollowUps" class="primary">Refresh Follow-Ups</button>
-        </div>
-        <div class="grid">
-          <div class="panel wide"><h2>Active Plan Follow-Ups</h2><div id="followUpsView"></div></div>
-          <div class="panel wide"><h2>Follow-Up JSON</h2><pre id="followUpsJson"></pre></div>
-        </div>
-      </section>
-      <section id="agents">
-        <div class="toolbar">
-          <button id="refreshAgents" class="primary">Refresh Agents</button>
-          <label style="max-width: 360px;">Filter goal ID <input id="agentGoalFilter" placeholder="optional goal UUID"></label>
-        </div>
-        <div class="grid">
-          <div class="panel wide"><h2>Agent Progress And Prompts</h2><div id="agentsView"></div></div>
-          <div class="panel wide"><h2>Selected Agent State</h2><pre id="agentDetailJson"></pre></div>
-        </div>
-      </section>
-      <section id="goal">
-        <div class="split">
-          <div class="panel">
-            <h2>Goal Control</h2>
-            <div class="toolbar">
-              <label>Goal ID <input id="goalId" placeholder="018f8f2f-..."></label>
-              <button id="loadGoal" class="primary">Load</button>
-            </div>
-            <h3>Submit GoalSpec</h3>
-            <textarea id="goalSubmitJson" spellcheck="false">{}</textarea>
-            <div class="toolbar"><button id="submitGoal" class="primary">Submit</button></div>
-            <h3>SteeringDirective</h3>
-            <textarea id="steerJson" spellcheck="false">{
-  "kind": "request_research",
-  "message": "Find current evidence before continuing.",
-  "created_by": "operator"
-}</textarea>
-            <div class="toolbar">
-              <button id="sendSteer" class="primary">Steer</button>
-              <button id="goalProgress">Progress</button>
-              <button id="goalStatus">Status</button>
-            </div>
-            <h3>Approval / Feedback</h3>
-            <textarea id="approvalJson" spellcheck="false">{
-  "approval_id": "",
-  "approved": true,
-  "comment": "Approved from control gateway"
-}</textarea>
-            <div class="toolbar">
-              <button id="sendApprove">Approve</button>
-              <button id="cancelGoal" class="warn">Cancel</button>
-            </div>
-          </div>
-          <div class="panel">
-            <h2>Goal Snapshot</h2>
-            <div id="goalTables"></div>
-            <h3>Agent Activity</h3>
-            <div id="goalAgentActivity"></div>
-            <pre id="goalJson"></pre>
-          </div>
-        </div>
-      </section>
-      <section id="human">
-        <div class="toolbar">
-          <button id="refreshThreads" class="primary">Refresh Threads</button>
-          <button id="refreshApprovals">Refresh Approvals</button>
-        </div>
-        <div class="grid">
-          <div class="panel"><h2>Threads</h2><div id="threadsView"></div></div>
-          <div class="panel"><h2>Approvals</h2><div id="approvalsView"></div></div>
-          <div class="panel wide"><h2>Thread / Approval Detail</h2><pre id="threadDetail"></pre></div>
-        </div>
-      </section>
-      <section id="events">
-        <div class="toolbar">
-          <button id="refreshEvents" class="primary">Refresh Events</button>
-        </div>
-        <div class="grid">
-          <div class="panel"><h2>Sources</h2><pre id="eventSourcesJson"></pre></div>
-          <div class="panel"><h2>Triggers</h2><pre id="eventTriggersJson"></pre></div>
-          <div class="panel wide"><h2>Recent Events</h2><pre id="eventsJson"></pre></div>
-        </div>
-      </section>
-      <section id="memory">
-        <div class="split">
-          <div class="panel">
-            <h2>Memory Search</h2>
-            <textarea id="memorySearchJson" spellcheck="false">{
-  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
-  "query": "current goal context and steering constraints",
-  "limit": 8
-}</textarea>
-            <div class="toolbar">
-              <button id="memorySearch" class="primary">Search</button>
-              <button id="memoryContext">Context</button>
-            </div>
-            <h3>Memory Write</h3>
-            <textarea id="memoryWriteJson" spellcheck="false">{
-  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
-  "scope": "goal",
-  "kind": "operator_note",
-  "text": "Reviewed through the control gateway.",
-  "tags": ["operator", "dashboard"]
-}</textarea>
-            <div class="toolbar"><button id="memoryWrite">Write</button></div>
-          </div>
-          <div class="panel">
-            <h2>Memory Result</h2>
-            <pre id="memoryJson"></pre>
-          </div>
-        </div>
-      </section>
-      <section id="mcp">
-        <div class="grid">
-          <div class="panel">
-            <h2>MCP Surface</h2>
-            <p class="muted">POST JSON-RPC to <code>/mcp</code>. Use <code>Authorization: Bearer $COAT_CONTROL_MCP_TOKEN</code> when configured.</p>
-            <pre>{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/list",
-  "params": {}
-}</pre>
-          </div>
-          <div class="panel">
-            <h2>Engine Boundary</h2>
-            <p class="muted">The SPA and MCP gateway only read projections and submit workflow signals. Durable state, task creation, validation, approval waits, and runner dispatch stay in the Rust/Restate engine.</p>
-          </div>
-        </div>
-      </section>
-    </div>
-  </main>
-  <script type="module" src="/app.js"></script>
-</body>
-</html>`;
 }
 
 const server = http.createServer((req, res) => {
@@ -1586,21 +1898,16 @@ const server = http.createServer((req, res) => {
       sendJson(res, 200, { ok: true, service: "coat-control-plane-web" });
       return;
     }
-    if (req.method === "GET" && url.pathname === "/") {
-      sendText(res, 200, appHtml(), "text/html; charset=utf-8");
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/app.js") {
-      const script = await readFile(clientScriptUrl, "utf8");
-      sendText(res, 200, script, "text/javascript; charset=utf-8");
-      return;
-    }
     if (url.pathname.startsWith("/api/")) {
       await routeApi(req, res, url);
       return;
     }
     if (req.method === "POST" && url.pathname === "/mcp") {
       await routeMcp(req, res);
+      return;
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      await serveSpa(req, res, url);
       return;
     }
     sendJson(res, 404, { error: "not found" });

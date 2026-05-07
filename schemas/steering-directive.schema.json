@@ -45,6 +45,7 @@
         "readability",
         "compile",
         "test_evidence",
+        "behavioral_testing",
         "hypothesis_testing",
         "type_soundness",
         "formal_verification",

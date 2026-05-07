@@ -8,29 +8,34 @@ Use this mode when you want durable goals to keep progressing across local proce
 
 1. Create a Restate Cloud environment.
 2. Copy the environment id, API key, region, and HTTP service signing public key from the Cloud UI.
-3. Copy `infra/compose/restate-cloud.env.example` to a local env file and fill in the values.
-4. Start the stack with the Restate Cloud tunnel profile:
+3. Initialize the local Compose env file, fill in the values, validate the merged Compose config, then start the stack:
 
 ```sh
-docker compose \
-  --env-file infra/compose/restate-cloud.env \
-  -f infra/compose/docker-compose.yml \
-  -f infra/compose/docker-compose.restate-cloud.yml \
-  --profile restate-cloud \
-  up --build
+coat compose up --restate-cloud --init-env
+# edit infra/compose/restate-cloud.env
+coat compose config --restate-cloud
 coat compose up --restate-cloud
 ```
 
+`coat compose up --restate-cloud` uses `infra/compose/docker-compose.yml`,
+`infra/compose/docker-compose.restate-cloud.yml`, the `restate-cloud` profile,
+and `infra/compose/restate-cloud.env`. If the env file is missing, the CLI
+copies `infra/compose/restate-cloud.env.example` and stops so secrets are not
+silently defaulted. If placeholders remain, the CLI lists the keys to fill in.
+
 The tunnel container maps Restate Cloud's ingress/admin proxies to host ports `18080` and `19070` by default so the local self-hosted Restate ports can still exist on `8080` and `9070`.
 
-Register the coordinator through the tunnel:
+Start detached and register the coordinator through the tunnel in one command:
 
 ```sh
-source infra/compose/restate-cloud.env
-coat restate register-cloud \
-  --tunnel-name "$RESTATE_TUNNEL_NAME" \
-  --service-url http://coordinator:9080
+coat compose up --restate-cloud --register-cloud
 ```
+
+`--register-cloud` implies detached Compose startup, then wraps `restate
+deployments register --tunnel-name <name> <service-url>`. Use `--tunnel-name`
+or `RESTATE_TUNNEL_NAME` if you changed the tunnel name from `jattg-personal`.
+You can still call `coat restate register-cloud --dry-run` when you only want
+to inspect the registration command.
 
 Submit and inspect goals through the cloud ingress proxy:
 
@@ -47,7 +52,7 @@ The coordinator validates Restate request identity when `RESTATE_IDENTITY_KEYS` 
 
 `coat restate tunnel-docker` prints an explicit `docker run` command for the official tunnel client when you do not want to use Compose.
 
-`coat restate register-cloud` wraps:
+`coat restate register-cloud` remains available as a lower-level helper and wraps:
 
 ```sh
 restate deployments register --tunnel-name <name> <service-url>
@@ -67,6 +72,12 @@ restate deployments register https://coordinator.example.com
 Do not expose a coordinator without identity verification. Restate Cloud signs requests with an environment-specific key, and the SDK rejects calls that fail verification when the service is configured with the public key.
 
 ## Kubernetes With Restate Cloud
+
+`coat compose` intentionally does not manage Kubernetes. Compose is the local
+Docker lifecycle; cluster manifests and ephemeral runner Jobs live under
+`coat k8s`, while packaged installs use the `infra/helm/jattg` chart. Use
+`coat k8s render` and `coat k8s apply --dry-run=client` for raw manifest
+workflows before moving to a real apply.
 
 For clusters, prefer the Restate Operator path. The operator provides `RestateCloudEnvironment` and `RestateDeployment` resources so services can remain private and still register with Restate Cloud through an operator-managed tunnel.
 

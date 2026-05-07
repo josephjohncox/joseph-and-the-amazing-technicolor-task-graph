@@ -1,0 +1,44 @@
+{
+  "id": "sqs-notifications",
+  "kind": "sqs",
+  "enabled": false,
+  "description": "Inbound SQS queue for durable notification and event fan-in.",
+  "namespace": "ops",
+  "webhook": null,
+  "generic": {
+    "auth": {
+      "kind": "none",
+      "secret_ref": null,
+      "header_name": null
+    },
+    "accepts_cloudevents": true,
+    "max_payload_bytes": 262144,
+    "allowed_event_types": [],
+    "id_json_pointer": "/id",
+    "type_json_pointer": "/event",
+    "subject_json_pointer": "/request/message",
+    "dedupe_json_pointer": "/id",
+    "dedupe_header": null,
+    "payload_schema": null,
+    "mcp_context": null
+  },
+  "sqs": {
+    "queue_url": "https://sqs.us-west-2.amazonaws.com/123456789012/coat-inbound-events",
+    "region": "us-west-2",
+    "endpoint": null,
+    "max_messages": 10,
+    "wait_time_seconds": 5,
+    "visibility_timeout_seconds": 30,
+    "delete_on_success": true
+  },
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "human_review",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": true,
+    "dedupe_window_seconds": 3600
+  }
+}

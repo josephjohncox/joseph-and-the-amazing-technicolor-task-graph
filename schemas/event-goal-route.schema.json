@@ -196,6 +196,49 @@
         "max_patch_size"
       ]
     },
+    "CapacityProvisioningMode": {
+      "type": "string",
+      "enum": [
+        "registered_runners_only",
+        "prefer_registered_then_ephemeral",
+        "ephemeral_only"
+      ]
+    },
+    "CapacityProvisioningPolicy": {
+      "description": "Task-local policy for adding execution capacity.\n\nThe coordinator or executor framework interprets this policy. Operators\nshould not hand-create one-off Kubernetes Jobs for every task; instead, task\nexecution can reference approved templates that provision bounded runner or\nservice-executor capacity and then register through the normal runner\nregistry or Restate deployment path.",
+      "type": "object",
+      "properties": {
+        "max_pending_provisions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/CapacityProvisioningMode"
+        },
+        "request_timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "require_human_approval": {
+          "type": "boolean"
+        },
+        "template_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EphemeralRunnerTemplateRef"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "request_timeout_seconds",
+        "max_pending_provisions",
+        "require_human_approval"
+      ]
+    },
     "CheckpointMode": {
       "type": "string",
       "enum": [
@@ -285,6 +328,65 @@
         "artifact_exists"
       ]
     },
+    "EphemeralCapacityKind": {
+      "type": "string",
+      "enum": [
+        "runner_job",
+        "restate_service_executor",
+        "sandbox_job"
+      ]
+    },
+    "EphemeralRunnerTemplateRef": {
+      "type": "object",
+      "properties": {
+        "active_deadline_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "config_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/EphemeralCapacityKind"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "name": {
+          "type": "string"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "ttl_seconds_after_finished": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ]
+    },
     "EventRouteMode": {
       "type": "string",
       "enum": [
@@ -299,6 +401,16 @@
       "description": "Task-local runner, model, persona, MCP, notification, result, and guardrail policy.\n\nThis is the contract that lets distributed runners and model providers pick\nup work without reading global plan prose. It is documented in\n`docs/design-docs/010-distributed-runners-mcp.md`.",
       "type": "object",
       "properties": {
+        "capacity": {
+          "$ref": "#/$defs/CapacityProvisioningPolicy",
+          "default": {
+            "max_pending_provisions": 1,
+            "mode": "registered_runners_only",
+            "request_timeout_seconds": 600,
+            "require_human_approval": true,
+            "template_refs": []
+          }
+        },
         "guardrails": {
           "$ref": "#/$defs/ExecutorGuardrailPolicy",
           "default": {
@@ -313,6 +425,20 @@
             "require_security_review": false,
             "require_strong_sandbox_attestation": false,
             "security_reviewer_role": "validator"
+          }
+        },
+        "local_tools": {
+          "$ref": "#/$defs/LocalToolPolicy",
+          "default": {
+            "allowed_tools": [],
+            "approval": "risk_based",
+            "default_timeout_seconds": 600,
+            "denied_binaries": [],
+            "enabled": false,
+            "max_output_bytes": 65536,
+            "require_command_evidence": true,
+            "require_sandbox_runner": true,
+            "require_workspace": true
           }
         },
         "mcp": {
@@ -482,13 +608,169 @@
       "type": "object",
       "properties": {
         "budget": {
-          "$ref": "#/$defs/Budget"
+          "$ref": "#/$defs/Budget",
+          "default": {
+            "max_child_tasks": 64,
+            "max_patch_size": 500000,
+            "max_runtime_seconds": 14400,
+            "max_tokens": 2000000,
+            "max_tool_calls": 2000,
+            "remaining_child_tasks": 64,
+            "remaining_runtime_seconds": 14400,
+            "remaining_tokens": 2000000,
+            "remaining_tool_calls": 2000
+          }
         },
         "done_criteria": {
-          "$ref": "#/$defs/DoneCriteria"
+          "$ref": "#/$defs/DoneCriteria",
+          "default": {
+            "artifact_exists": true,
+            "tests_pass": true,
+            "validator_score_min": 0.8500000238418579
+          }
         },
         "execution": {
-          "$ref": "#/$defs/ExecutionProfile"
+          "$ref": "#/$defs/ExecutionProfile",
+          "default": {
+            "capacity": {
+              "max_pending_provisions": 1,
+              "mode": "registered_runners_only",
+              "request_timeout_seconds": 600,
+              "require_human_approval": true,
+              "template_refs": []
+            },
+            "guardrails": {
+              "block_on_high_findings": true,
+              "enabled": false,
+              "max_inline_output_bytes": 65536,
+              "output_reviewer_role": "reviewer",
+              "redact_secrets": true,
+              "require_artifact_manifest": false,
+              "require_output_review": false,
+              "require_sandbox_attestation": false,
+              "require_security_review": false,
+              "require_strong_sandbox_attestation": false,
+              "security_reviewer_role": "validator"
+            },
+            "local_tools": {
+              "allowed_tools": [],
+              "approval": "risk_based",
+              "default_timeout_seconds": 600,
+              "denied_binaries": [],
+              "enabled": false,
+              "max_output_bytes": 65536,
+              "require_command_evidence": true,
+              "require_sandbox_runner": true,
+              "require_workspace": true
+            },
+            "mcp": {
+              "access_mode": "single_user",
+              "auth_distribution": {
+                "allow_node_local_device_session": true,
+                "allow_secret_sync": false,
+                "allowed_materials": [
+                  "api_token",
+                  "mcp_bearer_token",
+                  "oauth_access_token",
+                  "oauth_refresh_token",
+                  "workload_identity_token"
+                ],
+                "lease_ttl_seconds": 900,
+                "mode": "runner_resolves_refs",
+                "renewal": "manual_or_brokered",
+                "require_human_approval_for_brokered_user_auth": true,
+                "required_runner_labels": {}
+              },
+              "context_id": null,
+              "oidc_delegation": null,
+              "propagation": "coordinator_issued",
+              "secret_refs": [],
+              "servers": [],
+              "token_ttl_seconds": 900,
+              "user": null
+            },
+            "model": {
+              "candidates": [
+                {
+                  "context_window": null,
+                  "endpoint": null,
+                  "features": [
+                    "tool_use",
+                    "json_schema"
+                  ],
+                  "labels": {},
+                  "model": "codex-default",
+                  "priority": 100,
+                  "provider": "codex",
+                  "weight": 1
+                }
+              ],
+              "fallback": "allow_fallback",
+              "required_features": [
+                "tool_use",
+                "json_schema"
+              ],
+              "strategy": "first_available"
+            },
+            "notifications": {
+              "escalation_seconds": 3600,
+              "events": [
+                "approval_requested",
+                "human_feedback_requested",
+                "task_blocked"
+              ],
+              "feedback_thread_key": null,
+              "targets": []
+            },
+            "persona": {
+              "inline_instructions": [],
+              "instructions_ref": null,
+              "name": "default",
+              "risk_tolerance": "conservative"
+            },
+            "results": {
+              "checkpoints": {
+                "branch_prefix": "jattg/checkpoint",
+                "enabled": true,
+                "git_checkpoint_on_result": true,
+                "mode": "on_result",
+                "object_checkpoint_on_result": true,
+                "require_for_code_changes": false,
+                "tag_prefix": "jattg-checkpoint",
+                "workspace_snapshot_on_result": true
+              },
+              "git": {
+                "base_ref": "HEAD",
+                "branch_prefix": "jattg/task",
+                "enabled": false,
+                "include_patch_artifact": true,
+                "push_on_success": false,
+                "remote": "origin",
+                "require_clean_diff": true,
+                "worktree_root": "/worktrees"
+              },
+              "object_storage": {
+                "enabled": false,
+                "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+                "max_inline_bytes": 262144,
+                "require_manifest": true,
+                "store": null
+              }
+            },
+            "runner": {
+              "locality": "any_node",
+              "required_capabilities": [],
+              "required_labels": {},
+              "runner_id": null,
+              "worker": null
+            },
+            "subagents": {
+              "child_request_channel": "agent_run_result_child_requests",
+              "inject_runner_context": true,
+              "mode": "coordinator_durable_tasks",
+              "native_spawn": "disabled"
+            }
+          }
         },
         "objective_template": {
           "type": "string"
@@ -510,16 +792,168 @@
           "type": "string"
         },
         "worker_role": {
-          "$ref": "#/$defs/WorkerKind"
+          "$ref": "#/$defs/WorkerKind",
+          "default": "planner"
         }
       },
       "required": [
         "title_template",
-        "objective_template",
-        "worker_role",
-        "done_criteria",
-        "budget",
-        "execution"
+        "objective_template"
+      ]
+    },
+    "LocalToolApprovalMode": {
+      "type": "string",
+      "enum": [
+        "inherit",
+        "risk_based",
+        "always",
+        "never"
+      ]
+    },
+    "LocalToolCategory": {
+      "type": "string",
+      "enum": [
+        "version_control",
+        "container_runtime",
+        "kubernetes",
+        "helm",
+        "package_manager",
+        "build_tool",
+        "test_runner",
+        "formal_methods",
+        "shell",
+        "system",
+        "other"
+      ]
+    },
+    "LocalToolPermission": {
+      "type": "object",
+      "properties": {
+        "allowed_subcommands": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "binary": {
+          "type": "string"
+        },
+        "category": {
+          "$ref": "#/$defs/LocalToolCategory"
+        },
+        "denied_args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "requires_cluster_access": {
+          "type": "boolean",
+          "default": false
+        },
+        "requires_docker_socket": {
+          "type": "boolean",
+          "default": false
+        },
+        "requires_network": {
+          "type": "boolean",
+          "default": false
+        },
+        "risk": {
+          "$ref": "#/$defs/LocalToolRisk"
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "binary",
+        "category",
+        "risk"
+      ]
+    },
+    "LocalToolPolicy": {
+      "description": "Task-local allowlist for running local binaries in an isolated workspace.\n\nThis does not grant ambient shell access. It declares which binaries a\nrunner or sandbox executor may invoke, which runner capabilities must be\npresent, how approval is handled, and what evidence must be returned.",
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/LocalToolPermission"
+          }
+        },
+        "approval": {
+          "$ref": "#/$defs/LocalToolApprovalMode",
+          "default": "risk_based"
+        },
+        "default_timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "denied_binaries": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "require_command_evidence": {
+          "type": "boolean",
+          "default": true
+        },
+        "require_sandbox_runner": {
+          "type": "boolean",
+          "default": true
+        },
+        "require_workspace": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "enabled",
+        "default_timeout_seconds",
+        "max_output_bytes"
+      ]
+    },
+    "LocalToolRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
       ]
     },
     "McpAccessMode": {
@@ -1057,9 +1491,11 @@
       "type": "string",
       "enum": [
         "thread",
+        "dashboard",
         "webhook",
         "slack",
         "email",
+        "sqs",
         "git_hub",
         "linear",
         "jira",
@@ -1320,6 +1756,13 @@
         "mcp_tools",
         "durable_child_tasks",
         "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",
@@ -1338,6 +1781,7 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
+        "ephemeral_provisioning",
         "network_open",
         "formal_verification"
       ]
@@ -1449,6 +1893,7 @@
         "readability",
         "compile",
         "test_evidence",
+        "behavioral_testing",
         "hypothesis_testing",
         "type_soundness",
         "formal_verification",

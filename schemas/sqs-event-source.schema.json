@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SqsEventSource",
+  "description": "AWS SQS-compatible queue source for inbound event polling.\n\nCredentials are intentionally not embedded here. Runners and gateways resolve\nAWS credentials through the ambient AWS SDK chain, workload identity, or\nconfigured secret middleware. Queue polling still enters through\n`coat-event-gateway`; messages do not invoke workers directly.",
+  "type": "object",
+  "properties": {
+    "delete_on_success": {
+      "type": "boolean"
+    },
+    "endpoint": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_messages": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "queue_url": {
+      "type": "string"
+    },
+    "region": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "visibility_timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int32"
+    },
+    "wait_time_seconds": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "queue_url",
+    "max_messages",
+    "wait_time_seconds",
+    "delete_on_success"
+  ]
+}

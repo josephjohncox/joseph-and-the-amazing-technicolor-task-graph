@@ -13,6 +13,8 @@ Add durable planning-mode artifacts so operators can draft, revise, review, and 
 - Add `coat plan draft/list/show/revise/compile` CLI commands.
 - Add SPA plan views and MCP tools for plan listing, inspection, and compilation.
 - Document the plan-to-goal workflow.
+- Add `source_plan_id` so operators can branch planning history and compile branch candidates into distinct goals.
+- Add SPA branch comparison and selection rows for plans with `source_plan_id`.
 
 ## Tests
 
@@ -22,12 +24,13 @@ Add durable planning-mode artifacts so operators can draft, revise, review, and 
 
 ## Follow-Ups
 
-- Add examples for branching from an existing plan and compiling revised plans into new goals without overwriting prior goal history.
+- Add backend-backed branch voting and winner-selection workflows for compiled plan candidates.
 
 ## Acceptance
 
 - A rough planning prompt can become a durable plan record.
 - The plan can be revised without submitting a goal.
 - The plan can compile into a valid `GoalSpec`.
+- Branched plans preserve `source_plan_id` and can compile to a distinct `goal_id`.
 - The SPA and MCP can inspect plans without owning state.
 - Restate remains authoritative only after a compiled goal is submitted.

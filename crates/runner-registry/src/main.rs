@@ -116,19 +116,23 @@ async fn main() -> anyhow::Result<()> {
         runners: Arc::new(RwLock::new(runners)),
         journal_path,
     };
-    let app = Router::new()
+    let app = registry_app(state);
+
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    tracing::info!(%bind, "runner registry listening");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn registry_app(state: AppState) -> Router {
+    Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/runners", get(list_runners).post(register_runner))
         .route("/runners/status", get(list_runner_status))
         .route("/runners/heartbeat", post(heartbeat))
         .route("/dispatch", post(dispatch))
         .with_state(state)
-        .layer(TraceLayer::new_for_http());
-
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    tracing::info!(%bind, "runner registry listening");
-    axum::serve(listener, app).await?;
-    Ok(())
+        .layer(TraceLayer::new_for_http())
 }
 
 async fn register_runner(
@@ -309,12 +313,29 @@ fn instant_from_wall_clock(recorded_at_unix_seconds: u64) -> Instant {
 mod tests {
     use std::{
         collections::BTreeMap,
+        sync::Arc,
         time::{Duration, Instant},
     };
 
-    use coat_domain::RunnerRegistration;
+    use axum::{
+        Json, Router,
+        body::{Body, to_bytes},
+        extract::State,
+        http::{Method, Request, StatusCode},
+    };
+    use coat_domain::{
+        GoalSpec, GoalState, RunnerCapability, RunnerDispatchDecision, RunnerDispatchRequest,
+        RunnerDispatchStatus, RunnerHeartbeat, RunnerLocality, RunnerRegistration, RunnerStatus,
+        WorkerKind,
+    };
+    use serde::{Serialize, de::DeserializeOwned};
+    use tokio::sync::RwLock;
+    use tower::ServiceExt;
 
-    use super::{RunnerJournalEntry, RunnerRecord, apply_journal_entry, replay_journal, unix_now};
+    use super::{
+        AppState, RunnerJournalEntry, RunnerRecord, apply_journal_entry, dispatch, registry_app,
+        replay_journal, unix_now,
+    };
 
     fn registration() -> RunnerRegistration {
         RunnerRegistration {
@@ -329,6 +350,42 @@ mod tests {
             max_concurrency: 2,
             lease_ttl_seconds: 300,
         }
+    }
+
+    async fn post_json<T, R>(app: Router, uri: &str, body: &T) -> R
+    where
+        T: Serialize + ?Sized,
+        R: DeserializeOwned,
+    {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(body).expect("request json")))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("response json")
+    }
+
+    async fn get_json<R>(app: Router, uri: &str) -> R
+    where
+        R: DeserializeOwned,
+    {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("response json")
     }
 
     #[test]
@@ -420,5 +477,208 @@ mod tests {
         let record = runners.get("runner-a").expect("runner replayed");
         assert!(!record.is_dispatchable(Instant::now()));
         assert!(record.status(Instant::now()).stale);
+    }
+
+    #[tokio::test]
+    async fn dispatch_ignores_replayed_stale_and_full_runners_before_locality_matching() {
+        let mut goal = GoalSpec::new(
+            "multi-node dispatch",
+            "route a task only to available runners on compatible nodes",
+        );
+        goal.default_execution.runner.locality = RunnerLocality::RemoteOnly;
+        goal.default_execution
+            .runner
+            .required_capabilities
+            .push(RunnerCapability::Code);
+        goal.default_execution
+            .runner
+            .required_labels
+            .insert("region".to_string(), "west".to_string());
+        let task = GoalState::new(goal).runnable_tasks().remove(0);
+
+        let mut local_full = registration();
+        local_full.runner_id = "local-full".to_string();
+        local_full.node_id = "control-node".to_string();
+        local_full.endpoint = "http://local-full:9091".to_string();
+        local_full.capabilities = vec![RunnerCapability::Code];
+        local_full.roles = vec![WorkerKind::Planner];
+        local_full
+            .labels
+            .insert("region".to_string(), "west".to_string());
+        local_full.models = task.execution.model.candidates.clone();
+
+        let mut stale_remote = local_full.clone();
+        stale_remote.runner_id = "stale-remote".to_string();
+        stale_remote.node_id = "worker-stale".to_string();
+        stale_remote.endpoint = "http://stale-remote:9091".to_string();
+        stale_remote.lease_ttl_seconds = 300;
+
+        let mut active_remote = local_full.clone();
+        active_remote.runner_id = "active-remote".to_string();
+        active_remote.node_id = "worker-active".to_string();
+        active_remote.endpoint = "http://active-remote:9091".to_string();
+
+        let mut runners = BTreeMap::new();
+        apply_journal_entry(
+            &mut runners,
+            RunnerJournalEntry::Registered {
+                registration: local_full.clone(),
+                recorded_at_unix_seconds: unix_now(),
+            },
+        );
+        apply_journal_entry(
+            &mut runners,
+            RunnerJournalEntry::Heartbeat {
+                heartbeat: coat_domain::RunnerHeartbeat {
+                    runner_id: local_full.runner_id.clone(),
+                    node_id: local_full.node_id.clone(),
+                    running_tasks: 2,
+                    capacity_remaining: 0,
+                },
+                recorded_at_unix_seconds: unix_now(),
+            },
+        );
+        apply_journal_entry(
+            &mut runners,
+            RunnerJournalEntry::Registered {
+                registration: stale_remote.clone(),
+                recorded_at_unix_seconds: unix_now().saturating_sub(301),
+            },
+        );
+        apply_journal_entry(
+            &mut runners,
+            RunnerJournalEntry::Registered {
+                registration: active_remote,
+                recorded_at_unix_seconds: unix_now(),
+            },
+        );
+
+        let statuses: BTreeMap<String, _> = runners
+            .iter()
+            .map(|(runner_id, record)| (runner_id.clone(), record.status(Instant::now())))
+            .collect();
+        assert!(statuses["local-full"].full);
+        assert!(statuses["stale-remote"].stale);
+        assert!(statuses["active-remote"].dispatchable);
+
+        let state = AppState {
+            runners: Arc::new(RwLock::new(runners)),
+            journal_path: None,
+        };
+        let Json(decision) = dispatch(
+            State(state),
+            Json(RunnerDispatchRequest {
+                goal_id: task.goal_id,
+                task,
+                coordinator_node_id: Some("control-node".to_string()),
+                registered_runners: Vec::new(),
+            }),
+        )
+        .await;
+
+        assert_eq!(decision.status, RunnerDispatchStatus::Matched);
+        assert_eq!(decision.runner_id.as_deref(), Some("active-remote"));
+        assert_eq!(decision.candidates.len(), 1);
+        assert!(
+            decision
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("selected runner active-remote"))
+        );
+    }
+
+    #[tokio::test]
+    async fn http_registry_registers_heartbeats_and_dispatches_active_runner() {
+        let state = AppState {
+            runners: Arc::new(RwLock::new(BTreeMap::new())),
+            journal_path: None,
+        };
+        let app = registry_app(state);
+
+        let mut goal = GoalSpec::new(
+            "http dispatch",
+            "dispatch through the registry HTTP surface to an active remote runner",
+        );
+        goal.default_execution.runner.locality = RunnerLocality::RemoteOnly;
+        goal.default_execution
+            .runner
+            .required_capabilities
+            .push(RunnerCapability::Code);
+        goal.default_execution
+            .runner
+            .required_labels
+            .insert("pool".to_string(), "default".to_string());
+        let task = GoalState::new(goal).runnable_tasks().remove(0);
+
+        let mut local_full = registration();
+        local_full.runner_id = "local-full-http".to_string();
+        local_full.node_id = "control-node".to_string();
+        local_full.endpoint = "http://local-full-http:9091".to_string();
+        local_full.capabilities = vec![RunnerCapability::Code];
+        local_full.roles = vec![WorkerKind::Planner];
+        local_full
+            .labels
+            .insert("pool".to_string(), "default".to_string());
+        local_full.models = task.execution.model.candidates.clone();
+        local_full.lease_ttl_seconds = 300;
+
+        let mut stale_remote = local_full.clone();
+        stale_remote.runner_id = "stale-remote-http".to_string();
+        stale_remote.node_id = "worker-stale".to_string();
+        stale_remote.endpoint = "http://stale-remote-http:9091".to_string();
+        stale_remote.lease_ttl_seconds = 1;
+
+        for registration in [&local_full, &stale_remote] {
+            let response: RunnerRegistration =
+                post_json(app.clone(), "/runners", registration).await;
+            assert_eq!(response.runner_id, registration.runner_id);
+        }
+
+        let heartbeat_response: serde_json::Value = post_json(
+            app.clone(),
+            "/runners/heartbeat",
+            &RunnerHeartbeat {
+                runner_id: local_full.runner_id.clone(),
+                node_id: local_full.node_id.clone(),
+                running_tasks: 2,
+                capacity_remaining: 0,
+            },
+        )
+        .await;
+        assert_eq!(heartbeat_response["known"], true);
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        let mut active_remote = local_full.clone();
+        active_remote.runner_id = "active-remote-http".to_string();
+        active_remote.node_id = "worker-active".to_string();
+        active_remote.endpoint = "http://active-remote-http:9091".to_string();
+        let response: RunnerRegistration = post_json(app.clone(), "/runners", &active_remote).await;
+        assert_eq!(response.runner_id, "active-remote-http");
+
+        let statuses: Vec<RunnerStatus> = get_json(app.clone(), "/runners/status").await;
+        let status_by_runner: BTreeMap<String, RunnerStatus> = statuses
+            .into_iter()
+            .map(|status| (status.registration.runner_id.clone(), status))
+            .collect();
+        assert!(status_by_runner["local-full-http"].full);
+        assert!(status_by_runner["stale-remote-http"].stale);
+        assert!(status_by_runner["active-remote-http"].dispatchable);
+
+        let decision: RunnerDispatchDecision = post_json(
+            app,
+            "/dispatch",
+            &RunnerDispatchRequest {
+                goal_id: task.goal_id,
+                task,
+                coordinator_node_id: Some("control-node".to_string()),
+                registered_runners: Vec::new(),
+            },
+        )
+        .await;
+
+        assert_eq!(decision.status, RunnerDispatchStatus::Matched);
+        assert_eq!(decision.runner_id.as_deref(), Some("active-remote-http"));
+        assert_eq!(decision.candidates.len(), 1);
     }
 }

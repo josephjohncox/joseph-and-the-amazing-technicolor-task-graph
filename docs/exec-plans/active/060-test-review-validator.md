@@ -9,6 +9,8 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 - Tester records commands, exit codes, and artifact paths.
 - Reviewer records findings with file and line references.
 - Reviewer and unifier workers return `ReviewOutput` with decision, reward, findings, and retry recommendation.
+- Add doctrine coverage fixtures for formal-methods, type-soundness, hypothesis-testing, DDD, readability, abstraction, and security review objectives.
+- Add behavioral testing doctrine that reviewer/tester agents can inject as `behavioral_testing`; it must check the end-to-end objective, user/operator workflow, state transitions, and failure modes rather than only UI/API/file existence.
 - Validator applies done criteria and returns `ValidationReport`.
 - Validation treats review task completion separately from review acceptance; `changes_requested`, `blocked`, or `inconclusive` decisions keep goal satisfaction false.
 - Validation requires passing `test_evidence` for work-like and tester tasks when `done_criteria.tests_pass=true`.
@@ -20,12 +22,14 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 
 - Validator enforces artifact existence and minimum score.
 - Reviewer findings fail validation when priority is high.
+- Standard `behavioral_testing` steering creates a tester task and validation fails when the review omits `testing.behavioral_end_to_end` or `gate.behavioral_coverage`.
+- Doctrine fixtures must cover every strict objective and gate, and must fail for meaningful behavioral gaps rather than passing on presence-only evidence.
 - Critic decisions block `SatisfactionReport.satisfied` even when reward is high.
 - Patch merger refuses unknown or unvalidated branch candidates.
 
 ## Follow-Ups
 
-- Add richer reviewer fixtures for formal-methods, type-soundness, hypothesis-testing, DDD, readability, abstraction, and security doctrines.
+- Add more real-world reviewer fixtures as live worker outputs become available.
 - Add patch-merger and review-unifier tests over real git checkpoint branches once live git worktrees are part of CI.
 
 ## Acceptance

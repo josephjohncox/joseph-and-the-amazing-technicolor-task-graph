@@ -1,0 +1,42 @@
+{
+  "id": "prometheus-alertmanager",
+  "kind": "prometheus_alertmanager",
+  "enabled": false,
+  "description": "Prometheus Alertmanager webhook for SRE remediation goals.",
+  "namespace": "ops",
+  "webhook": {
+    "path": "/events/webhook/prometheus-alertmanager",
+    "auth": {
+      "kind": "none",
+      "secret_ref": null,
+      "header_name": null
+    },
+    "accepts_cloudevents": false,
+    "max_payload_bytes": 1048576,
+    "dedupe_header": null
+  },
+  "generic": null,
+  "sqs": null,
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "create_goal",
+    "goal_template": {
+      "title_template": "SRE remediation: {{severity}} {{alertname}} on {{service}}",
+      "objective_template": "Investigate Prometheus alert {{alertname}} for {{service}} in {{environment}}. Use memory_context for service={{service}}, alert={{alertname}}, fingerprint={{payload:/_coat_observability/fingerprint}}, and subject={{subject}} to determine whether this is recurring or persistent. If memory and current evidence show a code, config, dashboard, or runbook fix is justified, produce a reviewable branch or PR with tests or validation evidence. If the right action is operational rather than code, return dashboard, alert-tuning, runbook, or follow-up trigger artifacts. Runbook: {{runbook_url}}. Dashboard: {{dashboard_url}}.",
+      "repo": "example/service-repo",
+      "worker_role": "planner",
+      "tags": [
+        "observability",
+        "sre",
+        "prometheus",
+        "memory-recurrence",
+        "pr-candidate"
+      ]
+    },
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": false,
+    "dedupe_window_seconds": 3600
+  }
+}

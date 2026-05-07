@@ -1,0 +1,49 @@
+{
+  "runner_id": "local-tools-runner",
+  "node_id": "operator-workstation",
+  "endpoint": "http://localhost:9095",
+  "roles": ["tester", "reviewer", "rust_tool"],
+  "capabilities": [
+    "test",
+    "review",
+    "mcp_tools",
+    "workspace_sandbox",
+    "local_commands",
+    "git_cli",
+    "build_tooling",
+    "package_manager_cli",
+    "helm_cli"
+  ],
+  "models": [
+    {
+      "provider": "local_process",
+      "model": "tool-runner",
+      "endpoint": null,
+      "priority": 100,
+      "weight": 1,
+      "context_window": null,
+      "features": ["tool_use", "json_schema"],
+      "labels": {}
+    }
+  ],
+  "labels": {
+    "tools.git": "true",
+    "tools.build": "true",
+    "tools.package_manager": "true",
+    "tools.helm": "true",
+    "sandbox.backend": "local_workspace"
+  },
+  "mcp_servers": [
+    {
+      "name": "tool-registry",
+      "transport": "http",
+      "uri": "http://tool-registry:9084/mcp",
+      "allowed_tools": ["repo_status", "local_command", "artifact_manifest", "checkpoint_history", "subagent_policy"],
+      "auth": {
+        "kind": "none"
+      }
+    }
+  ],
+  "max_concurrency": 1,
+  "lease_ttl_seconds": 300
+}

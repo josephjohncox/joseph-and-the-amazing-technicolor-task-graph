@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryEditPreviewResponse",
+  "type": "object",
+  "properties": {
+    "diffs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryEditDiff"
+      }
+    },
+    "existing": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MemoryEditPreviewRecord"
+      }
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "missing_keys": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "ready_to_edit": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "replacement_content": {
+      "type": "string"
+    },
+    "replacement_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "replacement_tags": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "replacement_title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "replacement_title",
+    "replacement_content",
+    "reason",
+    "ready_to_edit"
+  ],
+  "$defs": {
+    "MemoryEditDiff": {
+      "type": "object",
+      "properties": {
+        "after_excerpt": {
+          "type": "string"
+        },
+        "after_title": {
+          "type": "string"
+        },
+        "before_excerpt": {
+          "type": "string"
+        },
+        "before_title": {
+          "type": "string"
+        },
+        "guidance": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "before_title",
+        "before_excerpt",
+        "after_title",
+        "after_excerpt",
+        "guidance"
+      ]
+    },
+    "MemoryEditPreviewRecord": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "invalidated": {
+          "type": "boolean"
+        },
+        "key": {
+          "type": "string"
+        },
+        "promoted": {
+          "type": "boolean"
+        },
+        "scope": {
+          "$ref": "#/$defs/MemoryScope"
+        },
+        "source": {
+          "$ref": "#/$defs/MemoryEpisodeSource"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "scope",
+        "title",
+        "content",
+        "source",
+        "promoted",
+        "invalidated"
+      ]
+    },
+    "MemoryEpisodeSource": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_type": {
+          "$ref": "#/$defs/MemoryEpisodeSourceType"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source_type"
+      ]
+    },
+    "MemoryEpisodeSourceType": {
+      "type": "string",
+      "enum": [
+        "actor",
+        "critic",
+        "unifier",
+        "research",
+        "human",
+        "tool",
+        "system"
+      ]
+    },
+    "MemoryScope": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "repo",
+        "persona",
+        "user",
+        "global"
+      ]
+    }
+  }
+}

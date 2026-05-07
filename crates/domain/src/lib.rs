@@ -39,6 +39,7 @@ pub type CheckpointId = Uuid;
 /// task tree. See `docs/operations/goal-authoring.md`.
 pub struct GoalSpec {
     #[serde(default = "new_goal_id")]
+    #[schemars(default = "nil_goal_id")]
     pub id: GoalId,
     pub title: String,
     pub objective: String,
@@ -630,6 +631,7 @@ pub struct PlanRevision {
 #[serde(rename_all = "snake_case")]
 pub struct DurablePlan {
     pub id: PlanId,
+    pub source_plan_id: Option<PlanId>,
     pub title: String,
     pub objective: String,
     pub repo: Option<String>,
@@ -675,6 +677,7 @@ impl DurablePlan {
         };
         Self {
             id: request.plan_id.unwrap_or_else(Uuid::new_v4),
+            source_plan_id: request.source_plan_id,
             title: request.title,
             objective: request.objective,
             repo: request.repo,
@@ -694,6 +697,7 @@ impl DurablePlan {
     pub fn summary(&self) -> DurablePlanSummary {
         DurablePlanSummary {
             plan_id: self.id,
+            source_plan_id: self.source_plan_id,
             title: self.title.clone(),
             objective: self.objective.clone(),
             repo: self.repo.clone(),
@@ -811,6 +815,7 @@ impl DurablePlan {
 #[serde(rename_all = "snake_case")]
 pub struct PlanDraftRequest {
     pub plan_id: Option<PlanId>,
+    pub source_plan_id: Option<PlanId>,
     pub title: String,
     pub objective: String,
     pub repo: Option<String>,
@@ -875,6 +880,7 @@ pub struct PlanCompileResult {
 #[serde(rename_all = "snake_case")]
 pub struct DurablePlanSummary {
     pub plan_id: PlanId,
+    pub source_plan_id: Option<PlanId>,
     pub title: String,
     pub objective: String,
     pub repo: Option<String>,
@@ -3278,6 +3284,12 @@ pub enum WorkerKind {
     RustTool,
 }
 
+impl Default for WorkerKind {
+    fn default() -> Self {
+        Self::Planner
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TaskPurpose {
@@ -3942,9 +3954,13 @@ pub struct ApprovalGatePolicy {
     #[serde(default = "default_true")]
     pub require_for_brokered_user_auth: bool,
     pub require_for_dangerous_mcp_tools: bool,
+    #[serde(default = "default_true")]
+    pub require_for_local_tool_execution: bool,
     pub require_for_privileged_runner_capabilities: bool,
     #[serde(default = "default_true")]
     pub require_for_native_subagent_spawn: bool,
+    #[serde(default = "default_true")]
+    pub require_for_ephemeral_capacity: bool,
     pub require_for_workspace_write_outside_isolation: bool,
     pub never_policy_requires_isolation: bool,
     #[serde(default = "default_true")]
@@ -3961,8 +3977,10 @@ impl Default for ApprovalGatePolicy {
             require_for_secret_access: true,
             require_for_brokered_user_auth: true,
             require_for_dangerous_mcp_tools: true,
+            require_for_local_tool_execution: true,
             require_for_privileged_runner_capabilities: true,
             require_for_native_subagent_spawn: true,
+            require_for_ephemeral_capacity: true,
             require_for_workspace_write_outside_isolation: true,
             never_policy_requires_isolation: true,
             never_policy_requires_strong_sandbox: true,
@@ -4024,6 +4042,12 @@ impl ApprovalGatePolicy {
             reason_codes.push(ApprovalReasonCode::DangerousMcpTool);
             risk = risk.max(ApprovalRisk::Medium);
         }
+        if self.require_for_local_tool_execution {
+            if let Some(local_tool_risk) = task.execution.local_tools.approval_risk() {
+                reason_codes.push(ApprovalReasonCode::LocalToolExecution);
+                risk = risk.max(local_tool_risk);
+            }
+        }
         if self.require_for_privileged_runner_capabilities
             && task.execution.runner.requires_privileged_capability()
         {
@@ -4035,6 +4059,15 @@ impl ApprovalGatePolicy {
         {
             reason_codes.push(ApprovalReasonCode::NativeSubagentSpawn);
             risk = risk.max(ApprovalRisk::High);
+        }
+        if self.require_for_ephemeral_capacity
+            && task
+                .execution
+                .capacity
+                .requires_ephemeral_provisioning_approval()
+        {
+            reason_codes.push(ApprovalReasonCode::EphemeralCapacityProvisioning);
+            risk = risk.max(ApprovalRisk::Medium);
         }
 
         if reason_codes.is_empty() {
@@ -4104,8 +4137,10 @@ pub enum ApprovalReasonCode {
     SecretAccess,
     BrokeredUserAuth,
     DangerousMcpTool,
+    LocalToolExecution,
     PrivilegedRunnerCapability,
     NativeSubagentSpawn,
+    EphemeralCapacityProvisioning,
 }
 
 impl ApprovalReasonCode {
@@ -4120,8 +4155,10 @@ impl ApprovalReasonCode {
             Self::SecretAccess => "secret_access",
             Self::BrokeredUserAuth => "brokered_user_auth",
             Self::DangerousMcpTool => "dangerous_mcp_tool",
+            Self::LocalToolExecution => "local_tool_execution",
             Self::PrivilegedRunnerCapability => "privileged_runner_capability",
             Self::NativeSubagentSpawn => "native_subagent_spawn",
+            Self::EphemeralCapacityProvisioning => "ephemeral_capacity_provisioning",
         }
     }
 }
@@ -4602,6 +4639,12 @@ impl ReviewDoctrinePreset {
                     "Changed behavior has focused tests or an explicit reason tests are not useful.",
                 ),
                 ReviewObjective::new(
+                    "testing.behavioral_end_to_end",
+                    ReviewObjectiveCategory::Testing,
+                    "Behavioral objective coverage",
+                    "Tests exercise the end-to-end objective, observable behavior, failure modes, and user or operator workflow instead of only checking that functions, buttons, or endpoints exist.",
+                ),
+                ReviewObjective::new(
                     "testing.hypothesis",
                     ReviewObjectiveCategory::HypothesisTesting,
                     "Hypothesis and property testing",
@@ -4684,6 +4727,11 @@ impl ReviewDoctrinePreset {
                     "Unit, integration, or smoke tests cover the changed behavior.",
                 ),
                 ReviewEvidenceRequirement::new(
+                    "evidence.behavioral_scenarios",
+                    ReviewEvidenceKind::BehavioralTests,
+                    "Behavioral, workflow, or end-to-end tests prove the objective and would fail for the main incorrect implementation modes.",
+                ),
+                ReviewEvidenceRequirement::new(
                     "evidence.property_tests",
                     ReviewEvidenceKind::PropertyTests,
                     "Property, fuzz, or hypothesis tests cover invariant-heavy paths when appropriate.",
@@ -4734,7 +4782,7 @@ impl ReviewDoctrinePreset {
             Self::Testing => vec![StyleDoctrine::new(
                 "style.tests_as_spec",
                 "Tests as executable specification",
-                "Tests should state observable behavior and invariants, not only implementation details.",
+                "Tests should state observable behavior, workflows, invariants, and falsifiable expectations, not only implementation details or UI/API existence.",
             )],
             Self::FormalMethods => vec![StyleDoctrine::new(
                 "style.invalid_states_unrepresentable",
@@ -4788,11 +4836,18 @@ impl ReviewDoctrinePreset {
                 ValidationGateKind::Compile,
                 "Build or compile check passes for changed packages.",
             )],
-            Self::Testing => vec![ValidationGate::new(
-                "gate.tests",
-                ValidationGateKind::TestSuite,
-                "Relevant automated tests pass or a reviewer-approved waiver explains why.",
-            )],
+            Self::Testing => vec![
+                ValidationGate::new(
+                    "gate.tests",
+                    ValidationGateKind::TestSuite,
+                    "Relevant automated tests pass or a reviewer-approved waiver explains why.",
+                ),
+                ValidationGate::new(
+                    "gate.behavioral_coverage",
+                    ValidationGateKind::BehavioralTesting,
+                    "Behavioral tests cover the end-to-end objective and at least one meaningful failure or edge path.",
+                ),
+            ],
             Self::FormalMethods => vec![
                 ValidationGate::new(
                     "gate.type_soundness",
@@ -4846,6 +4901,7 @@ impl ReviewDoctrinePreset {
                 "Testing reviewer",
                 vec![
                     "testing.regression".to_string(),
+                    "testing.behavioral_end_to_end".to_string(),
                     "testing.hypothesis".to_string(),
                 ],
             )],
@@ -4957,6 +5013,7 @@ impl ReviewObjective {
 pub enum ReviewEvidenceKind {
     Compile,
     AutomatedTests,
+    BehavioralTests,
     PropertyTests,
     TypeCheck,
     FormalProof,
@@ -5049,6 +5106,7 @@ impl StyleDoctrine {
 pub enum ValidationGateKind {
     Compile,
     TestSuite,
+    BehavioralTesting,
     PropertyTesting,
     TypeSoundness,
     FormalVerification,
@@ -5748,6 +5806,7 @@ pub enum StandardReviewCheck {
     Readability,
     Compile,
     TestEvidence,
+    BehavioralTesting,
     HypothesisTesting,
     TypeSoundness,
     FormalVerification,
@@ -5772,6 +5831,7 @@ impl StandardReviewCheck {
             StandardReviewCheck::Readability,
             StandardReviewCheck::Compile,
             StandardReviewCheck::TestEvidence,
+            StandardReviewCheck::BehavioralTesting,
             StandardReviewCheck::HypothesisTesting,
             StandardReviewCheck::TypeSoundness,
             StandardReviewCheck::FormalVerification,
@@ -5796,6 +5856,7 @@ impl StandardReviewCheck {
             Self::Readability => "readability",
             Self::Compile => "compile",
             Self::TestEvidence => "test_evidence",
+            Self::BehavioralTesting => "behavioral_testing",
             Self::HypothesisTesting => "hypothesis_testing",
             Self::TypeSoundness => "type_soundness",
             Self::FormalVerification => "formal_verification",
@@ -5820,6 +5881,7 @@ impl StandardReviewCheck {
             Self::Readability => "readability check",
             Self::Compile => "compile check",
             Self::TestEvidence => "test evidence check",
+            Self::BehavioralTesting => "behavioral testing check",
             Self::HypothesisTesting => "hypothesis/property testing check",
             Self::TypeSoundness => "type soundness check",
             Self::FormalVerification => "formal verification check",
@@ -5840,7 +5902,10 @@ impl StandardReviewCheck {
 
     pub fn worker_role(&self) -> WorkerKind {
         match self {
-            Self::Compile | Self::TestEvidence | Self::HypothesisTesting => WorkerKind::Tester,
+            Self::Compile
+            | Self::TestEvidence
+            | Self::BehavioralTesting
+            | Self::HypothesisTesting => WorkerKind::Tester,
             Self::TypeSoundness | Self::FormalVerification => WorkerKind::FormalMethods,
             Self::ReferenceSearch | Self::WebSearch | Self::DeepResearch | Self::LibraryFit => {
                 WorkerKind::Research
@@ -5876,6 +5941,9 @@ impl StandardReviewCheck {
             ),
             Self::TestEvidence => format!(
                 "Review '{focus}' for test evidence. Check unit, integration, smoke, and regression coverage against the changed behavior."
+            ),
+            Self::BehavioralTesting => format!(
+                "Review '{focus}' for behavioral testing depth. Identify the actual end-to-end objective, user or operator workflow, state transition, failure modes, and edge cases. Check that tests would fail for meaningful incorrect implementations instead of only checking that a button, API, route, schema, or file exists."
             ),
             Self::HypothesisTesting => format!(
                 "Review '{focus}' for property, fuzz, generative, or hypothesis-style tests. Identify invariants and whether examples are too narrow."
@@ -6042,6 +6110,7 @@ impl ResearchOutput {
                     validation_checks: vec![
                         "replace stub source with live source capture".to_string(),
                     ],
+                    ..InformationUsePlan::default()
                 },
                 open_questions: Vec::new(),
             }),
@@ -6064,15 +6133,58 @@ pub struct SourceArtifact {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+pub struct GoalUpdateHint {
+    pub target: GoalUpdateTarget,
+    pub path: String,
+    pub recommendation: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalUpdateTarget {
+    Authoring,
+    Plan,
+    ResearchPolicy,
+    MemoryPolicy,
+    ReviewPolicy,
+    DoneCriteria,
+    ExecutionProfile,
+    InitialTasks,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub struct InformationUsePlan {
     #[serde(default)]
     pub facts_to_use: Vec<String>,
     #[serde(default)]
     pub facts_to_avoid: Vec<String>,
     #[serde(default)]
+    pub proposed_goal_updates: Vec<GoalUpdateHint>,
+    #[serde(default)]
     pub proposed_task_updates: Vec<ChildTaskRequest>,
     #[serde(default)]
+    pub proposed_memory_writes: Vec<MemoryWriteRequest>,
+    #[serde(default)]
+    pub proposed_review_doctrine: Option<ReviewDoctrine>,
+    #[serde(default)]
     pub validation_checks: Vec<String>,
+}
+
+impl Default for InformationUsePlan {
+    fn default() -> Self {
+        Self {
+            facts_to_use: Vec::new(),
+            facts_to_avoid: Vec::new(),
+            proposed_goal_updates: Vec::new(),
+            proposed_task_updates: Vec::new(),
+            proposed_memory_writes: Vec::new(),
+            proposed_review_doctrine: None,
+            validation_checks: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -6320,6 +6432,7 @@ pub enum MemoryEventAction {
     Fork,
     Join,
     Invalidate,
+    Retract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -6464,6 +6577,109 @@ pub struct MemoryJoinResponse {
     pub adapter_reports: Vec<MemoryAdapterReport>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryRetractRequest {
+    pub goal_id: GoalId,
+    pub task_id: Option<TaskId>,
+    #[serde(default)]
+    pub keys: Vec<String>,
+    pub reason: String,
+    pub store: Option<MemoryStoreRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryRetractResponse {
+    #[serde(default)]
+    pub retracted: Vec<MemoryEvent>,
+    #[serde(default)]
+    pub missing_keys: Vec<String>,
+    #[serde(default)]
+    pub adapter_reports: Vec<MemoryAdapterReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryEditRequest {
+    pub goal_id: GoalId,
+    pub task_id: Option<TaskId>,
+    pub scope: MemoryScope,
+    #[serde(default)]
+    pub replace_keys: Vec<String>,
+    pub replacement_key: Option<String>,
+    pub replacement_episode: MemoryEpisode,
+    pub reason: String,
+    pub store: Option<MemoryStoreRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryEditResponse {
+    #[serde(default)]
+    pub retracted: Vec<MemoryEvent>,
+    #[serde(default)]
+    pub missing_keys: Vec<String>,
+    pub written: MemoryWriteResponse,
+    #[serde(default)]
+    pub adapter_reports: Vec<MemoryAdapterReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryEditPreviewRequest {
+    pub goal_id: GoalId,
+    #[serde(default)]
+    pub replace_keys: Vec<String>,
+    pub replacement_key: Option<String>,
+    pub replacement_episode: MemoryEpisode,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryEditPreviewResponse {
+    pub goal_id: GoalId,
+    #[serde(default)]
+    pub existing: Vec<MemoryEditPreviewRecord>,
+    #[serde(default)]
+    pub missing_keys: Vec<String>,
+    pub replacement_key: Option<String>,
+    pub replacement_title: String,
+    pub replacement_content: String,
+    #[serde(default)]
+    pub replacement_tags: Vec<String>,
+    pub reason: String,
+    pub ready_to_edit: bool,
+    #[serde(default)]
+    pub diffs: Vec<MemoryEditDiff>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryEditPreviewRecord {
+    pub key: String,
+    pub scope: MemoryScope,
+    pub title: String,
+    pub content: String,
+    pub source: MemoryEpisodeSource,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub promoted: bool,
+    pub invalidated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MemoryEditDiff {
+    pub key: String,
+    pub before_title: String,
+    pub before_excerpt: String,
+    pub after_title: String,
+    pub after_excerpt: String,
+    pub guidance: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct MemoryRepairRequest {
@@ -6509,10 +6725,14 @@ pub struct MemoryAdapterReport {
 /// `docs/design-docs/010-distributed-runners-mcp.md`.
 pub struct ExecutionProfile {
     pub runner: RunnerSelector,
+    #[serde(default)]
+    pub capacity: CapacityProvisioningPolicy,
     pub model: ModelRoute,
     pub persona: PersonaSpec,
     #[serde(default)]
     pub subagents: SubagentDelegationPolicy,
+    #[serde(default)]
+    pub local_tools: LocalToolPolicy,
     pub mcp: McpContextRef,
     pub notifications: NotificationPolicy,
     #[serde(default)]
@@ -6566,9 +6786,11 @@ impl Default for ExecutionProfile {
     fn default() -> Self {
         Self {
             runner: RunnerSelector::default(),
+            capacity: CapacityProvisioningPolicy::default(),
             model: ModelRoute::default(),
             persona: PersonaSpec::default(),
             subagents: SubagentDelegationPolicy::default(),
+            local_tools: LocalToolPolicy::default(),
             mcp: McpContextRef::default(),
             notifications: NotificationPolicy::default(),
             results: ResultChannelPolicy::default(),
@@ -6647,6 +6869,244 @@ pub enum NativeSubagentSpawnPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum ChildTaskRequestChannel {
     AgentRunResultChildRequests,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Task-local allowlist for running local binaries in an isolated workspace.
+///
+/// This does not grant ambient shell access. It declares which binaries a
+/// runner or sandbox executor may invoke, which runner capabilities must be
+/// present, how approval is handled, and what evidence must be returned.
+pub struct LocalToolPolicy {
+    pub enabled: bool,
+    #[serde(default)]
+    pub allowed_tools: Vec<LocalToolPermission>,
+    #[serde(default)]
+    pub denied_binaries: Vec<String>,
+    #[serde(default = "default_true")]
+    pub require_sandbox_runner: bool,
+    #[serde(default = "default_true")]
+    pub require_workspace: bool,
+    #[serde(default = "default_true")]
+    pub require_command_evidence: bool,
+    #[serde(default)]
+    pub approval: LocalToolApprovalMode,
+    pub default_timeout_seconds: u64,
+    pub max_output_bytes: u64,
+}
+
+impl LocalToolPolicy {
+    pub fn is_active(&self) -> bool {
+        self.enabled || !self.allowed_tools.is_empty()
+    }
+
+    fn required_runner_capabilities(&self) -> Vec<RunnerCapability> {
+        if !self.is_active() {
+            return Vec::new();
+        }
+
+        let mut capabilities = vec![RunnerCapability::LocalCommands];
+        for tool in &self.allowed_tools {
+            if let Some(capability) = tool.category.default_runner_capability() {
+                push_unique_capability(&mut capabilities, capability);
+            }
+            for capability in &tool.required_capabilities {
+                push_unique_capability(&mut capabilities, capability.clone());
+            }
+        }
+        capabilities
+    }
+
+    fn runner_mismatch_reasons(&self, registration: &RunnerRegistration) -> Vec<String> {
+        if !self.is_active() {
+            return Vec::new();
+        }
+
+        let mut reasons = Vec::new();
+        for capability in self.required_runner_capabilities() {
+            if !registration.capabilities.contains(&capability) {
+                reasons.push(format!(
+                    "task local_tools require capability {capability:?}"
+                ));
+            }
+        }
+        for tool in &self.allowed_tools {
+            for (key, value) in &tool.required_labels {
+                match registration.labels.get(key) {
+                    Some(actual) if actual == value => {}
+                    Some(actual) => reasons.push(format!(
+                        "runner label {key}={actual} does not satisfy local tool requirement {key}={value} for {}",
+                        tool.binary
+                    )),
+                    None => reasons.push(format!(
+                        "runner lacks local tool label {key}={value} for {}",
+                        tool.binary
+                    )),
+                }
+            }
+        }
+        reasons
+    }
+
+    fn approval_risk(&self) -> Option<ApprovalRisk> {
+        if !self.is_active() || matches!(self.approval, LocalToolApprovalMode::Never) {
+            return None;
+        }
+
+        let declared_risk = self
+            .allowed_tools
+            .iter()
+            .map(LocalToolPermission::approval_risk)
+            .max()
+            .unwrap_or(ApprovalRisk::Medium);
+
+        match self.approval {
+            LocalToolApprovalMode::Never => None,
+            LocalToolApprovalMode::Always | LocalToolApprovalMode::Inherit => {
+                Some(declared_risk.max(ApprovalRisk::Medium))
+            }
+            LocalToolApprovalMode::RiskBased => {
+                if declared_risk >= ApprovalRisk::High {
+                    Some(declared_risk)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+impl Default for LocalToolPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_tools: Vec::new(),
+            denied_binaries: Vec::new(),
+            require_sandbox_runner: true,
+            require_workspace: true,
+            require_command_evidence: true,
+            approval: LocalToolApprovalMode::RiskBased,
+            default_timeout_seconds: 600,
+            max_output_bytes: 65_536,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct LocalToolPermission {
+    pub binary: String,
+    pub category: LocalToolCategory,
+    pub risk: LocalToolRisk,
+    #[serde(default)]
+    pub allowed_subcommands: Vec<String>,
+    #[serde(default)]
+    pub denied_args: Vec<String>,
+    #[serde(default)]
+    pub requires_network: bool,
+    #[serde(default)]
+    pub requires_docker_socket: bool,
+    #[serde(default)]
+    pub requires_cluster_access: bool,
+    #[serde(default)]
+    pub required_capabilities: Vec<RunnerCapability>,
+    #[serde(default)]
+    pub required_labels: BTreeMap<String, String>,
+    pub timeout_seconds: Option<u64>,
+}
+
+impl LocalToolPermission {
+    fn approval_risk(&self) -> ApprovalRisk {
+        let mut risk = self.risk.approval_risk();
+        if self.requires_cluster_access || self.requires_docker_socket {
+            risk = risk.max(ApprovalRisk::High);
+        }
+        if self.requires_network {
+            risk = risk.max(ApprovalRisk::Medium);
+        }
+        risk
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalToolCategory {
+    VersionControl,
+    ContainerRuntime,
+    Kubernetes,
+    Helm,
+    PackageManager,
+    BuildTool,
+    TestRunner,
+    FormalMethods,
+    Shell,
+    System,
+    Other,
+}
+
+impl LocalToolCategory {
+    fn default_runner_capability(&self) -> Option<RunnerCapability> {
+        match self {
+            Self::VersionControl => Some(RunnerCapability::GitCli),
+            Self::ContainerRuntime => Some(RunnerCapability::DockerCli),
+            Self::Kubernetes => Some(RunnerCapability::KubernetesCli),
+            Self::Helm => Some(RunnerCapability::HelmCli),
+            Self::PackageManager => Some(RunnerCapability::PackageManagerCli),
+            Self::BuildTool | Self::TestRunner => Some(RunnerCapability::BuildTooling),
+            Self::FormalMethods => Some(RunnerCapability::FormalVerification),
+            Self::Shell | Self::System | Self::Other => None,
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalToolRisk {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl LocalToolRisk {
+    fn approval_risk(&self) -> ApprovalRisk {
+        match self {
+            Self::Low => ApprovalRisk::Low,
+            Self::Medium => ApprovalRisk::Medium,
+            Self::High => ApprovalRisk::High,
+            Self::Critical => ApprovalRisk::Critical,
+        }
+    }
+}
+
+impl Default for LocalToolRisk {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalToolApprovalMode {
+    Inherit,
+    RiskBased,
+    Always,
+    Never,
+}
+
+impl Default for LocalToolApprovalMode {
+    fn default() -> Self {
+        Self::RiskBased
+    }
+}
+
+fn push_unique_capability(capabilities: &mut Vec<RunnerCapability>, capability: RunnerCapability) {
+    if !capabilities.contains(&capability) {
+        capabilities.push(capability);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -6842,6 +7302,77 @@ pub struct RunnerSelector {
     pub locality: RunnerLocality,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Task-local policy for adding execution capacity.
+///
+/// The coordinator or executor framework interprets this policy. Operators
+/// should not hand-create one-off Kubernetes Jobs for every task; instead, task
+/// execution can reference approved templates that provision bounded runner or
+/// service-executor capacity and then register through the normal runner
+/// registry or Restate deployment path.
+pub struct CapacityProvisioningPolicy {
+    pub mode: CapacityProvisioningMode,
+    #[serde(default)]
+    pub template_refs: Vec<EphemeralRunnerTemplateRef>,
+    pub request_timeout_seconds: u64,
+    pub max_pending_provisions: u32,
+    pub require_human_approval: bool,
+}
+
+impl CapacityProvisioningPolicy {
+    fn requires_ephemeral_provisioning_approval(&self) -> bool {
+        self.require_human_approval
+            && matches!(
+                self.mode,
+                CapacityProvisioningMode::PreferRegisteredThenEphemeral
+                    | CapacityProvisioningMode::EphemeralOnly
+            )
+    }
+}
+
+impl Default for CapacityProvisioningPolicy {
+    fn default() -> Self {
+        Self {
+            mode: CapacityProvisioningMode::RegisteredRunnersOnly,
+            template_refs: Vec::new(),
+            request_timeout_seconds: 600,
+            max_pending_provisions: 1,
+            require_human_approval: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacityProvisioningMode {
+    RegisteredRunnersOnly,
+    PreferRegisteredThenEphemeral,
+    EphemeralOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct EphemeralRunnerTemplateRef {
+    pub name: String,
+    pub kind: EphemeralCapacityKind,
+    #[serde(default)]
+    pub required_capabilities: Vec<RunnerCapability>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    pub config_ref: Option<String>,
+    pub active_deadline_seconds: Option<u64>,
+    pub ttl_seconds_after_finished: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EphemeralCapacityKind {
+    RunnerJob,
+    RestateServiceExecutor,
+    SandboxJob,
+}
+
 impl RunnerSelector {
     pub fn matches(&self, registration: &RunnerRegistration) -> bool {
         if let Some(expected_runner) = &self.runner_id {
@@ -6937,6 +7468,13 @@ pub enum RunnerCapability {
     McpTools,
     DurableChildTasks,
     OidcUserDelegation,
+    LocalCommands,
+    GitCli,
+    DockerCli,
+    HelmCli,
+    KubernetesCli,
+    BuildTooling,
+    PackageManagerCli,
     WorkspaceSandbox,
     ContainerSandbox,
     GvisorSandbox,
@@ -6955,13 +7493,21 @@ pub enum RunnerCapability {
     Vllm,
     OpenAiCompatible,
     Gpu,
+    EphemeralProvisioning,
     NetworkOpen,
     FormalVerification,
 }
 
 impl RunnerCapability {
     fn requires_approval(&self) -> bool {
-        matches!(self, Self::NetworkOpen)
+        matches!(
+            self,
+            Self::NetworkOpen
+                | Self::EphemeralProvisioning
+                | Self::DockerCli
+                | Self::HelmCli
+                | Self::KubernetesCli
+        )
     }
 }
 
@@ -7797,9 +8343,11 @@ pub struct NotificationTarget {
 #[serde(rename_all = "snake_case")]
 pub enum NotificationTargetKind {
     Thread,
+    Dashboard,
     Webhook,
     Slack,
     Email,
+    Sqs,
     GitHub,
     Linear,
     Jira,
@@ -7906,6 +8454,7 @@ impl RunnerRegistration {
                 }
             }
         }
+        reasons.extend(task.execution.local_tools.runner_mismatch_reasons(self));
         for (key, value) in &selector.required_labels {
             match self.labels.get(key) {
                 Some(actual) if actual == value => {}
@@ -9219,7 +9768,7 @@ impl Default for GoalStorePolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
-/// Registered event ingress policy for webhooks, schedules, calendars, buses, and generic events.
+/// Registered event ingress policy for webhooks, schedules, calendars, queues, buses, and generic events.
 ///
 /// Event sources normalize external stimuli into `ExternalEvent`s and then route
 /// them through human review, triggered goals, or steering. They must not invoke
@@ -9232,6 +9781,7 @@ pub struct EventSource {
     pub namespace: Option<String>,
     pub webhook: Option<WebhookEventSource>,
     pub generic: Option<GenericEventSource>,
+    pub sqs: Option<SqsEventSource>,
     pub schedule: Option<ScheduledEventSource>,
     pub calendar: Option<CalendarEventSource>,
     pub route: EventGoalRoute,
@@ -9246,6 +9796,7 @@ pub enum EventSourceKind {
     CalendarPoll,
     CalendarPush,
     Queue,
+    Sqs,
     PubSub,
     GitHubWebhook,
     GitLabWebhook,
@@ -9266,6 +9817,9 @@ pub enum EventSourceKind {
     IssueTracker,
     Chat,
     MonitoringAlert,
+    PrometheusAlertmanager,
+    DatadogWebhook,
+    OpenTelemetrySignal,
     DatabaseChange,
     Manual,
     Other,
@@ -9296,6 +9850,24 @@ pub struct GenericEventSource {
     pub dedupe_header: Option<String>,
     pub payload_schema: Option<serde_json::Value>,
     pub mcp_context: Option<McpContextRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// AWS SQS-compatible queue source for inbound event polling.
+///
+/// Credentials are intentionally not embedded here. Runners and gateways resolve
+/// AWS credentials through the ambient AWS SDK chain, workload identity, or
+/// configured secret middleware. Queue polling still enters through
+/// `coat-event-gateway`; messages do not invoke workers directly.
+pub struct SqsEventSource {
+    pub queue_url: String,
+    pub region: Option<String>,
+    pub endpoint: Option<String>,
+    pub max_messages: u32,
+    pub wait_time_seconds: u32,
+    pub visibility_timeout_seconds: Option<i32>,
+    pub delete_on_success: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -9399,9 +9971,13 @@ pub struct GoalTriggerTemplate {
     pub title_template: String,
     pub objective_template: String,
     pub repo: Option<String>,
+    #[serde(default)]
     pub worker_role: WorkerKind,
+    #[serde(default)]
     pub done_criteria: DoneCriteria,
+    #[serde(default)]
     pub budget: Budget,
+    #[serde(default)]
     pub execution: ExecutionProfile,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -9627,6 +10203,54 @@ pub struct ApprovalRecord {
     pub updated_at: Option<String>,
     #[serde(default)]
     pub payload_json: serde_json::Value,
+}
+
+/// Durable projection of a human approval reference used to activate an event source.
+///
+/// Event sources can create or steer goals from external stimuli, so risky
+/// enabled sources require an auditable activation record. This record is not
+/// goal-scoped; it belongs to the ingress/control plane and is projected into
+/// the goal store for dashboards and operator review.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct EventSourceApprovalRecord {
+    pub record_id: Uuid,
+    pub approval_ref: String,
+    pub source_id: String,
+    pub source_kind: EventSourceKind,
+    pub status: EventSourceApprovalStatus,
+    pub risky: bool,
+    pub reason: String,
+    pub operator: Option<String>,
+    pub recorded_at: Option<String>,
+    #[serde(default)]
+    pub payload_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSourceApprovalStatus {
+    Provided,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct EventSourceApprovalRecordRequest {
+    pub record: EventSourceApprovalRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct EventSourceApprovalRecordResponse {
+    pub accepted: bool,
+    pub record: EventSourceApprovalRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct EventSourceApprovalListResponse {
+    #[serde(default)]
+    pub records: Vec<EventSourceApprovalRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -10307,6 +10931,7 @@ mod tests {
     fn durable_plan_revisions_compile_to_goal_spec() {
         let mut plan = DurablePlan::draft(PlanDraftRequest {
             plan_id: None,
+            source_plan_id: None,
             title: "Plan durable work".to_string(),
             objective:
                 "Create a durable planning artifact that can compile into executable goal state."
@@ -10885,6 +11510,107 @@ mod tests {
         );
 
         runner.capabilities.push(RunnerCapability::GvisorSandbox);
+        let matched = runner.evaluate_for_task(&task, None);
+        assert!(matched.matched, "{:?}", matched.reasons);
+    }
+
+    #[test]
+    fn runner_matching_requires_local_tool_capabilities_and_labels() {
+        let state = GoalState::new(GoalSpec::new(
+            "local tools",
+            "validate with docker and helm",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        task.execution.local_tools = LocalToolPolicy {
+            enabled: true,
+            allowed_tools: vec![
+                LocalToolPermission {
+                    binary: "git".to_string(),
+                    category: LocalToolCategory::VersionControl,
+                    risk: LocalToolRisk::Low,
+                    allowed_subcommands: vec!["status".to_string(), "diff".to_string()],
+                    denied_args: Vec::new(),
+                    requires_network: false,
+                    requires_docker_socket: false,
+                    requires_cluster_access: false,
+                    required_capabilities: Vec::new(),
+                    required_labels: BTreeMap::new(),
+                    timeout_seconds: Some(30),
+                },
+                LocalToolPermission {
+                    binary: "helm".to_string(),
+                    category: LocalToolCategory::Helm,
+                    risk: LocalToolRisk::High,
+                    allowed_subcommands: vec!["template".to_string(), "lint".to_string()],
+                    denied_args: Vec::new(),
+                    requires_network: false,
+                    requires_docker_socket: false,
+                    requires_cluster_access: true,
+                    required_capabilities: Vec::new(),
+                    required_labels: BTreeMap::from([(
+                        "tools.helm".to_string(),
+                        "true".to_string(),
+                    )]),
+                    timeout_seconds: Some(120),
+                },
+            ],
+            denied_binaries: Vec::new(),
+            require_sandbox_runner: true,
+            require_workspace: true,
+            require_command_evidence: true,
+            approval: LocalToolApprovalMode::RiskBased,
+            default_timeout_seconds: 600,
+            max_output_bytes: 65_536,
+        };
+
+        let mut runner = RunnerRegistration {
+            runner_id: "runner-tools".to_string(),
+            node_id: "node-a".to_string(),
+            endpoint: "http://runner-tools:9091".to_string(),
+            roles: vec![WorkerKind::Planner],
+            capabilities: vec![RunnerCapability::WorkspaceSandbox],
+            models: task.execution.model.candidates.clone(),
+            labels: BTreeMap::new(),
+            mcp_servers: Vec::new(),
+            max_concurrency: 1,
+            lease_ttl_seconds: 300,
+        };
+
+        let missing = runner.evaluate_for_task(&task, None);
+        assert!(!missing.matched);
+        assert!(missing.reasons.iter().any(|reason| {
+            reason.contains("task local_tools require capability LocalCommands")
+        }));
+        assert!(
+            missing
+                .reasons
+                .iter()
+                .any(|reason| { reason.contains("task local_tools require capability GitCli") })
+        );
+        assert!(
+            missing
+                .reasons
+                .iter()
+                .any(|reason| { reason.contains("task local_tools require capability HelmCli") })
+        );
+
+        runner.capabilities.extend([
+            RunnerCapability::LocalCommands,
+            RunnerCapability::GitCli,
+            RunnerCapability::HelmCli,
+        ]);
+        let missing_label = runner.evaluate_for_task(&task, None);
+        assert!(!missing_label.matched);
+        assert!(
+            missing_label
+                .reasons
+                .iter()
+                .any(|reason| { reason.contains("runner lacks local tool label tools.helm=true") })
+        );
+
+        runner
+            .labels
+            .insert("tools.helm".to_string(), "true".to_string());
         let matched = runner.evaluate_for_task(&task, None);
         assert!(matched.matched, "{:?}", matched.reasons);
     }
@@ -11705,6 +12431,104 @@ mod tests {
     }
 
     #[test]
+    fn standard_behavioral_testing_check_is_injectable_and_blocks_shallow_coverage() {
+        let doctrine = ReviewDoctrine::strict_engineering();
+        assert!(
+            doctrine
+                .resolved_objectives()
+                .iter()
+                .any(|objective| objective.id == "testing.behavioral_end_to_end")
+        );
+        assert!(
+            doctrine
+                .resolved_evidence_requirements()
+                .iter()
+                .any(|evidence| evidence.id == "evidence.behavioral_scenarios")
+        );
+        assert!(
+            doctrine
+                .resolved_validation_gates()
+                .iter()
+                .any(|gate| gate.id == "gate.behavioral_coverage")
+        );
+
+        let mut goal = GoalSpec::new(
+            "behavioral testing",
+            "standard checks should require objective-level behavioral tests",
+        );
+        goal.review_policy.doctrine = doctrine;
+        let mut state = GoalState::new(goal);
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "check behavior".to_string(),
+                    kind: SteeringDirectiveKind::RequestStandardReview {
+                        check: StandardReviewCheck::BehavioralTesting,
+                        topic: Some("control gateway goal authoring".to_string()),
+                        reason: "tests must prove the real operator workflow".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("behavioral testing steering applies");
+
+        let task = state
+            .tasks
+            .values()
+            .find(|task| {
+                task.role == WorkerKind::Tester
+                    && task.tags.iter().any(|tag| tag == "behavioral_testing")
+            })
+            .expect("behavioral testing task");
+        assert!(task.prompt.contains("end-to-end objective"));
+        assert!(
+            task.prompt
+                .contains("would fail for meaningful incorrect implementations")
+        );
+
+        let mut result = AgentRunResult::stub_done(task);
+        result.review = Some(ReviewOutput {
+            decision: ReviewDecision::Accept,
+            reward: 0.95,
+            findings: Vec::new(),
+            objective_results: task
+                .review_doctrine
+                .stub_objective_results()
+                .into_iter()
+                .filter(|objective| objective.objective_id != "testing.behavioral_end_to_end")
+                .collect(),
+            gate_results: task
+                .review_doctrine
+                .stub_gate_results()
+                .into_iter()
+                .filter(|gate| gate.gate_id != "gate.behavioral_coverage")
+                .collect(),
+            retry_recommended: false,
+            unification_summary: None,
+        });
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result,
+        });
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"review_objective_missing:testing.behavioral_end_to_end".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"validation_gate_missing:gate.behavioral_coverage".to_string())
+        );
+    }
+
+    #[test]
     fn review_doctrine_requires_objective_and_gate_coverage() {
         let mut goal = GoalSpec::new(
             "strict review",
@@ -11823,6 +12647,79 @@ mod tests {
             request
                 .reason_codes
                 .contains(&ApprovalReasonCode::NativeSubagentSpawn)
+        );
+    }
+
+    #[test]
+    fn ephemeral_capacity_policy_requires_approval_when_enabled() {
+        let mut state = GoalState::new(GoalSpec::new("approval", "ephemeral capacity"));
+        let task_id = state.runnable_tasks().remove(0).id;
+        let task = state.task_mut(task_id).expect("task");
+        task.execution.capacity.mode = CapacityProvisioningMode::PreferRegisteredThenEphemeral;
+        task.execution
+            .capacity
+            .template_refs
+            .push(EphemeralRunnerTemplateRef {
+                name: "codex-burst".to_string(),
+                kind: EphemeralCapacityKind::RunnerJob,
+                required_capabilities: vec![RunnerCapability::Code],
+                labels: BTreeMap::new(),
+                config_ref: Some("jattg-ephemeral-runner-templates".to_string()),
+                active_deadline_seconds: Some(3600),
+                ttl_seconds_after_finished: Some(900),
+            });
+
+        let request = state
+            .ensure_task_approval_or_request(task_id)
+            .expect("approval evaluation succeeds")
+            .expect("approval requested");
+
+        assert_eq!(request.risk, ApprovalRisk::Medium);
+        assert!(
+            request
+                .reason_codes
+                .contains(&ApprovalReasonCode::EphemeralCapacityProvisioning)
+        );
+    }
+
+    #[test]
+    fn high_risk_local_tools_require_approval_when_enabled() {
+        let mut state = GoalState::new(GoalSpec::new("approval", "local docker command"));
+        let task_id = state.runnable_tasks().remove(0).id;
+        state.task_mut(task_id).expect("task").execution.local_tools = LocalToolPolicy {
+            enabled: true,
+            allowed_tools: vec![LocalToolPermission {
+                binary: "docker".to_string(),
+                category: LocalToolCategory::ContainerRuntime,
+                risk: LocalToolRisk::High,
+                allowed_subcommands: vec!["build".to_string(), "run".to_string()],
+                denied_args: vec!["--privileged".to_string()],
+                requires_network: true,
+                requires_docker_socket: true,
+                requires_cluster_access: false,
+                required_capabilities: Vec::new(),
+                required_labels: BTreeMap::from([("tools.docker".to_string(), "true".to_string())]),
+                timeout_seconds: Some(600),
+            }],
+            denied_binaries: Vec::new(),
+            require_sandbox_runner: true,
+            require_workspace: true,
+            require_command_evidence: true,
+            approval: LocalToolApprovalMode::RiskBased,
+            default_timeout_seconds: 600,
+            max_output_bytes: 65_536,
+        };
+
+        let request = state
+            .ensure_task_approval_or_request(task_id)
+            .expect("approval evaluation succeeds")
+            .expect("approval requested");
+
+        assert_eq!(request.risk, ApprovalRisk::High);
+        assert!(
+            request
+                .reason_codes
+                .contains(&ApprovalReasonCode::LocalToolExecution)
         );
     }
 
@@ -12197,6 +13094,7 @@ mod tests {
                 facts_to_avoid: Vec::new(),
                 proposed_task_updates: Vec::new(),
                 validation_checks: Vec::new(),
+                ..InformationUsePlan::default()
             },
             open_questions: Vec::new(),
         });
@@ -12217,6 +13115,95 @@ mod tests {
             report
                 .missing_criteria
                 .contains(&"information_use_plan".to_string())
+        );
+    }
+
+    #[test]
+    fn doctrine_coverage_fixture_is_behavioral_and_not_presence_only() {
+        let mut goal = GoalSpec::new(
+            "doctrine fixture",
+            "review fixture should cover every strict objective and gate",
+        );
+        goal.review_policy.doctrine = ReviewDoctrine::strict_engineering();
+        let mut state = GoalState::new(goal);
+        let root = state.runnable_tasks().remove(0);
+        let actor_result = AgentRunResult::stub_done(&root);
+        state
+            .apply_agent_result(actor_result.clone(), &SpawnPolicy::default())
+            .expect("actor result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: root.goal_id,
+                task: root,
+                result: actor_result,
+            }))
+            .expect("actor validation");
+        state
+            .ensure_review_frontier(&SpawnPolicy::default())
+            .expect("review spawned");
+        let review = state
+            .tasks
+            .values()
+            .find(|task| task.purpose.is_review())
+            .cloned()
+            .expect("review task");
+
+        let fixture = serde_json::from_str::<ReviewOutput>(include_str!(
+            "../../../examples/review-output-doctrine-coverage.json"
+        ))
+        .expect("review doctrine coverage fixture parses");
+        assert!(
+            fixture
+                .objective_results
+                .iter()
+                .any(
+                    |result| result.objective_id == "testing.behavioral_end_to_end"
+                        && matches!(result.decision, ReviewObjectiveDecision::Fail)
+                        && !result.evidence.is_empty()
+                )
+        );
+        assert!(
+            fixture
+                .gate_results
+                .iter()
+                .any(|result| result.gate_id == "gate.behavioral_coverage"
+                    && !result.passed
+                    && !result.evidence.is_empty())
+        );
+
+        let mut result = AgentRunResult::stub_done(&review);
+        result.review = Some(fixture);
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: review.goal_id,
+            task: review,
+            result,
+        });
+        assert!(!report.passed);
+        assert!(
+            !report
+                .missing_criteria
+                .iter()
+                .any(|missing| missing.starts_with("review_objective_missing:")),
+            "{:?}",
+            report.missing_criteria
+        );
+        assert!(
+            !report
+                .missing_criteria
+                .iter()
+                .any(|missing| missing.starts_with("validation_gate_missing:")),
+            "{:?}",
+            report.missing_criteria
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"review_objective_failed:testing.behavioral_end_to_end".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"validation_gate_failed:gate.behavioral_coverage".to_string())
         );
     }
 
@@ -12278,6 +13265,10 @@ mod tests {
             "../../../examples/review-output-changes-requested.json"
         ))
         .expect("review-output example parses");
+        serde_json::from_str::<ReviewOutput>(include_str!(
+            "../../../examples/review-output-doctrine-coverage.json"
+        ))
+        .expect("review doctrine coverage fixture parses");
         serde_json::from_str::<SteeringDirective>(include_str!(
             "../../../examples/steering-request-research.json"
         ))
@@ -12286,6 +13277,10 @@ mod tests {
             "../../../examples/steering-standard-abstraction.json"
         ))
         .expect("standard abstraction steering example parses");
+        serde_json::from_str::<SteeringDirective>(include_str!(
+            "../../../examples/steering-standard-behavioral-testing.json"
+        ))
+        .expect("standard behavioral testing steering example parses");
         serde_json::from_str::<SteeringDirective>(include_str!(
             "../../../examples/steering-standard-deep-research.json"
         ))
@@ -12318,6 +13313,18 @@ mod tests {
             "../../../examples/memory-join.json"
         ))
         .expect("memory-join example parses");
+        serde_json::from_str::<MemoryRetractRequest>(include_str!(
+            "../../../examples/memory-retract.json"
+        ))
+        .expect("memory-retract example parses");
+        serde_json::from_str::<MemoryEditRequest>(include_str!(
+            "../../../examples/memory-edit.json"
+        ))
+        .expect("memory-edit example parses");
+        serde_json::from_str::<MemoryEditPreviewRequest>(include_str!(
+            "../../../examples/memory-edit.json"
+        ))
+        .expect("memory-edit example also parses as preview request");
         serde_json::from_str::<MemoryRepairRequest>(include_str!(
             "../../../examples/memory-repair.json"
         ))
@@ -12342,6 +13349,50 @@ mod tests {
             "../../../examples/notification-webhook.json"
         ))
         .expect("notification webhook example parses");
+        serde_json::from_str::<NotificationRequest>(include_str!(
+            "../../../examples/notification-dashboard.json"
+        ))
+        .expect("notification dashboard example parses");
+        serde_json::from_str::<NotificationRequest>(include_str!(
+            "../../../examples/notification-email.json"
+        ))
+        .expect("notification email example parses");
+        serde_json::from_str::<NotificationRequest>(include_str!(
+            "../../../examples/notification-slack.json"
+        ))
+        .expect("notification slack example parses");
+        serde_json::from_str::<NotificationRequest>(include_str!(
+            "../../../examples/notification-sqs.json"
+        ))
+        .expect("notification sqs example parses");
+        serde_json::from_str::<NotificationRequest>(include_str!(
+            "../../../examples/notification-pagerduty.json"
+        ))
+        .expect("notification pagerduty example parses");
+        serde_json::from_str::<NotificationRequest>(include_str!(
+            "../../../examples/notification-tracker-github.json"
+        ))
+        .expect("notification tracker example parses");
+        serde_json::from_str::<PlanDraftRequest>(include_str!(
+            "../../../examples/plan-draft-durable-mode.json"
+        ))
+        .expect("plan draft example parses");
+        serde_json::from_str::<PlanDraftRequest>(include_str!(
+            "../../../examples/plan-branch-from-existing.json"
+        ))
+        .expect("plan branch example parses");
+        serde_json::from_str::<PlanRevisionRequest>(include_str!(
+            "../../../examples/plan-revision-answer-questions.json"
+        ))
+        .expect("plan revision example parses");
+        serde_json::from_str::<PlanRevisionRequest>(include_str!(
+            "../../../examples/plan-revision-branch-local-runners.json"
+        ))
+        .expect("plan branch revision example parses");
+        serde_json::from_str::<PlanCompileRequest>(include_str!(
+            "../../../examples/plan-compile-branch-new-goal.json"
+        ))
+        .expect("plan branch compile example parses");
         serde_json::from_str::<GoalStoreArtifactRecordRequest>(include_str!(
             "../../../examples/goal-store-record-artifacts.json"
         ))
@@ -12366,6 +13417,22 @@ mod tests {
             "../../../examples/event-source-generic-ci.json"
         ))
         .expect("generic ci event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-sqs-notifications.json"
+        ))
+        .expect("sqs event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-prometheus-alertmanager.json"
+        ))
+        .expect("prometheus event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-datadog-monitor.json"
+        ))
+        .expect("datadog event-source example parses");
+        serde_json::from_str::<EventSourceApprovalRecord>(include_str!(
+            "../../../examples/event-source-approval-record.json"
+        ))
+        .expect("event-source approval record example parses");
         serde_json::from_str::<ExternalEvent>(include_str!(
             "../../../examples/external-event-calendar.json"
         ))

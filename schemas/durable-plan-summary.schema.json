@@ -36,6 +36,13 @@
         "null"
       ]
     },
+    "source_plan_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
     "status": {
       "$ref": "#/$defs/PlanStatus"
     },

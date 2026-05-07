@@ -1,0 +1,81 @@
+{
+  "plan_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756710",
+  "source_plan_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
+  "title": "Branch durable planning mode for local model runners",
+  "objective": "Explore a separate implementation path for durable planning mode that emphasizes local vLLM and Ollama runner routing without changing the original plan.",
+  "repo": null,
+  "prompt": "Branch the existing durable planning-mode plan and produce a separate goal candidate for local model runner integration.",
+  "mode": "human_steered",
+  "status": "draft",
+  "author": "operator",
+  "summary": "Branch from the original planning-mode plan for a local-model-heavy route.",
+  "authoring": {
+    "intake_summary": "This branch preserves the original plan history and investigates local model routing as a competing implementation path.",
+    "acceptance_evidence": [
+      "branched plan keeps source_plan_id",
+      "compiled goal receives a new goal_id",
+      "original plan and compiled goal history are not overwritten"
+    ],
+    "constraints": [
+      "do not mutate the source plan",
+      "use stable subgoal IDs for branch-specific tasks",
+      "require human review before submitting the compiled goal"
+    ],
+    "out_of_scope": [
+      "auto-submitting the compiled branch goal"
+    ],
+    "assumptions": [
+      "the source plan remains available in the goal store"
+    ],
+    "open_questions": [
+      "Which local model runner should be the first candidate?"
+    ]
+  },
+  "plan": {
+    "summary": "Create a branch plan that routes local model runner work through the same durable task tree.",
+    "subgoals": [
+      {
+        "id": "local-runner-contract",
+        "title": "Local runner contract",
+        "objective": "Define runner capabilities and model-route constraints for vLLM and Ollama candidates.",
+        "owner_role": "planner",
+        "priority": "high",
+        "dependencies": [],
+        "tags": ["planning", "local-models"],
+        "acceptance_evidence": ["runner route constraints are explicit"]
+      },
+      {
+        "id": "branch-review",
+        "title": "Branch review",
+        "objective": "Compare this branch against the source plan before compilation.",
+        "owner_role": "reviewer",
+        "priority": "normal",
+        "dependencies": ["local-runner-contract"],
+        "tags": ["review", "branch"],
+        "acceptance_evidence": ["branch tradeoffs are documented"]
+      }
+    ],
+    "distribution_notes": [
+      "Keep this branch separate from the source plan until the operator selects it."
+    ]
+  },
+  "initial_tasks": [],
+  "questions": [
+    {
+      "id": "q-local-model",
+      "question": "Which local model runner should be the first candidate?",
+      "required": true,
+      "status": "open",
+      "answer": null
+    }
+  ],
+  "decisions": [
+    {
+      "id": "d-source-plan",
+      "title": "Keep source plan immutable",
+      "decision": "This branch uses a new plan_id and records the original plan as source_plan_id.",
+      "rationale": "A separate durable plan prevents revised branch details from overwriting prior plan history.",
+      "created_at": null
+    }
+  ]
+}

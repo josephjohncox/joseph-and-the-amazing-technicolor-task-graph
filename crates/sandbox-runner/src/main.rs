@@ -12,7 +12,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    process::Command,
+    process::Command as StdCommand,
     sync::Arc,
     time::SystemTime,
 };
@@ -31,6 +31,10 @@ use coat_domain::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::{
+    process::Command as TokioCommand,
+    time::{Duration, timeout},
+};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -41,6 +45,11 @@ struct AppState {
     enable_live_git_worktrees: bool,
     require_live_git_worktree_approval: bool,
     approved_git_repo_roots: Vec<PathBuf>,
+    enable_local_command_execution: bool,
+    require_command_approval: bool,
+    allowed_local_binaries: Vec<String>,
+    command_timeout_seconds: u64,
+    command_max_output_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -124,6 +133,38 @@ struct CommandPlanResponse {
     diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+struct CommandRunRequest {
+    workspace_id: Option<Uuid>,
+    goal_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    #[serde(default)]
+    command: serde_json::Value,
+    approval_id: Option<String>,
+    cwd: Option<String>,
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+struct CommandRunResponse {
+    status: String,
+    success: bool,
+    workspace_id: Option<Uuid>,
+    workspace_path: Option<String>,
+    command: Vec<String>,
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    artifact: Option<ArtifactRef>,
+    diagnostics: Vec<String>,
+    started_at_unix_seconds: u64,
+    finished_at_unix_seconds: u64,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -150,12 +191,18 @@ async fn main() -> anyhow::Result<()> {
             true,
         ),
         approved_git_repo_roots,
+        enable_local_command_execution: env_bool("SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION", false),
+        require_command_approval: env_bool("SANDBOX_REQUIRE_COMMAND_APPROVAL", true),
+        allowed_local_binaries: parse_allowed_local_binaries(),
+        command_timeout_seconds: parse_u64_env("SANDBOX_COMMAND_TIMEOUT_SECONDS", 600),
+        command_max_output_bytes: parse_usize_env("SANDBOX_COMMAND_MAX_OUTPUT_BYTES", 65_536),
     });
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/launch-plan", post(launch_plan))
         .route("/workspaces", post(create_workspace))
         .route("/commands/plan", post(command_plan))
+        .route("/commands/run", post(command_run))
         .route("/snapshot", post(snapshot))
         .route("/cleanup", post(cleanup))
         .with_state(state)
@@ -405,14 +452,26 @@ async fn command_plan_inner(state: &AppState, request: CommandPlanRequest) -> Co
         .as_deref()
         .map(|approval| !approval.trim().is_empty())
         .unwrap_or(false);
+    let approval_satisfied = !state.require_command_approval || approved;
     let status = if record.is_none() {
         "workspace_not_found"
-    } else if approved {
+    } else if approval_satisfied {
         "ready_for_executor"
     } else {
         "waiting_approval"
     };
-    if !approved {
+    if state.enable_local_command_execution {
+        diagnostics.push(format!(
+            "local command execution is enabled for allowlisted binaries: {}",
+            state.allowed_local_binaries.join(", ")
+        ));
+    } else {
+        diagnostics.push(
+            "local command execution is disabled; an external sandbox executor must consume this plan"
+                .to_string(),
+        );
+    }
+    if state.require_command_approval && !approved {
         diagnostics.push(
             "test command planning requires approval_id before an executor may run it".to_string(),
         );
@@ -426,19 +485,392 @@ async fn command_plan_inner(state: &AppState, request: CommandPlanRequest) -> Co
     });
     CommandPlanResponse {
         status: status.to_string(),
-        requires_approval: true,
-        approved,
+        requires_approval: state.require_command_approval,
+        approved: approval_satisfied,
         workspace_id,
         workspace_path,
         command: request.command,
-        next_service: if approved {
-            "sandbox-executor".to_string()
+        next_service: if approval_satisfied {
+            if state.enable_local_command_execution {
+                "sandbox-runner:/commands/run".to_string()
+            } else {
+                "sandbox-executor".to_string()
+            }
         } else {
             "coordinator-approval".to_string()
         },
         artifact_manifest_path,
         diagnostics,
     }
+}
+
+async fn command_run(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CommandRunRequest>,
+) -> Json<CommandRunResponse> {
+    Json(command_run_inner(&state, request).await)
+}
+
+async fn command_run_inner(state: &AppState, request: CommandRunRequest) -> CommandRunResponse {
+    let started_at = unix_seconds();
+    let workspace_id = request
+        .workspace_id
+        .or_else(|| match (request.goal_id, request.task_id) {
+            (Some(goal_id), Some(task_id)) => Some(deterministic_workspace_id(goal_id, task_id)),
+            _ => None,
+        });
+    let mut diagnostics = Vec::new();
+    let mut command = Vec::new();
+    let mut workspace_path = None;
+
+    let Some(workspace_id_value) = workspace_id else {
+        diagnostics
+            .push("command run requires workspace_id or both goal_id and task_id".to_string());
+        return command_run_blocked(
+            "workspace_not_found",
+            workspace_id,
+            workspace_path,
+            command,
+            diagnostics,
+            started_at,
+        );
+    };
+
+    if !state.enable_local_command_execution {
+        diagnostics.push(
+            "SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION is false; use /commands/plan and an external sandbox executor"
+                .to_string(),
+        );
+        return command_run_blocked(
+            "execution_disabled",
+            workspace_id,
+            workspace_path,
+            command,
+            diagnostics,
+            started_at,
+        );
+    }
+
+    let approved = request
+        .approval_id
+        .as_deref()
+        .map(|approval| !approval.trim().is_empty())
+        .unwrap_or(false);
+    if state.require_command_approval && !approved {
+        diagnostics.push("approval_id is required before local command execution".to_string());
+        return command_run_blocked(
+            "waiting_approval",
+            workspace_id,
+            workspace_path,
+            command,
+            diagnostics,
+            started_at,
+        );
+    }
+
+    let record = match read_record(state, workspace_id_value).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            diagnostics.push(format!("workspace {workspace_id_value} was not found"));
+            return command_run_blocked(
+                "workspace_not_found",
+                workspace_id,
+                workspace_path,
+                command,
+                diagnostics,
+                started_at,
+            );
+        }
+        Err(error) => {
+            diagnostics.push(format!("workspace lookup failed: {error}"));
+            return command_run_blocked(
+                "workspace_not_found",
+                workspace_id,
+                workspace_path,
+                command,
+                diagnostics,
+                started_at,
+            );
+        }
+    };
+    workspace_path = Some(record.path.clone());
+
+    command = match parse_command_value(&request.command) {
+        Ok(command) => command,
+        Err(error) => {
+            diagnostics.push(error);
+            return command_run_blocked(
+                "invalid_command",
+                workspace_id,
+                workspace_path,
+                command,
+                diagnostics,
+                started_at,
+            );
+        }
+    };
+
+    if let Err(error) = validate_allowed_binary(state, &command) {
+        diagnostics.push(error);
+        return command_run_blocked(
+            "binary_not_allowed",
+            workspace_id,
+            workspace_path,
+            command,
+            diagnostics,
+            started_at,
+        );
+    }
+
+    let cwd = match resolve_command_cwd(&record, request.cwd.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            diagnostics.push(error.to_string());
+            return command_run_blocked(
+                "invalid_cwd",
+                workspace_id,
+                workspace_path,
+                command,
+                diagnostics,
+                started_at,
+            );
+        }
+    };
+    let timeout_seconds = request
+        .timeout_seconds
+        .unwrap_or(state.command_timeout_seconds)
+        .clamp(1, state.command_timeout_seconds.max(1));
+
+    let mut child = TokioCommand::new(&command[0]);
+    child.args(&command[1..]).current_dir(&cwd);
+    let output = match timeout(Duration::from_secs(timeout_seconds), child.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            diagnostics.push(format!("failed to execute local command: {error}"));
+            return command_run_blocked(
+                "execution_failed",
+                workspace_id,
+                workspace_path,
+                command,
+                diagnostics,
+                started_at,
+            );
+        }
+        Err(_) => {
+            diagnostics.push(format!("command timed out after {timeout_seconds}s"));
+            return command_run_blocked(
+                "timed_out",
+                workspace_id,
+                workspace_path,
+                command,
+                diagnostics,
+                started_at,
+            );
+        }
+    };
+
+    let (stdout, stdout_truncated) =
+        truncate_output(&output.stdout, state.command_max_output_bytes);
+    let (stderr, stderr_truncated) =
+        truncate_output(&output.stderr, state.command_max_output_bytes);
+    let exit_code = output.status.code();
+    let success = output.status.success();
+    let artifact = write_command_evidence(
+        workspace_id_value,
+        &record,
+        &command,
+        &cwd,
+        exit_code,
+        success,
+        &stdout,
+        &stderr,
+        stdout_truncated,
+        stderr_truncated,
+        started_at,
+    )
+    .await;
+    if let Err(error) = artifact.as_ref() {
+        diagnostics.push(format!(
+            "failed to write command evidence artifact: {error}"
+        ));
+    }
+
+    CommandRunResponse {
+        status: if success { "completed" } else { "failed" }.to_string(),
+        success,
+        workspace_id,
+        workspace_path,
+        command,
+        exit_code,
+        stdout,
+        stderr,
+        stdout_truncated,
+        stderr_truncated,
+        artifact: artifact.ok(),
+        diagnostics,
+        started_at_unix_seconds: started_at,
+        finished_at_unix_seconds: unix_seconds(),
+    }
+}
+
+fn command_run_blocked(
+    status: &str,
+    workspace_id: Option<Uuid>,
+    workspace_path: Option<String>,
+    command: Vec<String>,
+    diagnostics: Vec<String>,
+    started_at: u64,
+) -> CommandRunResponse {
+    CommandRunResponse {
+        status: status.to_string(),
+        success: false,
+        workspace_id,
+        workspace_path,
+        command,
+        exit_code: None,
+        stdout: String::new(),
+        stderr: String::new(),
+        stdout_truncated: false,
+        stderr_truncated: false,
+        artifact: None,
+        diagnostics,
+        started_at_unix_seconds: started_at,
+        finished_at_unix_seconds: unix_seconds(),
+    }
+}
+
+fn parse_command_value(value: &serde_json::Value) -> Result<Vec<String>, String> {
+    match value {
+        serde_json::Value::Array(items) => {
+            let command = items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "command array entries must be strings".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if command.is_empty() {
+                Err("command array must not be empty".to_string())
+            } else {
+                Ok(command)
+            }
+        }
+        serde_json::Value::String(command) => {
+            let parts = command
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if parts.is_empty() {
+                Err("command string must not be empty".to_string())
+            } else {
+                Ok(parts)
+            }
+        }
+        _ => Err("command must be a string or an argv array".to_string()),
+    }
+}
+
+fn validate_allowed_binary(state: &AppState, command: &[String]) -> Result<(), String> {
+    let binary = command
+        .first()
+        .ok_or_else(|| "command must include a binary".to_string())?;
+    if binary.contains('/') || binary.contains('\\') {
+        return Err(
+            "command binary must be a bare executable name; absolute or relative paths are not allowed"
+                .to_string(),
+        );
+    }
+    if state
+        .allowed_local_binaries
+        .iter()
+        .any(|allowed| allowed == binary)
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "binary {binary} is not in SANDBOX_ALLOWED_LOCAL_BINARIES"
+        ))
+    }
+}
+
+fn resolve_command_cwd(
+    record: &WorkspaceRecord,
+    requested: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    let workspace = PathBuf::from(&record.path).canonicalize()?;
+    let candidate = requested
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.clone());
+    let path = if candidate.is_absolute() {
+        candidate
+    } else {
+        workspace.join(candidate)
+    };
+    let canonical = path.canonicalize()?;
+    if !canonical.starts_with(&workspace) {
+        anyhow::bail!(
+            "command cwd {} is outside workspace {}",
+            canonical.display(),
+            workspace.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn truncate_output(bytes: &[u8], max_bytes: usize) -> (String, bool) {
+    let truncated = bytes.len() > max_bytes;
+    let slice = if truncated {
+        &bytes[..max_bytes]
+    } else {
+        bytes
+    };
+    (String::from_utf8_lossy(slice).to_string(), truncated)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_command_evidence(
+    workspace_id: Uuid,
+    record: &WorkspaceRecord,
+    command: &[String],
+    cwd: &Path,
+    exit_code: Option<i32>,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    started_at: u64,
+) -> anyhow::Result<ArtifactRef> {
+    let finished_at = unix_seconds();
+    let evidence = serde_json::json!({
+        "workspace_id": workspace_id,
+        "goal_id": record.goal_id,
+        "task_id": record.task_id,
+        "command": command,
+        "cwd": cwd.display().to_string(),
+        "exit_code": exit_code,
+        "success": success,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "started_at_unix_seconds": started_at,
+        "finished_at_unix_seconds": finished_at
+    });
+    let bytes = serde_json::to_vec_pretty(&evidence)?;
+    let digest = hex_sha256(&bytes);
+    let artifact_dir = PathBuf::from(&record.path).join("artifacts");
+    tokio::fs::create_dir_all(&artifact_dir).await?;
+    let path = artifact_dir.join(format!("command-{digest}.json"));
+    tokio::fs::write(&path, bytes).await?;
+    Ok(ArtifactRef {
+        kind: ArtifactKind::TestResult,
+        uri: format!("workspace://{workspace_id}/artifacts/command-{digest}.json"),
+        description: format!("local command evidence for {}", command.join(" ")),
+        sha256: Some(digest),
+    })
 }
 
 async fn snapshot(
@@ -834,6 +1266,33 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn parse_u64_env(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn parse_usize_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn parse_allowed_local_binaries() -> Vec<String> {
+    std::env::var("SANDBOX_ALLOWED_LOCAL_BINARIES")
+        .unwrap_or_else(|_| {
+            "git,make,cargo,npm,pnpm,yarn,node,python3,python,pytest,go,buf,docker,helm,kubectl"
+                .to_string()
+        })
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn parse_approved_git_repo_roots() -> Vec<PathBuf> {
     std::env::var("SANDBOX_APPROVED_GIT_REPO_ROOTS")
         .ok()
@@ -941,7 +1400,7 @@ async fn create_live_git_worktree(
         std::fs::create_dir_all(parent)?;
     }
     let branch_exists = git_branch_exists(&repo_root, &branch)?;
-    let mut command = Command::new("git");
+    let mut command = StdCommand::new("git");
     command.arg("-C").arg(&repo_root).arg("worktree").arg("add");
     if !branch_exists {
         command.arg("-b").arg(&branch);
@@ -973,7 +1432,7 @@ async fn create_live_git_worktree(
 }
 
 fn git_repo_root(repo_path: &Path) -> anyhow::Result<PathBuf> {
-    let output = Command::new("git")
+    let output = StdCommand::new("git")
         .arg("-C")
         .arg(repo_path)
         .arg("rev-parse")
@@ -991,7 +1450,7 @@ fn git_repo_root(repo_path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn git_branch_exists(repo_root: &Path, branch: &str) -> anyhow::Result<bool> {
-    let output = Command::new("git")
+    let output = StdCommand::new("git")
         .arg("-C")
         .arg(repo_root)
         .arg("show-ref")
@@ -1005,7 +1464,7 @@ fn is_git_worktree(path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
-    Command::new("git")
+    StdCommand::new("git")
         .arg("-C")
         .arg(path)
         .arg("rev-parse")
@@ -1065,6 +1524,11 @@ mod tests {
             enable_live_git_worktrees: false,
             require_live_git_worktree_approval: true,
             approved_git_repo_roots: Vec::new(),
+            enable_local_command_execution: false,
+            require_command_approval: true,
+            allowed_local_binaries: parse_allowed_local_binaries(),
+            command_timeout_seconds: 600,
+            command_max_output_bytes: 65_536,
         };
         let goal_id = Uuid::new_v4();
         let task_id = Uuid::new_v4();
@@ -1138,6 +1602,11 @@ mod tests {
             enable_live_git_worktrees: false,
             require_live_git_worktree_approval: true,
             approved_git_repo_roots: Vec::new(),
+            enable_local_command_execution: false,
+            require_command_approval: true,
+            allowed_local_binaries: parse_allowed_local_binaries(),
+            command_timeout_seconds: 600,
+            command_max_output_bytes: 65_536,
         };
         let request = CreateWorkspaceRequest {
             goal_id: Uuid::new_v4(),
@@ -1189,6 +1658,11 @@ mod tests {
             enable_live_git_worktrees: true,
             require_live_git_worktree_approval: true,
             approved_git_repo_roots: vec![temp.path().canonicalize().expect("canonical temp")],
+            enable_local_command_execution: false,
+            require_command_approval: true,
+            allowed_local_binaries: parse_allowed_local_binaries(),
+            command_timeout_seconds: 600,
+            command_max_output_bytes: 65_536,
         };
         let goal_id = Uuid::new_v4();
         let task_id = Uuid::new_v4();
@@ -1238,6 +1712,11 @@ mod tests {
             enable_live_git_worktrees: false,
             require_live_git_worktree_approval: true,
             approved_git_repo_roots: Vec::new(),
+            enable_local_command_execution: false,
+            require_command_approval: true,
+            allowed_local_binaries: parse_allowed_local_binaries(),
+            command_timeout_seconds: 600,
+            command_max_output_bytes: 65_536,
         };
         let goal_id = Uuid::new_v4();
         let task_id = Uuid::new_v4();
@@ -1282,8 +1761,71 @@ mod tests {
         assert_eq!(approved.workspace_path, Some(workspace.path));
     }
 
+    #[tokio::test]
+    async fn command_run_executes_allowlisted_binary_with_evidence() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = AppState {
+            workspace_root: temp.path().to_path_buf(),
+            supported_backends: vec![SandboxBackend::LocalWorkspace],
+            enable_live_git_worktrees: false,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: Vec::new(),
+            enable_local_command_execution: true,
+            require_command_approval: true,
+            allowed_local_binaries: vec!["git".to_string()],
+            command_timeout_seconds: 30,
+            command_max_output_bytes: 65_536,
+        };
+        let request = CreateWorkspaceRequest {
+            goal_id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            repo: None,
+            sandbox: SandboxProfile::default(),
+            git: GitResultPolicy::default(),
+            object_storage: ObjectStoragePolicy::default(),
+            live_git_worktree: LiveGitWorktreePolicy::default(),
+        };
+        let workspace = create_workspace_inner(&state, request)
+            .await
+            .expect("workspace");
+
+        let blocked = command_run_inner(
+            &state,
+            CommandRunRequest {
+                workspace_id: Some(workspace.workspace_id),
+                command: serde_json::json!(["git", "--version"]),
+                approval_id: None,
+                ..CommandRunRequest::default()
+            },
+        )
+        .await;
+        assert_eq!(blocked.status, "waiting_approval");
+
+        let ran = command_run_inner(
+            &state,
+            CommandRunRequest {
+                workspace_id: Some(workspace.workspace_id),
+                command: serde_json::json!(["git", "--version"]),
+                approval_id: Some("approval-123".to_string()),
+                ..CommandRunRequest::default()
+            },
+        )
+        .await;
+        assert!(ran.success, "{:?}", ran.diagnostics);
+        assert!(ran.stdout.contains("git version"));
+        assert!(ran.artifact.is_some());
+        assert!(
+            PathBuf::from(workspace.path)
+                .join("artifacts")
+                .read_dir()
+                .expect("artifact dir")
+                .next()
+                .is_some()
+        );
+    }
+
     fn run_git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = StdCommand::new("git")
             .arg("-C")
             .arg(repo)
             .args(args)
@@ -1299,7 +1841,7 @@ mod tests {
     }
 
     fn current_branch(repo: &Path) -> String {
-        let output = Command::new("git")
+        let output = StdCommand::new("git")
             .arg("-C")
             .arg(repo)
             .arg("branch")

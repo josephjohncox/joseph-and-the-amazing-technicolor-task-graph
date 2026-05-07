@@ -158,7 +158,7 @@ A runner should perform this sequence before doing substantial work:
 1. Read the task objective, purpose, done criteria, and execution profile.
 2. Query memory for goal, repo, persona, and parent-task scopes.
 3. Search source knowledgebases if research policy allows it.
-4. Build a small `InformationUsePlan`.
+4. Build a small `InformationUsePlan` with usable facts, rejected assumptions, proposed memory writes, proposed child tasks, and validation checks.
 5. Use only the facts that have provenance and fit the task scope.
 6. Record missing context as open questions or child research requests.
 

@@ -1,0 +1,31 @@
+{
+  "author": "operator",
+  "summary": "Answer the local model question and mark the branch ready for review.",
+  "operator_message": "Use vLLM first because it is OpenAI-compatible and works well for shared GPU runners; keep Ollama as a fallback for Mac mini clusters.",
+  "status": "ready_for_review",
+  "questions": [
+    {
+      "id": "q-local-model",
+      "question": "Which local model runner should be the first candidate?",
+      "required": true,
+      "status": "answered",
+      "answer": "Use vLLM first; keep Ollama as the fallback local-provider route."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "d-source-plan",
+      "title": "Keep source plan immutable",
+      "decision": "This branch uses a new plan_id and records the original plan as source_plan_id.",
+      "rationale": "A separate durable plan prevents revised branch details from overwriting prior plan history.",
+      "created_at": null
+    },
+    {
+      "id": "d-vllm-first",
+      "title": "Use vLLM first",
+      "decision": "Prefer vLLM for the branch's first local model runner because it exposes an OpenAI-compatible API and maps cleanly to runner capabilities.",
+      "rationale": "The coordinator can route through the same model-provider contract while preserving local-model optionality.",
+      "created_at": null
+    }
+  ]
+}

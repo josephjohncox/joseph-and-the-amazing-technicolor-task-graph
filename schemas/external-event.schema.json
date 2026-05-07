@@ -64,6 +64,7 @@
         "calendar_poll",
         "calendar_push",
         "queue",
+        "sqs",
         "pub_sub",
         "git_hub_webhook",
         "git_lab_webhook",
@@ -84,6 +85,9 @@
         "issue_tracker",
         "chat",
         "monitoring_alert",
+        "prometheus_alertmanager",
+        "datadog_webhook",
+        "open_telemetry_signal",
         "database_change",
         "manual",
         "other"

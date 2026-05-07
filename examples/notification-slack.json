@@ -1,0 +1,25 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "budget_warning",
+  "message": "A durable goal is close to its configured frontier budget.",
+  "policy": {
+    "events": ["budget_warning", "task_failed", "goal_completed"],
+    "targets": [
+      {
+        "kind": "slack",
+        "address": "#coat-ops",
+        "secret_ref": {
+          "provider": "env",
+          "name": "COAT_SLACK_INCOMING_WEBHOOK_URL",
+          "key": "COAT_SLACK_INCOMING_WEBHOOK_URL",
+          "namespace": null,
+          "audience": "notifier"
+        },
+        "require_ack": false
+      }
+    ],
+    "feedback_thread_key": "ops-budget-alerts",
+    "escalation_seconds": 900
+  }
+}

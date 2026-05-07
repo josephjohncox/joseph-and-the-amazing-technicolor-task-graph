@@ -1,0 +1,19 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "task_blocked",
+  "message": "The task is blocked on an approval that should be visible outside the dashboard.",
+  "policy": {
+    "events": ["task_blocked", "approval_requested", "human_feedback_requested"],
+    "targets": [
+      {
+        "kind": "email",
+        "address": "operator@example.com",
+        "secret_ref": null,
+        "require_ack": true
+      }
+    ],
+    "feedback_thread_key": "operator-email-outbox",
+    "escalation_seconds": 3600
+  }
+}

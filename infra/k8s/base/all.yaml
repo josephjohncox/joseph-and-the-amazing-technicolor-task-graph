@@ -553,6 +553,8 @@ spec:
               value: 0.0.0.0:9089
             - name: COAT_RESTATE_INGRESS
               value: http://restate:8080
+            - name: COAT_GOAL_STORE_URL
+              value: http://goal-store:9088
             - name: COAT_EVENT_GATEWAY_TOKEN
               valueFrom:
                 secretKeyRef:

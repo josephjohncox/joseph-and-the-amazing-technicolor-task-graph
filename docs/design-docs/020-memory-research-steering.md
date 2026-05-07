@@ -29,9 +29,10 @@ COAT should feel like it can keep working, but it must stay steerable. The durab
 - search web/docs/MCP/memory/repo sources as allowed by policy;
 - prefer primary, official, or peer-reviewed sources;
 - return `ResearchOutput` with sources, confidence, open questions, and an `InformationUsePlan`;
-- use gathered information by proposing task updates, validation checks, and facts to avoid.
+- use gathered information by proposing goal updates, child task requests, memory writes, review-doctrine changes, validation checks, and facts to avoid.
 
 Research output is not just prose. Validation requires source artifacts and an information-use plan for research tasks.
+The coordinator decides whether to apply proposed updates; research workers never mutate the durable task tree directly.
 
 ## Memory Substrate
 

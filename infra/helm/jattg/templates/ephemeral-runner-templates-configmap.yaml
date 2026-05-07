@@ -1,0 +1,14 @@
+{{- if .Values.ephemeralRunnerTemplates.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jattg-ephemeral-runner-templates
+  namespace: {{ include "jattg.namespace" . }}
+  labels:
+    {{- include "jattg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ephemeral-runner-templates
+data:
+  templates.yaml: |
+    {{- toYaml .Values.ephemeralRunnerTemplates.templates | nindent 4 }}
+{{- end }}

@@ -1,4 +1,6 @@
 {
+  "plan_id": null,
+  "source_plan_id": null,
   "title": "Durable planning mode",
   "objective": "Design a typed planning-mode workflow that compiles into executable GoalSpec state before agents start work.",
   "repo": null,

@@ -1,0 +1,35 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HighErrorRate\", service=\"checkout-api\"}",
+  "status": "firing",
+  "receiver": "coat-sre",
+  "externalURL": "https://alertmanager.example",
+  "commonLabels": {
+    "alertname": "HighErrorRate",
+    "service": "checkout-api",
+    "severity": "page",
+    "environment": "prod"
+  },
+  "commonAnnotations": {
+    "summary": "checkout-api error rate is above the SLO burn threshold",
+    "runbook_url": "https://runbooks.example/checkout/high-error-rate",
+    "dashboard_url": "https://grafana.example/d/checkout"
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "fingerprint": "checkout-high-error-rate-prod",
+      "startsAt": "2026-05-07T12:00:00Z",
+      "labels": {
+        "alertname": "HighErrorRate",
+        "service": "checkout-api",
+        "severity": "page",
+        "environment": "prod"
+      },
+      "annotations": {
+        "summary": "checkout-api is returning elevated 5xx responses"
+      },
+      "generatorURL": "https://prometheus.example/graph?g0.expr=rate(http_requests_total%7Bstatus%3D~%225..%22%7D%5B5m%5D)"
+    }
+  ]
+}

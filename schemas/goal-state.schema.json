@@ -176,6 +176,14 @@
         "require_for_dangerous_mcp_tools": {
           "type": "boolean"
         },
+        "require_for_ephemeral_capacity": {
+          "type": "boolean",
+          "default": true
+        },
+        "require_for_local_tool_execution": {
+          "type": "boolean",
+          "default": true
+        },
         "require_for_native_subagent_spawn": {
           "type": "boolean",
           "default": true
@@ -227,8 +235,10 @@
         "secret_access",
         "brokered_user_auth",
         "dangerous_mcp_tool",
+        "local_tool_execution",
         "privileged_runner_capability",
-        "native_subagent_spawn"
+        "native_subagent_spawn",
+        "ephemeral_capacity_provisioning"
       ]
     },
     "ApprovalRequest": {
@@ -705,6 +715,49 @@
         "max_patch_size"
       ]
     },
+    "CapacityProvisioningMode": {
+      "type": "string",
+      "enum": [
+        "registered_runners_only",
+        "prefer_registered_then_ephemeral",
+        "ephemeral_only"
+      ]
+    },
+    "CapacityProvisioningPolicy": {
+      "description": "Task-local policy for adding execution capacity.\n\nThe coordinator or executor framework interprets this policy. Operators\nshould not hand-create one-off Kubernetes Jobs for every task; instead, task\nexecution can reference approved templates that provision bounded runner or\nservice-executor capacity and then register through the normal runner\nregistry or Restate deployment path.",
+      "type": "object",
+      "properties": {
+        "max_pending_provisions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/CapacityProvisioningMode"
+        },
+        "request_timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "require_human_approval": {
+          "type": "boolean"
+        },
+        "template_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EphemeralRunnerTemplateRef"
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "request_timeout_seconds",
+        "max_pending_provisions",
+        "require_human_approval"
+      ]
+    },
     "CheckpointKind": {
       "type": "string",
       "enum": [
@@ -1139,10 +1192,79 @@
         "other"
       ]
     },
+    "EphemeralCapacityKind": {
+      "type": "string",
+      "enum": [
+        "runner_job",
+        "restate_service_executor",
+        "sandbox_job"
+      ]
+    },
+    "EphemeralRunnerTemplateRef": {
+      "type": "object",
+      "properties": {
+        "active_deadline_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "config_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/EphemeralCapacityKind"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "name": {
+          "type": "string"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "ttl_seconds_after_finished": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ]
+    },
     "ExecutionProfile": {
       "description": "Task-local runner, model, persona, MCP, notification, result, and guardrail policy.\n\nThis is the contract that lets distributed runners and model providers pick\nup work without reading global plan prose. It is documented in\n`docs/design-docs/010-distributed-runners-mcp.md`.",
       "type": "object",
       "properties": {
+        "capacity": {
+          "$ref": "#/$defs/CapacityProvisioningPolicy",
+          "default": {
+            "max_pending_provisions": 1,
+            "mode": "registered_runners_only",
+            "request_timeout_seconds": 600,
+            "require_human_approval": true,
+            "template_refs": []
+          }
+        },
         "guardrails": {
           "$ref": "#/$defs/ExecutorGuardrailPolicy",
           "default": {
@@ -1157,6 +1279,20 @@
             "require_security_review": false,
             "require_strong_sandbox_attestation": false,
             "security_reviewer_role": "validator"
+          }
+        },
+        "local_tools": {
+          "$ref": "#/$defs/LocalToolPolicy",
+          "default": {
+            "allowed_tools": [],
+            "approval": "risk_based",
+            "default_timeout_seconds": 600,
+            "denied_binaries": [],
+            "enabled": false,
+            "max_output_bytes": 65536,
+            "require_command_evidence": true,
+            "require_sandbox_runner": true,
+            "require_workspace": true
           }
         },
         "mcp": {
@@ -1466,6 +1602,8 @@
             "never_policy_requires_strong_sandbox": true,
             "require_for_brokered_user_auth": true,
             "require_for_dangerous_mcp_tools": true,
+            "require_for_ephemeral_capacity": true,
+            "require_for_local_tool_execution": true,
             "require_for_native_subagent_spawn": true,
             "require_for_network_open": true,
             "require_for_non_isolated_runner": true,
@@ -1593,6 +1731,13 @@
         "default_execution": {
           "$ref": "#/$defs/ExecutionProfile",
           "default": {
+            "capacity": {
+              "max_pending_provisions": 1,
+              "mode": "registered_runners_only",
+              "request_timeout_seconds": 600,
+              "require_human_approval": true,
+              "template_refs": []
+            },
             "guardrails": {
               "block_on_high_findings": true,
               "enabled": false,
@@ -1605,6 +1750,17 @@
               "require_security_review": false,
               "require_strong_sandbox_attestation": false,
               "security_reviewer_role": "validator"
+            },
+            "local_tools": {
+              "allowed_tools": [],
+              "approval": "risk_based",
+              "default_timeout_seconds": 600,
+              "denied_binaries": [],
+              "enabled": false,
+              "max_output_bytes": 65536,
+              "require_command_evidence": true,
+              "require_sandbox_runner": true,
+              "require_workspace": true
             },
             "mcp": {
               "access_mode": "single_user",
@@ -1721,7 +1877,7 @@
         "id": {
           "type": "string",
           "format": "uuid",
-          "default": "0c888836-d642-42e2-80ae-f5e6ebce3a7c"
+          "default": "00000000-0000-0000-0000-000000000000"
         },
         "initial_tasks": {
           "type": "array",
@@ -2044,6 +2200,161 @@
         "review_unification",
         "actor_retry",
         "research"
+      ]
+    },
+    "LocalToolApprovalMode": {
+      "type": "string",
+      "enum": [
+        "inherit",
+        "risk_based",
+        "always",
+        "never"
+      ]
+    },
+    "LocalToolCategory": {
+      "type": "string",
+      "enum": [
+        "version_control",
+        "container_runtime",
+        "kubernetes",
+        "helm",
+        "package_manager",
+        "build_tool",
+        "test_runner",
+        "formal_methods",
+        "shell",
+        "system",
+        "other"
+      ]
+    },
+    "LocalToolPermission": {
+      "type": "object",
+      "properties": {
+        "allowed_subcommands": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "binary": {
+          "type": "string"
+        },
+        "category": {
+          "$ref": "#/$defs/LocalToolCategory"
+        },
+        "denied_args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "requires_cluster_access": {
+          "type": "boolean",
+          "default": false
+        },
+        "requires_docker_socket": {
+          "type": "boolean",
+          "default": false
+        },
+        "requires_network": {
+          "type": "boolean",
+          "default": false
+        },
+        "risk": {
+          "$ref": "#/$defs/LocalToolRisk"
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "binary",
+        "category",
+        "risk"
+      ]
+    },
+    "LocalToolPolicy": {
+      "description": "Task-local allowlist for running local binaries in an isolated workspace.\n\nThis does not grant ambient shell access. It declares which binaries a\nrunner or sandbox executor may invoke, which runner capabilities must be\npresent, how approval is handled, and what evidence must be returned.",
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/LocalToolPermission"
+          }
+        },
+        "approval": {
+          "$ref": "#/$defs/LocalToolApprovalMode",
+          "default": "risk_based"
+        },
+        "default_timeout_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "denied_binaries": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "require_command_evidence": {
+          "type": "boolean",
+          "default": true
+        },
+        "require_sandbox_runner": {
+          "type": "boolean",
+          "default": true
+        },
+        "require_workspace": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "enabled",
+        "default_timeout_seconds",
+        "max_output_bytes"
+      ]
+    },
+    "LocalToolRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
       ]
     },
     "McpAccessMode": {
@@ -2404,7 +2715,8 @@
         "write",
         "fork",
         "join",
-        "invalidate"
+        "invalidate",
+        "retract"
       ]
     },
     "MemoryForkJoinPolicy": {
@@ -2877,9 +3189,11 @@
       "type": "string",
       "enum": [
         "thread",
+        "dashboard",
         "webhook",
         "slack",
         "email",
+        "sqs",
         "git_hub",
         "linear",
         "jira",
@@ -3504,6 +3818,7 @@
       "enum": [
         "compile",
         "automated_tests",
+        "behavioral_tests",
         "property_tests",
         "type_check",
         "formal_proof",
@@ -3905,6 +4220,13 @@
         "mcp_tools",
         "durable_child_tasks",
         "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",
@@ -3923,6 +4245,7 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
+        "ephemeral_provisioning",
         "network_open",
         "formal_verification"
       ]
@@ -4301,6 +4624,7 @@
         "readability",
         "compile",
         "test_evidence",
+        "behavioral_testing",
         "hypothesis_testing",
         "type_soundness",
         "formal_verification",
@@ -5251,6 +5575,7 @@
       "enum": [
         "compile",
         "test_suite",
+        "behavioral_testing",
         "property_testing",
         "type_soundness",
         "formal_verification",

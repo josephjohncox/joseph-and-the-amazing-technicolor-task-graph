@@ -27,7 +27,34 @@ coat follow-ups
 Run the local stack:
 
 ```sh
-docker compose -f infra/compose/docker-compose.yml up --build
+coat compose up
+```
+
+The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model lanes. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, and model route instead of assuming one local agent.
+
+Set up local provider credentials and model endpoints when you want live hosted or local models. The no-flag command starts an interactive wizard; explicit flags keep setup scriptable:
+
+```sh
+coat setup local-auth
+coat setup local-auth --write-env --output infra/compose/local-providers.env
+coat compose up --env-file infra/compose/local-providers.env
+```
+
+Install COAT into a primary chat client with the remote HTTP MCP gateway and
+the `coat-control-plane` skill. The no-flag command starts an interactive
+wizard for gateway URL, token mode, Claude scope, and selected install actions:
+
+```sh
+export COAT_CONTROL_MCP_TOKEN=<redacted-token>
+coat setup chat-client
+coat setup chat-client \
+  --mcp-url http://localhost:9090/mcp \
+  --install-codex-mcp \
+  --install-codex-skill
+coat setup chat-client \
+  --mcp-url http://localhost:9090/mcp \
+  --install-claude-mcp \
+  --install-claude-skill
 ```
 
 The optional web control surface is included in Compose at `http://localhost:9090`. It shows goal progress, agent/task state, current projected prompts, runner status, execution-plan follow-ups, human feedback threads, event sources, schedules/triggers, and memory search/context. It also exposes a small MCP surface at `POST /mcp` for agent or chat clients.
@@ -35,26 +62,31 @@ The optional web control surface is included in Compose at `http://localhost:909
 Run the local services against Restate Cloud for personal durable use:
 
 ```sh
-cp infra/compose/restate-cloud.env.example infra/compose/restate-cloud.env
+coat compose up --restate-cloud --init-env
 # edit infra/compose/restate-cloud.env with env id, API key, region, and signing public key
-docker compose \
-  --env-file infra/compose/restate-cloud.env \
-  -f infra/compose/docker-compose.yml \
-  -f infra/compose/docker-compose.restate-cloud.yml \
-  --profile restate-cloud \
-  up --build
-coat compose up --restate-cloud
-coat restate register-cloud \
-  --tunnel-name jattg-personal \
-  --service-url http://coordinator:9080
+coat compose config --restate-cloud
+coat compose up --restate-cloud --register-cloud
 ```
 
-See `docs/operations/restate-cloud.md` for personal Restate Cloud, public endpoint, and Kubernetes operator paths.
+`coat compose up --restate-cloud` creates `infra/compose/restate-cloud.env`
+from the example when it is missing and stops before starting containers if
+placeholder cloud values are still present. `--register-cloud` starts Compose
+detached and then runs `restate deployments register` for the default
+`jattg-personal` tunnel. Pass `--tunnel-name` if you changed the tunnel name.
+
+See `docs/operations/restate-cloud.md` for personal Restate Cloud, public endpoint, and Kubernetes operator paths. Kubernetes remains under `coat k8s` and Helm chart commands rather than `coat compose`.
+
+Render and validate the base Kubernetes manifest with the CLI:
+
+```sh
+coat k8s render --output infra/k8s/rendered.yaml
+coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
+```
 
 Start the optional Postgres/pgvector operational store profile when you want SQL-backed dashboard and audit development:
 
 ```sh
-docker compose -f infra/compose/docker-compose.yml --profile db up postgres
+coat compose up --profile db postgres
 ```
 
 Submit a goal through Restate ingress. In local development, unmatched tasks can fall back to the local stub runner:
@@ -181,7 +213,7 @@ Run the Postgres projection locally with:
 
 ```sh
 COAT_GOAL_STORE_BACKEND=postgres \
-  docker compose -f infra/compose/docker-compose.yml --profile db up postgres goal-store
+  coat compose up --profile db postgres goal-store
 ```
 
 Inspect the projection surface:
@@ -254,12 +286,14 @@ coat runner dispatch --file examples/dispatch-smoke.json
 The bundled Codex and staff-engineer sidecars auto-register when `RUNNER_REGISTRY_URL` and `RUNNER_ENDPOINT` are set, which Compose and Kubernetes do by default.
 The runner registry can persist registrations and heartbeats through `COAT_RUNNER_REGISTRY_JOURNAL_PATH`, so local multi-node smoke runs can restart the registry without losing the visible runner set. Stale heartbeat TTL and capacity still determine dispatchability after replay.
 
-Ephemeral Kubernetes runners and temporary Restate executors use the same
-runner registry and service contracts. Build or publish `jattg-agent-toolbox`
-from the `agent-toolbox` target in `infra/containers/rust-service.Dockerfile`,
-then create bounded Jobs with `COAT_EPHEMERAL_KIND=codex-runner`,
-`claude-code-runner`, `model-provider-runner`, `staff-engineer-runner`, or a
-Rust service name. See `docs/operations/ephemeral-kubernetes-runners.md`.
+Ephemeral Kubernetes runners and temporary Restate executors use approved
+capacity templates, not ad hoc worker-owned loops. A task can set
+`ExecutionProfile.capacity.mode=prefer_registered_then_ephemeral` and reference
+Helm-provided templates such as `codex-burst` or `model-provider-burst`; the
+coordinator or executor provisioner creates bounded Jobs, waits for normal
+runner/Restate registration, and dispatches through the same durable path. The
+manual manifest examples remain fixtures and escape hatches. See
+`docs/operations/ephemeral-kubernetes-runners.md`.
 Render the reusable example set with:
 
 ```sh
@@ -288,15 +322,23 @@ The notifier records local in-memory feedback threads. Operators can inspect the
 ```sh
 coat notify --threads
 coat notify --thread-key local-model-coding-smoke
+coat notify --queue
 ```
+
+It also accepts dashboard queue targets, Slack incoming webhook targets, generic webhook targets with `SecretRef` bearer auth, and email outbox targets through the same `NotificationRequest` contract. Human approval and feedback state still resumes through coordinator workflows; notifier delivery reports are visibility evidence, not the durable source of truth.
 
 ## Control Gateway And SPA
 
-`ui/control-plane-web` is an optional TypeScript gateway and browser UI. It composes existing backend APIs; it does not dispatch workers or mutate durable state directly.
+`ui/control-plane-web` is an optional TypeScript gateway and Vite/React browser UI. It composes existing backend APIs; it does not dispatch workers or mutate durable state directly.
 
-Use it for durable plan drafting/revision/compilation, goal submission, status, progress, steering, approval, cancellation, restart, branch selection, global and per-goal agent/task progress, projected prompts from `TaskNode.payload_json`, runner status, event sources, triggers, recent events, projected approval queues, notification threads, and memory operations.
+Use it as the user-facing manager for durable plan drafting, goal progress, technicolor task graph viewing, shared memory search/write flows, runner status, human approvals, notification threads, and high-level steering. The richer diagnostics and raw contracts stay available through explicit inspect controls, MCP, CLI, and backend APIs. The SPA includes light, dark, and system appearance modes so operators can keep a readable dashboard during long monitoring sessions.
 
 Set `COAT_CONTROL_GATEWAY_TOKEN` for `/api/*` bearer auth and `COAT_CONTROL_MCP_TOKEN` for `/mcp`. See `docs/design-docs/110-control-gateway-spa.md`.
+
+Use `docs/operations/chat-client-integration.md` to install the MCP server and
+`coat-control-plane` skill into Codex or Claude Code. The same setup command can
+write Claude Code `.mcp.json`, install personal skill copies, and print or run
+the MCP registration commands.
 
 ## Result Channels
 
@@ -382,3 +424,13 @@ Compose also runs Qdrant and configures the gateway to use it as the vector memo
 - Execution plans: `docs/exec-plans/active/`
 - Operations: `docs/operations/`
 - Agent guide: `AGENTS.md`
+
+## License
+
+This repository is source-available under the Business Source License 1.1
+(`BUSL-1.1`) with an additional use grant for non-competing use and a Change
+License of Apache-2.0 on May 7, 2030. See `LICENSE`.
+
+This is intentionally not an OSI open-source license before the Change Date:
+blocking commercial forks or competing cloud products is incompatible with the
+Open Source Definition.

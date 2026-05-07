@@ -13,13 +13,14 @@ It exists so a human or another agent can see and steer:
 - runner capacity and model-routing state;
 - notification, approval, feedback, and async-response queues;
 - event sources, cron-like triggers, webhooks, calendars, and recent external events;
-- memory search, memory context packs, and semantic memory repair state.
+- memory search, memory context packs, fork/join promotion, memory retraction/editing, semantic memory repair state, and research-output application.
+- chat-assisted authoring for goals, plans, steering directives, state explanations, and JSON drafts.
 
 The gateway must never own durable orchestration state. Restate remains the durable authority. The coordinator remains the only task-tree writer. The goal store, memory gateway, notifier, event gateway, and runner registry remain backend services.
 
 ## Components
 
-- `ui/control-plane-web`: TypeScript gateway and SPA.
+- `ui/control-plane-web`: TypeScript gateway plus Vite/React SPA.
 - `GET /`: browser operator UI.
 - `GET /api/overview`: composed health, runner, notification, event, goal, and agent summary.
 - `GET /api/approvals`: projected durable approval queue.
@@ -36,11 +37,34 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `POST /api/goals/{goal_id}/{handler}`: calls approved workflow handlers such as `steer`, `approve`, `cancel`, `restart`, `branch`, `select_branch`, `tasks`, `status`, and `progress`.
 - `GET /api/agents`: projected task/agent rows across goals.
 - `GET /api/human/threads`: local notification and feedback threads.
+- `POST /api/chat`: chat assistant endpoint that can use a configured OpenAI-compatible chat-completions model or the local stub.
 - `GET /api/events`, `/api/events/sources`, `/api/events/triggers`: event gateway read surfaces.
-- `POST /api/memory/{search,context,write,join,repair}`: memory gateway proxy.
+- `GET /api/memory/events/{goal_id}`: memory events projected for one goal.
+- `POST /api/memory/{search,context,write,join,retract,edit,edit-preview,repair}`: memory gateway proxy.
+- `POST /api/research/apply`: converts `ResearchOutput.use_plan` or an `InformationUsePlan` into coordinator-owned `SteeringDirective` calls.
 - `POST /mcp`: MCP-compatible JSON-RPC surface for agent and chat clients.
 
 ## Engine Boundary
+
+The browser UI is a real SPA, not HTML embedded in the Node server. The server
+serves static Vite assets from `dist/public` and owns only gateway APIs, health,
+MCP, and static-file delivery. Product pages live as React components under
+`ui/control-plane-web/src/spa/`, with API access isolated in `src/spa/api.ts`
+and styling in `src/spa/styles.css`.
+
+Appearance is a first-class shell concern. The SPA provides a light, dark, and
+system theme switcher, stores the operator preference locally, sets the
+document color scheme before React boots, and themes React Flow, dialogs,
+forms, cards, and status affordances through shared CSS variables.
+
+The frontend stack is intentionally standard:
+
+- Vite for TypeScript React bundling and production assets;
+- React for product-facing pages and component composition;
+- TanStack Query for server-state fetching, caching, refresh, and mutation state;
+- React Flow for task-graph visualization;
+- Radix primitives for accessible dialogs;
+- lucide-react for iconography.
 
 The SPA may edit text in browser forms, but edits become backend commands:
 
@@ -51,7 +75,18 @@ The SPA may edit text in browser forms, but edits become backend commands:
 - cancellation: `GoalWorkflow/cancel`;
 - restart or branch selection: workflow handler;
 - memory note: `coat-memory-gateway`;
+- memory join or repair: `coat-memory-gateway`;
+- memory retraction or replacement: `coat-memory-gateway`;
+- research application: `GoalWorkflow/steer` directives derived from the sourced `InformationUsePlan`;
 - event source or trigger: `coat-event-gateway`.
+
+The chat tab is intentionally a drafting surface. It can read optional goal context and fill existing JSON forms, but durable mutations still require the operator to press the normal submit, steer, approve, memory, or plan buttons.
+
+Chat provider configuration is optional:
+
+- default: local stub drafts with no model call;
+- OpenAI-compatible: set `COAT_CONTROL_CHAT_COMPLETIONS_URL`, `COAT_CONTROL_CHAT_MODEL`, and optionally `COAT_CONTROL_CHAT_API_KEY`;
+- OpenAI account: set `COAT_CONTROL_CHAT_MODEL` and `OPENAI_API_KEY`; the gateway uses the OpenAI chat-completions URL.
 
 It must not write Restate state, goal-store rows, runner rows, or memory storage directly.
 
@@ -75,9 +110,13 @@ Execution plans keep durable continuation items under `## Follow-Ups`.
 The gateway exposes those items through:
 
 - the overview dashboard;
-- a dedicated Follow-Ups tab;
+- a dedicated Follow-Ups tab with search, counts, source paths, raw projection inspection, and chat-assisted plan drafting;
 - `GET /api/follow-ups`;
+- `POST /api/follow-ups/draft-plan`;
 - MCP tool `coat_follow_ups`.
+- MCP tool `coat_follow_up_draft_plan`.
+
+The SPA also groups projected plans by `source_plan_id` so operators can compare branched planning candidates and select one as the current plan before compilation.
 
 This is a documentation projection, not workflow state. Operators and agent clients should use it to choose the next implementation slice, then turn work into durable plans, goals, steering directives, or code changes through the normal backend APIs.
 
@@ -94,7 +133,7 @@ Supported local queue items:
 - completion notifications;
 - async-response requests such as device-code login, source clarification, or branch-selection review.
 
-Production notification adapters can route the same `NotificationRequest` records to Slack, email, trackers, webhooks, paging, or a future chat assistant. Human decisions still resume the workflow through durable handlers.
+Production notification adapters can route the same `NotificationRequest` records to Slack, email, trackers, webhooks, paging, or a future chat assistant. The local notifier already exposes dashboard queue records, Slack incoming webhooks, generic webhooks, tracker webhook payloads, PagerDuty Events API v2 delivery, and a structured email outbox. Human decisions still resume the workflow through durable handlers.
 
 ## MCP And Other Dashboards
 
@@ -104,14 +143,30 @@ The gateway exposes MCP tools so agent/chat clients can inspect and steer the sy
 - `coat_goal_snapshot`;
 - `coat_agent_activity`;
 - `coat_plan_list`;
+- `coat_plan_draft`;
 - `coat_plan_get`;
+- `coat_plan_revise`;
 - `coat_plan_continuity`;
 - `coat_plan_compile`;
 - `coat_follow_ups`;
+- `coat_goal_submit`;
 - `coat_human_threads`;
 - `coat_approval_queue`;
+- `coat_approve_goal`;
 - `coat_steer_goal`;
+- `coat_chat_assist`;
+- `coat_runner_list`;
+- `coat_runner_register`;
 - `coat_memory_search`;
+- `coat_memory_context`;
+- `coat_memory_write`;
+- `coat_memory_join`;
+- `coat_memory_retract`;
+- `coat_memory_edit`;
+- `coat_memory_edit_preview`;
+- `coat_memory_repair`;
+- `coat_memory_events`;
+- `coat_apply_research_output`;
 - `coat_event_sources`.
 
 External dashboards should prefer the same gateway APIs or the lower-level backend APIs. The gateway is useful for composition and auth consolidation, while the lower-level services remain the stable engine contracts.

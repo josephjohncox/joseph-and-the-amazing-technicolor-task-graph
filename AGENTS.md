@@ -32,6 +32,7 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Strong sandbox and guardrails guide: `docs/design-docs/100-strong-sandboxing-guardrails.md`
 - Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
+- Chat client MCP/skill integration: `docs/operations/chat-client-integration.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
 - Restate Cloud runbook: `docs/operations/restate-cloud.md`
 - Ephemeral Kubernetes runners: `docs/operations/ephemeral-kubernetes-runners.md`
@@ -62,6 +63,7 @@ Update docs when behavior or public contracts change.
 - Every dangerous operation needs an explicit approval path.
 - Strong sandboxing is opt-in by profile, but runners must never claim gVisor, Kata, Firecracker, or provider sandbox enforcement unless they can return an attestation.
 - Executor output is untrusted data until validated and, when enabled, reviewed by output and security guardrail tasks.
+- Testing and review agents should prove objective-level behavior, workflow, state transition, and meaningful failure modes; presence-only checks are not enough for strict goals.
 - Every live agent integration must have a stub mode for local smoke tests.
 
 ## Architecture Rules
@@ -130,9 +132,13 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Initial tasks are coordinator-owned work seeds. Workers may request children, but subgoal creation and routing stay in durable state.
 - Steering directives are the human control surface for pausing, resuming, injecting tasks, and requesting research.
 - Runner selection uses role, capabilities, labels, locality, and optional runner ID.
+- Ephemeral capacity is requested through `ExecutionProfile.capacity` and approved template refs; workers must not hand-create Kubernetes Jobs from prompt text.
 - Model routing can target Codex, OpenAI, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, or local processes.
 - Provider runners are wrappers, not coordinators. Codex, Claude Code, Bedrock, vLLM, Ollama, llama.cpp, Hugging Face, and local-process runners must register capabilities and return structured `AgentRunResult` values through the durable runner queue.
 - Dispatch decisions should preserve ranked candidates and rejected-runner reasons for operator debugging.
+- Local binary execution must be declared in `ExecutionProfile.local_tools`; prompts do not grant shell access.
+- Runners that execute local binaries must advertise `local_commands` plus specific tool capabilities such as `git_cli`, `docker_cli`, `helm_cli`, `kubernetes_cli`, `build_tooling`, or `package_manager_cli`.
+- Local commands must run through the sandbox runner or an approved sandbox executor, inside the task workspace, with command evidence artifacts.
 - Sidecars should expose `/capabilities` without leaking MCP or provider secrets.
 - Sandbox-capable runners should advertise backend capabilities and labels such as `sandbox.backend`, `sandbox.runtime_class`, and `network.egress`.
 - Local workspace sandboxing is for trusted development only; production untrusted execution should use container hardening, gVisor, Kata, Firecracker, Kubernetes Jobs, or provider-backed sandboxes.
@@ -147,6 +153,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Device/browser auth for Codex or Claude Code is runner-local unless `AuthDistributionPolicy` explicitly allows brokered user auth or secret sync.
 - Brokered user auth requires a human approval gate and short-lived leases; never place raw user tokens in task state, diagnostics, artifacts, or memory.
 - Notifications are task-local and should be emitted for approval, feedback, blocked, failed, and completed events.
+- Durable notification fanout and event fan-in should use stable infrastructure targets such as SQS when operators need replay, dead-letter queues, external automations, or bounded queue polling.
 - Local notification threads are for operator visibility; Restate workflow state remains the source of truth.
 - Web UI edits are steering, approval, goal, event, or memory commands against backend APIs; never mutate projections as if they were source-of-truth state.
 - Agent progress views should read projected `TaskRecord` rows and `payload_json.prompt` so operators can inspect current prompts, task contracts, state, and evidence.
@@ -173,6 +180,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Keep protobuf ID/status/artifact fields typed and put full Rust payloads behind JSON-schema envelopes.
 - External events enter through `coat-event-gateway`; generic events, webhooks, cron, calendar checks, and event buses must not invoke workers directly.
 - Use generic JSON or CloudEvents-compatible event sources for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before adding provider-specific adapters.
+- Observability sources such as Prometheus Alertmanager and Datadog must normalize into durable events, search memory for recurrence/persistence evidence, and route through SRE, software-engineering, data-engineering, or data-science goals before PR, dashboard, alert, or runbook changes.
 - Webhook auth must use `WebhookAuthPolicy` and `SecretRef`; shared-secret, bearer, and HMAC-SHA256 are local gateway paths, while mTLS/OIDC should terminate in trusted ingress or secret middleware until implemented.
 - Agent-proposed monitors or schedules require coordinator or human-approved activation.
 - Recurring work should become events, triggered goals, or steering directives, not hidden sleeping loops inside agents.
@@ -183,17 +191,20 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run `make schemas` after contract edits.
 - Run `buf lint` after proto edits.
 - Run `cargo check --workspace` before handing off.
-- Validate Compose with `docker compose -f infra/compose/docker-compose.yml config`.
+- Prefer behavioral tests that would fail for incorrect goal, workflow, routing, validation, persistence, or operator-feedback behavior.
+- Validate Compose with `coat compose config`.
 - Validate Kubernetes with `kubectl apply --dry-run=client -f infra/k8s/base/all.yaml` when `kubectl` is available.
 
 ## Deployment
 
-- Local stack: `docker compose -f infra/compose/docker-compose.yml up --build`
-- Personal Restate Cloud stack: `docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud up --build`
-- CLI local stack: `coat compose up`
-- CLI Restate Cloud stack: `coat compose up --restate-cloud`
-- Restate Cloud registration: `coat restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
+- Local stack: `coat compose up`
+- Personal Restate Cloud env bootstrap: `coat compose up --restate-cloud --init-env`
+- Personal Restate Cloud stack and registration: `coat compose up --restate-cloud --register-cloud`
+- Local provider auth setup wizard: `coat setup local-auth`
+- Chat client MCP/skill setup wizard: `coat setup chat-client`
+- Restate Cloud registration only: `coat restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
 - Kubernetes render: `coat k8s render --output infra/k8s/rendered.yaml`
+- Kubernetes apply or dry-run: `coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client`
 - Restate ingress defaults to `http://localhost:8080`.
 - Coordinator service listens on `:9080`.
 - Runner registry listens on `:9085`.
@@ -205,6 +216,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 ## Safety
 
 - Never run live coding agents without an isolated workspace.
+- Never let a runner execute local binaries that are not allowlisted by task `local_tools` and runner policy.
 - Never use approval-policy `never` outside an isolated runner.
 - Never let recursive child spawning bypass budget checks.
 - Never merge or mark tracker work Done from an autonomous worker.

@@ -4,10 +4,27 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:server && npm run build:spa",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:spa": "tsc -p tsconfig.app.json && vite build",
+    "dev": "vite --host 0.0.0.0",
+    "smoke": "node test/smoke.mjs",
     "start": "node dist/server.js"
   },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@tanstack/react-query": "^5.90.7",
+    "@xyflow/react": "^12.9.2",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.552.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
   "devDependencies": {
-    "typescript": "^5.9.0"
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.2.2"
   }
 }

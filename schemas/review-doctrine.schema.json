@@ -192,6 +192,7 @@
       "enum": [
         "compile",
         "automated_tests",
+        "behavioral_tests",
         "property_tests",
         "type_check",
         "formal_proof",
@@ -431,6 +432,13 @@
         "mcp_tools",
         "durable_child_tasks",
         "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",
@@ -449,6 +457,7 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
+        "ephemeral_provisioning",
         "network_open",
         "formal_verification"
       ]
@@ -557,6 +566,7 @@
       "enum": [
         "compile",
         "test_suite",
+        "behavioral_testing",
         "property_testing",
         "type_soundness",
         "formal_verification",

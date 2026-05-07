@@ -21,7 +21,7 @@ The standard library is available by preset, but it is not forced on every goal.
 ## Built-In Presets
 
 - `core_engineering`: correctness, maintainability, abstraction quality, compile evidence.
-- `testing`: regression tests and hypothesis/property/fuzz-style invariant tests.
+- `testing`: regression tests, behavioral/end-to-end objective tests, and hypothesis/property/fuzz-style invariant tests.
 - `formal_methods`: type soundness and formal verification posture.
 - `functional_domain_driven_design`: DDD language, functional core, and denotational clarity.
 - `laziness_lost`: simplicity, negative code, and abstraction that reduces future cognitive load.
@@ -35,7 +35,7 @@ The `laziness_lost` preset links to Bryan Cantrill's "The peril of laziness lost
 Presets expand to reusable subagent profiles:
 
 - `subagent.code_reviewer`: reviewer role for correctness, maintainability, and abstraction.
-- `subagent.tester`: tester role for regression and hypothesis/property testing.
+- `subagent.tester`: tester role for regression, behavioral/end-to-end, and hypothesis/property testing.
 - `subagent.formal_methods`: formal-methods role for type soundness, proof posture, and model-check questions.
 - `subagent.functional_ddd`: reviewer role for DDD, functional core, and denotational semantics.
 - `subagent.simplicity_critic`: reviewer role for generated-bulk and abstraction-debt checks.
@@ -61,6 +61,24 @@ When doctrine coverage is required, `ValidationReport::from_result` blocks revie
 
 This lets strict goals require compile, test, type-soundness, style, and formal-methods evidence without embedding that logic in sidecar-specific prompts.
 
+## Behavioral Testing Doctrine
+
+The `testing` preset is intentionally deeper than "a test command ran" or "the button/API exists." It includes:
+
+- `testing.regression`: changed behavior has focused regression coverage.
+- `testing.behavioral_end_to_end`: tests exercise the actual end-to-end objective, observable behavior, user/operator workflow, state transition, and meaningful failure modes.
+- `testing.hypothesis`: important invariants have property, generative, fuzz, or explicit hypothesis-style tests when appropriate.
+
+The required evidence includes `evidence.behavioral_scenarios`, and strict doctrine adds `gate.behavioral_coverage`. Reviewers and tester agents should reject shallow existence checks when the goal is behavioral. Examples of shallow checks that do not satisfy the doctrine:
+
+- only checking that a button renders;
+- only checking that an endpoint returns 200;
+- only checking that a JSON schema file exists;
+- only checking that a CLI command prints something;
+- only checking that a route or config key is present.
+
+Instead, tests should be falsifiable against the objective: they should fail when the key workflow is broken, when the state transition is wrong, when persistence/dedupe/routing is incorrect, when edge cases regress, or when the operator would receive misleading evidence.
+
 ## Standard Steering Checks
 
 Operators can inject doctrine-backed checks into active goals through `SteeringDirectiveKind::RequestStandardReview`:
@@ -69,6 +87,7 @@ Operators can inject doctrine-backed checks into active goals through `SteeringD
 - `readability`
 - `compile`
 - `test_evidence`
+- `behavioral_testing`
 - `hypothesis_testing`
 - `type_soundness`
 - `formal_verification`
@@ -86,6 +105,12 @@ Operators can inject doctrine-backed checks into active goals through `SteeringD
 - `output_safety`
 
 Review-like checks create reviewer, tester, or formal-methods tasks. Research-like checks create sourced research tasks that must return source capture and an information-use plan. The coordinator still owns the task tree; steering only requests bounded work.
+
+Use `behavioral_testing` when a goal needs a tester agent to inspect whether coverage proves the end-to-end objective:
+
+```sh
+coat goal steer-standard --goal-id <goal-id> --check behavioral_testing --topic "control gateway goal authoring"
+```
 
 `security` and `output_safety` are the standard executor guardrail checks. They are useful when a worker ran code, touched secrets, used open network, changed dependencies, returned large logs, or produced output that another agent might be tempted to follow as instructions.
 
@@ -108,4 +133,4 @@ Use `--emit-only` or `--out <file>` when a human should review the directive JSO
 - Use overrides for local policy differences instead of forking the preset.
 - Keep `coverage.require_*` false for exploratory goals and true for production-quality gates.
 
-See `examples/goal-review-doctrine.json`, `examples/steering-standard-abstraction.json`, and `examples/steering-standard-deep-research.json`.
+See `examples/goal-review-doctrine.json`, `examples/review-output-doctrine-coverage.json`, `examples/steering-standard-abstraction.json`, `examples/steering-standard-behavioral-testing.json`, and `examples/steering-standard-deep-research.json`.

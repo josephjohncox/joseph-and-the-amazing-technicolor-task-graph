@@ -1,0 +1,160 @@
+{
+  "decision": "changes_requested",
+  "reward": 0.78,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Abstraction boundary is still implicit",
+      "body": "The implementation exposes storage-specific details through the domain API, which makes the task harder to reason about and weakens the DDD boundary.",
+      "file": "crates/domain/src/lib.rs",
+      "start_line": 6072,
+      "end_line": 6088,
+      "priority": 1,
+      "evidence": ["artifact://review/abstraction-boundary"],
+      "suggested_action": "Introduce an explicit domain-level hint type and keep provider-specific details in adapters."
+    },
+    {
+      "severity": "medium",
+      "title": "Hypothesis test is underspecified",
+      "body": "The test evidence proves JSON parsing, but it does not state the falsifiable behavior that should fail if the review doctrine contract regresses.",
+      "file": "crates/domain/src/lib.rs",
+      "start_line": 12308,
+      "end_line": 12311,
+      "priority": 2,
+      "evidence": ["artifact://review/hypothesis-testing"],
+      "suggested_action": "Add a fixture that fails when required objective or gate evidence is absent."
+    }
+  ],
+  "objective_results": [
+    {
+      "objective_id": "correctness.behavior",
+      "decision": "pass",
+      "score": 0.9,
+      "evidence": ["artifact://review/behavioral-correctness"],
+      "notes": ["The changed behavior matches the stated task contract."]
+    },
+    {
+      "objective_id": "quality.maintainability",
+      "decision": "pass",
+      "score": 0.86,
+      "evidence": ["artifact://review/readability"],
+      "notes": ["Names and module boundaries are readable enough for future changes."]
+    },
+    {
+      "objective_id": "abstraction.future_time",
+      "decision": "fail",
+      "score": 0.68,
+      "evidence": ["artifact://review/abstraction-boundary"],
+      "notes": ["Storage and domain concepts need a clearer interface boundary."]
+    },
+    {
+      "objective_id": "testing.regression",
+      "decision": "pass",
+      "score": 0.84,
+      "evidence": ["command://cargo-test-domain"],
+      "notes": ["The fixture includes regression coverage for doctrine validation."]
+    },
+    {
+      "objective_id": "testing.behavioral_end_to_end",
+      "decision": "fail",
+      "score": 0.66,
+      "evidence": ["artifact://review/behavioral-scenarios"],
+      "notes": ["The test evidence still proves JSON parsing more than the actual operator workflow."]
+    },
+    {
+      "objective_id": "testing.hypothesis",
+      "decision": "fail",
+      "score": 0.64,
+      "evidence": ["artifact://review/hypothesis-testing"],
+      "notes": ["The current fixture should state the falsifiable property more directly."]
+    },
+    {
+      "objective_id": "formal.type_soundness",
+      "decision": "pass",
+      "score": 0.92,
+      "evidence": ["command://cargo-check-workspace"],
+      "notes": ["The typed contract compiles across the Rust workspace."]
+    },
+    {
+      "objective_id": "formal.verification",
+      "decision": "not_applicable",
+      "score": 0.82,
+      "evidence": ["artifact://formal/risk-screen"],
+      "notes": ["No formal proof obligation was introduced, but the reviewer recorded why it is not required."]
+    },
+    {
+      "objective_id": "ddd.ubiquitous_language",
+      "decision": "pass",
+      "score": 0.85,
+      "evidence": ["artifact://review/domain-language"],
+      "notes": ["The contract names use task graph and review doctrine language consistently."]
+    },
+    {
+      "objective_id": "functional.core",
+      "decision": "pass",
+      "score": 0.86,
+      "evidence": ["artifact://review/domain-boundary"],
+      "notes": ["Domain contracts stay serializable and side-effect free."]
+    },
+    {
+      "objective_id": "semantics.denotational",
+      "decision": "pass",
+      "score": 0.84,
+      "evidence": ["artifact://review/semantic-contract"],
+      "notes": ["The objective and gate IDs have stable meaning independent of a runner implementation."]
+    },
+    {
+      "objective_id": "simplicity.negative_code",
+      "decision": "pass",
+      "score": 0.88,
+      "evidence": ["artifact://review/simplicity"],
+      "notes": ["The reviewer flags unnecessary abstraction without asking for broad generated layers."]
+    }
+  ],
+  "gate_results": [
+    {
+      "gate_id": "gate.compile",
+      "passed": true,
+      "score": 1.0,
+      "evidence": ["command://cargo-check-workspace"],
+      "notes": ["Workspace compilation succeeded."]
+    },
+    {
+      "gate_id": "gate.tests",
+      "passed": true,
+      "score": 0.88,
+      "evidence": ["command://cargo-test-domain"],
+      "notes": ["Focused domain tests ran."]
+    },
+    {
+      "gate_id": "gate.behavioral_coverage",
+      "passed": false,
+      "score": 0.66,
+      "evidence": ["artifact://review/behavioral-scenarios"],
+      "notes": ["The available tests do not yet prove the end-to-end operator workflow."]
+    },
+    {
+      "gate_id": "gate.type_soundness",
+      "passed": true,
+      "score": 0.92,
+      "evidence": ["command://cargo-check-workspace"],
+      "notes": ["Type-level checks completed."]
+    },
+    {
+      "gate_id": "gate.domain_model",
+      "passed": true,
+      "score": 0.86,
+      "evidence": ["artifact://review/domain-boundary"],
+      "notes": ["Domain and adapter boundaries were reviewed."]
+    },
+    {
+      "gate_id": "gate.simplicity",
+      "passed": true,
+      "score": 0.88,
+      "evidence": ["artifact://review/simplicity"],
+      "notes": ["Reviewer checked for generated bulk and abstraction debt."]
+    }
+  ],
+  "retry_recommended": true,
+  "unification_summary": "The critic accepts the direction but requests an actor retry for abstraction and hypothesis-testing evidence before goal satisfaction."
+}

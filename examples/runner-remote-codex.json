@@ -1,0 +1,30 @@
+{
+  "runner_id": "remote-codex-01",
+  "node_id": "mac-mini-lab-01",
+  "endpoint": "https://runner.example.com/run-task",
+  "roles": ["codex", "reviewer", "tester"],
+  "capabilities": ["code", "review", "test", "mcp_tools", "durable_child_tasks", "workspace_sandbox", "git_worktree", "git", "object_storage", "s3_compatible"],
+  "models": [
+    {
+      "provider": "codex",
+      "model": "codex-default",
+      "endpoint": null,
+      "priority": 100,
+      "weight": 1,
+      "context_window": null,
+      "features": ["tool_use", "json_schema", "streaming"],
+      "labels": {
+        "runtime": "codex",
+        "auth.codex.device": "runner_local_only"
+      }
+    }
+  ],
+  "labels": {
+    "pool": "remote",
+    "runtime": "codex",
+    "auth.codex.device": "true"
+  },
+  "mcp_servers": [],
+  "max_concurrency": 1,
+  "lease_ttl_seconds": 300
+}

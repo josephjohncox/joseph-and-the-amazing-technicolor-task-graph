@@ -1,0 +1,25 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "goal_completed",
+  "message": "The goal passed validation and is ready for human PR or tracker review.",
+  "policy": {
+    "events": ["goal_completed", "task_failed", "approval_requested"],
+    "targets": [
+      {
+        "kind": "git_hub",
+        "address": "https://api.github.com/repos/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/issues/1/comments",
+        "secret_ref": {
+          "provider": "env",
+          "name": "GITHUB_TOKEN",
+          "key": "GITHUB_TOKEN",
+          "namespace": null,
+          "audience": "github"
+        },
+        "require_ack": false
+      }
+    ],
+    "feedback_thread_key": "tracker-updates",
+    "escalation_seconds": 1800
+  }
+}

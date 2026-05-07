@@ -1,0 +1,19 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "human_feedback_requested",
+  "message": "A reviewer needs a human decision before the coordinator can join branches.",
+  "policy": {
+    "events": ["human_feedback_requested", "approval_requested", "task_blocked"],
+    "targets": [
+      {
+        "kind": "dashboard",
+        "address": "human-queue",
+        "secret_ref": null,
+        "require_ack": true
+      }
+    ],
+    "feedback_thread_key": "branch-unification-review",
+    "escalation_seconds": 1800
+  }
+}

@@ -18,7 +18,9 @@ use coat_domain::{
     CheckpointKind, CheckpointMode, CheckpointPolicy, CheckpointRef, ChildTaskRequest,
     ChildTaskRequestChannel, ControlLoopPolicy, DeviceAuthProvider, DurablePlan,
     DurablePlanListResponse, DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy,
-    EmbeddingProviderKind, EventGoalRoute, EventRouteMode, EventSource, EventSourceKind,
+    EmbeddingProviderKind, EventGoalRoute, EventRouteMode, EventSource,
+    EventSourceApprovalListResponse, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
+    EventSourceApprovalRecordResponse, EventSourceApprovalStatus, EventSourceKind,
     ExecutionProfile, ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy,
     GitResultRef, GoalArtifactRecord, GoalAuthoringGuidance, GoalEventBackend, GoalEventKind,
     GoalEventRecord, GoalPlan, GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord,
@@ -30,28 +32,30 @@ use coat_domain::{
     GoalStoreTaskListResponse, GoalTriggerTemplate, GraphColorAssignmentMode, GraphColorPolicy,
     GraphColorRef, HumanApproval, HumanFeedback, InformationUsePlan, LearningSignal, McpAccessMode,
     McpAuthRef, McpContextRef, MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse,
+    MemoryEditPreviewRequest, MemoryEditPreviewResponse, MemoryEditRequest, MemoryEditResponse,
     MemoryEpisode, MemoryEvent, MemoryJoinRequest, MemoryJoinResponse, MemoryPolicy,
-    MemoryRepairRequest, MemoryRepairResponse, MemoryRetrievalPolicy, MemorySearchRequest,
-    MemorySearchResponse, MemoryStoreRef, MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy,
-    ModelRoute, NativeSubagentSpawnPolicy, NotificationPolicy, NotificationRequest,
-    ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef,
-    OidcDelegationPolicy, PlanCompileRequest, PlanCompileResult, PlanDecision, PlanDraftRequest,
-    PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata,
-    ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest,
-    ResultChannelPolicy, RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy,
-    ReviewDoctrineOverride, ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding,
-    ReviewObjective, ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound,
-    ReviewSubagentProfile, RunnerDispatchCandidate, RunnerDispatchDecision,
-    RunnerDispatchRejection, RunnerDispatchRequest, RunnerRegistration, RunnerStatus,
-    SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
-    SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan, SandboxSecurityPlan,
-    SandboxSnapshotStrategy, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
-    SourceArtifact, StandardReviewCheck, SteeringDirective, StyleDoctrine, SubagentDelegationMode,
-    SubagentDelegationPolicy, SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority,
-    TaskProgress, TaskPurpose, TaskPurposeKind, TaskQuery, TaskRecord, TestCommandEvidence,
-    TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest, TriggeredGoalResponse, TriggeredGoalStatus,
-    UserPrincipalRef, ValidationGate, ValidationGateResult, ValidationReport, ValidationRequest,
-    VectorMemoryPolicy, WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
+    MemoryRepairRequest, MemoryRepairResponse, MemoryRetractRequest, MemoryRetractResponse,
+    MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse, MemoryStoreRef,
+    MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute,
+    NativeSubagentSpawnPolicy, NotificationPolicy, NotificationRequest, ObjectStorageArtifactRef,
+    ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef, OidcDelegationPolicy, PlanCompileRequest,
+    PlanCompileResult, PlanDecision, PlanDraftRequest, PlanQuestion, PlanRevision,
+    PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata, ResearchOutput,
+    ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest, ResultChannelPolicy,
+    RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride,
+    ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding, ReviewObjective,
+    ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound, ReviewSubagentProfile,
+    RunnerDispatchCandidate, RunnerDispatchDecision, RunnerDispatchRejection,
+    RunnerDispatchRequest, RunnerRegistration, RunnerStatus, SandboxAttestation, SandboxBackend,
+    SandboxIsolationProfile, SandboxLaunchPlan, SandboxNetworkPlan, SandboxProfile,
+    SandboxResourcePlan, SandboxSecurityPlan, SandboxSnapshotStrategy, SatisfactionReport,
+    ScheduleKind, ScheduleSpec, SecretRef, SourceArtifact, SqsEventSource, StandardReviewCheck,
+    SteeringDirective, StyleDoctrine, SubagentDelegationMode, SubagentDelegationPolicy,
+    SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose,
+    TaskPurposeKind, TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy,
+    TriggeredGoalRequest, TriggeredGoalResponse, TriggeredGoalStatus, UserPrincipalRef,
+    ValidationGate, ValidationGateResult, ValidationReport, ValidationRequest, VectorMemoryPolicy,
+    WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -193,6 +197,11 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "sqs-event-source.schema.json",
+        schema_for!(SqsEventSource),
+    )?;
+    write_schema(
+        &out_dir,
         "webhook-auth-policy.schema.json",
         schema_for!(WebhookAuthPolicy),
     )?;
@@ -297,6 +306,31 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "approval-record.schema.json",
         schema_for!(ApprovalRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source-approval-record.schema.json",
+        schema_for!(EventSourceApprovalRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source-approval-status.schema.json",
+        schema_for!(EventSourceApprovalStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source-approval-record-request.schema.json",
+        schema_for!(EventSourceApprovalRecordRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source-approval-record-response.schema.json",
+        schema_for!(EventSourceApprovalRecordResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "event-source-approval-list-response.schema.json",
+        schema_for!(EventSourceApprovalListResponse),
     )?;
     write_schema(
         &out_dir,
@@ -700,6 +734,36 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "memory-join-response.schema.json",
         schema_for!(MemoryJoinResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-retract-request.schema.json",
+        schema_for!(MemoryRetractRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-retract-response.schema.json",
+        schema_for!(MemoryRetractResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-edit-request.schema.json",
+        schema_for!(MemoryEditRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-edit-response.schema.json",
+        schema_for!(MemoryEditResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-edit-preview-request.schema.json",
+        schema_for!(MemoryEditPreviewRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "memory-edit-preview-response.schema.json",
+        schema_for!(MemoryEditPreviewResponse),
     )?;
     write_schema(
         &out_dir,

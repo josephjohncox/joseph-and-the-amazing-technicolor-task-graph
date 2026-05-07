@@ -11,17 +11,18 @@ Make Restate Cloud a supported durable substrate for personal COAT usage and cor
 - Add CLI helpers for printing cloud env, printing the tunnel Docker command, and registering the coordinator through a tunnel.
 - Add Kubernetes examples for Restate Operator cloud registration and self-hosted Restate clusters.
 - Document personal, public endpoint, and corporate deployment modes.
+- Add provider-neutral operator install guidance covering Helm, Restate Cloud/self-hosted Restate, Postgres, object storage, OIDC front door, ephemeral runners, smoke tests, and rollback.
 
 ## Validation
 
 - `cargo check -p coat-coordinator`
 - `cargo check -p coat-cli`
-- `docker compose -f infra/compose/docker-compose.yml config`
-- `docker compose -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud config`
+- `coat compose config`
+- `coat compose config --restate-cloud`
 - CI verifies the Restate Cloud Compose profile with placeholder env.
 - `coat restate register-cloud --dry-run`
 
 ## Follow-Ups
 
-- Add an operator install guide once the target cluster provider is chosen.
+- Add provider-specific overlays after a concrete target such as EKS, GKE, AKS, k0s, k3s, or OpenShift is selected.
 - Add service-level journal encryption guidance when the deployed SDK path supports it for Rust services.

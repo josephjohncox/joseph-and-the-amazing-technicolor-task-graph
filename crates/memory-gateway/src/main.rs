@@ -1,7 +1,8 @@
 //! Durable memory gateway and adapter boundary.
 //!
 //! Purpose: provide a stable local REST/MCP-shaped interface for memory writes,
-//! search, context packs, fork/join consolidation, repair, and event inspection.
+//! search, context packs, fork/join consolidation, retraction/editing, repair,
+//! and event inspection.
 //! Local JSONL durability is the availability boundary; Graphiti/Zep and Qdrant
 //! adapters are best-effort mirrors.
 //!
@@ -27,10 +28,12 @@ use axum::{
 };
 use coat_domain::{
     GoalId, InformationUsePlan, MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse,
-    MemoryEpisode, MemoryEpisodeSource, MemoryEpisodeSourceType, MemoryEvent, MemoryEventAction,
-    MemoryJoinRequest, MemoryJoinResponse, MemoryRepairRequest, MemoryRepairResponse, MemoryScope,
-    MemorySearchHit, MemorySearchRequest, MemorySearchResponse, MemoryStoreKind, MemoryStoreRef,
-    MemoryWriteRequest, MemoryWriteResponse,
+    MemoryEditDiff, MemoryEditPreviewRecord, MemoryEditPreviewRequest, MemoryEditPreviewResponse,
+    MemoryEditRequest, MemoryEditResponse, MemoryEpisode, MemoryEpisodeSource,
+    MemoryEpisodeSourceType, MemoryEvent, MemoryEventAction, MemoryJoinRequest, MemoryJoinResponse,
+    MemoryRepairRequest, MemoryRepairResponse, MemoryRetractRequest, MemoryRetractResponse,
+    MemoryScope, MemorySearchHit, MemorySearchRequest, MemorySearchResponse, MemoryStoreKind,
+    MemoryStoreRef, MemoryWriteRequest, MemoryWriteResponse,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -103,6 +106,10 @@ enum MemoryJournalEntry {
         promoted: Vec<MemoryEvent>,
         invalidated: Vec<MemoryEvent>,
     },
+    Retract {
+        goal_id: GoalId,
+        retracted: Vec<MemoryEvent>,
+    },
 }
 
 impl MemoryStore {
@@ -156,6 +163,15 @@ impl MemoryStore {
                     .entry(goal_id)
                     .or_default()
                     .extend(promoted.into_iter().chain(invalidated));
+            }
+            MemoryJournalEntry::Retract { goal_id, retracted } => {
+                for event in &retracted {
+                    if let Some(record) = self.records.get_mut(&event.key) {
+                        record.invalidated = true;
+                        record.event = event.clone();
+                    }
+                }
+                self.events.entry(goal_id).or_default().extend(retracted);
             }
         }
     }
@@ -254,6 +270,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/memory/search", post(search_memory))
         .route("/memory/context", post(context_memory))
         .route("/memory/join", post(join_memory))
+        .route("/memory/retract", post(retract_memory))
+        .route("/memory/edit", post(edit_memory))
+        .route("/memory/edit/preview", post(preview_memory_edit))
         .route("/memory/repair", post(repair_memory))
         .route("/memory/events/{goal_id}", get(memory_events))
         .route("/mcp", post(mcp_endpoint))
@@ -309,6 +328,42 @@ async fn join_memory(
 ) -> Result<Json<MemoryJoinResponse>, (StatusCode, Json<serde_json::Value>)> {
     authorize(&state, &headers)?;
     join_memory_with_adapters(&state, request)
+        .await
+        .map(Json)
+        .map_err(server_error)
+}
+
+async fn retract_memory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryRetractRequest>,
+) -> Result<Json<MemoryRetractResponse>, (StatusCode, Json<serde_json::Value>)> {
+    authorize(&state, &headers)?;
+    retract_memory_with_adapters(&state, request)
+        .await
+        .map(Json)
+        .map_err(server_error)
+}
+
+async fn edit_memory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryEditRequest>,
+) -> Result<Json<MemoryEditResponse>, (StatusCode, Json<serde_json::Value>)> {
+    authorize(&state, &headers)?;
+    edit_memory_with_adapters(&state, request)
+        .await
+        .map(Json)
+        .map_err(server_error)
+}
+
+async fn preview_memory_edit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MemoryEditPreviewRequest>,
+) -> Result<Json<MemoryEditPreviewResponse>, (StatusCode, Json<serde_json::Value>)> {
+    authorize(&state, &headers)?;
+    preview_memory_edit_inner(&state.memory, request)
         .await
         .map(Json)
         .map_err(server_error)
@@ -513,6 +568,169 @@ async fn join_memory_with_adapters(
         );
     }
     Ok(response)
+}
+
+async fn retract_memory_with_adapters(
+    state: &AppState,
+    request: MemoryRetractRequest,
+) -> anyhow::Result<MemoryRetractResponse> {
+    let mut response = retract_memory_inner(
+        &state.memory,
+        state.config.journal_path.as_deref(),
+        request.clone(),
+    )
+    .await?;
+    if should_forward_to_graphiti(state, request.store.as_ref()) {
+        let body = serde_json::json!({
+            "goal_id": request.goal_id,
+            "task_id": request.task_id,
+            "keys": &request.keys,
+            "reason": &request.reason,
+            "missing_keys": &response.missing_keys,
+        });
+        response.adapter_reports.push(
+            graphiti_add_episode(
+                state,
+                "memory_retract",
+                &request.store,
+                "COAT memory retraction",
+                &serde_json::to_string_pretty(&body)?,
+                "coat memory retract",
+                None,
+            )
+            .await,
+        );
+    }
+    if should_forward_to_qdrant(state) {
+        let body = serde_json::json!({
+            "goal_id": request.goal_id,
+            "task_id": request.task_id,
+            "keys": &request.keys,
+            "reason": &request.reason,
+            "missing_keys": &response.missing_keys,
+        });
+        let retract_key = format!(
+            "{}:retract:{}",
+            request.goal_id,
+            request
+                .task_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| Uuid::new_v4().to_string())
+        );
+        response.adapter_reports.push(
+            qdrant_upsert_text(
+                state,
+                "memory_retract",
+                &retract_key,
+                "COAT memory retraction",
+                &serde_json::to_string_pretty(&body)?,
+                serde_json::json!({
+                    "goal_id": request.goal_id.to_string(),
+                    "task_id": request.task_id.map(|id| id.to_string()),
+                    "key": "memory_retract",
+                    "scope": "goal",
+                    "title": "COAT memory retraction",
+                    "summary": request.reason,
+                    "content": body,
+                    "tags": ["memory", "retraction"],
+                }),
+            )
+            .await,
+        );
+    }
+    Ok(response)
+}
+
+async fn edit_memory_with_adapters(
+    state: &AppState,
+    request: MemoryEditRequest,
+) -> anyhow::Result<MemoryEditResponse> {
+    let retract = retract_memory_with_adapters(
+        state,
+        MemoryRetractRequest {
+            goal_id: request.goal_id,
+            task_id: request.task_id,
+            keys: request.replace_keys.clone(),
+            reason: format!(
+                "{} Replacement key: {:?}",
+                request.reason, request.replacement_key
+            ),
+            store: request.store.clone(),
+        },
+    )
+    .await?;
+    let write = write_memory_with_adapters(
+        state,
+        MemoryWriteRequest {
+            goal_id: request.goal_id,
+            task_id: request.task_id,
+            scope: request.scope,
+            key: request.replacement_key,
+            episode: request.replacement_episode,
+            store: request.store,
+        },
+    )
+    .await?;
+    let mut adapter_reports = retract.adapter_reports.clone();
+    adapter_reports.extend(write.adapter_reports.clone());
+    Ok(MemoryEditResponse {
+        retracted: retract.retracted,
+        missing_keys: retract.missing_keys,
+        written: write,
+        adapter_reports,
+    })
+}
+
+async fn preview_memory_edit_inner(
+    memory: &MemoryState,
+    request: MemoryEditPreviewRequest,
+) -> anyhow::Result<MemoryEditPreviewResponse> {
+    let memory = memory.read().await;
+    let mut existing = Vec::new();
+    let mut missing_keys = Vec::new();
+    let mut diffs = Vec::new();
+
+    for key in &request.replace_keys {
+        if let Some(record) = memory.records.get(key) {
+            if record.goal_id != request.goal_id {
+                missing_keys.push(key.clone());
+                continue;
+            }
+            existing.push(MemoryEditPreviewRecord {
+                key: key.clone(),
+                scope: record.scope.clone(),
+                title: record.episode.title.clone(),
+                content: record.episode.content.clone(),
+                source: record.episode.source.clone(),
+                tags: record.episode.tags.clone(),
+                promoted: record.promoted,
+                invalidated: record.invalidated,
+            });
+            diffs.push(MemoryEditDiff {
+                key: key.clone(),
+                before_title: record.episode.title.clone(),
+                before_excerpt: summarize(&record.episode.content),
+                after_title: request.replacement_episode.title.clone(),
+                after_excerpt: summarize(&request.replacement_episode.content),
+                guidance: "Review the source, tags, and replacement content before promoting this edit to shared memory.".to_string(),
+            });
+        } else {
+            missing_keys.push(key.clone());
+        }
+    }
+
+    Ok(MemoryEditPreviewResponse {
+        goal_id: request.goal_id,
+        existing,
+        missing_keys: missing_keys.clone(),
+        replacement_key: request.replacement_key,
+        replacement_title: request.replacement_episode.title,
+        replacement_content: request.replacement_episode.content,
+        replacement_tags: request.replacement_episode.tags,
+        reason: request.reason,
+        ready_to_edit: !request.replace_keys.is_empty() && missing_keys.is_empty(),
+        diffs,
+    })
 }
 
 async fn repair_memory_with_adapters(
@@ -800,6 +1018,63 @@ async fn join_memory_inner(
     })
 }
 
+async fn retract_memory_inner(
+    memory: &MemoryState,
+    journal_path: Option<&Path>,
+    request: MemoryRetractRequest,
+) -> anyhow::Result<MemoryRetractResponse> {
+    let mut memory = memory.write().await;
+    let mut retracted = Vec::new();
+    let mut missing_keys = Vec::new();
+
+    for key in &request.keys {
+        if let Some(record) = memory.records.get_mut(key) {
+            if record.goal_id != request.goal_id {
+                missing_keys.push(key.clone());
+                continue;
+            }
+            record.invalidated = true;
+            let event = MemoryEvent {
+                task_id: request.task_id,
+                scope: record.scope.clone(),
+                action: MemoryEventAction::Retract,
+                store_kind: request
+                    .store
+                    .as_ref()
+                    .map(|store| store.kind.clone())
+                    .unwrap_or(MemoryStoreKind::ZepGraphiti),
+                key: key.clone(),
+                summary: format!("retracted memory: {}", request.reason),
+            };
+            record.event = event.clone();
+            retracted.push(event);
+        } else {
+            missing_keys.push(key.clone());
+        }
+    }
+
+    memory
+        .events
+        .entry(request.goal_id)
+        .or_default()
+        .extend(retracted.iter().cloned());
+    if let Some(journal_path) = journal_path {
+        append_journal(
+            journal_path,
+            &MemoryJournalEntry::Retract {
+                goal_id: request.goal_id,
+                retracted: retracted.clone(),
+            },
+        )?;
+    }
+
+    Ok(MemoryRetractResponse {
+        retracted,
+        missing_keys,
+        adapter_reports: Vec::new(),
+    })
+}
+
 async fn mcp_endpoint(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -821,6 +1096,9 @@ async fn mcp_endpoint(
                 {"name": "memory_search", "description": "Search local gateway memory records"},
                 {"name": "memory_context", "description": "Build a bounded task context pack from memory retrieval"},
                 {"name": "memory_join", "description": "Promote or invalidate branch memories"},
+                {"name": "memory_retract", "description": "Retract selected memory records after operator or unifier review"},
+                {"name": "memory_edit", "description": "Retract old keys and write a linked replacement memory record"},
+                {"name": "memory_edit_preview", "description": "Preview old memory keys versus a replacement before committing an edit"},
                 {"name": "memory_repair", "description": "Replay local memory records into configured external adapters"},
                 {"name": "memory_events", "description": "List memory events for a goal"}
             ]
@@ -868,6 +1146,36 @@ async fn mcp_endpoint(
                         .map_err(bad_request)?;
                     serde_json::to_value(
                         join_memory_with_adapters(&state, parsed)
+                            .await
+                            .map_err(server_error)?,
+                    )
+                    .map_err(bad_request)?
+                }
+                "memory_retract" => {
+                    let parsed = serde_json::from_value::<MemoryRetractRequest>(arguments)
+                        .map_err(bad_request)?;
+                    serde_json::to_value(
+                        retract_memory_with_adapters(&state, parsed)
+                            .await
+                            .map_err(server_error)?,
+                    )
+                    .map_err(bad_request)?
+                }
+                "memory_edit" => {
+                    let parsed = serde_json::from_value::<MemoryEditRequest>(arguments)
+                        .map_err(bad_request)?;
+                    serde_json::to_value(
+                        edit_memory_with_adapters(&state, parsed)
+                            .await
+                            .map_err(server_error)?,
+                    )
+                    .map_err(bad_request)?
+                }
+                "memory_edit_preview" => {
+                    let parsed = serde_json::from_value::<MemoryEditPreviewRequest>(arguments)
+                        .map_err(bad_request)?;
+                    serde_json::to_value(
+                        preview_memory_edit_inner(&state.memory, parsed)
                             .await
                             .map_err(server_error)?,
                     )
@@ -966,6 +1274,7 @@ fn build_context_use_plan(
             "Preserve memory keys, scopes, and provenance when citing retrieved context in worker output.".to_string(),
             "Write new durable facts only after evidence, review, or unifier approval according to MemoryPolicy.write_policy.".to_string(),
         ],
+        ..InformationUsePlan::default()
     }
 }
 
@@ -2011,6 +2320,202 @@ mod tests {
                 .any(|fact| fact.contains("qdrant-policy"))
         );
         assert!(!response.use_plan.validation_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retract_invalidates_memory_and_replays_from_journal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("memory.jsonl");
+        let memory = Arc::new(RwLock::new(MemoryStore::default()));
+        let goal_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+
+        write_memory_inner(
+            &memory,
+            Some(&journal),
+            MemoryWriteRequest {
+                goal_id,
+                task_id: Some(task_id),
+                scope: MemoryScope::Goal,
+                key: Some("stale-fact".to_string()),
+                episode: MemoryEpisode {
+                    title: "Stale fact".to_string(),
+                    content: "This memory should no longer be used by workers.".to_string(),
+                    source: MemoryEpisodeSource {
+                        source_type: coat_domain::MemoryEpisodeSourceType::Human,
+                        uri: None,
+                        actor: Some("tester".to_string()),
+                    },
+                    artifacts: Vec::new(),
+                    tags: vec!["stale".to_string()],
+                },
+                store: None,
+            },
+        )
+        .await
+        .expect("write memory");
+
+        let response = retract_memory_inner(
+            &memory,
+            Some(&journal),
+            MemoryRetractRequest {
+                goal_id,
+                task_id: Some(task_id),
+                keys: vec!["stale-fact".to_string()],
+                reason: "newer evidence superseded this fact".to_string(),
+                store: None,
+            },
+        )
+        .await
+        .expect("retract memory");
+
+        assert_eq!(response.retracted.len(), 1);
+        assert!(response.missing_keys.is_empty());
+        assert_eq!(response.retracted[0].action, MemoryEventAction::Retract);
+
+        let search = search_memory_inner(
+            &memory,
+            None,
+            MemorySearchRequest {
+                goal_id,
+                task_id: None,
+                query: "workers".to_string(),
+                scopes: vec![MemoryScope::Goal],
+                limit: Some(5),
+                store: None,
+            },
+        )
+        .await
+        .expect("search after retract");
+        assert!(search.hits.is_empty());
+
+        let replayed = MemoryStore::load_journal(&journal).expect("replay journal");
+        let record = replayed.records.get("stale-fact").expect("record replayed");
+        assert!(record.invalidated);
+        assert_eq!(replayed.events.get(&goal_id).expect("events").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn edit_retracts_old_key_and_writes_replacement() {
+        let memory = Arc::new(RwLock::new(MemoryStore::default()));
+        let goal_id = Uuid::new_v4();
+        let state = AppState {
+            memory: memory.clone(),
+            config: AppConfig {
+                bearer_token: None,
+                journal_path: None,
+                graphiti_mcp_url: None,
+                graphiti_group_id: "jattg".to_string(),
+                graphiti_token: None,
+                qdrant_url: None,
+                qdrant_collection: "jattg_memory".to_string(),
+                qdrant_token: None,
+                embedding_url: None,
+                embedding_model: "text-embedding-3-large".to_string(),
+                embedding_dimensions: 3072,
+                embedding_token: None,
+                embedding_send_dimensions: false,
+            },
+            client: Client::new(),
+        };
+
+        write_memory_inner(
+            &memory,
+            None,
+            MemoryWriteRequest {
+                goal_id,
+                task_id: None,
+                scope: MemoryScope::Goal,
+                key: Some("candidate".to_string()),
+                episode: MemoryEpisode {
+                    title: "Candidate".to_string(),
+                    content: "Use the preliminary memory substrate decision.".to_string(),
+                    source: MemoryEpisodeSource {
+                        source_type: coat_domain::MemoryEpisodeSourceType::Research,
+                        uri: None,
+                        actor: Some("researcher".to_string()),
+                    },
+                    artifacts: Vec::new(),
+                    tags: vec!["candidate".to_string()],
+                },
+                store: None,
+            },
+        )
+        .await
+        .expect("write candidate");
+
+        let preview = preview_memory_edit_inner(
+            &memory,
+            MemoryEditPreviewRequest {
+                goal_id,
+                replace_keys: vec!["candidate".to_string()],
+                replacement_key: Some("reviewed".to_string()),
+                replacement_episode: MemoryEpisode {
+                    title: "Reviewed".to_string(),
+                    content: "Use the reviewed Graphiti and Qdrant memory decision.".to_string(),
+                    source: MemoryEpisodeSource {
+                        source_type: coat_domain::MemoryEpisodeSourceType::Human,
+                        uri: None,
+                        actor: Some("operator".to_string()),
+                    },
+                    artifacts: Vec::new(),
+                    tags: vec!["reviewed".to_string()],
+                },
+                reason: "critic accepted the replacement".to_string(),
+            },
+        )
+        .await
+        .expect("preview edit");
+        assert!(preview.ready_to_edit);
+        assert_eq!(preview.existing.len(), 1);
+        assert_eq!(preview.diffs[0].key, "candidate");
+        assert!(preview.diffs[0].after_excerpt.contains("Graphiti"));
+
+        let response = edit_memory_with_adapters(
+            &state,
+            MemoryEditRequest {
+                goal_id,
+                task_id: None,
+                scope: MemoryScope::Goal,
+                replace_keys: vec!["candidate".to_string()],
+                replacement_key: Some("reviewed".to_string()),
+                replacement_episode: MemoryEpisode {
+                    title: "Reviewed".to_string(),
+                    content: "Use the reviewed Graphiti and Qdrant memory decision.".to_string(),
+                    source: MemoryEpisodeSource {
+                        source_type: coat_domain::MemoryEpisodeSourceType::Human,
+                        uri: None,
+                        actor: Some("operator".to_string()),
+                    },
+                    artifacts: Vec::new(),
+                    tags: vec!["reviewed".to_string()],
+                },
+                reason: "critic accepted the replacement".to_string(),
+                store: None,
+            },
+        )
+        .await
+        .expect("edit memory");
+
+        assert_eq!(response.retracted.len(), 1);
+        assert_eq!(response.written.key, "reviewed");
+
+        let search = search_memory_inner(
+            &memory,
+            None,
+            MemorySearchRequest {
+                goal_id,
+                task_id: None,
+                query: "reviewed graphiti qdrant".to_string(),
+                scopes: vec![MemoryScope::Goal],
+                limit: Some(5),
+                store: None,
+            },
+        )
+        .await
+        .expect("search replacement");
+        assert_eq!(search.hits.len(), 1);
+        assert_eq!(search.hits[0].key, "reviewed");
     }
 
     #[tokio::test]

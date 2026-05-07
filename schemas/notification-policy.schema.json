@@ -78,9 +78,11 @@
       "type": "string",
       "enum": [
         "thread",
+        "dashboard",
         "webhook",
         "slack",
         "email",
+        "sqs",
         "git_hub",
         "linear",
         "jira",

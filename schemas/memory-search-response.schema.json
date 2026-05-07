@@ -137,7 +137,8 @@
         "write",
         "fork",
         "join",
-        "invalidate"
+        "invalidate",
+        "retract"
       ]
     },
     "MemoryScope": {

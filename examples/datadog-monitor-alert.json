@@ -1,0 +1,15 @@
+{
+  "event_id": "818181",
+  "alert_transition": "Triggered",
+  "title": "Warehouse lag is above threshold",
+  "date": "1770000000",
+  "tags": [
+    "service:warehouse-sync",
+    "env:prod",
+    "severity:warning",
+    "team:data-platform"
+  ],
+  "dashboard_url": "https://app.datadoghq.com/dashboard/warehouse-lag",
+  "runbook_url": "https://runbooks.example/data-platform/warehouse-lag",
+  "body": "Warehouse load lag has exceeded 45 minutes for three consecutive checks."
+}

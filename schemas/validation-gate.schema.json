@@ -53,6 +53,7 @@
       "enum": [
         "compile",
         "test_suite",
+        "behavioral_testing",
         "property_testing",
         "type_soundness",
         "formal_verification",

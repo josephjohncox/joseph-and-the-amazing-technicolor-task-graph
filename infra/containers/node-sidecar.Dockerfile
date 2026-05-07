@@ -2,8 +2,7 @@ FROM node:24-slim AS builder
 
 ARG SIDECAR_DIR
 WORKDIR /app
-COPY ${SIDECAR_DIR}/package.json ${SIDECAR_DIR}/tsconfig.json ./
-COPY ${SIDECAR_DIR}/src ./src
+COPY ${SIDECAR_DIR}/ ./
 COPY docs/exec-plans/active ./docs/exec-plans/active
 RUN npm install && npm run build
 

@@ -18,18 +18,21 @@ use std::{
 };
 
 use anyhow::Context;
+use aws_config::{BehaviorVersion, meta::region::RegionProviderChain};
+use aws_sdk_sqs::{Client as SqsClient, config::Region, types::Message as SqsMessage};
 use axum::{
     Json, Router,
     body::Bytes,
     extract::{Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use coat_domain::{
-    EventRouteMode, EventSource, EventSourceKind, ExternalEvent, GoalSpec, GoalTriggerTemplate,
-    SecretProvider, SecretRef, SteeringDirective, TriggeredGoalRequest, TriggeredGoalResponse,
-    TriggeredGoalStatus, WebhookAuthKind,
+    EventRouteMode, EventSource, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
+    EventSourceApprovalStatus, EventSourceKind, ExternalEvent, GoalSpec, GoalTriggerTemplate,
+    SecretProvider, SecretRef, SqsEventSource, SteeringDirective, TriggeredGoalRequest,
+    TriggeredGoalResponse, TriggeredGoalStatus, WebhookAuthKind,
 };
 use hmac::{Hmac, Mac};
 use reqwest::StatusCode;
@@ -45,6 +48,7 @@ struct AppState {
     state: Arc<RwLock<EventGatewayState>>,
     journal_path: Option<PathBuf>,
     restate_ingress: Option<String>,
+    goal_store_url: Option<String>,
     gateway_token: Option<String>,
     require_event_source_approval: bool,
     backend: EventGatewayBackend,
@@ -105,6 +109,24 @@ struct IngestEventQuery {
     route: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SqsPollQuery {
+    route: Option<bool>,
+    max_messages: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+struct SqsPollResponse {
+    source_id: String,
+    received: usize,
+    accepted: usize,
+    deduped: usize,
+    deleted: usize,
+    failures: Vec<String>,
+    events: Vec<ExternalEvent>,
+    routes: Vec<TriggeredGoalResponse>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -120,6 +142,9 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(PathBuf::from);
     let restate_ingress = std::env::var("COAT_RESTATE_INGRESS")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let goal_store_url = std::env::var("COAT_GOAL_STORE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty());
     let gateway_token = std::env::var("COAT_EVENT_GATEWAY_TOKEN")
@@ -160,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
         state: Arc::new(RwLock::new(gateway_state)),
         journal_path,
         restate_ingress,
+        goal_store_url,
         gateway_token,
         require_event_source_approval,
         backend,
@@ -173,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/events", get(list_events).post(ingest_event))
         .route("/events/webhook/{source_id}", post(webhook_event))
         .route("/events/generic/{source_id}", post(generic_event))
+        .route("/events/sqs/{source_id}/poll", post(sqs_poll))
         .route("/triggers", get(list_triggers).post(trigger_goal))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -190,6 +217,7 @@ async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
         "event_format": "cloudevents_compatible",
         "backend": state.backend.as_str(),
         "postgres_connected": state.postgres.is_some(),
+        "goal_store_projection_enabled": state.goal_store_url.is_some(),
     }))
 }
 
@@ -199,7 +227,7 @@ async fn register_source(
     Json(source): Json<EventSource>,
 ) -> Result<Json<EventSource>, GatewayError> {
     require_gateway_auth(&state, &headers)?;
-    enforce_event_source_activation_policy(&state, &headers, &source)?;
+    let approval_record = enforce_event_source_activation_policy(&state, &headers, &source)?;
     if let Some(pool) = &state.postgres {
         upsert_source_postgres(pool, &source).await?;
     } else {
@@ -211,6 +239,9 @@ async fn register_source(
         .await
         .sources
         .insert(source.id.clone(), source.clone());
+    if let Some(record) = approval_record {
+        project_event_source_approval(&state, record).await?;
+    }
     Ok(Json(source))
 }
 
@@ -295,6 +326,101 @@ async fn generic_event(
         "event_id": event.id,
         "deduped": deduped,
     })))
+}
+
+async fn sqs_poll(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+    Query(query): Query<SqsPollQuery>,
+    headers: HeaderMap,
+) -> Result<Json<SqsPollResponse>, GatewayError> {
+    require_gateway_auth(&state, &headers)?;
+    let source = state
+        .state
+        .read()
+        .await
+        .sources
+        .get(&source_id)
+        .cloned()
+        .ok_or_else(|| GatewayError::BadRequest(format!("unknown SQS event source {source_id}")))?;
+    if !source.enabled {
+        return Err(GatewayError::BadRequest(format!(
+            "SQS event source {source_id} is disabled"
+        )));
+    }
+    let sqs = source.sqs.as_ref().ok_or_else(|| {
+        GatewayError::BadRequest(format!(
+            "event source {source_id} does not declare an sqs block"
+        ))
+    })?;
+    let client = sqs_client(sqs).await;
+    let max_messages = query
+        .max_messages
+        .unwrap_or(sqs.max_messages as i32)
+        .clamp(1, 10);
+    let mut receive = client
+        .receive_message()
+        .queue_url(&sqs.queue_url)
+        .max_number_of_messages(max_messages)
+        .wait_time_seconds((sqs.wait_time_seconds as i32).clamp(0, 20));
+    if let Some(timeout) = sqs.visibility_timeout_seconds {
+        receive = receive.visibility_timeout(timeout);
+    }
+    let output = receive
+        .send()
+        .await
+        .map_err(|error| GatewayError::BadGateway(format!("receive SQS messages: {error}")))?;
+    let messages = output.messages();
+    let mut response = SqsPollResponse {
+        source_id: source_id.clone(),
+        received: messages.len(),
+        accepted: 0,
+        deduped: 0,
+        deleted: 0,
+        failures: Vec::new(),
+        events: Vec::new(),
+        routes: Vec::new(),
+    };
+
+    for message in messages {
+        match normalize_sqs_message(&source, message) {
+            Ok(event) => {
+                let deduped = record_event(&state, event.clone()).await?;
+                if deduped {
+                    response.deduped += 1;
+                } else {
+                    response.accepted += 1;
+                }
+                if query.route.unwrap_or(true) {
+                    if let Some(route) = route_event_from_source(&state, &event, deduped).await? {
+                        response.routes.push(route);
+                    }
+                }
+                if sqs.delete_on_success {
+                    if let Some(receipt_handle) = message.receipt_handle() {
+                        match client
+                            .delete_message()
+                            .queue_url(&sqs.queue_url)
+                            .receipt_handle(receipt_handle)
+                            .send()
+                            .await
+                        {
+                            Ok(_) => response.deleted += 1,
+                            Err(error) => response
+                                .failures
+                                .push(format!("delete SQS message after ingest failed: {error}")),
+                        }
+                    }
+                }
+                response.events.push(event);
+            }
+            Err(error) => response
+                .failures
+                .push(format!("normalize SQS message failed: {error:?}")),
+        }
+    }
+
+    Ok(Json(response))
 }
 
 async fn list_events(
@@ -580,7 +706,7 @@ fn goal_from_template(template: &GoalTriggerTemplate, event: &ExternalEvent) -> 
 }
 
 fn render_template(template: &str, event: &ExternalEvent) -> String {
-    template
+    let rendered = template
         .replace("{{event_id}}", &event.id)
         .replace("{{source_id}}", &event.source_id)
         .replace("{{event_type}}", &event.event_type)
@@ -588,6 +714,84 @@ fn render_template(template: &str, event: &ExternalEvent) -> String {
             "{{subject}}",
             event.subject.as_deref().unwrap_or("no subject"),
         )
+        .replace(
+            "{{service}}",
+            event_observability_field(event, "service")
+                .as_deref()
+                .unwrap_or("unknown service"),
+        )
+        .replace(
+            "{{severity}}",
+            event_observability_field(event, "severity")
+                .as_deref()
+                .unwrap_or("unknown severity"),
+        )
+        .replace(
+            "{{alertname}}",
+            event_observability_field(event, "alertname")
+                .as_deref()
+                .unwrap_or("unknown alert"),
+        )
+        .replace(
+            "{{environment}}",
+            event_observability_field(event, "environment")
+                .as_deref()
+                .unwrap_or("unknown environment"),
+        )
+        .replace(
+            "{{runbook_url}}",
+            event_observability_field(event, "runbook_url")
+                .as_deref()
+                .unwrap_or("no runbook"),
+        )
+        .replace(
+            "{{dashboard_url}}",
+            event_observability_field(event, "dashboard_url")
+                .as_deref()
+                .unwrap_or("no dashboard"),
+        );
+    render_payload_pointer_placeholders(&rendered, &event.payload)
+}
+
+fn event_observability_field(event: &ExternalEvent, field: &str) -> Option<String> {
+    event
+        .payload
+        .pointer(&format!("/_coat_observability/{field}"))
+        .and_then(json_value_string)
+        .or_else(|| event.payload.get(field).and_then(json_value_string))
+}
+
+fn render_payload_pointer_placeholders(template: &str, payload: &serde_json::Value) -> String {
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{payload:") {
+        rendered.push_str(&rest[..start]);
+        let after_start = &rest[start + "{{payload:".len()..];
+        let Some(end) = after_start.find("}}") else {
+            rendered.push_str(&rest[start..]);
+            return rendered;
+        };
+        let pointer = &after_start[..end];
+        rendered.push_str(
+            payload
+                .pointer(pointer)
+                .and_then(json_value_string)
+                .as_deref()
+                .unwrap_or(""),
+        );
+        rest = &after_start[end + "}}".len()..];
+    }
+    rendered.push_str(rest);
+    rendered
+}
+
+fn json_value_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn normalize_webhook_event(
@@ -605,6 +809,10 @@ fn normalize_webhook_event(
         EventSourceKind::StripeWebhook => normalize_stripe_webhook(base, &payload),
         EventSourceKind::JiraWebhook => normalize_jira_webhook(base, &payload),
         EventSourceKind::LinearWebhook => normalize_linear_webhook(base, &payload),
+        EventSourceKind::PrometheusAlertmanager => {
+            normalize_prometheus_alertmanager(base, &payload)
+        }
+        EventSourceKind::DatadogWebhook => normalize_datadog_webhook(base, &payload),
         _ => base,
     };
     if let Some(dedupe_header) = source
@@ -769,17 +977,286 @@ fn provider_event_type(provider: &str, event: &str, action: Option<&str>) -> Str
         .unwrap_or_else(|| format!("{provider}.{base}"))
 }
 
+fn normalize_prometheus_alertmanager(
+    mut event: ExternalEvent,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    let status = json_path_string(payload, &["status"]).unwrap_or_else(|| "unknown".to_string());
+    let alertname = first_string([
+        json_path_string(payload, &["commonLabels", "alertname"]),
+        json_path_string(payload, &["alerts", "0", "labels", "alertname"]),
+    ])
+    .unwrap_or_else(|| "alert".to_string());
+    let service = first_string([
+        json_path_string(payload, &["commonLabels", "service"]),
+        json_path_string(payload, &["commonLabels", "job"]),
+        json_path_string(payload, &["alerts", "0", "labels", "service"]),
+        json_path_string(payload, &["alerts", "0", "labels", "job"]),
+    ]);
+    let severity = first_string([
+        json_path_string(payload, &["commonLabels", "severity"]),
+        json_path_string(payload, &["alerts", "0", "labels", "severity"]),
+    ]);
+    let environment = first_string([
+        json_path_string(payload, &["commonLabels", "environment"]),
+        json_path_string(payload, &["commonLabels", "env"]),
+        json_path_string(payload, &["alerts", "0", "labels", "environment"]),
+        json_path_string(payload, &["alerts", "0", "labels", "env"]),
+    ]);
+    let fingerprint = first_string([
+        json_path_string(payload, &["alerts", "0", "fingerprint"]),
+        json_path_string(payload, &["groupKey"]),
+    ])
+    .unwrap_or_else(|| event.id.clone());
+    let starts_at = json_path_string(payload, &["alerts", "0", "startsAt"]);
+    let ends_at = json_path_string(payload, &["alerts", "0", "endsAt"]);
+    let event_time = if status == "resolved" {
+        ends_at.clone().or(starts_at.clone())
+    } else {
+        starts_at.clone().or(ends_at.clone())
+    };
+    let group_key = json_path_string(payload, &["groupKey"]).unwrap_or_else(|| fingerprint.clone());
+    let raw_id = format!(
+        "{}:{}:{}",
+        group_key,
+        status,
+        event_time
+            .clone()
+            .unwrap_or_else(|| "unknown-time".to_string())
+    );
+
+    event.id = stable_event_id("prometheus", &raw_id);
+    event.event_type = provider_event_type("prometheus.alertmanager", "alert", Some(&status));
+    event.subject = Some(observability_subject(
+        service.as_deref(),
+        Some(&alertname),
+        severity.as_deref(),
+    ));
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event.occurred_at = event_time.or(event.occurred_at);
+    event.payload = payload_with_observability_metadata(
+        event.payload,
+        ObservabilityMetadata {
+            provider: "prometheus",
+            status: Some(status),
+            alertname: Some(alertname),
+            service,
+            severity,
+            environment,
+            fingerprint: Some(fingerprint),
+            runbook_url: first_string([
+                json_path_string(payload, &["commonAnnotations", "runbook_url"]),
+                json_path_string(payload, &["commonAnnotations", "runbook"]),
+                json_path_string(payload, &["alerts", "0", "annotations", "runbook_url"]),
+            ]),
+            dashboard_url: first_string([
+                json_path_string(payload, &["commonAnnotations", "dashboard_url"]),
+                json_path_string(payload, &["alerts", "0", "generatorURL"]),
+                json_path_string(payload, &["externalURL"]),
+            ]),
+        },
+    );
+    event
+}
+
+fn normalize_datadog_webhook(
+    mut event: ExternalEvent,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    let transition = first_string([
+        json_path_string(payload, &["alert_transition"]),
+        json_path_string(payload, &["status"]),
+        json_path_string(payload, &["event_type"]),
+    ])
+    .unwrap_or_else(|| "event".to_string());
+    let title = first_string([
+        json_path_string(payload, &["title"]),
+        json_path_string(payload, &["monitor_name"]),
+        json_path_string(payload, &["alert_title"]),
+    ]);
+    let event_id = first_string([
+        json_path_string(payload, &["event_id"]),
+        json_path_string(payload, &["alert_id"]),
+        json_path_string(payload, &["monitor_id"]),
+    ])
+    .unwrap_or_else(|| event.id.clone());
+    let event_time = first_string([
+        json_path_string(payload, &["date"]),
+        json_path_string(payload, &["last_updated"]),
+        json_path_string(payload, &["timestamp"]),
+    ]);
+    let tags = datadog_tags(payload);
+    let service =
+        datadog_tag_value(&tags, "service").or_else(|| json_path_string(payload, &["service"]));
+    let severity = datadog_tag_value(&tags, "severity")
+        .or_else(|| datadog_tag_value(&tags, "priority"))
+        .or_else(|| json_path_string(payload, &["priority"]));
+    let environment = datadog_tag_value(&tags, "env")
+        .or_else(|| datadog_tag_value(&tags, "environment"))
+        .or_else(|| json_path_string(payload, &["environment"]));
+
+    event.id = stable_event_id(
+        "datadog",
+        &format!(
+            "{}:{}:{}",
+            event_id,
+            transition,
+            event_time
+                .clone()
+                .unwrap_or_else(|| "unknown-time".to_string())
+        ),
+    );
+    event.event_type = provider_event_type("datadog.monitor", &transition, None);
+    event.subject = Some(title.clone().unwrap_or_else(|| {
+        observability_subject(service.as_deref(), Some("monitor"), severity.as_deref())
+    }));
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event.occurred_at = event_time.or(event.occurred_at);
+    event.payload = payload_with_observability_metadata(
+        event.payload,
+        ObservabilityMetadata {
+            provider: "datadog",
+            status: Some(transition),
+            alertname: title,
+            service,
+            severity,
+            environment,
+            fingerprint: Some(event_id),
+            runbook_url: first_string([
+                json_path_string(payload, &["runbook_url"]),
+                json_path_string(payload, &["runbook"]),
+            ]),
+            dashboard_url: first_string([
+                json_path_string(payload, &["dashboard_url"]),
+                json_path_string(payload, &["snapshot_url"]),
+                json_path_string(payload, &["url"]),
+            ]),
+        },
+    );
+    event
+}
+
+#[derive(Debug)]
+struct ObservabilityMetadata<'a> {
+    provider: &'a str,
+    status: Option<String>,
+    alertname: Option<String>,
+    service: Option<String>,
+    severity: Option<String>,
+    environment: Option<String>,
+    fingerprint: Option<String>,
+    runbook_url: Option<String>,
+    dashboard_url: Option<String>,
+}
+
+fn payload_with_observability_metadata(
+    mut payload: serde_json::Value,
+    metadata: ObservabilityMetadata<'_>,
+) -> serde_json::Value {
+    let metadata = serde_json::json!({
+        "provider": metadata.provider,
+        "status": metadata.status,
+        "alertname": metadata.alertname,
+        "service": metadata.service,
+        "severity": metadata.severity,
+        "environment": metadata.environment,
+        "fingerprint": metadata.fingerprint,
+        "runbook_url": metadata.runbook_url,
+        "dashboard_url": metadata.dashboard_url,
+    });
+    match &mut payload {
+        serde_json::Value::Object(object) => {
+            object.insert("_coat_observability".to_string(), metadata);
+            payload
+        }
+        other => serde_json::json!({
+            "body": other.clone(),
+            "_coat_observability": metadata,
+        }),
+    }
+}
+
+fn observability_subject(
+    service: Option<&str>,
+    alertname: Option<&str>,
+    severity: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(service) = service.filter(|value| !value.trim().is_empty()) {
+        parts.push(service.to_string());
+    }
+    if let Some(alertname) = alertname.filter(|value| !value.trim().is_empty()) {
+        parts.push(alertname.to_string());
+    }
+    if let Some(severity) = severity.filter(|value| !value.trim().is_empty()) {
+        parts.push(format!("severity={severity}"));
+    }
+    if parts.is_empty() {
+        "observability event".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn stable_event_id(prefix: &str, raw: &str) -> String {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("coat://event/{prefix}/{raw}").as_bytes(),
+    )
+    .to_string()
+}
+
+fn first_string(values: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    values
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
+}
+
+fn datadog_tags(payload: &serde_json::Value) -> Vec<String> {
+    payload
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .or_else(|| {
+            payload
+                .get("tags")
+                .and_then(serde_json::Value::as_str)
+                .map(|tags| {
+                    tags.split(',')
+                        .map(str::trim)
+                        .filter(|tag| !tag.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
+fn datadog_tag_value(tags: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    tags.iter()
+        .find_map(|tag| tag.strip_prefix(&prefix).map(str::to_string))
+}
+
 fn json_path_string(payload: &serde_json::Value, path: &[&str]) -> Option<String> {
     let mut current = payload;
     for key in path {
-        current = current.get(*key)?;
+        current = match current {
+            serde_json::Value::Array(values) => {
+                let index = key.parse::<usize>().ok()?;
+                values.get(index)?
+            }
+            other => other.get(*key)?,
+        };
     }
-    match current {
-        serde_json::Value::String(value) => Some(value.clone()),
-        serde_json::Value::Number(value) => Some(value.to_string()),
-        serde_json::Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
+    json_value_string(current)
 }
 
 fn normalize_generic_event(
@@ -879,6 +1356,104 @@ fn normalize_generic_event(
     })
 }
 
+fn normalize_sqs_message(
+    source: &EventSource,
+    message: &SqsMessage,
+) -> Result<ExternalEvent, GatewayError> {
+    let source_id = source.id.clone();
+    let body = message.body().unwrap_or_default();
+    let payload: serde_json::Value =
+        serde_json::from_str(body).unwrap_or_else(|_| serde_json::json!({ "raw_utf8": body }));
+    let generic = source.generic.as_ref();
+    let explicit_id = generic
+        .and_then(|generic| generic.id_json_pointer.as_deref())
+        .and_then(|pointer| json_pointer_string(&payload, pointer))
+        .or_else(|| {
+            payload
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    let explicit_type = generic
+        .and_then(|generic| generic.type_json_pointer.as_deref())
+        .and_then(|pointer| json_pointer_string(&payload, pointer))
+        .or_else(|| {
+            payload
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+
+    let message_id = message
+        .message_id()
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let mut headers = HeaderMap::new();
+    insert_synthetic_header(&mut headers, "x-sqs-message-id", &message_id);
+    insert_synthetic_header(&mut headers, "ce-source", &source_id);
+    if let Some(md5) = message.md5_of_body() {
+        insert_synthetic_header(&mut headers, "x-sqs-md5-of-body", md5);
+    }
+    if explicit_id.is_none() {
+        insert_synthetic_header(&mut headers, "ce-id", &message_id);
+    }
+    if explicit_type.is_none() {
+        insert_synthetic_header(&mut headers, "ce-type", "sqs.message");
+    }
+
+    let mut event = normalize_generic_event(Some(source), source_id, &headers, body.as_bytes())?;
+    event.source_kind = EventSourceKind::Sqs;
+    event.payload = payload_with_sqs_metadata(event.payload, message);
+    Ok(event)
+}
+
+fn insert_synthetic_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
+    if let Ok(value) = HeaderValue::from_str(value) {
+        headers.insert(name, value);
+    }
+}
+
+fn payload_with_sqs_metadata(
+    mut payload: serde_json::Value,
+    message: &SqsMessage,
+) -> serde_json::Value {
+    let metadata = serde_json::json!({
+        "message_id": message.message_id(),
+        "md5_of_body": message.md5_of_body(),
+    });
+    match &mut payload {
+        serde_json::Value::Object(object) => {
+            object.insert("_sqs".to_string(), metadata);
+            payload
+        }
+        other => serde_json::json!({
+            "body": other.clone(),
+            "_sqs": metadata,
+        }),
+    }
+}
+
+async fn sqs_client(source: &SqsEventSource) -> SqsClient {
+    let region = source
+        .region
+        .clone()
+        .or_else(|| std::env::var("COAT_SQS_REGION").ok())
+        .or_else(|| std::env::var("AWS_REGION").ok())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+        .unwrap_or_else(|| "us-east-1".to_string());
+    let region_provider = RegionProviderChain::default_provider().or_else(Region::new(region));
+    let mut loader = aws_config::defaults(BehaviorVersion::latest()).region(region_provider);
+    let endpoint = source
+        .endpoint
+        .clone()
+        .or_else(|| std::env::var("COAT_SQS_ENDPOINT_URL").ok())
+        .filter(|value| !value.trim().is_empty());
+    if let Some(endpoint) = endpoint {
+        loader = loader.endpoint_url(endpoint);
+    }
+    SqsClient::new(&loader.load().await)
+}
+
 fn json_pointer_string(payload: &serde_json::Value, pointer: &str) -> Option<String> {
     payload.pointer(pointer).and_then(|value| match value {
         serde_json::Value::String(value) => Some(value.clone()),
@@ -975,9 +1550,9 @@ fn enforce_event_source_activation_policy(
     state: &AppState,
     headers: &HeaderMap,
     source: &EventSource,
-) -> Result<(), GatewayError> {
+) -> Result<Option<EventSourceApprovalRecord>, GatewayError> {
     if !state.require_event_source_approval || !source.enabled || !event_source_is_risky(source) {
-        return Ok(());
+        return Ok(None);
     }
     let approval_id = header(headers, "x-coat-approval-id")
         .or_else(|| header(headers, "x-approval-id"))
@@ -988,12 +1563,82 @@ fn enforce_event_source_activation_policy(
             source.id
         )));
     }
-    Ok(())
+    let operator = header(headers, "x-coat-operator")
+        .or_else(|| header(headers, "x-operator"))
+        .filter(|value| !value.trim().is_empty());
+    Ok(Some(event_source_approval_record(
+        source,
+        approval_id.trim(),
+        operator,
+    )))
+}
+
+fn event_source_approval_record(
+    source: &EventSource,
+    approval_ref: &str,
+    operator: Option<String>,
+) -> EventSourceApprovalRecord {
+    EventSourceApprovalRecord {
+        record_id: Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!(
+                "coat://event-source-approval/{}/{}",
+                source.id, approval_ref
+            )
+            .as_bytes(),
+        ),
+        approval_ref: approval_ref.to_string(),
+        source_id: source.id.clone(),
+        source_kind: source.kind.clone(),
+        status: EventSourceApprovalStatus::Provided,
+        risky: event_source_is_risky(source),
+        reason: format!(
+            "event source {} was registered enabled and required activation approval",
+            source.id
+        ),
+        operator,
+        recorded_at: Some(unix_now_string()),
+        payload_json: serde_json::json!({
+            "source_enabled": source.enabled,
+            "route_mode": source.route.mode,
+            "route_requires_approval": source.route.require_approval,
+        }),
+    }
+}
+
+async fn project_event_source_approval(
+    state: &AppState,
+    record: EventSourceApprovalRecord,
+) -> Result<(), GatewayError> {
+    let Some(goal_store_url) = &state.goal_store_url else {
+        return Ok(());
+    };
+    let request = EventSourceApprovalRecordRequest { record };
+    let url = format!(
+        "{}/goal-store/event-source-approvals",
+        goal_store_url.trim_end_matches('/')
+    );
+    let response = state
+        .client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| GatewayError::BadGateway(error.to_string()))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(GatewayError::BadGateway(format!(
+            "goal-store event-source approval projection failed with status {}",
+            response.status()
+        )))
+    }
 }
 
 fn event_source_is_risky(source: &EventSource) -> bool {
     source.webhook.is_some()
         || source.generic.is_some()
+        || source.sqs.is_some()
         || source.schedule.is_some()
         || source.calendar.is_some()
         || source.route.require_approval
@@ -1265,6 +1910,13 @@ fn ensure_recent_unix_timestamp(
     } else {
         Err(GatewayError::Unauthorized)
     }
+}
+
+fn unix_now_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 fn decode_hex(input: &str) -> Option<Vec<u8>> {
@@ -1589,6 +2241,7 @@ async fn append_journal(state: &AppState, entry: JournalEntry) -> Result<(), Gat
 enum GatewayError {
     Unauthorized,
     BadRequest(String),
+    BadGateway(String),
     Internal(String),
 }
 
@@ -1623,6 +2276,11 @@ impl IntoResponse for GatewayError {
                 serde_json::json!({ "error": error }).to_string(),
             )
                 .into_response(),
+            Self::BadGateway(error) => (
+                StatusCode::BAD_GATEWAY,
+                serde_json::json!({ "error": error }).to_string(),
+            )
+                .into_response(),
             Self::Internal(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 serde_json::json!({ "error": error }).to_string(),
@@ -1634,17 +2292,19 @@ impl IntoResponse for GatewayError {
 
 #[cfg(test)]
 mod tests {
+    use aws_sdk_sqs::types::Message as SqsMessage;
     use axum::http::{HeaderMap, HeaderValue};
     use coat_domain::{
         EventGoalRoute, EventSourceKind, ExternalEvent, GenericEventSource, GoalTriggerTemplate,
-        WebhookAuthKind, WebhookAuthPolicy,
+        SqsEventSource, WebhookAuthKind, WebhookAuthPolicy,
     };
     use hmac::Mac;
 
     use super::{
         AppState, WebhookSignatureStyle, enforce_event_source_activation_policy,
-        event_source_is_risky, goal_from_template, normalize_generic_event,
-        normalize_webhook_event, provider_webhook_defaults, render_template, verify_hmac_sha256,
+        event_source_approval_record, event_source_is_risky, goal_from_template,
+        normalize_generic_event, normalize_sqs_message, normalize_webhook_event,
+        provider_webhook_defaults, render_template, verify_hmac_sha256,
         verify_provider_hmac_sha256,
     };
 
@@ -1768,6 +2428,93 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_prometheus_alertmanager_into_observability_event() {
+        let event = normalize_webhook_event(
+            None,
+            "prometheus-alertmanager".to_string(),
+            EventSourceKind::PrometheusAlertmanager,
+            &HeaderMap::new(),
+            serde_json::json!({
+                "status": "firing",
+                "groupKey": "{}:{alertname=\"HighErrorRate\", service=\"checkout-api\"}",
+                "externalURL": "https://alertmanager.example",
+                "commonLabels": {
+                    "alertname": "HighErrorRate",
+                    "service": "checkout-api",
+                    "severity": "page",
+                    "environment": "prod"
+                },
+                "commonAnnotations": {
+                    "runbook_url": "https://runbooks.example/high-error-rate",
+                    "dashboard_url": "https://grafana.example/d/checkout"
+                },
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "fingerprint": "fp-123",
+                        "startsAt": "2026-05-07T12:00:00Z",
+                        "labels": {
+                            "alertname": "HighErrorRate",
+                            "service": "checkout-api"
+                        }
+                    }
+                ]
+            }),
+        );
+
+        assert_eq!(event.event_type, "prometheus.alertmanager.alert.firing");
+        assert_eq!(
+            event.subject.as_deref(),
+            Some("checkout-api HighErrorRate severity=page")
+        );
+        assert_eq!(event.occurred_at.as_deref(), Some("2026-05-07T12:00:00Z"));
+        assert_eq!(
+            event.payload.pointer("/_coat_observability/service"),
+            Some(&serde_json::json!("checkout-api"))
+        );
+        assert_eq!(
+            render_template(
+                "{{severity}} {{alertname}} {{service}} {{payload:/commonLabels/environment}}",
+                &event
+            ),
+            "page HighErrorRate checkout-api prod"
+        );
+    }
+
+    #[test]
+    fn normalizes_datadog_webhook_into_observability_event() {
+        let event = normalize_webhook_event(
+            None,
+            "datadog-monitor".to_string(),
+            EventSourceKind::DatadogWebhook,
+            &HeaderMap::new(),
+            serde_json::json!({
+                "event_id": "818181",
+                "alert_transition": "Triggered",
+                "title": "Warehouse lag is above threshold",
+                "date": "1770000000",
+                "tags": ["service:warehouse-sync", "env:prod", "severity:warning"],
+                "dashboard_url": "https://app.datadoghq.com/dashboard/abc"
+            }),
+        );
+
+        assert_eq!(event.event_type, "datadog.monitor.triggered");
+        assert_eq!(
+            event.subject.as_deref(),
+            Some("Warehouse lag is above threshold")
+        );
+        assert_eq!(event.occurred_at.as_deref(), Some("1770000000"));
+        assert_eq!(
+            event.payload.pointer("/_coat_observability/service"),
+            Some(&serde_json::json!("warehouse-sync"))
+        );
+        assert_eq!(
+            render_template("{{service}} {{environment}} {{dashboard_url}}", &event),
+            "warehouse-sync prod https://app.datadoghq.com/dashboard/abc"
+        );
+    }
+
+    #[test]
     fn verifies_slack_v0_signature_base_string() {
         let timestamp = unix_now_string();
         let body = br#"{"type":"event_callback"}"#;
@@ -1844,6 +2591,7 @@ mod tests {
                 payload_schema: None,
                 mcp_context: None,
             }),
+            sqs: None,
             schedule: None,
             calendar: None,
             route: EventGoalRoute {
@@ -1875,6 +2623,82 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_sqs_message_through_generic_event_contract() {
+        let source = coat_domain::EventSource {
+            id: "sqs-notifications".to_string(),
+            kind: EventSourceKind::Sqs,
+            enabled: true,
+            description: "SQS notifications".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 1024,
+                allowed_event_types: vec!["approval.requested".to_string()],
+                id_json_pointer: Some("/id".to_string()),
+                type_json_pointer: Some("/event".to_string()),
+                subject_json_pointer: Some("/request/message".to_string()),
+                dedupe_json_pointer: Some("/id".to_string()),
+                dedupe_header: None,
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            sqs: Some(SqsEventSource {
+                queue_url: "https://sqs.us-west-2.amazonaws.com/123456789012/coat-inbound-events"
+                    .to_string(),
+                region: Some("us-west-2".to_string()),
+                endpoint: None,
+                max_messages: 10,
+                wait_time_seconds: 5,
+                visibility_timeout_seconds: Some(30),
+                delete_on_success: true,
+            }),
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::HumanReview,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: true,
+                dedupe_window_seconds: 3600,
+            },
+        };
+        let message = SqsMessage::builder()
+            .message_id("sqs-message-1")
+            .md5_of_body("md5")
+            .body(
+                r#"{
+                    "id": "notification-1",
+                    "event": "approval.requested",
+                    "request": {"message": "Approve sandbox escalation"}
+                }"#,
+            )
+            .build();
+        let event =
+            normalize_sqs_message(&source, &message).expect("SQS message normalizes to event");
+
+        assert_eq!(event.id, "notification-1");
+        assert_eq!(event.event_type, "approval.requested");
+        assert_eq!(event.subject.as_deref(), Some("Approve sandbox escalation"));
+        assert_eq!(event.dedupe_key, "notification-1");
+        assert_eq!(event.source_kind, EventSourceKind::Sqs);
+        assert_eq!(
+            event.headers.get("x-sqs-message-id").map(String::as_str),
+            Some("sqs-message-1")
+        );
+        assert_eq!(
+            event.payload.pointer("/_sqs/message_id"),
+            Some(&serde_json::json!("sqs-message-1"))
+        );
+    }
+
+    #[test]
     fn approval_policy_blocks_risky_source_activation_without_reference() {
         let source = coat_domain::EventSource {
             id: "calendar-daily-brief".to_string(),
@@ -1884,6 +2708,7 @@ mod tests {
             namespace: None,
             webhook: None,
             generic: None,
+            sqs: None,
             schedule: None,
             calendar: None,
             route: EventGoalRoute {
@@ -1901,6 +2726,7 @@ mod tests {
             state: Default::default(),
             journal_path: None,
             restate_ingress: None,
+            goal_store_url: None,
             gateway_token: None,
             require_event_source_approval: true,
             backend: super::EventGatewayBackend::Memory,
@@ -1915,14 +2741,55 @@ mod tests {
             "x-coat-approval-id",
             HeaderValue::from_static("approval-123"),
         );
-        assert!(enforce_event_source_activation_policy(&state, &headers, &source).is_ok());
+        let record = enforce_event_source_activation_policy(&state, &headers, &source)
+            .expect("activation policy accepts approval reference")
+            .expect("approval record returned");
+        assert_eq!(record.approval_ref, "approval-123");
+        assert_eq!(record.source_id, "calendar-daily-brief");
 
         let mut disabled_source = source;
         disabled_source.enabled = false;
         assert!(
             enforce_event_source_activation_policy(&state, &HeaderMap::new(), &disabled_source)
-                .is_ok()
+                .expect("disabled source does not need approval")
+                .is_none()
         );
+    }
+
+    #[test]
+    fn event_source_approval_record_is_deterministic_for_source_and_reference() {
+        let source = coat_domain::EventSource {
+            id: "ci-events".to_string(),
+            kind: EventSourceKind::Ci,
+            enabled: true,
+            description: "ci".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: None,
+            sqs: None,
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::CreateGoal,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: true,
+                dedupe_window_seconds: 3600,
+            },
+        };
+
+        let first =
+            event_source_approval_record(&source, "approval-123", Some("operator".to_string()));
+        let second = event_source_approval_record(&source, "approval-123", None);
+
+        assert_eq!(first.record_id, second.record_id);
+        assert_eq!(
+            first.status,
+            coat_domain::EventSourceApprovalStatus::Provided
+        );
+        assert!(first.risky);
+        assert_eq!(first.operator.as_deref(), Some("operator"));
     }
 
     fn unix_now_string() -> String {

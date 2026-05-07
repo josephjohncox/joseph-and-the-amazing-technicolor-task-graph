@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventSourceApprovalRecord",
+  "description": "Durable projection of a human approval reference used to activate an event source.\n\nEvent sources can create or steer goals from external stimuli, so risky\nenabled sources require an auditable activation record. This record is not\ngoal-scoped; it belongs to the ingress/control plane and is projected into\nthe goal store for dashboards and operator review.",
+  "type": "object",
+  "properties": {
+    "approval_ref": {
+      "type": "string"
+    },
+    "operator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload_json": {
+      "default": null
+    },
+    "reason": {
+      "type": "string"
+    },
+    "record_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "recorded_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "risky": {
+      "type": "boolean"
+    },
+    "source_id": {
+      "type": "string"
+    },
+    "source_kind": {
+      "$ref": "#/$defs/EventSourceKind"
+    },
+    "status": {
+      "$ref": "#/$defs/EventSourceApprovalStatus"
+    }
+  },
+  "required": [
+    "record_id",
+    "approval_ref",
+    "source_id",
+    "source_kind",
+    "status",
+    "risky",
+    "reason"
+  ],
+  "$defs": {
+    "EventSourceApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "provided"
+      ]
+    },
+    "EventSourceKind": {
+      "type": "string",
+      "enum": [
+        "webhook",
+        "cloud_events_webhook",
+        "cron",
+        "calendar_poll",
+        "calendar_push",
+        "queue",
+        "sqs",
+        "pub_sub",
+        "git_hub_webhook",
+        "git_lab_webhook",
+        "jira_webhook",
+        "linear_webhook",
+        "slack_event",
+        "stripe_webhook",
+        "email",
+        "object_storage",
+        "kubernetes",
+        "generic",
+        "agent_event",
+        "runner_event",
+        "goal_lifecycle",
+        "memory_event",
+        "ci",
+        "git",
+        "issue_tracker",
+        "chat",
+        "monitoring_alert",
+        "prometheus_alertmanager",
+        "datadog_webhook",
+        "open_telemetry_signal",
+        "database_change",
+        "manual",
+        "other"
+      ]
+    }
+  }
+}

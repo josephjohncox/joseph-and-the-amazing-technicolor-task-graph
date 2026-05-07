@@ -106,6 +106,11 @@ services:
       BIND_ADDR: 0.0.0.0:9083
       SANDBOX_WORKSPACE_ROOT: /workspaces
       SANDBOX_SUPPORTED_BACKENDS: local_workspace
+      SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION: ${SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION:-false}
+      SANDBOX_REQUIRE_COMMAND_APPROVAL: ${SANDBOX_REQUIRE_COMMAND_APPROVAL:-true}
+      SANDBOX_ALLOWED_LOCAL_BINARIES: ${SANDBOX_ALLOWED_LOCAL_BINARIES:-git,make,cargo,npm,pnpm,yarn,node,python3,python,pytest,go,buf,docker,helm,kubectl}
+      SANDBOX_COMMAND_TIMEOUT_SECONDS: ${SANDBOX_COMMAND_TIMEOUT_SECONDS:-600}
+      SANDBOX_COMMAND_MAX_OUTPUT_BYTES: ${SANDBOX_COMMAND_MAX_OUTPUT_BYTES:-65536}
     ports:
       - "9083:9083"
     volumes:
@@ -154,6 +159,11 @@ services:
         BIN: coat-notifier
     environment:
       BIND_ADDR: 0.0.0.0:9086
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
+      COAT_SQS_REGION: ${COAT_SQS_REGION:-}
+      COAT_SQS_ENDPOINT_URL: ${COAT_SQS_ENDPOINT_URL:-}
+      COAT_SQS_MESSAGE_GROUP_ID: ${COAT_SQS_MESSAGE_GROUP_ID:-}
     ports:
       - "9086:9086"
 
@@ -184,11 +194,16 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:9089
       COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_GOAL_STORE_URL: http://goal-store:9088
       COAT_EVENT_GATEWAY_TOKEN: ${COAT_EVENT_GATEWAY_TOKEN:-}
       COAT_REQUIRE_EVENT_SOURCE_APPROVAL: ${COAT_REQUIRE_EVENT_SOURCE_APPROVAL:-false}
       COAT_EVENT_GATEWAY_BACKEND: ${COAT_EVENT_GATEWAY_BACKEND:-jsonl}
       COAT_EVENT_GATEWAY_DATABASE_URL: ${COAT_EVENT_GATEWAY_DATABASE_URL:-postgres://jattg:jattg-local-secret@postgres:5432/jattg}
       COAT_EVENT_GATEWAY_JOURNAL_PATH: /data/event-gateway.jsonl
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
+      COAT_SQS_REGION: ${COAT_SQS_REGION:-}
+      COAT_SQS_ENDPOINT_URL: ${COAT_SQS_ENDPOINT_URL:-}
     ports:
       - "9089:9089"
     depends_on:
@@ -333,6 +348,32 @@ services:
       - memory-gateway
       - object-store
 
+  codex-reviewer-runner:
+    build:
+      context: ../..
+      dockerfile: infra/containers/node-sidecar.Dockerfile
+      args:
+        SIDECAR_DIR: sidecars/codex-runner-ts
+    environment:
+      PORT: 9091
+      CODEX_RUNNER_MODE: stub
+      CODEX_MODEL: ${CODEX_REVIEW_MODEL:-codex-default}
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://codex-reviewer-runner:9091
+      RUNNER_ID: codex-reviewer-runner-ts
+      NODE_ID: compose-node-review
+      RUNNER_ROLES_JSON: '["reviewer","tester","validator","formal_methods","research"]'
+      RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","lane":"review","auth.codex.device":"false","auth.codex.api_key":"env"}'
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
+      COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-jattg-artifacts}
+    depends_on:
+      - runner-registry
+      - memory-gateway
+      - object-store
+
   claude-code-runner:
     build:
       context: ../..
@@ -380,13 +421,74 @@ services:
       RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","provider":"open_ai_compatible"}'
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AWS_PROFILE: ${AWS_PROFILE:-}
       AWS_REGION: ${AWS_REGION:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
       COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
     ports:
       - "9093:9093"
+    depends_on:
+      - runner-registry
+      - memory-gateway
+
+  model-provider-research-runner:
+    build:
+      context: ../..
+      dockerfile: infra/containers/node-sidecar.Dockerfile
+      args:
+        SIDECAR_DIR: sidecars/model-provider-runner-ts
+    environment:
+      PORT: 9093
+      MODEL_PROVIDER_RUNNER_MODE: stub
+      MODEL_PROVIDER_KIND: ${MODEL_PROVIDER_RESEARCH_KIND:-open_ai_compatible}
+      MODEL_PROVIDER_MODEL: ${MODEL_PROVIDER_RESEARCH_MODEL:-openai-compatible-research}
+      MODEL_PROVIDER_ENDPOINT: ${MODEL_PROVIDER_RESEARCH_ENDPOINT:-}
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://model-provider-research-runner:9093
+      RUNNER_ID: model-provider-research-runner-ts
+      NODE_ID: compose-node-research
+      RUNNER_ROLES_JSON: '["planner","research","reviewer","validator"]'
+      RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","lane":"research"}'
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
+    depends_on:
+      - runner-registry
+      - memory-gateway
+
+  model-provider-local-runner:
+    build:
+      context: ../..
+      dockerfile: infra/containers/node-sidecar.Dockerfile
+      args:
+        SIDECAR_DIR: sidecars/model-provider-runner-ts
+    environment:
+      PORT: 9093
+      MODEL_PROVIDER_RUNNER_MODE: stub
+      MODEL_PROVIDER_KIND: ${LOCAL_MODEL_PROVIDER_KIND:-ollama}
+      MODEL_PROVIDER_MODEL: ${LOCAL_MODEL_PROVIDER_MODEL:-llama3.1}
+      MODEL_PROVIDER_ENDPOINT: ${LOCAL_MODEL_PROVIDER_ENDPOINT:-http://host.docker.internal:11434/v1}
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://model-provider-local-runner:9093
+      RUNNER_ID: model-provider-local-runner-ts
+      NODE_ID: compose-node-local-model
+      RUNNER_ROLES_JSON: '["model_provider","research","reviewer","tester","validator"]'
+      RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","lane":"local-model","locality":"host"}'
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
     depends_on:
       - runner-registry
       - memory-gateway

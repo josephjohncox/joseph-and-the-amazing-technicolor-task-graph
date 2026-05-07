@@ -1,0 +1,181 @@
+{
+  "title": "Validate repository with local tools",
+  "objective": "Run bounded local validation commands in an isolated task workspace. Success means git status, build/test commands, and Helm rendering are captured as command evidence artifacts and reviewed by the validator.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 100000,
+    "remaining_tokens": 100000,
+    "max_runtime_seconds": 1800,
+    "remaining_runtime_seconds": 1800,
+    "max_tool_calls": 80,
+    "remaining_tool_calls": 80,
+    "max_child_tasks": 6,
+    "remaining_child_tasks": 6,
+    "max_patch_size": 80000
+  },
+  "done_criteria": {
+    "tests_pass": true,
+    "artifact_exists": true,
+    "validator_score_min": 0.85
+  },
+  "approval_policy": {
+    "enabled": true,
+    "require_for_network_open": true,
+    "require_for_non_isolated_runner": true,
+    "require_for_secret_access": true,
+    "require_for_brokered_user_auth": true,
+    "require_for_dangerous_mcp_tools": true,
+    "require_for_local_tool_execution": true,
+    "require_for_privileged_runner_capabilities": true,
+    "require_for_native_subagent_spawn": true,
+    "require_for_ephemeral_capacity": true,
+    "require_for_workspace_write_outside_isolation": true,
+    "never_policy_requires_isolation": true,
+    "never_policy_requires_strong_sandbox": true,
+    "approval_timeout_seconds": 3600
+  },
+  "default_execution": {
+    "runner": {
+      "worker": "tester",
+      "runner_id": null,
+      "required_capabilities": ["test", "workspace_sandbox", "local_commands", "git_cli", "build_tooling", "helm_cli"],
+      "required_labels": {
+        "tools.helm": "true"
+      },
+      "locality": "any_node"
+    },
+    "capacity": {
+      "mode": "registered_runners_only",
+      "template_refs": [],
+      "request_timeout_seconds": 600,
+      "max_pending_provisions": 1,
+      "require_human_approval": true
+    },
+    "model": {
+      "strategy": "first_available",
+      "required_features": ["tool_use", "json_schema"],
+      "candidates": [
+        {
+          "provider": "local_process",
+          "model": "tool-runner",
+          "endpoint": null,
+          "priority": 100,
+          "weight": 1,
+          "context_window": null,
+          "features": ["tool_use", "json_schema"],
+          "labels": {}
+        }
+      ],
+      "fallback": "allow_fallback"
+    },
+    "persona": {
+      "name": "tester",
+      "instructions_ref": "docs/operations/runner-context-initialization.md",
+      "inline_instructions": [
+        "Use local binaries only through the task local_tools policy and sandbox runner command evidence.",
+        "Return command evidence artifacts instead of inline log dumps."
+      ],
+      "risk_tolerance": "conservative"
+    },
+    "subagents": {
+      "mode": "coordinator_durable_tasks",
+      "native_spawn": "disabled",
+      "child_request_channel": "agent_run_result_child_requests",
+      "inject_runner_context": true
+    },
+    "local_tools": {
+      "enabled": true,
+      "allowed_tools": [
+        {
+          "binary": "git",
+          "category": "version_control",
+          "risk": "low",
+          "allowed_subcommands": ["status", "diff", "rev-parse"],
+          "denied_args": [],
+          "requires_network": false,
+          "requires_docker_socket": false,
+          "requires_cluster_access": false,
+          "required_capabilities": [],
+          "required_labels": {},
+          "timeout_seconds": 30
+        },
+        {
+          "binary": "cargo",
+          "category": "build_tool",
+          "risk": "medium",
+          "allowed_subcommands": ["check", "test", "fmt"],
+          "denied_args": [],
+          "requires_network": false,
+          "requires_docker_socket": false,
+          "requires_cluster_access": false,
+          "required_capabilities": [],
+          "required_labels": {},
+          "timeout_seconds": 900
+        },
+        {
+          "binary": "helm",
+          "category": "helm",
+          "risk": "high",
+          "allowed_subcommands": ["lint", "template"],
+          "denied_args": ["upgrade", "install", "delete", "rollback"],
+          "requires_network": false,
+          "requires_docker_socket": false,
+          "requires_cluster_access": false,
+          "required_capabilities": [],
+          "required_labels": {
+            "tools.helm": "true"
+          },
+          "timeout_seconds": 180
+        }
+      ],
+      "denied_binaries": ["sh", "bash", "zsh", "sudo"],
+      "require_sandbox_runner": true,
+      "require_workspace": true,
+      "require_command_evidence": true,
+      "approval": "risk_based",
+      "default_timeout_seconds": 600,
+      "max_output_bytes": 65536
+    },
+    "mcp": {
+      "context_id": "local-tool-execution",
+      "servers": [
+        {
+          "name": "tool-registry",
+          "transport": "http",
+          "uri": "http://tool-registry:9084/mcp",
+          "allowed_tools": ["repo_status", "local_command", "artifact_manifest", "checkpoint_history", "subagent_policy"],
+          "auth": {
+            "kind": "none"
+          }
+        }
+      ],
+      "secret_refs": [],
+      "propagation": "runner_resolves_refs",
+      "token_ttl_seconds": 900,
+      "auth_distribution": {
+        "mode": "runner_resolves_refs",
+        "allowed_materials": [],
+        "required_runner_labels": {},
+        "lease_ttl_seconds": 900,
+        "renewal": "manual_or_brokered",
+        "allow_node_local_device_session": false,
+        "allow_secret_sync": false,
+        "require_human_approval_for_brokered_user_auth": true
+      }
+    },
+    "notifications": {
+      "events": ["approval_requested", "human_feedback_requested", "task_blocked", "task_failed", "goal_completed"],
+      "targets": [
+        {
+          "kind": "thread",
+          "address": "current-codex-thread",
+          "secret_ref": null,
+          "require_ack": false
+        }
+      ],
+      "feedback_thread_key": "local-tool-execution",
+      "escalation_seconds": 1800
+    }
+  },
+  "initial_tasks": []
+}

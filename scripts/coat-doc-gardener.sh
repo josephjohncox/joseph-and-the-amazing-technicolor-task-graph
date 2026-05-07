@@ -80,7 +80,8 @@ sidecars/claude-code-runner-ts/src/index.ts
 sidecars/model-provider-runner-ts/src/index.ts
 sidecars/staff-engineer-runner-ts/src/index.ts
 ui/control-plane-web/src/server.ts
-ui/control-plane-web/src/client.ts
+ui/control-plane-web/src/spa/App.tsx
+ui/control-plane-web/src/spa/api.ts
 "
 
 for path in $documented_entrypoints; do

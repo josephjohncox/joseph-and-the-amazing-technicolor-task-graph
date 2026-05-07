@@ -9,6 +9,7 @@ Durable tasks must be runnable by different worker processes on different nodes.
 Every `TaskNode` has an `ExecutionProfile`:
 
 - `RunnerSelector`: worker role, capabilities, labels, locality, and optional runner ID.
+- `CapacityProvisioningPolicy`: registered-runner-only vs approved ephemeral capacity templates.
 - `ModelRoute`: model candidates, provider kinds, routing strategy, required features, and fallback policy.
 - `PersonaSpec`: task-local persona and instruction references.
 - `SubagentDelegationPolicy`: runner-context rule for durable child tasks vs native runner-local delegation.
@@ -17,6 +18,15 @@ Every `TaskNode` has an `ExecutionProfile`:
 - `TaskPurpose`: actor work, candidate branch, branch vote, branch unification, critic review, review unification, actor retry, or research.
 
 Child tasks inherit the parent execution profile unless they request an override.
+
+Capacity provisioning is explicit. The default is `registered_runners_only`.
+When a task can tolerate burst capacity, set `ExecutionProfile.capacity.mode` to
+`prefer_registered_then_ephemeral` and reference one or more approved
+`EphemeralRunnerTemplateRef` entries. The coordinator or executor provisioner
+resolves those refs from configuration such as the Helm
+`jattg-ephemeral-runner-templates` ConfigMap, creates a bounded Job or temporary
+Restate service executor, waits for registration, and then dispatches normally.
+Workers do not create their own Jobs from prompt text.
 
 ## Subagent Delegation
 
@@ -82,6 +92,34 @@ Dispatch decisions include:
 - rejected runners with explicit mismatch reasons;
 - the MCP context ref that should be passed to the selected runner.
 
+## Local Binary Tools
+
+Some tasks need local binaries for validation or operator work: `git`, build
+tools, package managers, `docker`, `helm`, `kubectl`, formal-methods binaries,
+or project-specific CLIs. This is explicit task policy, not prompt-inferred
+shell access.
+
+`ExecutionProfile.local_tools` declares:
+
+- enabled state and allowed `LocalToolPermission` entries;
+- bare binary names, categories, risk, allowed subcommands, and denied args;
+- whether the tool needs network, Docker socket, or cluster access;
+- required runner capabilities and labels;
+- timeout and bounded output limits;
+- approval mode and command-evidence requirements.
+
+Dispatch requires the selected runner to advertise `local_commands` plus
+category-specific capabilities such as `git_cli`, `docker_cli`, `helm_cli`,
+`kubernetes_cli`, `build_tooling`, or `package_manager_cli`. Tool-specific
+labels such as `tools.helm=true` let operators distinguish installed binaries
+from policy approval to use them.
+
+The tool registry exposes local command access only as an MCP boundary:
+`local_command` posts to the sandbox runner for `/commands/plan` or
+`/commands/run`. The registry does not execute the command in-process.
+`/commands/run` is still opt-in through `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION`
+and writes command evidence artifacts under the task workspace.
+
 `RunnerLocality` can require any node, the coordinator node, a local-only runner, or a remote-only runner. The coordinator passes `COAT_COORDINATOR_NODE_ID` into dispatch when it is configured.
 
 ## Model Routing
@@ -132,6 +170,7 @@ The bundled sidecars inspect MCP context during `/run-task` and report redacted 
 When `COAT_MEMORY_GATEWAY_URL` is configured, the sidecars also call `/memory/context` before task execution. The returned context pack is represented as a `memory_context` artifact and summarized with hit counts, adapter report counts, and failed-adapter counts in diagnostics. A context fetch failure is non-terminal for the runner; coordinator policy and reviewers decide whether missing memory should block, trigger research, or run `memory_repair`.
 
 Approval gating happens before dispatch. `GoalSpec.approval_policy` evaluates the task sandbox, runner selector, MCP tools, secret references, and brokered user-auth requirements; a required approval creates durable `ApprovalRequest` state and notifies the task's `NotificationPolicy`. Runners never self-approve their own requested capabilities.
+High-risk local tools such as Docker socket access, Helm/Kubernetes cluster access, or policy-marked critical binaries also create approval reasons before dispatch when `require_for_local_tool_execution=true`.
 
 The Rust tool registry exposes a minimal MCP HTTP endpoint at `/mcp`. If `MCP_TOOL_TOKEN` is set, requests must include `Authorization: Bearer ...`. Compose leaves this unset by default for local smoke work; Kubernetes wires it from `jattg-agent-secrets`.
 
@@ -140,6 +179,7 @@ Currently implemented MCP methods:
 - `tools/list`
 - `tools/call` with `repo_status`
 - `tools/call` with `test_command`, which reports that execution must go through the sandbox runner
+- `tools/call` with `local_command`, which plans or executes allowlisted local binaries through the sandbox runner
 - `tools/call` with `artifact_manifest`
 - `tools/call` with `subagent_policy`, which returns the durable child-task rule for MCP client initialization
 
@@ -147,4 +187,14 @@ Currently implemented MCP methods:
 
 Notification routing is task-local. Approval requests and feedback requests should create or continue a human-facing thread, while durable workflow state remains in Restate.
 
-The notifier service is intentionally generic: it accepts `NotificationRequest`, logs when no target is configured, and can later add Slack, email, webhook, GitHub, Linear, Jira, and PagerDuty adapters.
+The notifier service is intentionally generic: it accepts `NotificationRequest`,
+records local threads, and can deliver to dashboard queues, generic webhooks,
+Slack incoming webhooks, email outbox, SQS, GitHub, Linear, Jira, and PagerDuty
+adapters. Use stable infrastructure such as SQS when notifications need durable
+fanout, replay, dead-letter queues, or downstream automations outside the COAT
+process. The event gateway also treats SQS as an inbound source by polling
+registered queues through `coat event poll-sqs`, normalizing the body through
+the generic event contract, and routing through the same approval and trigger
+path as webhooks. Credentials must come from normal AWS
+environment/profile/workload identity resolution or secret middleware, not from
+task state.

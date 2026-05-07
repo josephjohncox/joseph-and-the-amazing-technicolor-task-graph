@@ -5,6 +5,34 @@ time-boxed local-model worker, a short-lived Claude Code/Codex runner, or a
 temporary Restate service executor. Restate and the coordinator still own
 durable state; Jobs only provide execution capacity.
 
+Ephemeral capacity should normally be requested by the coordinator or executor
+framework from approved templates, not hand-created by an operator for each
+task. A task expresses this through `ExecutionProfile.capacity`:
+
+```json
+{
+  "mode": "prefer_registered_then_ephemeral",
+  "template_refs": [
+    {
+      "name": "codex-burst",
+      "kind": "runner_job",
+      "required_capabilities": ["code", "git_worktree"],
+      "config_ref": "jattg-ephemeral-runner-templates",
+      "active_deadline_seconds": 7200,
+      "ttl_seconds_after_finished": 1800
+    }
+  ],
+  "request_timeout_seconds": 600,
+  "max_pending_provisions": 1,
+  "require_human_approval": true
+}
+```
+
+The provisioner resolves the template, creates the bounded Job or temporary
+executor, waits for normal runner registration or Restate service registration,
+and then dispatches through the same registry path as persistent runners.
+`registered_runners_only` remains the default.
+
 ## Image Model
 
 The default image is `jattg-agent-toolbox`, built from the `agent-toolbox` target
@@ -16,6 +44,12 @@ It includes:
 - built TypeScript runner sidecars for Codex, Claude Code, model-provider, and staff-engineer;
 - common operator tools: `bash`, `curl`, `git`, `jq`, `ripgrep`, `openssh-client`, Python, build tools, Node, and npm;
 - `/usr/local/bin/jattg-ephemeral-entrypoint`, which dispatches by `COAT_EPHEMERAL_KIND`.
+
+The toolbox image can satisfy `local_commands`, `git_cli`, `build_tooling`, and
+`package_manager_cli` for tasks that declare `ExecutionProfile.local_tools`.
+Do not advertise `docker_cli`, `helm_cli`, or `kubernetes_cli` unless those
+binaries and their credentials are injected or installed in the runner image and
+the runner has the matching sandbox and network policy.
 
 Supported `COAT_EPHEMERAL_KIND` values:
 
@@ -62,14 +96,15 @@ or short-lived broker leases.
 - a temporary coordinator Restate service executor with a Service and
   registration Job.
 
-Render the reusable raw manifest set from the CLI:
+Render the reusable raw manifest set from the CLI when you want an operator
+example or a fixture:
 
 ```sh
 coat k8s ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
 ```
 
-Runner Jobs should:
+Provisioned Runner Jobs should:
 
 - set `activeDeadlineSeconds` and `ttlSecondsAfterFinished`;
 - register with `coat-runner-registry` through `RUNNER_REGISTRY_URL`;
@@ -117,7 +152,14 @@ that deadline-driven shutdown behavior.
 
 ## Helm
 
-The chart supports disabled-by-default `.Values.ephemeralJobs`. Each entry can
+The chart exposes `.Values.ephemeralRunnerTemplates` as the standard template
+library for coordinator/executor provisioning. Helm renders these templates into
+the `jattg-ephemeral-runner-templates` ConfigMap. A provisioner should read that
+ConfigMap, select a template from `ExecutionProfile.capacity.template_refs`, and
+materialize a bounded Job only after budget and approval checks pass.
+
+`.Values.ephemeralJobs` remains as a disabled-by-default manual escape hatch.
+Each manual entry can
 set:
 
 - `kind`: the `COAT_EPHEMERAL_KIND`;

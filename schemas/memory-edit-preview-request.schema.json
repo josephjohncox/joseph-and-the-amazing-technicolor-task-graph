@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryEditPreviewRequest",
+  "type": "object",
+  "properties": {
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "replace_keys": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "replacement_episode": {
+      "$ref": "#/$defs/MemoryEpisode"
+    },
+    "replacement_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "goal_id",
+    "replacement_episode",
+    "reason"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "MemoryEpisode": {
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "content": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/MemoryEpisodeSource"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "content",
+        "source"
+      ]
+    },
+    "MemoryEpisodeSource": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_type": {
+          "$ref": "#/$defs/MemoryEpisodeSourceType"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source_type"
+      ]
+    },
+    "MemoryEpisodeSourceType": {
+      "type": "string",
+      "enum": [
+        "actor",
+        "critic",
+        "unifier",
+        "research",
+        "human",
+        "tool",
+        "system"
+      ]
+    }
+  }
+}

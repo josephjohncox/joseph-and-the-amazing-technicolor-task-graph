@@ -389,6 +389,13 @@
         "mcp_tools",
         "durable_child_tasks",
         "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",
@@ -407,6 +414,7 @@
         "vllm",
         "open_ai_compatible",
         "gpu",
+        "ephemeral_provisioning",
         "network_open",
         "formal_verification"
       ]

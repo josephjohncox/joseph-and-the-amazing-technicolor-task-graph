@@ -1,0 +1,25 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "runner_lost",
+  "message": "A runner stopped heartbeating while it had assigned task capacity.",
+  "policy": {
+    "events": ["runner_lost", "task_failed", "task_blocked"],
+    "targets": [
+      {
+        "kind": "pager_duty",
+        "address": "coat-runner-registry",
+        "secret_ref": {
+          "provider": "env",
+          "name": "COAT_PAGERDUTY_ROUTING_KEY",
+          "key": "COAT_PAGERDUTY_ROUTING_KEY",
+          "namespace": null,
+          "audience": "notifier"
+        },
+        "require_ack": true
+      }
+    ],
+    "feedback_thread_key": "ops-paging",
+    "escalation_seconds": 300
+  }
+}

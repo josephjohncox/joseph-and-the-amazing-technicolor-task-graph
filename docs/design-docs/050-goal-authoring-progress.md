@@ -57,7 +57,7 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 7. Branch risky or high-value work with `coat goal branch --file examples/branch-request-root.json`.
 8. Select a winning branch with `coat goal select-branch` after vote/unifier evidence is available.
 9. Restart blocked or timed-out work with `coat goal restart --file examples/restart-request-task.json`.
-10. Inject standard checks with `coat goal steer-standard --check abstraction`, `coat goal steer-standard --check deep_research`, or `coat goal steer --file examples/steering-standard-abstraction.json`.
+10. Inject standard checks with `coat goal steer-standard --check abstraction`, `coat goal steer-standard --check behavioral_testing`, `coat goal steer-standard --check deep_research`, or `coat goal steer --file examples/steering-standard-abstraction.json`.
 11. Apply changes through steering commands, not by editing workflow state.
 
 ## Design Rules

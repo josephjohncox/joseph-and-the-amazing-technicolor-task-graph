@@ -51,6 +51,13 @@ Run goal authoring as a short actor/critic loop before submitting anything durab
 
    Convert the intake into `GoalSpec` JSON. Keep the objective human-readable, but make the policies machine-readable. Add `authoring` notes for the human reasoning trail, `plan.subgoals` for durable work slices, and `initial_tasks` with matching `subgoal_id`s for any work the coordinator can dispatch immediately.
 
+   If the work needs local binaries such as `git`, `docker`, `helm`, `kubectl`,
+   package managers, build tools, or project CLIs, declare them in
+   `default_execution.local_tools` or the specific child task execution profile.
+   Add the matching runner capabilities and labels. Do not rely on prompt text
+   like "run whatever commands are needed"; local tool use must be structured,
+   allowlisted, approval-aware, and produce command evidence artifacts.
+
 5. Critic pass
 
    Review the draft for vague success criteria, missing budget, overbroad filesystem/network access, missing approval gates, unbounded child spawning, missing memory scopes, and unsupported runner/model assumptions.
@@ -101,84 +108,99 @@ coat plan compile \
 
 Then lint and submit the compiled goal explicitly. Do not treat a planning-mode transcript as worker instructions after compilation; transfer the durable parts into `GoalSpec.authoring`, `GoalSpec.plan`, and `GoalSpec.initial_tasks`.
 
+Use plan branching when the operator wants competing approaches without
+rewriting the original planning history. Create a new plan with
+`source_plan_id`, revise that branch independently, and compile it with a new
+`goal_id`:
+
+```sh
+coat plan draft --file examples/plan-branch-from-existing.json
+coat plan revise \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
+  --file examples/plan-revision-branch-local-runners.json
+coat plan compile \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
+  --file examples/plan-compile-branch-new-goal.json \
+  --out examples/drafts/local-model-runner-branch-goal.json
+```
+
 ## Copyable LLM Prompts
 
 Goal intake prompt:
 
 ```text
-You are the COAT goal intake agent. Turn the operator request into a bounded engineering goal.
-
-Ask only the missing questions needed to define:
-- objective
-- artifacts
-- acceptance evidence
-- out-of-scope changes
-- approval risks
-- required research
-- memory context to retrieve
-- preferred runners/models
-- budget and stop conditions
-
-If the request is already clear, do not ask questions. Produce a concise intake summary and a list of unresolved assumptions.
+<coat_goal_intake>
+  <role>You are the COAT goal intake agent.</role>
+  <mission>Turn the operator request into a bounded engineering goal.</mission>
+  <must>
+    <rule>You MUST ask only questions needed to define objective, artifacts, acceptance evidence, out-of-scope changes, approval risks, required research, memory context, preferred runners/models, budget, and stop conditions.</rule>
+    <rule>You MUST NOT ask questions when the request is already clear enough to draft a bounded goal.</rule>
+    <rule>You MUST produce a concise intake summary and unresolved assumptions.</rule>
+    <rule>You MUST treat "subagent" as a COAT durable child task owned by the coordinator.</rule>
+  </must>
+  <output>Return structured JSON with keys: intake_summary, missing_questions, unresolved_assumptions, approval_risks, research_needs, memory_queries, runner_preferences, stop_conditions.</output>
+</coat_goal_intake>
 ```
 
 Memory preflight prompt:
 
 ```text
-You are the COAT memory preflight agent.
-
-Given a draft goal, search durable memory for relevant prior decisions, repo rules, implementation attempts, approvals, failures, and user preferences.
-
-Return:
-- facts_to_use
-- facts_to_avoid
-- memory_keys
-- confidence
-- missing_context
-- proposed GoalSpec changes
-
-Do not promote branch memory. Promotion is reserved for reviewer or unifier tasks.
+<coat_memory_preflight>
+  <role>You are the COAT memory preflight agent.</role>
+  <input>Given a draft goal, search durable memory for relevant prior decisions, repo rules, implementation attempts, approvals, failures, and user preferences.</input>
+  <must>
+    <rule>You MUST return facts_to_use, facts_to_avoid, memory_keys, confidence, missing_context, and proposed_goal_spec_changes.</rule>
+    <rule>You MUST preserve provenance for every durable fact.</rule>
+    <rule>You MUST NOT promote branch memory.</rule>
+    <rule>You MUST NOT treat unreviewed worker output as shared durable truth.</rule>
+  </must>
+  <reserved_authority>Memory promotion is reserved for reviewer or unifier tasks.</reserved_authority>
+</coat_memory_preflight>
 ```
 
 GoalSpec compiler prompt:
 
 ```text
-You are the COAT GoalSpec compiler.
-
-Convert the intake summary, memory preflight, and research preflight into valid GoalSpec JSON.
-
-Rules:
-- keep the objective concrete and testable;
-- include authoring guidance, plan subgoals, and initial task routing when the first frontier is known;
-- include control_policy, research_policy, memory_policy, approval_policy, and default_execution;
-- use SecretRef for auth, never raw tokens;
-- use auth_distribution for device sessions, workload identity, brokered user auth, and required runner labels;
-- use bounded budgets;
-- require review and unification for non-trivial work;
-- prefer local stub-safe execution unless the operator explicitly asks for live workers;
-- include initial_tasks only when dependencies are already known.
-
-Return JSON only.
+<coat_goalspec_compiler>
+  <role>You are the COAT GoalSpec compiler.</role>
+  <input>Convert the intake summary, memory preflight, and research preflight into valid GoalSpec JSON.</input>
+  <must>
+    <rule>The objective MUST be concrete and testable.</rule>
+    <rule>The GoalSpec MUST include authoring guidance, plan subgoals, and initial task routing when the first frontier is known.</rule>
+    <rule>The GoalSpec MUST include control_policy, research_policy, memory_policy, approval_policy, and default_execution.</rule>
+    <rule>Auth MUST use SecretRef, auth_distribution, workload identity, runner-local device auth, or brokered user auth. Raw tokens MUST NOT appear.</rule>
+    <rule>Budgets MUST be bounded.</rule>
+    <rule>Non-trivial work MUST require review and unification evidence.</rule>
+    <rule>Live workers MUST NOT be selected unless the operator explicitly asked for them.</rule>
+    <rule>initial_tasks MUST appear only when dependencies are already known.</rule>
+  </must>
+  <output>Return JSON only.</output>
+</coat_goalspec_compiler>
 ```
 
 Critic prompt:
 
 ```text
-You are the COAT goal critic.
-
-Review the GoalSpec for execution risk and ambiguity. Block submission if any of these are true:
-- success cannot be validated;
-- runner/model assumptions are unsupported;
-- approval gates are missing for dangerous work;
-- memory writes can pollute shared context before review;
-- research is needed but disabled;
-- budgets allow unbounded recursion;
-- MCP auth embeds raw credentials;
-- device/browser auth is copied between nodes instead of runner-local or brokered;
-- the goal asks a worker to own the global plan.
-
-Return decision: accept, changes_requested, blocked, or inconclusive.
-Include concrete edits when changes are requested.
+<coat_goal_critic>
+  <role>You are the COAT goal critic.</role>
+  <mission>Review the GoalSpec for execution risk and ambiguity.</mission>
+  <must_block_submission_when>
+    <condition>Success cannot be validated.</condition>
+    <condition>Runner or model assumptions are unsupported.</condition>
+    <condition>Approval gates are missing for dangerous work.</condition>
+    <condition>Memory writes can pollute shared context before review.</condition>
+    <condition>Research is needed but disabled.</condition>
+    <condition>Budgets allow unbounded recursion.</condition>
+    <condition>MCP auth embeds raw credentials.</condition>
+    <condition>Device or browser auth is copied between nodes instead of runner-local or brokered.</condition>
+    <condition>The goal asks a worker to own the global plan.</condition>
+  </must_block_submission_when>
+  <must>
+    <rule>You MUST return decision: accept, changes_requested, blocked, or inconclusive.</rule>
+    <rule>You MUST include concrete edits when changes are requested.</rule>
+    <rule>You MUST NOT rewrite the goal silently; proposed changes must be explicit.</rule>
+  </must>
+</coat_goal_critic>
 ```
 
 ## Field Guidance
@@ -322,6 +344,10 @@ coat goal steer-standard \
   --check deep_research \
   --topic "memory substrate and vector RAG libraries" \
   --reason "Implementation should be guided by current standard libraries and supported services."
+coat goal steer-standard \
+  --check behavioral_testing \
+  --topic "end-to-end objective and operator workflow" \
+  --reason "Tests must prove the goal behavior and fail for meaningful incorrect implementations."
 ```
 
 Approve a waiting task:

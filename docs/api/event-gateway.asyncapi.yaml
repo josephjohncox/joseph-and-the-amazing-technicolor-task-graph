@@ -8,6 +8,9 @@ info:
     repository events, and other real-world signals that create or steer
     durable goals. Payloads should be compatible with CloudEvents where
     upstream providers support it.
+    When event-source activation approval is required, register enabled risky
+    sources with x-coat-approval-id; the gateway can project the accepted
+    approval reference to the goal store.
 servers:
   local:
     url: http://localhost:9089
@@ -19,7 +22,7 @@ channels:
   /event-sources:
     publish:
       operationId: registerEventSource
-      summary: Register or replace an event source and its routing policy.
+      summary: Register or replace an event source and its routing policy. Enabled risky sources may require x-coat-approval-id.
       message:
         $ref: '#/components/messages/EventSource'
   /events:
@@ -50,6 +53,19 @@ channels:
       summary: Emit an arbitrary JSON or CloudEvents-compatible event for a registered generic source.
       message:
         $ref: '#/components/messages/GenericEventPayload'
+  /events/sqs/{source_key}/poll:
+    parameters:
+      source_key:
+        description: Stable SQS event source key.
+        schema:
+          type: string
+    publish:
+      operationId: pollSqsEventSource
+      summary: Poll a registered SQS source, normalize messages, and optionally route resulting events.
+      message:
+        payload:
+          type: object
+          additionalProperties: true
   /triggers:
     publish:
       operationId: triggerGoal
@@ -109,6 +125,7 @@ components:
             - calendar_poll
             - calendar_push
             - queue
+            - sqs
             - pub_sub
             - git_hub_webhook
             - git_lab_webhook
@@ -129,6 +146,9 @@ components:
             - issue_tracker
             - chat
             - monitoring_alert
+            - prometheus_alertmanager
+            - datadog_webhook
+            - open_telemetry_signal
             - database_change
             - manual
             - other
@@ -140,6 +160,8 @@ components:
           $ref: '#/components/schemas/WebhookEventSource'
         generic:
           $ref: '#/components/schemas/GenericEventSource'
+        sqs:
+          $ref: '#/components/schemas/SqsEventSource'
         route:
           $ref: '#/components/schemas/EventGoalRoute'
     WebhookEventSource:
@@ -192,6 +214,32 @@ components:
         payload_schema:
           type: object
           additionalProperties: true
+    SqsEventSource:
+      type: object
+      required:
+        - queue_url
+        - max_messages
+        - wait_time_seconds
+        - delete_on_success
+      properties:
+        queue_url:
+          type: string
+        region:
+          type: string
+        endpoint:
+          type: string
+        max_messages:
+          type: integer
+          minimum: 1
+          maximum: 10
+        wait_time_seconds:
+          type: integer
+          minimum: 0
+          maximum: 20
+        visibility_timeout_seconds:
+          type: integer
+        delete_on_success:
+          type: boolean
     EventGoalRoute:
       type: object
       required:

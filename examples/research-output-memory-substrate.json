@@ -42,7 +42,60 @@
       "Do not treat vector-only storage as sufficient for temporal fork/join agent memory.",
       "Do not copy auth tokens into task state; memory access must use SecretRef or workload identity."
     ],
-    "proposed_task_updates": [],
+    "proposed_goal_updates": [
+      {
+        "target": "memory_policy",
+        "path": "/memory_policy/store/kind",
+        "recommendation": "Set the default memory store kind to zep_graphiti for semantic agent memory.",
+        "reason": "The sourced research favors a temporal graph memory layer for fork/join context rather than vector-only retrieval."
+      },
+      {
+        "target": "review_policy",
+        "path": "/review_policy/doctrine/custom_validation_gates",
+        "recommendation": "Require a memory provenance gate for branch memory promotion.",
+        "reason": "Branch memories should be unifier-reviewed before becoming shared durable facts."
+      }
+    ],
+    "proposed_task_updates": [
+      {
+        "role": "reviewer",
+        "purpose": null,
+        "title": "Review memory substrate decision",
+        "subgoal_id": "memory-substrate",
+        "color": null,
+        "prompt": "Review whether Zep/Graphiti plus Qdrant is the correct default memory substrate for COAT. Confirm source quality, operational risk, and fallback behavior.",
+        "reason": "Research recommends a default architecture that should become durable policy only after critic review.",
+        "dependencies": [],
+        "budget": null,
+        "sandbox": null,
+        "done_criteria": null,
+        "review_doctrine": null,
+        "execution": null,
+        "priority": "normal",
+        "tags": ["research-followup", "memory", "review"]
+      }
+    ],
+    "proposed_memory_writes": [
+      {
+        "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+        "task_id": null,
+        "scope": "goal",
+        "key": "research-memory-substrate-candidate",
+        "episode": {
+          "title": "Research-backed memory substrate candidate",
+          "content": "Research recommends Zep/Graphiti over MCP as the default temporal graph memory layer and Qdrant as the embedded retrieval mirror.",
+          "source": {
+            "source_type": "research",
+            "uri": "artifact://research-output-memory-substrate",
+            "actor": "research_worker"
+          },
+          "artifacts": [],
+          "tags": ["research", "memory", "graphiti", "qdrant"]
+        },
+        "store": null
+      }
+    ],
+    "proposed_review_doctrine": null,
     "validation_checks": [
       "A research task must include source artifacts.",
       "A memory write must record scope, provenance, and whether it came from actor, critic, or unifier output."

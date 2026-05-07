@@ -27,7 +27,9 @@ Initial DDL lives in `infra/db/migrations/001_goal_store.sql` and `infra/db/migr
 
 `POST /goal-store/artifacts` and `coat store record-artifacts` append artifact refs without replacing the full projected snapshot.
 
+Local JSONL replay mirrors the Postgres event idempotency rule: appending the same goal event sequence or idempotency key replaces the existing projected event instead of duplicating it. This keeps Restate replay-safe projection behavior consistent across local and Postgres backends.
+
 ## Follow-Ups
 
 - Add generated Rust/TypeScript SDKs from Buf once the final SDK target is selected.
-- Add integration tests proving Restate replay does not duplicate projected events.
+- Add a real Restate restart integration test once the Restate test harness is selected.

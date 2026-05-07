@@ -15,8 +15,11 @@ Compose is the default local deployment. It includes:
 - Rust tool registry
 - TypeScript control gateway and SPA
 - Codex runner sidecar
+- Codex reviewer/tester runner sidecar
 - Claude Code runner sidecar
 - Model-provider runner sidecar
+- Model-provider research runner sidecar
+- Host-local model-provider runner sidecar
 - Staff-engineer runner sidecar
 - MinIO S3-compatible object store for local large-artifact refs
 - OpenTelemetry collector
@@ -25,19 +28,29 @@ The Compose goal store listens on `:9088`, uses `COAT_GOAL_STORE_BACKEND=jsonl` 
 
 The Compose event gateway listens on `:9089`, defaults to a JSONL journal, can switch to `COAT_EVENT_GATEWAY_BACKEND=postgres` for the SQL event inbox/outbox, and can submit generated goals to Restate through `COAT_RESTATE_INGRESS`.
 
-The Compose control gateway listens on `:9090`. It reads goal-store projections, workflow status/progress, runner status, notifier threads, event gateway sources/triggers/events, and memory gateway results. Set `COAT_CONTROL_GATEWAY_TOKEN` to protect `/api/*` and `COAT_CONTROL_MCP_TOKEN` to protect `/mcp`.
+The Compose control gateway listens on `:9090`. It reads goal-store projections, workflow status/progress, runner status, notifier threads, event gateway sources/triggers/events, and memory gateway results. It can also draft goals/plans/steering through the chat assistant, submit memory join/retract/edit/repair commands, and convert sourced research output into `GoalWorkflow/steer` directives. Set `COAT_CONTROL_GATEWAY_TOKEN` to protect `/api/*` and `COAT_CONTROL_MCP_TOKEN` to protect `/mcp`.
+
+The default Compose runner pool intentionally has multiple task lanes. Primary runner ports are exposed for local inspection, while additional review/research/local-model lanes are internal-only and selected through `coat-runner-registry`. Use the interactive `coat setup local-auth` wizard to create the env file for hosted provider keys, Bedrock/AWS routing, local Ollama/vLLM endpoints, and control-gateway chat model settings. Use `coat setup local-auth --write-env --output infra/compose/local-providers.env` when automation needs the non-interactive template path. Use `coat compose config` and `coat compose up` for the normal local lifecycle.
 
 Compose defaults to single-user mode. Multi-user OIDC MCP delegation is an extension path and requires an external OIDC-aware gateway or broker; do not enable user-delegated MCP auth by sharing local browser or CLI tokens.
 
 Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` for production-like event-gateway deployments. With that switch enabled, risky enabled sources such as webhooks, calendars, schedules, or goal-creating routes require an approval reference at registration time. Use `coat event register --approval-id ...` or register proposed sources disabled first when the approval has not happened yet.
 
-For personal Restate Cloud usage, use `infra/compose/docker-compose.restate-cloud.yml` with the `restate-cloud` profile. It starts the Restate Cloud tunnel client, configures coordinator request identity verification through `RESTATE_IDENTITY_KEYS` or `RESTATE_SIGNING_PUBLIC_KEY`, and points the event gateway at the tunnel ingress. See `docs/operations/restate-cloud.md`.
+For personal Restate Cloud usage, prefer `coat compose up --restate-cloud`.
+It uses `infra/compose/docker-compose.restate-cloud.yml` with the
+`restate-cloud` profile, creates the local env file from the example when
+missing, blocks placeholder values, starts the Restate Cloud tunnel client,
+configures coordinator request identity verification through
+`RESTATE_IDENTITY_KEYS` or `RESTATE_SIGNING_PUBLIC_KEY`, and points the event
+gateway at the tunnel ingress. Use `coat compose up --restate-cloud
+--register-cloud` when you want detached startup plus coordinator registration.
+See `docs/operations/restate-cloud.md`.
 
 Postgres/pgvector is available as an optional profile for local operational-store development:
 
 ```sh
-docker compose -f infra/compose/docker-compose.yml --profile db up postgres
-COAT_GOAL_STORE_BACKEND=postgres docker compose -f infra/compose/docker-compose.yml --profile db up postgres goal-store
+coat compose up --profile db postgres
+COAT_GOAL_STORE_BACKEND=postgres coat compose up --profile db postgres goal-store
 ```
 
 The profile mounts `infra/db/migrations/` into `/docker-entrypoint-initdb.d` on first boot. For production, run the same migrations with a real migration tool and managed credentials instead of relying on container init scripts.
@@ -45,6 +58,20 @@ The profile mounts `infra/db/migrations/` into `/docker-entrypoint-initdb.d` on 
 ## Kubernetes
 
 Kubernetes manifests live in `infra/k8s/base/all.yaml`.
+
+Keep Kubernetes under `coat k8s`, not `coat compose`. The commands share the
+same service-boundary assumptions, but they target different runtimes:
+Compose starts local containers; `coat k8s render` and `coat k8s
+ephemeral-jobs apply` materialize and apply cluster manifests; Helm installs
+the packaged `infra/helm/jattg` chart.
+
+Render, validate, and apply the base manifest through the CLI:
+
+```sh
+coat k8s render --output infra/k8s/rendered.yaml
+coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
+coat k8s apply --file infra/k8s/rendered.yaml --namespace jattg
+```
 
 Expected production hardening:
 
@@ -67,6 +94,7 @@ Expected production hardening:
 - Keep model-serving nodes separate from executor nodes when possible. See `docs/operations/model-runner-clusters.md` for GB10/DGX Spark, Mac mini, and mixed GPU/CPU runner fleets.
 - Use `infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` and `docs/operations/ephemeral-kubernetes-runners.md` for burst runner Jobs, short-lived Claude Code/Codex/model-provider runners, and temporary Restate service executors.
 - Add ingress and TLS according to the target cluster.
+- For multi-user dashboard access, use `infra/k8s/examples/control-web-oidc-gateway.yaml` as an OAuth2 Proxy front-door example. It authenticates the SPA/control gateway without changing the Rust engine and keeps COAT in single-user mode until a goal explicitly uses `McpContextRef.access_mode=multi_user_oidc`.
 - For Restate Cloud-backed clusters, prefer the Restate Operator `RestateCloudEnvironment` and `RestateDeployment` path in `infra/k8s/examples/restate-cloud-environment.yaml`.
 - For self-hosted Restate clusters, use the operator pattern in `infra/k8s/examples/restate-operator-cluster.yaml` as the starting point and replace local storage with reviewed persistent or object-store-backed configuration.
 
@@ -85,7 +113,14 @@ For raw manifest workflows, render the reusable example Jobs with:
 ```sh
 coat k8s ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
+coat k8s ephemeral-jobs apply \
+  --file infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml \
+  --dry-run=client
 ```
+
+Drop `--dry-run=client` only after reviewing the rendered namespace,
+NetworkPolicies, ServiceAccounts, Secrets, runner image tags, resource limits,
+and any injected environment references for the target cluster.
 
 Local validation:
 

@@ -1,0 +1,20 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "scope": "goal",
+  "replace_keys": ["research-memory-substrate-candidate"],
+  "replacement_key": "research-memory-substrate-reviewed",
+  "replacement_episode": {
+    "title": "Reviewed memory substrate decision",
+    "content": "Use Zep/Graphiti for temporal graph memory and Qdrant for embedded retrieval after critic review.",
+    "source": {
+      "source_type": "human",
+      "uri": "artifact://research-output-memory-substrate",
+      "actor": "operator"
+    },
+    "artifacts": [],
+    "tags": ["memory", "reviewed", "graphiti", "qdrant"]
+  },
+  "reason": "Supersede the candidate fact with reviewed operator guidance.",
+  "store": null
+}

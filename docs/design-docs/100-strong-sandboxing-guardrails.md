@@ -6,11 +6,21 @@ Strong sandboxing is an optional production layer. Local Compose keeps a metadat
 
 The coordinator does not execute untrusted code. It assigns a durable task to a runner whose registration matches the task role, capabilities, labels, model route, MCP context, and `SandboxProfile`.
 
+Local binaries are executor tools. A runner may use `git`, `docker`, `helm`,
+`kubectl`, build tools, package managers, or project-specific CLIs only when the
+task declares them in `ExecutionProfile.local_tools` and the runner advertises
+the matching capabilities. The sandbox runner's `/commands/run` path is
+disabled by default, requires a known task workspace, refuses path-like binary
+names, enforces an allowlist, and writes bounded command evidence artifacts.
+
 Ephemeral Kubernetes runners are capacity, not authority. A Job may host a
 runner sidecar or temporary Restate service executor, but the coordinator still
-owns task state, approvals, budgets, and validation. Use
-`jattg-agent-toolbox` for bounded Jobs when the task needs the shared toolset;
-use slim service images for always-on control-plane Deployments.
+owns task state, approvals, budgets, and validation. Prefer
+`ExecutionProfile.capacity` with an approved `ephemeralRunnerTemplates` entry so
+the coordinator or executor framework chooses when to create capacity. Manual
+Job manifests are fixtures and escape hatches, not the normal task-distribution
+path. Use `jattg-agent-toolbox` for bounded Jobs when the task needs the shared
+toolset; use slim service images for always-on control-plane Deployments.
 
 `SandboxProfile.isolation` describes the requested boundary:
 
@@ -62,8 +72,10 @@ needs explicit approval or stronger guardrail review.
 Sandbox-capable runners should advertise both capabilities and labels:
 
 - capability: `workspace_sandbox`, `container_sandbox`, `gvisor_sandbox`, `kata_sandbox`, `firecracker_sandbox`, `kubernetes_job_sandbox`, or `provider_sandbox`
+- local tool capability: `local_commands` plus specific capabilities such as `git_cli`, `docker_cli`, `helm_cli`, `kubernetes_cli`, `build_tooling`, or `package_manager_cli`
 - label: `sandbox.backend=gvisor`
 - label: `sandbox.runtime_class=gvisor`
+- label: `tools.helm=true` or `tools.docker=true` only when the binary and guardrails are actually available
 - label: `node_pool=executor-gvisor`
 - label: `network.egress=restricted`
 

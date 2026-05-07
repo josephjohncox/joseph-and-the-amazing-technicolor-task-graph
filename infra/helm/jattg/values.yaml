@@ -227,6 +227,7 @@ workloads:
     env:
       BIND_ADDR: 0.0.0.0:9089
       COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_GOAL_STORE_URL: http://goal-store:9088
       COAT_EVENT_GATEWAY_JOURNAL_PATH: /data/event-gateway.jsonl
     configEnv:
       COAT_EVENT_GATEWAY_BACKEND: COAT_EVENT_GATEWAY_BACKEND
@@ -502,6 +503,66 @@ networkPolicy:
   # egress, or ingress allowlists without changing service templates.
   extraPolicies: {}
 
+# Templates are durable capacity policy inputs for the coordinator or executor
+# framework. They are not rendered as Jobs by themselves. A task selects them
+# through ExecutionProfile.capacity.template_refs, then an approved provisioner
+# creates bounded Jobs or temporary Restate executors from the template.
+ephemeralRunnerTemplates:
+  enabled: true
+  templates:
+    codex-burst:
+      kind: runner_job
+      image:
+        repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox
+      ephemeralKind: codex-runner
+      activeDeadlineSeconds: 7200
+      ttlSecondsAfterFinished: 1800
+      networkProfile: control-plane-egress
+      requiredCapabilities:
+        - code
+        - git_worktree
+        - workspace_sandbox
+        - local_commands
+        - git_cli
+        - build_tooling
+        - package_manager_cli
+      labels:
+        lane: codex-burst
+        capacity.jattg.dev/lifecycle: ephemeral
+      env:
+        HOME: /workspace
+        RUNNER_REGISTRY_URL: http://runner-registry:9085
+    model-provider-burst:
+      kind: runner_job
+      image:
+        repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox
+      ephemeralKind: model-provider-runner
+      activeDeadlineSeconds: 7200
+      ttlSecondsAfterFinished: 1800
+      networkProfile: model-endpoint-egress
+      requiredCapabilities: ["local_models", "open_ai_compatible"]
+      labels:
+        lane: model-provider-burst
+        capacity.jattg.dev/lifecycle: ephemeral
+      env:
+        HOME: /workspace
+        MODEL_PROVIDER_RUNNER_MODE: stub
+        RUNNER_REGISTRY_URL: http://runner-registry:9085
+    sandbox-job:
+      kind: sandbox_job
+      image:
+        repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox
+      ephemeralKind: command
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 900
+      networkProfile: restricted
+      requiredCapabilities: ["kubernetes_job_sandbox"]
+      labels:
+        lane: sandbox-job
+        capacity.jattg.dev/lifecycle: ephemeral
+
+# Manual escape hatch. Prefer ephemeralRunnerTemplates plus coordinator/executor
+# provisioning for normal task execution.
 ephemeralJobs: {}
 
 # Example:

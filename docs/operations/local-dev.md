@@ -12,35 +12,55 @@ sh scripts/coat-doc-gardener.sh
 npm run --prefix sidecars/codex-runner-ts build
 npm run --prefix sidecars/staff-engineer-runner-ts build
 npm run --prefix ui/control-plane-web build
+npm run --prefix ui/control-plane-web smoke
 ```
 
 ## Compose
 
 ```sh
-docker compose -f infra/compose/docker-compose.yml config
-docker compose -f infra/compose/docker-compose.yml up --build
-docker compose -f infra/compose/docker-compose.yml --profile db up postgres
-docker compose \
-  --env-file infra/compose/restate-cloud.env \
-  -f infra/compose/docker-compose.yml \
-  -f infra/compose/docker-compose.restate-cloud.yml \
-  --profile restate-cloud \
-  config
-docker compose \
-  --env-file infra/compose/restate-cloud.env.example \
-  -f infra/compose/docker-compose.yml \
-  -f infra/compose/docker-compose.restate-cloud.yml \
-  --profile restate-cloud \
-  config
+coat compose config
+coat compose up
+coat compose config --profile db
+coat compose up --profile db
+coat compose up --restate-cloud --init-env
+# edit infra/compose/restate-cloud.env
+coat compose config --restate-cloud
+coat compose up --restate-cloud --register-cloud
 ```
+
+`coat compose up --restate-cloud` creates `infra/compose/restate-cloud.env`
+from `infra/compose/restate-cloud.env.example` when missing and refuses to
+start while placeholder Restate Cloud values remain. `--register-cloud` starts
+Compose detached and then registers the coordinator through the default
+`jattg-personal` tunnel.
+
+Create a local provider env file when you want live hosted or local model credentials. The no-flag command opens an interactive setup wizard; the explicit flags are useful in CI, scripts, and copy-paste runbooks:
+
+```sh
+coat setup local-auth
+coat setup local-auth --write-env --output infra/compose/local-providers.env
+coat compose up --env-file infra/compose/local-providers.env
+```
+
+The setup wizard checks provider CLIs and environment variables without printing secret values, asks which provider surfaces to prepare, and can write `infra/compose/local-providers.env` from the single env template. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
 
 The Rust service image builds all `coat` Rust binaries once in a shared builder stage and copies the selected binary into each service image. It defaults to `CARGO_BUILD_JOBS=8` so builds still use parallel Rust compilation without multiplying compiler jobs across every Compose service.
 
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
-The control gateway and SPA listen on `http://localhost:9090`.
-The Codex, Claude Code, staff-engineer, and generic model-provider sidecars auto-register with `runner-registry` when Compose starts.
+The control gateway and SPA listen on `http://localhost:9090`. Use the Chat tab to draft goals, plans, steering directives, and state explanations from plain language. Use the Memory tab to search context, write reviewed facts, join forked branch memories, retract or replace stale facts, dry-run adapter repair, inspect memory events, and apply sourced research output back into the goal as steering directives.
+The default Compose stack starts a small multi-agent pool and auto-registers every runner with `runner-registry`:
+
+- `codex-runner`: externally exposed coding lane on `localhost:9091`;
+- `codex-reviewer-runner`: internal review/test/formal-methods lane;
+- `claude-code-runner`: externally exposed Claude Code lane on `localhost:9094`;
+- `model-provider-runner`: externally exposed generic hosted/local model lane on `localhost:9093`;
+- `model-provider-research-runner`: internal research/review lane;
+- `model-provider-local-runner`: internal host-local Ollama/vLLM-style lane;
+- `staff-engineer-runner`: externally exposed issue-to-PR lifecycle lane on `localhost:9092`.
+
+Use the internal-only runners through the registry and control gateway rather than direct host ports.
 The sandbox runner uses `SANDBOX_WORKSPACE_ROOT=/workspaces` in Compose and writes per-task manifests under the `sandbox-workspaces` volume.
 Live git worktree creation is disabled by default. For an explicitly approved local development run, start the sandbox runner with:
 
@@ -67,6 +87,25 @@ coat plan compile \
   --strict-review \
   --human-steered \
   --out examples/drafts/compiled-goal.json
+coat plan draft --file examples/plan-branch-from-existing.json
+coat plan revise \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
+  --file examples/plan-revision-branch-local-runners.json
+coat plan compile \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
+  --file examples/plan-compile-branch-new-goal.json \
+  --out examples/drafts/local-model-runner-branch-goal.json
+coat setup local-auth
+coat setup local-auth --write-env --output infra/compose/local-providers.env
+coat setup chat-client
+coat setup chat-client \
+  --mcp-url http://localhost:9090/mcp \
+  --install-codex-mcp \
+  --install-codex-skill
+coat setup chat-client \
+  --mcp-url http://localhost:9090/mcp \
+  --install-claude-mcp \
+  --install-claude-skill
 coat compose up --restate-cloud
 coat goal draft \
   --title "Local strict review smoke" \
@@ -84,18 +123,30 @@ coat runner register --file examples/runner-vllm.json
 coat runner list
 coat runner status
 coat runner dispatch --file examples/dispatch-smoke.json
+coat runner register --file examples/runner-remote-codex.json
 coat event register --file examples/event-source-calendar-schedule.json
 coat event register --file examples/event-source-webhook-hmac.json
 coat event register --file examples/event-source-generic-ci.json
+coat event register --file examples/event-source-sqs-notifications.json
+coat event register --file examples/event-source-prometheus-alertmanager.json
+coat event register --file examples/event-source-datadog-monitor.json
 coat event register --file examples/event-source-slack-event.json
 coat event register --file examples/event-source-stripe-webhook.json
 coat event register \
   --file examples/event-source-webhook-hmac.json \
   --approval-id approval-123
+coat store event-source-approvals --source-id github-review-webhook --limit 10
 coat event ingest --file examples/external-event-calendar.json
 coat event emit \
   --source-id ci-events \
   --file examples/generic-event-ci-failed.json
+coat event webhook \
+  --source-id prometheus-alertmanager \
+  --file examples/prometheus-alertmanager-firing.json
+coat event webhook \
+  --source-id datadog-monitor \
+  --file examples/datadog-monitor-alert.json
+coat event poll-sqs --source-id sqs-notifications --max-messages 10
 coat event trigger --file examples/triggered-goal-webhook.json
 coat event triggers
 coat goal steer \
@@ -112,6 +163,11 @@ coat goal steer-standard \
   --check abstraction \
   --topic "durable coordinator task graph" \
   --emit-only
+coat goal steer-standard \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
+  --check behavioral_testing \
+  --topic "end-to-end objective and operator workflow" \
+  --emit-only
 coat goal branch \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/branch-request-root.json
@@ -123,8 +179,14 @@ coat goal restart \
   --file examples/restart-request-task.json
 coat notify --file examples/notification-approval.json
 coat notify --file examples/notification-webhook.json
+coat notify --file examples/notification-dashboard.json
+coat notify --file examples/notification-email.json
+coat notify --file examples/notification-sqs.json
+coat notify --file examples/notification-pagerduty.json
+coat notify --file examples/notification-tracker-github.json
 coat notify --threads
 coat notify --thread-key local-model-coding-smoke
+coat notify --queue
 coat store policy
 coat store goals
 coat store plans
@@ -133,13 +195,20 @@ coat store approvals --limit 50
 coat store record-artifacts --file examples/goal-store-record-artifacts.json
 coat sandbox create --file examples/sandbox-workspace-request.json
 coat sandbox create --file examples/sandbox-workspace-request-live-git.json
+coat runner register --file examples/runner-local-tools.json
+coat goal submit --file examples/goal-local-tool-execution.json
 coat memory write --file examples/memory-write-fact.json
 coat memory search --file examples/memory-search.json
 coat memory join --file examples/memory-join.json
+coat memory retract --file examples/memory-retract.json
+coat memory preview-edit --file examples/memory-edit.json
+coat memory edit --file examples/memory-edit.json
+coat memory repair --file examples/memory-repair.json
 coat memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602
 coat restate cloud-env
 coat restate register-cloud --dry-run
 coat k8s render --output infra/k8s/rendered.yaml
+coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
 ```
 
 Manual runner registration is only needed for external workers such as a vLLM node. Sidecars use:
@@ -156,7 +225,9 @@ Use `docs/operations/goal-authoring.md` before submitting non-trivial goals. It 
 - `OPENAI_API_KEY` for Codex API-key mode
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` for non-interactive Claude Code modes
 - `MODEL_PROVIDER_KIND`, `MODEL_PROVIDER_MODEL`, and `MODEL_PROVIDER_ENDPOINT` for the generic provider runner
-- `AWS_REGION` plus workload identity or AWS credentials for Bedrock provider smoke tests
+- `MODEL_PROVIDER_RESEARCH_KIND`, `MODEL_PROVIDER_RESEARCH_MODEL`, and `MODEL_PROVIDER_RESEARCH_ENDPOINT` for the research-lane provider runner
+- `LOCAL_MODEL_PROVIDER_KIND`, `LOCAL_MODEL_PROVIDER_MODEL`, and `LOCAL_MODEL_PROVIDER_ENDPOINT` for the host-local model runner
+- `AWS_PROFILE`, `AWS_REGION`/`AWS_DEFAULT_REGION`, workload identity, or AWS credentials for Bedrock provider smoke tests
 
 Sidecars also expose `GET /capabilities`, which is the quickest way to verify model candidates, review support, MCP propagation support, and remaining capacity without reading environment variables.
 
@@ -189,6 +260,7 @@ curl -sS -X POST http://localhost:9084/mcp \
 Set `MCP_TOOL_TOKEN` to require bearer auth on `/mcp`.
 In Compose, `tool-registry` mounts the sandbox workspace volume read-only and sets `TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT=/workspaces`, so `artifact_manifest` can return `workspace-manifest.json`, `sandbox-launch-plan.json`, `snapshots/latest.json`, and worker `artifacts/artifact-manifest.json` for a `{goal_id, task_id}` lookup. Kubernetes should normally resolve large artifacts from object storage or the goal-store projection; set the same env var only when the registry can safely read the sandbox workspace volume.
 Compose also sets `TOOL_REGISTRY_SANDBOX_RUNNER_URL=http://sandbox-runner:9083`. With that URL configured, the MCP `test_command` tool posts to `coat-sandbox-runner /commands/plan` and returns an approval-aware command plan instead of executing commands in the tool registry process.
+The MCP `local_command` tool uses the same sandbox runner boundary for local binaries such as `git`, `docker`, `helm`, `kubectl`, build tools, and package managers. It plans by default; execution requires `execute=true`, an approval ID when `SANDBOX_REQUIRE_COMMAND_APPROVAL=true`, a known task workspace, and `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION=true`.
 
 For local Codex or Claude Code device/browser auth, prefer a runner-local setup:
 
@@ -202,9 +274,15 @@ Use `examples/auth-distribution-codex-device.json` for the node-local shape and 
 Default local mode is single-user. Multi-user OIDC MCP delegation is opt-in and should stay off for local smoke runs unless you are testing an auth broker. Use `examples/mcp-context-multi-user-oidc.json`, set runner capabilities to include `oidc_user_delegation`, label the runner with `auth.oidc.user_delegation=true` and tenant labels, and keep all user tokens in the broker or MCP server. Task state should contain only `UserPrincipalRef`, `OidcDelegationPolicy`, consent refs, and `SecretRef` values.
 
 The notifier stores local in-memory notification threads by `feedback_thread_key`, thread target address, or goal ID. This is for operator visibility in local runs; Restate workflow state remains the source of truth for approval and feedback signals.
-It also supports `NotificationTargetKind::webhook` by posting the `NotificationRequest` JSON to the target address and resolving optional bearer tokens through `SecretRef`. Slack, email, tracker, and paging targets intentionally require provider-specific adapters instead of pretending a local thread equals real delivery.
+It supports `NotificationTargetKind::dashboard` for the dashboard human queue, `webhook` by posting the `NotificationRequest` JSON to the target address with optional `SecretRef` bearer auth, `slack` through an incoming webhook URL or secret ref, `email` as a structured local outbox, `sqs` through the official AWS SDK, `pager_duty` through Events API v2, and tracker webhook payloads for `git_hub`, `linear`, and `jira`. Set `COAT_EMAIL_OUTBOX_DIR` to persist email outbox messages as JSON files; otherwise they are only visible through notifier threads and `coat notify --queue`.
+
+For outbound SQS notifications, put the queue URL in `NotificationTarget.address` and let the SDK resolve credentials through normal AWS environment variables, profile configuration, IRSA, ECS task roles, or workload identity. Use `COAT_SQS_REGION`, `AWS_REGION`, or `AWS_DEFAULT_REGION` for region selection. Set `COAT_SQS_ENDPOINT_URL` for LocalStack or another SQS-compatible endpoint. FIFO queues get `COAT_SQS_MESSAGE_GROUP_ID` or the default `coat-notifications` group.
+
+For inbound SQS events, register `examples/event-source-sqs-notifications.json`, edit the queue URL/region, then run `coat event poll-sqs --source-id sqs-notifications`. The event gateway polls with the same AWS SDK credential chain, converts each message body through the source `generic` JSON Pointer contract, records the normalized event, optionally routes it, and deletes the SQS message only when `sqs.delete_on_success=true` and ingest succeeds.
 
 `coat-event-gateway` listens on `http://localhost:9089` in Compose. It records webhook, generic, calendar, scheduled, and bus events with dedupe keys, then can create or hold triggered goals. Set `COAT_EVENT_GATEWAY_TOKEN` to require bearer auth for mutating endpoints. Use `COAT_RESTATE_INGRESS` when the gateway should submit generated goals directly to Restate.
+
+Prometheus Alertmanager and Datadog monitor examples are disabled by default but show the intended SRE, data-engineering, and data-science loop. When enabled, a provider webhook becomes an observability event with normalized fields under `payload._coat_observability`; the route creates a goal that first checks durable memory for recurrence before deciding whether to generate a service PR, dashboard or alert-tuning PR, data-quality investigation, SLO review, runbook update, or no-action report. Use `coat event webhook` for local JSON payload smoke tests; production providers should use webhook auth and event-source activation approval.
 
 Local Compose defaults the event gateway to `COAT_EVENT_GATEWAY_BACKEND=jsonl`. To exercise the SQL event inbox/outbox path, start the database profile and set `COAT_EVENT_GATEWAY_BACKEND=postgres`; the service uses `COAT_EVENT_GATEWAY_DATABASE_URL`, falling back to the same Postgres database used by the goal store.
 
@@ -213,7 +291,7 @@ Generic sources use `GenericEventSource` to normalize arbitrary JSON or CloudEve
 Webhook source auth is separate from gateway admin auth. Register a `WebhookAuthPolicy` with `kind=shared_secret_header`, `bearer_token`, or `hmac_sha256`, point `secret_ref` at an environment variable or local secret file for local smoke tests, and keep production secret providers behind Kubernetes, Vault, cloud secret stores, or workload identity. The example `examples/event-source-webhook-hmac.json` expects `COAT_GITHUB_WEBHOOK_SECRET`.
 Provider presets cover GitHub HMAC, Slack Events API HMAC, and Stripe-style HMAC canonicalization. The Slack example expects `COAT_SLACK_SIGNING_SECRET`; the Stripe example expects `COAT_STRIPE_WEBHOOK_SECRET`.
 
-Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` to smoke-test production activation policy. Risky enabled sources then need `coat event register --approval-id ...` on registration, or they should be registered with `"enabled": false` until a human approves activation.
+Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` to smoke-test production activation policy. Risky enabled sources then need `coat event register --approval-id ...` on registration, or they should be registered with `"enabled": false` until a human approves activation. When `COAT_GOAL_STORE_URL` is configured on the event gateway, accepted activation references are projected to `coat-goal-store` and can be inspected with `coat store event-source-approvals`.
 
 The event API contract lives at `docs/api/event-gateway.asyncapi.yaml`. The cluster CronJob pattern lives at `infra/k8s/examples/calendar-trigger-cronjob.yaml`.
 
@@ -228,6 +306,7 @@ coat store tasks --goal-id <goal-id>
 coat store events --goal-id <goal-id>
 coat store artifacts --goal-id <goal-id>
 coat store goal-approvals --goal-id <goal-id>
+coat store event-source-approvals --limit 25
 coat store record-artifacts --file examples/goal-store-record-artifacts.json
 ```
 
@@ -258,11 +337,21 @@ curl -sS -X POST http://localhost:9090/mcp \
 
 Set `COAT_CONTROL_GATEWAY_TOKEN` and `COAT_CONTROL_MCP_TOKEN` when exposing the gateway beyond local trusted development.
 
+The Chat tab defaults to a local stub so smoke tests do not need model credentials. To use a live OpenAI-compatible model provider, set:
+
+```sh
+COAT_CONTROL_CHAT_COMPLETIONS_URL=http://localhost:8000/v1/chat/completions
+COAT_CONTROL_CHAT_MODEL=local-chat-model
+COAT_CONTROL_CHAT_API_KEY=optional-provider-token
+```
+
+For OpenAI-hosted chat completions, set `COAT_CONTROL_CHAT_MODEL` and `OPENAI_API_KEY`; the gateway will use `https://api.openai.com/v1/chat/completions`. Chat drafts still require explicit operator submission through the existing forms.
+
 The service also has a real Postgres backend. Start the local database and goal store with:
 
 ```sh
 COAT_GOAL_STORE_BACKEND=postgres \
-  docker compose -f infra/compose/docker-compose.yml --profile db up postgres goal-store
+  coat compose up --profile db postgres goal-store
 ```
 
 Keep full contract payloads in JSONB and use typed columns for IDs, statuses, roles, subgoals, event kinds, and artifact URIs. Migration scaffolding lives under `infra/db/migrations/`; Compose starts a local `pgvector/pgvector:pg16` database with the `db` profile.
@@ -276,9 +365,9 @@ coat approve \
   --approved true
 ```
 
-The default `ApprovalGatePolicy` requires approval for open network, non-isolated runners, secret-bearing MCP contexts, brokered user auth, dangerous MCP tools, privileged runner labels/capabilities, and any approval-policy `never` task that is not isolated.
+The default `ApprovalGatePolicy` requires approval for open network, non-isolated runners, secret-bearing MCP contexts, brokered user auth, dangerous MCP tools, high-risk local tool execution, privileged runner labels/capabilities, and any approval-policy `never` task that is not isolated.
 
-Review output examples live under `examples/`. Runner implementations should return the same shape as `examples/review-output-changes-requested.json` when they need to block satisfaction and request an actor retry. Findings should include file, line, and priority when the issue is tied to code; high/critical findings and priority 0/1 findings block validation even if the reviewer accidentally returns `accept`.
+Review output examples live under `examples/`. Runner implementations should return the same shape as `examples/review-output-changes-requested.json` when they need to block satisfaction and request an actor retry. Use `examples/review-output-doctrine-coverage.json` for formal-methods, type-soundness, hypothesis-testing, DDD, readability, abstraction, and security coverage. Findings should include file, line, and priority when the issue is tied to code; high/critical findings and priority 0/1 findings block validation even if the reviewer accidentally returns `accept`.
 
 Tester and code-worker results should include `test_evidence` entries with command, exit code, pass/fail, duration, and stdout/stderr or artifact URIs whenever `done_criteria.tests_pass=true`. The validator treats missing or all-failing test evidence as incomplete for work-like and tester tasks.
 
@@ -350,7 +439,9 @@ Do not enable live code execution without isolated workspaces and an explicit sa
 
 ## Sandbox Runner
 
-The sandbox runner listens on `http://localhost:9083` in Compose. It does not run arbitrary commands directly. It creates a deterministic per-task workspace, records a local registry file, writes `workspace-manifest.json`, and returns git/object-storage result refs that workers can use in their structured results.
+The sandbox runner listens on `http://localhost:9083` in Compose. It creates a deterministic per-task workspace, records a local registry file, writes `workspace-manifest.json`, and returns git/object-storage result refs that workers can use in their structured results.
+
+Local binary execution is opt-in and allowlisted. `/commands/plan` is always available for approval-aware planning. `/commands/run` only executes bare binary names when `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION=true`, the workspace exists, the command has an approval ID when required, and the binary is listed in `SANDBOX_ALLOWED_LOCAL_BINARIES`. The default allowlist is aimed at validation and operator tooling: `git`, build/test tools, package managers, `docker`, `helm`, and `kubectl`. Keep this disabled unless the runner node is isolated enough for the requested task.
 
 Local Compose advertises only `SANDBOX_SUPPORTED_BACKENDS=local_workspace`. A request can declare `gvisor`, `kata`, `firecracker`, or `kubernetes_job`, but the local runner will return a `SandboxAttestation` warning unless the runner is deployed on infrastructure that can actually enforce that backend. Use `docs/design-docs/100-strong-sandboxing-guardrails.md` for the production pattern.
 
@@ -371,6 +462,9 @@ Render the reusable bounded Job example set from the CLI:
 ```sh
 coat k8s ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
+coat k8s ephemeral-jobs apply \
+  --file infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml \
+  --dry-run=client
 ```
 
 The rendered file contains default-deny network policy, a restricted service

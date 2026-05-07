@@ -1,0 +1,12 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756814",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Run the standard behavioral testing review before accepting the implementation.",
+  "kind": {
+    "kind": "request_standard_review",
+    "check": "behavioral_testing",
+    "topic": "the end-to-end goal and user/operator workflow",
+    "reason": "Need evidence that tests prove the actual objective and fail for meaningful incorrect behavior, not only that a button, API, schema, or file exists."
+  }
+}

@@ -9,11 +9,15 @@ adapter into COAT.
 Every runner context must include this policy before task-specific instructions:
 
 ```text
-Subagent policy:
-- In COAT, "subagent" means a coordinator-owned durable child task.
-- Do not spawn native Codex, Claude Code, SDK, MCP-client, or framework-local subagents.
-- If more work is needed, return ChildTaskRequest objects in AgentRunResult.child_requests.
-- The coordinator owns task creation, budgets, approvals, runner routing, memory context, MCP auth, sandbox policy, validation, and retry.
+<coat_subagent_policy>
+  <definition>In COAT, "subagent" MUST mean a coordinator-owned durable child task.</definition>
+  <must>
+    <rule>Runners MUST NOT spawn native Codex, Claude Code, SDK, MCP-client, framework-local, or model-provider subagents.</rule>
+    <rule>If more work is needed, runners MUST return `ChildTaskRequest` objects in `AgentRunResult.child_requests`.</rule>
+    <rule>The coordinator MUST own task creation, budgets, approvals, runner routing, memory context, MCP auth, sandbox policy, validation, and retry.</rule>
+    <rule>Prompt, skill, MCP, and runner contexts MUST preserve this policy before task-specific instructions.</rule>
+  </must>
+</coat_subagent_policy>
 ```
 
 This mirrors `ExecutionProfile.subagents`, which defaults to:
@@ -32,6 +36,31 @@ MCP clients should fetch or embed the same rule:
 Use the returned structured content when initializing chat agents, skills, or
 tool-use contexts. Do not put raw MCP auth tokens in this context; use
 `McpContextRef` and `SecretRef` resolution.
+
+## Local Tool Context
+
+Runner contexts that may execute local binaries must include this policy before
+tool-use instructions:
+
+```text
+<coat_local_tool_policy>
+  <definition>Local binaries are task-scoped executor tools, not ambient shell access.</definition>
+  <must>
+    <rule>Runners MUST inspect `ExecutionProfile.local_tools` before invoking `git`, `docker`, `helm`, `kubectl`, build tools, package managers, tests, or local binaries.</rule>
+    <rule>Runners MUST NOT execute binaries that are absent from `local_tools.allowed_tools` or denied by `local_tools.denied_binaries`.</rule>
+    <rule>Runners MUST use the sandbox runner or an approved sandbox executor for command planning and execution.</rule>
+    <rule>Runners MUST run commands inside the task workspace and MUST return command evidence artifacts with argv, cwd, exit code, stdout/stderr refs or bounded output, and timestamps.</rule>
+    <rule>Runners MUST request approval before high-risk tools such as Docker socket access, Helm/Kubernetes cluster access, broad network access, privileged flags, or policy-denied subcommands.</rule>
+    <rule>Runners MUST NOT put secrets, bearer tokens, kubeconfigs, cloud credentials, or device-auth materials in command output, diagnostics, memory, or artifacts.</rule>
+  </must>
+</coat_local_tool_policy>
+```
+
+Runner registration must advertise `local_commands` and the specific tool
+capabilities it can actually enforce, such as `git_cli`, `docker_cli`,
+`helm_cli`, `kubernetes_cli`, `build_tooling`, or `package_manager_cli`. Labels
+like `tools.helm=true`, `tools.docker=true`, and `sandbox.backend=gvisor` make
+routing auditable.
 
 ## Live Runner Adapters
 

@@ -99,6 +99,21 @@ coat plan compile \
   --out examples/drafts/compiled-goal.json
 ```
 
+Branch from an existing plan by creating a new durable plan with `source_plan_id`.
+The branch keeps independent revision history and should compile to a new
+`goal_id` when it becomes an executable candidate:
+
+```sh
+coat plan draft --file examples/plan-branch-from-existing.json
+coat plan revise \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
+  --file examples/plan-revision-branch-local-runners.json
+coat plan compile \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
+  --file examples/plan-compile-branch-new-goal.json \
+  --out examples/drafts/local-model-runner-branch-goal.json
+```
+
 ## SPA And MCP
 
 The control gateway has a `Plans` tab. It can create plans, list plans, load a plan, post revisions, and compile a plan to a `GoalSpec`.
@@ -126,6 +141,8 @@ Plan editing through the SPA or MCP still calls backend APIs. The browser does n
 - Use durable plans for ambiguous, multi-step, high-risk, or collaborative requests.
 - Keep open questions explicit instead of hiding them inside a prompt.
 - Record decisions and rationale when steering changes direction.
+- Branch competing plans with a new `plan_id` plus `source_plan_id`; do not revise
+  the source plan just to explore an alternate implementation path.
 - Keep stable subgoal IDs once other artifacts refer to them.
 - Compile to `GoalSpec` only when the plan has enough evidence, constraints, and first-frontier routing.
 - Do not ask workers to infer subgoals from plan prose after compilation.

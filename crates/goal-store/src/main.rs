@@ -21,7 +21,9 @@ use axum::{
 };
 use coat_domain::{
     ApprovalRecord, ApprovalStatus, CheckpointRef, DurablePlan, DurablePlanListResponse,
-    DurablePlanResponse, GoalArtifactRecord, GoalEventRecord, GoalId, GoalRecord, GoalStatus,
+    DurablePlanResponse, EventSourceApprovalListResponse, EventSourceApprovalRecord,
+    EventSourceApprovalRecordRequest, EventSourceApprovalRecordResponse, EventSourceApprovalStatus,
+    GoalArtifactRecord, GoalEventRecord, GoalId, GoalRecord, GoalStatus,
     GoalStoreApprovalListResponse, GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest,
     GoalStoreArtifactRecordResponse, GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest,
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
@@ -102,6 +104,7 @@ struct GoalStore {
     events: BTreeMap<GoalId, Vec<GoalEventRecord>>,
     artifacts: BTreeMap<GoalId, Vec<GoalArtifactRecord>>,
     approvals: BTreeMap<GoalId, Vec<ApprovalRecord>>,
+    event_source_approvals: BTreeMap<Uuid, EventSourceApprovalRecord>,
     snapshots: BTreeMap<GoalId, GoalStoreSnapshot>,
     plans: BTreeMap<PlanId, DurablePlan>,
 }
@@ -113,6 +116,7 @@ enum JournalEntry {
     Event(GoalStoreEventAppendRequest),
     Artifact(GoalStoreArtifactRecordRequest),
     Plan(DurablePlan),
+    EventSourceApproval(EventSourceApprovalRecord),
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +154,14 @@ struct EventFilter {
 struct ApprovalFilter {
     goal_id: Option<GoalId>,
     status: Option<Vec<ApprovalStatus>>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EventSourceApprovalFilter {
+    source_id: Option<String>,
+    approval_ref: Option<String>,
+    status: Option<Vec<EventSourceApprovalStatus>>,
     limit: Option<usize>,
 }
 
@@ -219,6 +231,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/goal-store/goals", get(list_goals))
         .route("/goal-store/tasks", get(list_all_tasks))
         .route("/goal-store/approvals", get(list_all_approvals))
+        .route(
+            "/goal-store/event-source-approvals",
+            get(list_event_source_approvals).post(record_event_source_approval),
+        )
         .route("/goal-store/goals/{goal_id}", get(get_goal))
         .route("/goal-store/goals/{goal_id}/tasks", get(list_tasks))
         .route("/goal-store/goals/{goal_id}/events", get(list_events))
@@ -480,6 +496,42 @@ async fn list_all_approvals(
     })))
 }
 
+async fn record_event_source_approval(
+    State(state): State<AppState>,
+    Json(request): Json<EventSourceApprovalRecordRequest>,
+) -> Result<Json<EventSourceApprovalRecordResponse>, ApiError> {
+    upsert_event_source_approval_record(&state, &request.record)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(EventSourceApprovalRecordResponse {
+        accepted: true,
+        record: request.record,
+    }))
+}
+
+async fn list_event_source_approvals(
+    State(state): State<AppState>,
+    Query(filter): Query<EventSourceApprovalFilter>,
+) -> Result<Json<EventSourceApprovalListResponse>, ApiError> {
+    let records = if let Some(pool) = &state.postgres {
+        list_event_source_approvals_postgres(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state
+            .store
+            .read()
+            .await
+            .event_source_approvals
+            .values()
+            .cloned()
+            .collect()
+    };
+    Ok(Json(EventSourceApprovalListResponse {
+        records: filter_event_source_approvals(records, &filter),
+    }))
+}
+
 async fn list_tasks(
     State(state): State<AppState>,
     Path(goal_id): Path<Uuid>,
@@ -721,6 +773,37 @@ fn filter_approvals(
     approvals
 }
 
+fn filter_event_source_approvals(
+    mut records: Vec<EventSourceApprovalRecord>,
+    filter: &EventSourceApprovalFilter,
+) -> Vec<EventSourceApprovalRecord> {
+    records.retain(|record| {
+        filter
+            .source_id
+            .as_ref()
+            .is_none_or(|source_id| &record.source_id == source_id)
+            && filter
+                .approval_ref
+                .as_ref()
+                .is_none_or(|approval_ref| &record.approval_ref == approval_ref)
+            && filter
+                .status
+                .as_ref()
+                .is_none_or(|statuses| statuses.contains(&record.status))
+    });
+    records.sort_by(|left, right| {
+        right
+            .recorded_at
+            .cmp(&left.recorded_at)
+            .then_with(|| left.source_id.cmp(&right.source_id))
+            .then_with(|| left.record_id.cmp(&right.record_id))
+    });
+    if let Some(limit) = filter.limit {
+        records.truncate(limit);
+    }
+    records
+}
+
 fn filter_events(mut events: Vec<GoalEventRecord>, filter: &EventFilter) -> Vec<GoalEventRecord> {
     events.retain(|event| {
         filter
@@ -744,6 +827,16 @@ async fn verify_postgres_schema(pool: &PgPool) -> anyhow::Result<()> {
         .context("check coat.goals table")?;
     if table.is_none() {
         bail!("coat.goals table missing; run infra/db/migrations before starting goal-store");
+    }
+    let event_source_approvals: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('coat.event_source_approvals')::text")
+            .fetch_one(pool)
+            .await
+            .context("check coat.event_source_approvals table")?;
+    if event_source_approvals.is_none() {
+        bail!(
+            "coat.event_source_approvals table missing; run infra/db/migrations before starting goal-store"
+        );
     }
     Ok(())
 }
@@ -1098,6 +1191,25 @@ async fn upsert_plan_record(state: &AppState, plan: &DurablePlan) -> anyhow::Res
     Ok(())
 }
 
+async fn upsert_event_source_approval_record(
+    state: &AppState,
+    record: &EventSourceApprovalRecord,
+) -> anyhow::Result<()> {
+    if let Some(pool) = &state.postgres {
+        upsert_event_source_approval_postgres(pool, record).await?;
+    } else if let Err(error) =
+        append_journal(state, JournalEntry::EventSourceApproval(record.clone())).await
+    {
+        tracing::warn!(%error, "append event source approval journal failed");
+    }
+    state
+        .store
+        .write()
+        .await
+        .apply_event_source_approval(record.clone());
+    Ok(())
+}
+
 async fn insert_event_postgres(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event: &GoalEventRecord,
@@ -1152,11 +1264,12 @@ async fn upsert_plan_postgres(pool: &PgPool, plan: &DurablePlan) -> anyhow::Resu
     sqlx::query(
         r#"
         INSERT INTO coat.plans (
-            id, title, objective, repo, status, mode, version, compiled_goal_id,
-            updated_at_text, record_json
+            id, source_plan_id, title, objective, repo, status, mode, version,
+            compiled_goal_id, updated_at_text, record_json
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (id) DO UPDATE SET
+            source_plan_id = EXCLUDED.source_plan_id,
             title = EXCLUDED.title,
             objective = EXCLUDED.objective,
             repo = EXCLUDED.repo,
@@ -1170,6 +1283,7 @@ async fn upsert_plan_postgres(pool: &PgPool, plan: &DurablePlan) -> anyhow::Resu
         "#,
     )
     .bind(plan.id)
+    .bind(plan.source_plan_id)
     .bind(&plan.title)
     .bind(&plan.objective)
     .bind(&plan.repo)
@@ -1269,6 +1383,66 @@ async fn list_approvals_postgres_all(pool: &PgPool) -> anyhow::Result<Vec<Approv
         .collect()
 }
 
+async fn upsert_event_source_approval_postgres(
+    pool: &PgPool,
+    record: &EventSourceApprovalRecord,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO coat.event_source_approvals (
+            id, approval_ref, source_id, source_kind, status, risky, reason,
+            operator, recorded_at_text, payload_json, record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (approval_ref, source_id) DO UPDATE SET
+            id = EXCLUDED.id,
+            source_kind = EXCLUDED.source_kind,
+            status = EXCLUDED.status,
+            risky = EXCLUDED.risky,
+            reason = EXCLUDED.reason,
+            operator = EXCLUDED.operator,
+            recorded_at_text = EXCLUDED.recorded_at_text,
+            payload_json = EXCLUDED.payload_json,
+            record_json = EXCLUDED.record_json,
+            recorded_at = now()
+        "#,
+    )
+    .bind(record.record_id)
+    .bind(&record.approval_ref)
+    .bind(&record.source_id)
+    .bind(json_string(&record.source_kind)?)
+    .bind(json_string(&record.status)?)
+    .bind(record.risky)
+    .bind(&record.reason)
+    .bind(&record.operator)
+    .bind(&record.recorded_at)
+    .bind(record.payload_json.clone())
+    .bind(serde_json::to_value(record)?)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "upsert event source approval {} for source {}",
+            record.approval_ref, record.source_id
+        )
+    })?;
+    Ok(())
+}
+
+async fn list_event_source_approvals_postgres(
+    pool: &PgPool,
+) -> anyhow::Result<Vec<EventSourceApprovalRecord>> {
+    let rows = sqlx::query(
+        "SELECT record_json FROM coat.event_source_approvals ORDER BY recorded_at DESC, source_id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .context("query event source approvals")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "event source approval"))
+        .collect()
+}
+
 async fn list_events_postgres(
     pool: &PgPool,
     goal_id: GoalId,
@@ -1345,7 +1519,14 @@ impl GoalStore {
     }
 
     fn apply_event(&mut self, event: GoalEventRecord) {
-        self.events.entry(event.goal_id).or_default().push(event);
+        let events = self.events.entry(event.goal_id).or_default();
+        if let Some(existing) = events.iter_mut().find(|existing| {
+            existing.sequence == event.sequence || existing.idempotency_key == event.idempotency_key
+        }) {
+            *existing = event;
+        } else {
+            events.push(event);
+        }
     }
 
     fn apply_artifacts(&mut self, records: Vec<GoalArtifactRecord>) {
@@ -1359,6 +1540,10 @@ impl GoalStore {
 
     fn apply_plan(&mut self, plan: DurablePlan) {
         self.plans.insert(plan.id, plan);
+    }
+
+    fn apply_event_source_approval(&mut self, record: EventSourceApprovalRecord) {
+        self.event_source_approvals.insert(record.record_id, record);
     }
 }
 
@@ -1383,6 +1568,9 @@ fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<GoalStore> {
             JournalEntry::Event(request) => store.apply_event(request.event),
             JournalEntry::Artifact(request) => store.apply_artifacts(request.into_records()),
             JournalEntry::Plan(plan) => store.apply_plan(plan),
+            JournalEntry::EventSourceApproval(record) => {
+                store.apply_event_source_approval(record);
+            }
         }
     }
     Ok(store)
@@ -1412,9 +1600,10 @@ async fn append_journal(state: &AppState, entry: JournalEntry) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use coat_domain::{
-        ArtifactKind, ArtifactRef, CheckpointRef, GoalSpec, GoalState,
-        GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest, PlanDraftRequest,
-        ProtocolMetadata,
+        ArtifactKind, ArtifactRef, CheckpointRef, EventSourceApprovalRecord,
+        EventSourceApprovalStatus, EventSourceKind, GoalEventKind, GoalEventRecord, GoalSpec,
+        GoalState, GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest,
+        PlanDraftRequest, ProtocolMetadata,
     };
 
     use super::{GoalStore, checkpoints_from_artifacts};
@@ -1441,6 +1630,7 @@ mod tests {
     fn plan_projection_indexes_durable_plan() {
         let request = PlanDraftRequest {
             plan_id: None,
+            source_plan_id: None,
             title: "Plan first".to_string(),
             objective: "Create a durable plan before compiling a goal.".to_string(),
             repo: None,
@@ -1496,6 +1686,35 @@ mod tests {
     }
 
     #[test]
+    fn event_projection_is_idempotent_by_sequence_or_key() {
+        let goal_id = uuid::Uuid::new_v4();
+        let mut store = GoalStore::default();
+        let event = GoalEventRecord {
+            event_id: uuid::Uuid::new_v4(),
+            goal_id,
+            task_id: None,
+            sequence: 7,
+            kind: GoalEventKind::StateProjected,
+            message: "first projection".to_string(),
+            actor: Some("coordinator".to_string()),
+            idempotency_key: "goal:event:7".to_string(),
+            created_at: Some("1715000000".to_string()),
+            payload_json: serde_json::json!({"attempt": 1}),
+        };
+        let mut replayed = event.clone();
+        replayed.event_id = uuid::Uuid::new_v4();
+        replayed.message = "replayed projection".to_string();
+        replayed.payload_json = serde_json::json!({"attempt": 2});
+
+        store.apply_event(event);
+        store.apply_event(replayed);
+
+        assert_eq!(store.events[&goal_id].len(), 1);
+        assert_eq!(store.events[&goal_id][0].message, "replayed projection");
+        assert_eq!(store.events[&goal_id][0].payload_json["attempt"], 2);
+    }
+
+    #[test]
     fn checkpoint_records_are_queryable_history() {
         let state = GoalState::new(GoalSpec::new("checkpoint", "record checkpoint history"));
         let task = state.tasks.values().next().expect("root task");
@@ -1519,5 +1738,30 @@ mod tests {
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(checkpoints[0].id, checkpoint.id);
         assert_eq!(checkpoints[0].label, "before-review");
+    }
+
+    #[test]
+    fn event_source_approval_records_are_queryable() {
+        let record = EventSourceApprovalRecord {
+            record_id: uuid::Uuid::new_v4(),
+            approval_ref: "approval-123".to_string(),
+            source_id: "ci-events".to_string(),
+            source_kind: EventSourceKind::Ci,
+            status: EventSourceApprovalStatus::Provided,
+            risky: true,
+            reason: "enabled source can create or steer work".to_string(),
+            operator: Some("local-operator".to_string()),
+            recorded_at: Some("1715000000".to_string()),
+            payload_json: serde_json::json!({"source_enabled": true}),
+        };
+        let mut store = GoalStore::default();
+
+        store.apply_event_source_approval(record.clone());
+
+        assert_eq!(store.event_source_approvals.len(), 1);
+        assert_eq!(
+            store.event_source_approvals[&record.record_id].approval_ref,
+            "approval-123"
+        );
     }
 }

@@ -42,6 +42,13 @@ Tasks store references and claims needed for routing. They do not store raw ID t
 
 The broker should verify issuer, audience, tenant, scopes, consent, task ID, runner identity, and TTL before minting anything.
 
+`infra/k8s/examples/control-web-oidc-gateway.yaml` shows the optional dashboard
+front-door pattern with OAuth2 Proxy. That gateway authenticates browser access
+and can pass identity headers to `control-web`, but it is not itself the MCP
+token broker. User-delegated MCP calls still require `UserPrincipalRef`,
+`OidcDelegationPolicy`, runner labels, approval/consent refs, and a broker that
+mints short-lived per-MCP credentials.
+
 ## MCP Server Rules
 
 An MCP server that acts as a user must:

@@ -110,6 +110,10 @@ fn tool_descriptors() -> Vec<ToolDescriptor> {
             description: "Route an approved test command through the sandbox runner.",
         },
         ToolDescriptor {
+            name: "local_command",
+            description: "Plan or run an approved allowlisted local binary through the sandbox runner.",
+        },
+        ToolDescriptor {
             name: "artifact_manifest",
             description: "List artifacts produced by a task.",
         },
@@ -234,6 +238,28 @@ fn mcp_tools() -> Vec<serde_json::Value> {
             }
         }),
         serde_json::json!({
+            "name": "local_command",
+            "description": "Plan or run an approved allowlisted local binary through the sandbox runner. The tool registry never runs the command in-process.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}}
+                        ]
+                    },
+                    "workspace_id": {"type": "string"},
+                    "goal_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "approval_id": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1},
+                    "execute": {"type": "boolean", "default": false}
+                }
+            }
+        }),
+        serde_json::json!({
             "name": "artifact_manifest",
             "description": "Return artifact and sandbox manifest refs for a task workspace.",
             "inputSchema": {
@@ -275,6 +301,7 @@ async fn call_tool(state: &AppState, params: ToolCallParams) -> anyhow::Result<s
     match params.name.as_str() {
         "repo_status" => repo_status(state, &params.arguments),
         "test_command" => test_command(state, &params.arguments).await,
+        "local_command" => local_command(state, &params.arguments).await,
         "artifact_manifest" => artifact_manifest(state, &params.arguments).await,
         "checkpoint_history" => checkpoint_history(state, &params.arguments).await,
         "subagent_policy" => Ok(subagent_policy()),
@@ -407,6 +434,77 @@ async fn test_command(
             "diagnostics": ["TOOL_REGISTRY_SANDBOX_RUNNER_URL is not configured"]
         },
         "isError": false
+    }))
+}
+
+async fn local_command(
+    state: &AppState,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let requested_command = arguments
+        .get("command")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let execute = arguments
+        .get("execute")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let Some(sandbox_runner_url) = state.sandbox_runner_url.as_ref() else {
+        return Ok(serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "local command execution is delegated to sandbox-runner; this MCP tool does not execute commands directly"
+                }
+            ],
+            "structuredContent": {
+                "requested_command": requested_command,
+                "status": "blocked",
+                "next_service": "sandbox-runner",
+                "diagnostics": ["TOOL_REGISTRY_SANDBOX_RUNNER_URL is not configured"]
+            },
+            "isError": false
+        }));
+    };
+
+    let endpoint = if execute {
+        "commands/run"
+    } else {
+        "commands/plan"
+    };
+    let response = reqwest::Client::new()
+        .post(format!("{sandbox_runner_url}/{endpoint}"))
+        .json(&serde_json::json!({
+            "workspace_id": arguments.get("workspace_id"),
+            "goal_id": arguments.get("goal_id"),
+            "task_id": arguments.get("task_id"),
+            "command": requested_command,
+            "approval_id": arguments.get("approval_id"),
+            "cwd": arguments.get("cwd"),
+            "timeout_seconds": arguments.get("timeout_seconds")
+        }))
+        .send()
+        .await?;
+    let status = response.status();
+    let value = response.json::<serde_json::Value>().await?;
+    Ok(serde_json::json!({
+        "content": [
+            {
+                "type": "text",
+                "text": if execute {
+                    "local command was routed to sandbox-runner for approval-aware execution"
+                } else {
+                    "local command was routed to sandbox-runner for approval-aware planning"
+                }
+            }
+        ],
+        "structuredContent": {
+            "sandbox_runner_url": sandbox_runner_url,
+            "http_status": status.as_u16(),
+            "execute": execute,
+            "result": value
+        },
+        "isError": !status.is_success()
     }))
 }
 
@@ -751,8 +849,8 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
     use super::{
-        AppState, artifact_manifest, authorize, checkpoint_history, resolve_repo_path,
-        subagent_policy, test_command,
+        AppState, artifact_manifest, authorize, checkpoint_history, local_command,
+        resolve_repo_path, subagent_policy, test_command,
     };
 
     #[test]
@@ -800,6 +898,28 @@ mod tests {
         let result = test_command(&state, &serde_json::json!({ "command": "cargo test" }))
             .await
             .expect("test command response");
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["status"], "blocked");
+        assert_eq!(
+            result["structuredContent"]["next_service"],
+            "sandbox-runner"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_command_reports_sandbox_delegation() {
+        let state = AppState {
+            workspace_root: std::env::current_dir().expect("cwd"),
+            sandbox_workspace_root: None,
+            sandbox_runner_url: None,
+            auth_token: None,
+        };
+        let result = local_command(
+            &state,
+            &serde_json::json!({ "command": ["git", "status"], "execute": true }),
+        )
+        .await
+        .expect("local command response");
         assert_eq!(result["isError"], false);
         assert_eq!(result["structuredContent"]["status"], "blocked");
         assert_eq!(

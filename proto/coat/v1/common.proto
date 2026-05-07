@@ -19,6 +19,37 @@ message SecretRef {
   string audience = 5;
 }
 
+enum McpAccessMode {
+  MCP_ACCESS_MODE_UNSPECIFIED = 0;
+  MCP_ACCESS_MODE_SINGLE_USER = 1;
+  MCP_ACCESS_MODE_MULTI_USER_OIDC = 2;
+}
+
+message UserPrincipalRef {
+  string user_id = 1;
+  string issuer = 2;
+  string subject = 3;
+  string tenant_id = 4;
+  string email_hint = 5;
+  repeated string groups = 6;
+  string session_id = 7;
+  string consent_ref = 8;
+}
+
+message OidcDelegationPolicy {
+  string issuer = 1;
+  string client_id = 2;
+  repeated string audiences = 3;
+  repeated string requested_scopes = 4;
+  SecretRef token_broker = 5;
+  SecretRef token_cache_ref = 6;
+  uint64 lease_ttl_seconds = 7;
+  bool require_user_consent = 8;
+  map<string, string> required_runner_labels = 9;
+  repeated string allowed_mcp_servers = 10;
+  bool pass_id_token_to_mcp = 11;
+}
+
 message GoalRef {
   string goal_id = 1;
 }

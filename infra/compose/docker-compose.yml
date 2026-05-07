@@ -106,6 +106,7 @@ services:
       BIND_ADDR: 0.0.0.0:9084
       TOOL_REGISTRY_WORKSPACE_ROOT: /workspace
       TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT: /workspaces
+      TOOL_REGISTRY_SANDBOX_RUNNER_URL: http://sandbox-runner:9083
       MCP_TOOL_TOKEN: ${MCP_TOOL_TOKEN:-}
     ports:
       - "9084:9084"

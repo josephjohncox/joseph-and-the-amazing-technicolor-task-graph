@@ -1,3 +1,14 @@
+//! Restate-backed durable coordinator service.
+//!
+//! Purpose: own `GoalState`, drive the durable task frontier, request approval,
+//! dispatch bounded tasks to runners, validate results, and project read models.
+//! Workers do not own global plan or completion truth.
+//!
+//! Architecture references:
+//! - `ARCHITECTURE.md`
+//! - `docs/design-docs/000-system-shape.md`
+//! - `docs/exec-plans/active/020-restate-coordinator.md`
+
 use coat_domain::{
     AgentRunRequest, AgentRunResult, ApprovalRequest, BranchRequest, BranchSelectionRequest,
     ControlLoopMode, DomainError, GoalProgress, GoalSpec, GoalState,

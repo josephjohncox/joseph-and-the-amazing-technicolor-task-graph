@@ -19,6 +19,7 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 - Mutating endpoints can require gateway bearer auth through `COAT_EVENT_GATEWAY_TOKEN`.
 - Registered webhook sources can require shared-secret headers, bearer tokens, or HMAC-SHA256 signatures with secrets resolved through `SecretRef`.
 - Provider HMAC presets verify GitHub, Slack Events, and Stripe-style canonical signatures without exposing raw secrets in event state.
+- Webhook ingestion normalizes GitHub, GitLab, Slack Events, Stripe-style, Jira, and Linear payloads into stable `ExternalEvent` IDs, event types, subjects, and dedupe keys.
 - Registered generic event sources can normalize arbitrary JSON or CloudEvents-compatible payloads through JSON Pointer extraction and route through the same policy.
 - `coat event emit --source-id ... --file ...` emits generic events and routes them by default.
 - Routes support record-only, create-goal, create-research-goal, steer-goal, and human-review modes.
@@ -30,6 +31,5 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 
 ## Future Work
 
-- Add full provider payload normalization adapters for GitHub, GitLab, Slack, Stripe, Jira, and Linear on top of the provider signature presets.
 - Add Google Calendar and Outlook source adapters using MCP or provider APIs.
 - Persist event-source approval records in the goal store instead of only requiring an approval reference header.

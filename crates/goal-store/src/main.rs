@@ -1,3 +1,14 @@
+//! Queryable goal, task, plan, event, approval, and artifact projection service.
+//!
+//! Purpose: provide operator and dashboard read models without taking authority
+//! away from Restate. The coordinator remains source of truth; this service is a
+//! projection backed by JSONL for smoke tests or Postgres for production reads.
+//!
+//! Architecture references:
+//! - `docs/design-docs/070-protobuf-goal-store-protocols.md`
+//! - `infra/db/migrations/001_goal_store.sql`
+//! - `docs/exec-plans/active/110-protobuf-goal-store.md`
+
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, bail};

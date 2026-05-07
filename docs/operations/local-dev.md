@@ -40,6 +40,15 @@ The coordinator service listens internally on `http://coordinator:9080`.
 The control gateway and SPA listen on `http://localhost:9090`.
 The Codex and staff-engineer sidecars auto-register with `runner-registry` when Compose starts.
 The sandbox runner uses `SANDBOX_WORKSPACE_ROOT=/workspaces` in Compose and writes per-task manifests under the `sandbox-workspaces` volume.
+Live git worktree creation is disabled by default. For an explicitly approved local development run, start the sandbox runner with:
+
+```sh
+SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true
+SANDBOX_APPROVED_GIT_REPO_ROOTS=/absolute/path/to/approved/repo/root
+SANDBOX_REQUIRE_LIVE_GIT_WORKTREE_APPROVAL=true
+```
+
+Then include `live_git_worktree.enabled=true` and `live_git_worktree.approval_id` in the sandbox create request. Without all three controls, the runner still returns a planned `git_result` but does not mutate the repo.
 
 ## CLI
 
@@ -117,6 +126,7 @@ cargo run -p coat-cli -- store all-tasks
 cargo run -p coat-cli -- store approvals --limit 50
 cargo run -p coat-cli -- store record-artifacts --file examples/goal-store-record-artifacts.json
 cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request.json
+cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request-live-git.json
 cargo run -p coat-cli -- memory write --file examples/memory-write-fact.json
 cargo run -p coat-cli -- memory search --file examples/memory-search.json
 cargo run -p coat-cli -- memory join --file examples/memory-join.json
@@ -161,6 +171,7 @@ curl -sS -X POST http://localhost:9084/mcp \
 
 Set `MCP_TOOL_TOKEN` to require bearer auth on `/mcp`.
 In Compose, `tool-registry` mounts the sandbox workspace volume read-only and sets `TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT=/workspaces`, so `artifact_manifest` can return `workspace-manifest.json`, `sandbox-launch-plan.json`, `snapshots/latest.json`, and worker `artifacts/artifact-manifest.json` for a `{goal_id, task_id}` lookup. Kubernetes should normally resolve large artifacts from object storage or the goal-store projection; set the same env var only when the registry can safely read the sandbox workspace volume.
+Compose also sets `TOOL_REGISTRY_SANDBOX_RUNNER_URL=http://sandbox-runner:9083`. With that URL configured, the MCP `test_command` tool posts to `coat-sandbox-runner /commands/plan` and returns an approval-aware command plan instead of executing commands in the tool registry process.
 
 For local Codex or Claude Code device/browser auth, prefer a runner-local setup:
 
@@ -170,6 +181,8 @@ For local Codex or Claude Code device/browser auth, prefer a runner-local setup:
 - keep `allow_secret_sync=false`.
 
 Use `examples/auth-distribution-codex-device.json` for the node-local shape and `examples/auth-distribution-claude-brokered.json` for a brokered human-auth shape. Brokered user auth should emit an approval or feedback notification with the device-code URL or browser-login instructions, then resume through durable approval state.
+
+Default local mode is single-user. Multi-user OIDC MCP delegation is opt-in and should stay off for local smoke runs unless you are testing an auth broker. Use `examples/mcp-context-multi-user-oidc.json`, set runner capabilities to include `oidc_user_delegation`, label the runner with `auth.oidc.user_delegation=true` and tenant labels, and keep all user tokens in the broker or MCP server. Task state should contain only `UserPrincipalRef`, `OidcDelegationPolicy`, consent refs, and `SecretRef` values.
 
 The notifier stores local in-memory notification threads by `feedback_thread_key`, thread target address, or goal ID. This is for operator visibility in local runs; Restate workflow state remains the source of truth for approval and feedback signals.
 It also supports `NotificationTargetKind::webhook` by posting the `NotificationRequest` JSON to the target address and resolving optional bearer tokens through `SecretRef`. Slack, email, tracker, and paging targets intentionally require provider-specific adapters instead of pretending a local thread equals real delivery.

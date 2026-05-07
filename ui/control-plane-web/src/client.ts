@@ -1,3 +1,12 @@
+/**
+ * Browser client for the optional COAT control surface.
+ *
+ * Purpose: render backend state and send explicit steering/approval/planning
+ * commands through the control gateway APIs. The browser stores only UI token
+ * input locally and never owns coordinator truth.
+ *
+ * Architecture reference: docs/design-docs/110-control-gateway-spa.md
+ */
 type JsonValue = unknown;
 
 const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>("nav button[data-tab]"));

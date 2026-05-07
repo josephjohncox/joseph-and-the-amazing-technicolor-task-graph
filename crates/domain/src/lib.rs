@@ -1,3 +1,19 @@
+//! Shared COAT domain contracts and deterministic task-tree logic.
+//!
+//! This crate is the type boundary for Joseph and the Amazing Technicolor Task
+//! Graph. The coordinator, runners, validators, CLI, sidecars, and projection
+//! services all exchange these structures as JSON or protobuf-shaped envelopes.
+//!
+//! Architecture references:
+//! - `ARCHITECTURE.md` for the durable coordinator and service boundaries.
+//! - `docs/product-specs/coat-v1.md` for product intent and success criteria.
+//! - `docs/design-docs/010-distributed-runners-mcp.md` for runner/model/MCP routing.
+//! - `docs/design-docs/070-protobuf-goal-store-protocols.md` for projection protocols.
+//!
+//! Keep this crate free of network, filesystem, database, or model side effects.
+//! It should remain replay-safe and deterministic so Restate workflows can use
+//! it as policy and state-transition logic.
+
 use std::{
     collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
@@ -14,6 +30,12 @@ pub type TaskId = Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// User-authored executable contract for a durable goal.
+///
+/// A `GoalSpec` is not just a prompt. It carries the objective, budget,
+/// acceptance criteria, review policy, memory/research policy, approval policy,
+/// default execution profile, and optional initial tasks that seed the durable
+/// task tree. See `docs/operations/goal-authoring.md`.
 pub struct GoalSpec {
     pub id: GoalId,
     pub title: String,
@@ -178,6 +200,16 @@ impl GoalSpec {
                 "auth distribution allows secret sync; prefer runner-local or brokered leases"
                     .to_string(),
             );
+        }
+        if self.default_execution.mcp.access_mode == McpAccessMode::MultiUserOidc {
+            if self.default_execution.mcp.user.is_none() {
+                missing.push("multi-user OIDC MCP access requires a UserPrincipalRef".to_string());
+            }
+            if self.default_execution.mcp.oidc_delegation.is_none() {
+                missing.push(
+                    "multi-user OIDC MCP access requires an OidcDelegationPolicy".to_string(),
+                );
+            }
         }
         if self.default_execution.notifications.targets.is_empty() {
             warnings.push(
@@ -652,6 +684,11 @@ fn now_unix_timestamp_string() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Durable coordinator state for a goal.
+///
+/// `GoalState` is the coordinator-owned truth for task status, approvals,
+/// branch competition, review rounds, restart history, satisfaction, and
+/// learning signals. Workers return evidence; they never own this state.
 pub struct GoalState {
     pub goal: GoalSpec,
     pub tasks: BTreeMap<TaskId, TaskNode>,
@@ -2789,6 +2826,12 @@ pub enum GoalStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// One durable node in the goal's task tree.
+///
+/// Tasks are bounded work units with role, purpose, budget, sandbox profile,
+/// done criteria, execution profile, dependencies, and result refs. Subagents
+/// may request children through `ChildTaskRequest`, but only the coordinator
+/// materializes new `TaskNode`s.
 pub struct TaskNode {
     pub id: TaskId,
     pub parent_id: Option<TaskId>,
@@ -3575,6 +3618,8 @@ pub struct ApprovalGatePolicy {
     pub require_for_brokered_user_auth: bool,
     pub require_for_dangerous_mcp_tools: bool,
     pub require_for_privileged_runner_capabilities: bool,
+    #[serde(default = "default_true")]
+    pub require_for_native_subagent_spawn: bool,
     pub require_for_workspace_write_outside_isolation: bool,
     pub never_policy_requires_isolation: bool,
     #[serde(default = "default_true")]
@@ -3592,6 +3637,7 @@ impl Default for ApprovalGatePolicy {
             require_for_brokered_user_auth: true,
             require_for_dangerous_mcp_tools: true,
             require_for_privileged_runner_capabilities: true,
+            require_for_native_subagent_spawn: true,
             require_for_workspace_write_outside_isolation: true,
             never_policy_requires_isolation: true,
             never_policy_requires_strong_sandbox: true,
@@ -3657,6 +3703,12 @@ impl ApprovalGatePolicy {
             && task.execution.runner.requires_privileged_capability()
         {
             reason_codes.push(ApprovalReasonCode::PrivilegedRunnerCapability);
+            risk = risk.max(ApprovalRisk::High);
+        }
+        if self.require_for_native_subagent_spawn
+            && task.execution.subagents.native_spawn_requires_approval()
+        {
+            reason_codes.push(ApprovalReasonCode::NativeSubagentSpawn);
             risk = risk.max(ApprovalRisk::High);
         }
 
@@ -3728,6 +3780,7 @@ pub enum ApprovalReasonCode {
     BrokeredUserAuth,
     DangerousMcpTool,
     PrivilegedRunnerCapability,
+    NativeSubagentSpawn,
 }
 
 impl ApprovalReasonCode {
@@ -3743,6 +3796,7 @@ impl ApprovalReasonCode {
             Self::BrokeredUserAuth => "brokered_user_auth",
             Self::DangerousMcpTool => "dangerous_mcp_tool",
             Self::PrivilegedRunnerCapability => "privileged_runner_capability",
+            Self::NativeSubagentSpawn => "native_subagent_spawn",
         }
     }
 }
@@ -4770,7 +4824,12 @@ impl ReviewSubagentProfile {
             validation_gate_ids: Vec::new(),
             required_capabilities,
             required_model_features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
-            prompt_hints: Vec::new(),
+            prompt_hints: vec![
+                "Request additional subagent work only through AgentRunResult.child_requests."
+                    .to_string(),
+                "Do not spawn native Codex, Claude Code, SDK, or framework-local subagents."
+                    .to_string(),
+            ],
             inherited_by_default: true,
         }
     }
@@ -6114,10 +6173,17 @@ pub struct MemoryAdapterReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Task-local runner, model, persona, MCP, notification, result, and guardrail policy.
+///
+/// This is the contract that lets distributed runners and model providers pick
+/// up work without reading global plan prose. It is documented in
+/// `docs/design-docs/010-distributed-runners-mcp.md`.
 pub struct ExecutionProfile {
     pub runner: RunnerSelector,
     pub model: ModelRoute,
     pub persona: PersonaSpec,
+    #[serde(default)]
+    pub subagents: SubagentDelegationPolicy,
     pub mcp: McpContextRef,
     pub notifications: NotificationPolicy,
     #[serde(default)]
@@ -6148,7 +6214,8 @@ impl ExecutionProfile {
     }
 
     fn requires_brokered_user_auth(&self) -> bool {
-        self.mcp.auth_distribution.requires_brokered_user_approval()
+        self.mcp.requires_user_delegation_approval()
+            || self.mcp.auth_distribution.requires_brokered_user_approval()
             || self
                 .mcp
                 .servers
@@ -6172,12 +6239,85 @@ impl Default for ExecutionProfile {
             runner: RunnerSelector::default(),
             model: ModelRoute::default(),
             persona: PersonaSpec::default(),
+            subagents: SubagentDelegationPolicy::default(),
             mcp: McpContextRef::default(),
             notifications: NotificationPolicy::default(),
             results: ResultChannelPolicy::default(),
             guardrails: ExecutorGuardrailPolicy::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Task-local rule for interpreting "subagent" inside runner contexts.
+///
+/// COAT subagents are durable `TaskNode`s created by the coordinator and picked
+/// up through runner dispatch. Codex, Claude Code, MCP clients, and local model
+/// runners must not turn a prompt mention of "subagent" into native in-process
+/// delegation unless this policy is explicitly changed and approved.
+pub struct SubagentDelegationPolicy {
+    pub mode: SubagentDelegationMode,
+    pub native_spawn: NativeSubagentSpawnPolicy,
+    pub child_request_channel: ChildTaskRequestChannel,
+    #[serde(default = "default_true")]
+    pub inject_runner_context: bool,
+}
+
+impl SubagentDelegationPolicy {
+    pub fn runner_context_lines(&self) -> Vec<&'static str> {
+        match self.mode {
+            SubagentDelegationMode::CoordinatorDurableTasks => vec![
+                "Treat any request to use a subagent as a request to create a COAT durable child task.",
+                "Do not spawn native Codex, Claude Code, SDK, or framework-local subagents from inside this runner.",
+                "Return proposed child work only through AgentRunResult.child_requests.",
+                "The coordinator validates budgets, approval policy, routing, memory context, and sandbox policy before dispatch.",
+            ],
+            SubagentDelegationMode::Disabled => vec![
+                "Do not spawn subagents and do not request child tasks for this run.",
+                "Return blocked or partial with next_actions when more work is needed.",
+            ],
+        }
+    }
+
+    pub fn native_spawn_requires_approval(&self) -> bool {
+        matches!(
+            self.native_spawn,
+            NativeSubagentSpawnPolicy::RequiresApproval | NativeSubagentSpawnPolicy::Allowed
+        )
+    }
+}
+
+impl Default for SubagentDelegationPolicy {
+    fn default() -> Self {
+        Self {
+            mode: SubagentDelegationMode::CoordinatorDurableTasks,
+            native_spawn: NativeSubagentSpawnPolicy::Disabled,
+            child_request_channel: ChildTaskRequestChannel::AgentRunResultChildRequests,
+            inject_runner_context: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentDelegationMode {
+    CoordinatorDurableTasks,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSubagentSpawnPolicy {
+    Disabled,
+    RequiresApproval,
+    Allowed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildTaskRequestChannel {
+    AgentRunResultChildRequests,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -6422,6 +6562,8 @@ pub enum RunnerCapability {
     Test,
     Review,
     McpTools,
+    DurableChildTasks,
+    OidcUserDelegation,
     WorkspaceSandbox,
     ContainerSandbox,
     GvisorSandbox,
@@ -6870,8 +7012,19 @@ pub enum RiskTolerance {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// MCP context distributed by reference, never by raw credential value.
+///
+/// The coordinator stores server refs, allowed tools, secret refs, optional
+/// user principal refs, and auth-distribution policy. Runners resolve usable
+/// credentials locally or through brokers. See
+/// `docs/design-docs/040-auth-distribution.md` and
+/// `docs/design-docs/130-multi-user-oidc-mcp.md`.
 pub struct McpContextRef {
     pub context_id: Option<String>,
+    #[serde(default)]
+    pub access_mode: McpAccessMode,
+    pub user: Option<UserPrincipalRef>,
+    pub oidc_delegation: Option<OidcDelegationPolicy>,
     #[serde(default)]
     pub servers: Vec<McpServerRef>,
     #[serde(default)]
@@ -6886,6 +7039,9 @@ impl Default for McpContextRef {
     fn default() -> Self {
         Self {
             context_id: None,
+            access_mode: McpAccessMode::default(),
+            user: None,
+            oidc_delegation: None,
             servers: Vec::new(),
             secret_refs: Vec::new(),
             propagation: McpContextPropagation::CoordinatorIssued,
@@ -6893,6 +7049,82 @@ impl Default for McpContextRef {
             auth_distribution: AuthDistributionPolicy::default(),
         }
     }
+}
+
+impl McpContextRef {
+    pub fn uses_multi_user_oidc(&self) -> bool {
+        self.access_mode == McpAccessMode::MultiUserOidc || self.oidc_delegation.is_some()
+    }
+
+    fn requires_user_delegation_approval(&self) -> bool {
+        self.oidc_delegation
+            .as_ref()
+            .is_some_and(|policy| policy.require_user_consent)
+            || self.servers.iter().any(|server| {
+                matches!(
+                    &server.auth,
+                    McpAuthRef::OidcDelegation {
+                        require_user_consent: true,
+                        ..
+                    }
+                )
+            })
+    }
+
+    fn oidc_required_runner_labels(&self) -> BTreeMap<String, String> {
+        let mut labels = BTreeMap::new();
+        if self.uses_multi_user_oidc() {
+            labels.insert("auth.oidc.user_delegation".to_string(), "true".to_string());
+        }
+        if let Some(policy) = &self.oidc_delegation {
+            labels.extend(policy.required_runner_labels.clone());
+        }
+        labels
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAccessMode {
+    #[default]
+    SingleUser,
+    MultiUserOidc,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct UserPrincipalRef {
+    pub user_id: String,
+    pub issuer: String,
+    pub subject: String,
+    pub tenant_id: Option<String>,
+    pub email_hint: Option<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    pub session_id: Option<String>,
+    pub consent_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct OidcDelegationPolicy {
+    pub issuer: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    #[serde(default)]
+    pub requested_scopes: Vec<String>,
+    pub token_broker: SecretRef,
+    pub token_cache_ref: Option<SecretRef>,
+    pub lease_ttl_seconds: Option<u64>,
+    #[serde(default = "default_true")]
+    pub require_user_consent: bool,
+    #[serde(default)]
+    pub required_runner_labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub allowed_mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub pass_id_token_to_mcp: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -6982,6 +7214,10 @@ pub enum AuthMaterialKind {
     OAuthAccessToken,
     #[serde(rename = "oauth_refresh_token")]
     OAuthRefreshToken,
+    OidcIdToken,
+    OidcAccessToken,
+    OidcRefreshToken,
+    OidcOnBehalfOfToken,
     DeviceAuthSession,
     WorkloadIdentityToken,
     LocalCliSession,
@@ -6995,6 +7231,10 @@ impl AuthMaterialKind {
             self,
             Self::OAuthAccessToken
                 | Self::OAuthRefreshToken
+                | Self::OidcIdToken
+                | Self::OidcAccessToken
+                | Self::OidcRefreshToken
+                | Self::OidcOnBehalfOfToken
                 | Self::DeviceAuthSession
                 | Self::LocalCliSession
         )
@@ -7043,6 +7283,17 @@ pub enum McpAuthRef {
     OAuthDelegation {
         token_exchange_secret: SecretRef,
     },
+    OidcDelegation {
+        broker: SecretRef,
+        issuer: String,
+        audience: String,
+        #[serde(default)]
+        requested_scopes: Vec<String>,
+        principal: Option<UserPrincipalRef>,
+        token_ttl_seconds: Option<u64>,
+        #[serde(default = "default_true")]
+        require_user_consent: bool,
+    },
     DeviceAuthSession {
         session_ref: SecretRef,
         refresh_ref: Option<SecretRef>,
@@ -7064,6 +7315,7 @@ impl McpAuthRef {
             self,
             Self::Secret { .. }
                 | Self::OAuthDelegation { .. }
+                | Self::OidcDelegation { .. }
                 | Self::DeviceAuthSession { .. }
                 | Self::BrokeredUserSession { .. }
         )
@@ -7071,6 +7323,13 @@ impl McpAuthRef {
 
     fn requires_brokered_user_auth(&self) -> bool {
         matches!(self, Self::BrokeredUserSession { .. })
+            || matches!(
+                self,
+                Self::OidcDelegation {
+                    require_user_consent: true,
+                    ..
+                }
+            )
             || matches!(
                 self,
                 Self::DeviceAuthSession {
@@ -7206,6 +7465,10 @@ pub struct NotificationDeliveryReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Runner-advertised capacity, model inventory, labels, MCP servers, and capabilities.
+///
+/// The registry and coordinator use this to route a `TaskNode` by role,
+/// capability, locality, labels, model route, MCP context, and auth policy.
 pub struct RunnerRegistration {
     pub runner_id: String,
     pub node_id: String,
@@ -7336,6 +7599,7 @@ impl RunnerRegistration {
         if mcp.servers.is_empty()
             && mcp.secret_refs.is_empty()
             && mcp.auth_distribution.required_runner_labels.is_empty()
+            && !mcp.uses_multi_user_oidc()
         {
             return Vec::new();
         }
@@ -7346,6 +7610,16 @@ impl RunnerRegistration {
         {
             reasons.push("task has MCP context but runner lacks mcp_tools capability".to_string());
         }
+        if mcp.uses_multi_user_oidc()
+            && !self
+                .capabilities
+                .contains(&RunnerCapability::OidcUserDelegation)
+        {
+            reasons.push(
+                "task requires multi-user OIDC MCP delegation but runner lacks oidc_user_delegation capability"
+                    .to_string(),
+            );
+        }
         for (label, expected) in &mcp.auth_distribution.required_runner_labels {
             match self.labels.get(label) {
                 Some(actual) if actual == expected => {}
@@ -7355,6 +7629,19 @@ impl RunnerRegistration {
                 )),
                 None => reasons.push(format!(
                     "runner lacks MCP auth distribution label {}={}",
+                    label, expected
+                )),
+            }
+        }
+        for (label, expected) in mcp.oidc_required_runner_labels() {
+            match self.labels.get(&label) {
+                Some(actual) if actual == &expected => {}
+                Some(actual) => reasons.push(format!(
+                    "runner label {}={} does not satisfy OIDC delegation requirement {}={}",
+                    label, actual, label, expected
+                )),
+                None => reasons.push(format!(
+                    "runner lacks OIDC delegation label {}={}",
                     label, expected
                 )),
             }
@@ -7613,6 +7900,14 @@ impl ObjectStorageArtifactRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Input contract passed from the coordinator to a bounded worker run.
+///
+/// It contains exactly the assigned task plus scoped artifacts and timeout
+/// metadata. A runner should not discover global work from prose or mutate
+/// coordinator state directly. When the task or persona mentions "subagents,"
+/// the runner must initialize its local context from
+/// `ExecutionProfile.subagents` and return proposed durable children through
+/// `AgentRunResult.child_requests` instead of native in-runner subagent spawns.
 pub struct AgentRunRequest {
     pub goal_id: GoalId,
     pub task: TaskNode,
@@ -7624,6 +7919,11 @@ pub struct AgentRunRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Structured worker result returned to the coordinator for validation.
+///
+/// Free-form summaries are allowed only as supporting text. Durable decisions
+/// depend on typed artifacts, git/object refs, review output, research output,
+/// test evidence, sandbox attestation, and child-task requests.
 pub struct AgentRunResult {
     pub task_id: TaskId,
     pub status: WorkerRunStatus,
@@ -7869,6 +8169,11 @@ pub enum WorkerRunStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Only worker-to-coordinator channel for requesting subagent work.
+///
+/// A `ChildTaskRequest` is a proposal. The coordinator owns budget checks,
+/// approval gates, execution-profile inheritance, durable task materialization,
+/// and runner dispatch.
 pub struct ChildTaskRequest {
     pub role: WorkerKind,
     pub purpose: Option<TaskPurpose>,
@@ -7894,6 +8199,7 @@ pub struct ChildTaskRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Validator input tying one worker result back to the task and goal.
 pub struct ValidationRequest {
     pub goal_id: GoalId,
     pub task: TaskNode,
@@ -7902,6 +8208,11 @@ pub struct ValidationRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Validator decision consumed by the coordinator state machine.
+///
+/// A report translates worker evidence into pass/fail, score, missing criteria,
+/// next task status, child requests, and durable artifact refs. The coordinator
+/// applies the report; the validator does not mutate global state.
 pub struct ValidationReport {
     pub goal_id: GoalId,
     pub task_id: TaskId,
@@ -8383,6 +8694,11 @@ impl Default for GoalStorePolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// Registered event ingress policy for webhooks, schedules, calendars, buses, and generic events.
+///
+/// Event sources normalize external stimuli into `ExternalEvent`s and then route
+/// them through human review, triggered goals, or steering. They must not invoke
+/// workers directly. See `docs/design-docs/080-events-webhooks-schedules.md`.
 pub struct EventSource {
     pub id: String,
     pub kind: EventSourceKind,
@@ -10678,6 +10994,56 @@ mod tests {
     }
 
     #[test]
+    fn default_subagent_policy_routes_through_durable_child_requests() {
+        let state = GoalState::new(GoalSpec::new("subagents", "route subagents through COAT"));
+        let task = state.tasks.values().next().expect("root task");
+
+        assert_eq!(
+            task.execution.subagents.mode,
+            SubagentDelegationMode::CoordinatorDurableTasks
+        );
+        assert_eq!(
+            task.execution.subagents.native_spawn,
+            NativeSubagentSpawnPolicy::Disabled
+        );
+        assert_eq!(
+            task.execution.subagents.child_request_channel,
+            ChildTaskRequestChannel::AgentRunResultChildRequests
+        );
+        assert!(
+            task.execution
+                .subagents
+                .runner_context_lines()
+                .iter()
+                .any(|line| line.contains("AgentRunResult.child_requests"))
+        );
+    }
+
+    #[test]
+    fn native_subagent_spawn_requires_approval_when_enabled() {
+        let mut state = GoalState::new(GoalSpec::new("approval", "native subagent spawn"));
+        let task_id = state.runnable_tasks().remove(0).id;
+        state
+            .task_mut(task_id)
+            .expect("task")
+            .execution
+            .subagents
+            .native_spawn = NativeSubagentSpawnPolicy::RequiresApproval;
+
+        let request = state
+            .ensure_task_approval_or_request(task_id)
+            .expect("approval evaluation succeeds")
+            .expect("approval requested");
+
+        assert_eq!(request.risk, ApprovalRisk::High);
+        assert!(
+            request
+                .reason_codes
+                .contains(&ApprovalReasonCode::NativeSubagentSpawn)
+        );
+    }
+
+    #[test]
     fn network_open_task_waits_for_approval_then_resumes() {
         let mut state = GoalState::new(GoalSpec::new("approval", "network open task"));
         let task_id = state.runnable_tasks().remove(0).id;
@@ -10916,6 +11282,120 @@ mod tests {
     }
 
     #[test]
+    fn multi_user_oidc_is_opt_in_and_requires_capable_runner() {
+        let mut goal = GoalSpec::new("oidc", "delegate MCP calls as a logged-in OIDC user");
+        goal.default_execution.runner.worker = Some(WorkerKind::Planner);
+        assert_eq!(
+            goal.default_execution.mcp.access_mode,
+            McpAccessMode::SingleUser
+        );
+
+        let broker = SecretRef {
+            provider: SecretProvider::ExternalBroker,
+            name: "oidc-token-broker".to_string(),
+            key: Some("mcp".to_string()),
+            namespace: Some("coat".to_string()),
+            audience: Some("mcp-user-delegation".to_string()),
+        };
+        let principal = UserPrincipalRef {
+            user_id: "user-123".to_string(),
+            issuer: "https://issuer.example.com".to_string(),
+            subject: "00u123".to_string(),
+            tenant_id: Some("tenant-a".to_string()),
+            email_hint: Some("operator@example.com".to_string()),
+            groups: vec!["engineering".to_string()],
+            session_id: Some("session-123".to_string()),
+            consent_ref: Some("consent-123".to_string()),
+        };
+        goal.default_execution.mcp.access_mode = McpAccessMode::MultiUserOidc;
+        goal.default_execution.mcp.user = Some(principal.clone());
+        goal.default_execution.mcp.oidc_delegation = Some(OidcDelegationPolicy {
+            issuer: "https://issuer.example.com".to_string(),
+            client_id: "coat-mcp".to_string(),
+            audiences: vec!["mcp://github".to_string()],
+            requested_scopes: vec!["openid".to_string(), "profile".to_string()],
+            token_broker: broker.clone(),
+            token_cache_ref: None,
+            lease_ttl_seconds: Some(600),
+            require_user_consent: true,
+            required_runner_labels: BTreeMap::from([(
+                "tenant".to_string(),
+                "tenant-a".to_string(),
+            )]),
+            allowed_mcp_servers: vec!["github".to_string()],
+            pass_id_token_to_mcp: false,
+        });
+        goal.default_execution.mcp.servers.push(McpServerRef {
+            name: "github".to_string(),
+            transport: McpTransport::Http,
+            uri: "https://mcp.example.com/github".to_string(),
+            allowed_tools: vec!["issues.read".to_string()],
+            auth: McpAuthRef::OidcDelegation {
+                broker,
+                issuer: "https://issuer.example.com".to_string(),
+                audience: "mcp://github".to_string(),
+                requested_scopes: vec!["repo:read".to_string()],
+                principal: Some(principal),
+                token_ttl_seconds: Some(600),
+                require_user_consent: true,
+            },
+        });
+
+        let mut state = GoalState::new(goal);
+        let task_id = state.runnable_tasks().remove(0).id;
+        let approval = state
+            .ensure_task_approval_or_request(task_id)
+            .expect("approval evaluation succeeds")
+            .expect("OIDC user delegation requires approval");
+        assert_eq!(approval.risk, ApprovalRisk::Critical);
+        assert!(
+            approval
+                .reason_codes
+                .contains(&ApprovalReasonCode::BrokeredUserAuth)
+        );
+
+        let task = state.task(task_id).expect("task").clone();
+        let mut runner = RunnerRegistration {
+            runner_id: "runner-oidc".to_string(),
+            node_id: "node-a".to_string(),
+            endpoint: "http://runner-oidc:9091".to_string(),
+            roles: vec![WorkerKind::Planner],
+            capabilities: vec![RunnerCapability::Code, RunnerCapability::McpTools],
+            models: task.execution.model.candidates.clone(),
+            labels: BTreeMap::new(),
+            mcp_servers: Vec::new(),
+            max_concurrency: 1,
+            lease_ttl_seconds: 300,
+        };
+        let missing_capability = runner.evaluate_for_task(&task, None);
+        assert!(!missing_capability.matched);
+        assert!(
+            missing_capability
+                .reasons
+                .iter()
+                .any(|reason| { reason.contains("runner lacks oidc_user_delegation capability") })
+        );
+
+        runner
+            .capabilities
+            .push(RunnerCapability::OidcUserDelegation);
+        let missing_label = runner.evaluate_for_task(&task, None);
+        assert!(!missing_label.matched);
+        assert!(missing_label.reasons.iter().any(|reason| {
+            reason.contains("runner lacks OIDC delegation label tenant=tenant-a")
+        }));
+
+        runner
+            .labels
+            .insert("auth.oidc.user_delegation".to_string(), "true".to_string());
+        runner
+            .labels
+            .insert("tenant".to_string(), "tenant-a".to_string());
+        let matched = runner.evaluate_for_task(&task, None);
+        assert!(matched.matched, "{:?}", matched.reasons);
+    }
+
+    #[test]
     fn research_validation_requires_sources_and_use_plan() {
         let state = GoalState::new(GoalSpec::new("research", "answer sourced question"));
         let mut task = state.runnable_tasks().remove(0);
@@ -11059,6 +11539,10 @@ mod tests {
             "../../../examples/auth-distribution-claude-brokered.json"
         ))
         .expect("claude brokered auth distribution example parses");
+        serde_json::from_str::<McpContextRef>(include_str!(
+            "../../../examples/mcp-context-multi-user-oidc.json"
+        ))
+        .expect("multi-user OIDC MCP context example parses");
         serde_json::from_str::<NotificationRequest>(include_str!(
             "../../../examples/notification-approval.json"
         ))

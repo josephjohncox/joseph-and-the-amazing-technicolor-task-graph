@@ -20,8 +20,10 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 
 - Product intent: `docs/product-specs/coat-v1.md`
 - Architecture: `ARCHITECTURE.md`
+- Documentation map: `docs/README.md`
 - Goal authoring guide: `docs/operations/goal-authoring.md`
 - Distributed memory guide: `docs/design-docs/030-distributed-memory-knowledgebases.md`
+- Multi-user OIDC MCP guide: `docs/design-docs/130-multi-user-oidc-mcp.md`
 - Result channels guide: `docs/design-docs/060-result-channels-git-object-storage.md`
 - Protobuf and goal-store guide: `docs/design-docs/070-protobuf-goal-store-protocols.md`
 - Events, webhooks, and schedules guide: `docs/design-docs/080-events-webhooks-schedules.md`
@@ -120,7 +122,9 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Local workspace sandboxing is for trusted development only; production untrusted execution should use container hardening, gVisor, Kata, Firecracker, Kubernetes Jobs, or provider-backed sandboxes.
 - Personas are task-local. Do not infer persona only from worker role.
 - MCP context is distributed as server refs and secret refs, never raw tokens.
+- Default access mode is `single_user`; multi-user OIDC is an opt-in extension through `McpContextRef.access_mode=multi_user_oidc`.
 - Runners resolve MCP auth through env, Kubernetes Secret, Vault, cloud secret stores, 1Password, Bitwarden, Doppler, SOPS, workload identity, external brokers, or OAuth delegation.
+- User-delegated MCP auth must use `UserPrincipalRef`, `OidcDelegationPolicy`, `McpAuthRef::OidcDelegation`, short-lived broker leases, `oidc_user_delegation` runner capability, and tenant/user labels.
 - Device/browser auth for Codex or Claude Code is runner-local unless `AuthDistributionPolicy` explicitly allows brokered user auth or secret sync.
 - Brokered user auth requires a human approval gate and short-lived leases; never place raw user tokens in task state, diagnostics, artifacts, or memory.
 - Notifications are task-local and should be emitted for approval, feedback, blocked, failed, and completed events.

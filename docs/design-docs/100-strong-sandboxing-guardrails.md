@@ -51,6 +51,8 @@ The launch plan contains:
 
 The local runner only plans and records. A production Kubernetes, Kata, Firecracker, or provider-backed executor should consume this plan, launch the workload, write the artifact manifest, and replace the metadata-only attestation with enforcement evidence.
 
+Live git worktree creation is a separate local-development result channel, not a sandbox boundary. It is disabled unless `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`, the repo is under `SANDBOX_APPROVED_GIT_REPO_ROOTS`, and the request carries an approval ID when `SANDBOX_REQUIRE_LIVE_GIT_WORKTREE_APPROVAL=true`. Strong sandbox validation should still depend on `SandboxAttestation`, not on the existence of a git worktree.
+
 ## Kubernetes Pattern
 
 Use separate node pools:

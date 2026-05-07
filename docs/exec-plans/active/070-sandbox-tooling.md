@@ -24,8 +24,11 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - `SandboxProfile.isolation` now captures backend, runtime class, seccomp/AppArmor profile, dropped capabilities, read-only rootfs intent, limits, egress policy ref, and snapshot strategy.
 - `coat-sandbox-runner` returns `SandboxAttestation`; local Compose defaults to `local_workspace` and does not pretend to enforce gVisor/Kata/Firecracker.
 - `coat-sandbox-runner` exposes `/launch-plan` and writes `sandbox-launch-plan.json` so real executor adapters can consume the same durable plan without parsing free-form task prompts.
+- `coat-sandbox-runner` exposes `/commands/plan` for approval-aware command routing; it returns `waiting_approval` until an approval ID is present and never executes the command itself.
 - `coat-tool-registry` resolves `artifact_manifest` through `TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT` and returns workspace, launch-plan, snapshot, and artifact-manifest JSON when it can read the sandbox volume.
+- `coat-tool-registry` routes MCP `test_command` calls to `/commands/plan` when `TOOL_REGISTRY_SANDBOX_RUNNER_URL` is configured; otherwise it reports sandbox delegation without execution.
 - `ExecutionProfile.guardrails` can fork output and security guardrail reviews for completed work tasks.
+- `coat-sandbox-runner` supports approval-gated live git worktree creation when `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`, the repo is under `SANDBOX_APPROVED_GIT_REPO_ROOTS`, and the request supplies `live_git_worktree.approval_id`.
 
 ## Tests
 
@@ -34,12 +37,12 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - Tool registry lists known tools.
 - Artifact manifest lookup reads real sandbox workspace files in Compose.
 - Dangerous commands require approval metadata.
+- Live git worktree creation remains metadata-only unless all operator and approval gates are present.
+- MCP test command planning returns `waiting_approval` without an approval ID and `ready_for_executor` with one.
 
 ## Follow-Ups
 
-- Add an approval-gated live git worktree creation mode that runs only for explicitly approved local repositories.
 - Promote content-addressed snapshot archives from local manifests into object storage when the object-store upload adapter is live.
-- Route approved test commands through sandbox runner instead of the MCP tool registry.
 - Add a Kubernetes Job runner that creates real per-task pods with `runtimeClassName`, resource limits, NetworkPolicies, and attestation evidence.
 - Add provider-backed sandbox adapters where managed sandbox APIs can return attestations.
 

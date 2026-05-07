@@ -59,11 +59,12 @@ Webhook handlers should:
 - use provider HMAC presets for GitHub (`x-hub-signature-256`), Slack Events (`x-slack-signature` over `v0:{timestamp}:{body}`), and Stripe-style webhooks (`Stripe-Signature` over `{timestamp}.{body}`);
 - terminate production-only mTLS or OIDC JWT flows at trusted ingress or secret middleware until a provider adapter is installed;
 - normalize headers and payload into `ExternalEvent`;
+- normalize GitHub, GitLab, Slack Events, Stripe-style, Jira, and Linear payloads into provider-prefixed event types plus stable IDs, subjects, and dedupe keys;
 - preserve provider delivery IDs as `dedupe_key`;
 - never put raw shared secrets into event payloads, diagnostics, goal JSON, artifacts, or memory;
 - create goals only through the event gateway and Restate ingress.
 
-Provider-specific webhook adapters should map delivery metadata into CloudEvents-style fields: `id`, `source_id`, `event_type`, `subject`, `occurred_at`, and payload. The local gateway already has provider signature presets; full provider adapters should build on those presets instead of reimplementing auth.
+Provider-specific webhook adapters map delivery metadata into CloudEvents-style fields: `id`, `source_id`, `event_type`, `subject`, `occurred_at`, and payload. The local gateway includes first-pass adapters for GitHub, GitLab, Slack Events, Stripe-style, Jira, and Linear payload shapes; deeper provider integrations should build on those adapters instead of reimplementing auth.
 
 ## Generic Event Sources
 

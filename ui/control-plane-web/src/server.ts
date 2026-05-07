@@ -1,3 +1,15 @@
+/**
+ * Optional COAT control gateway and SPA host.
+ *
+ * Purpose: expose operator visibility and steering APIs for goals, tasks,
+ * plans, approvals, runners, events, memory, and MCP dashboard tools. This is a
+ * remote-control surface over backend services; it is not a durable engine and
+ * must not mutate projections as if they were source-of-truth state.
+ *
+ * Architecture references:
+ * - docs/design-docs/110-control-gateway-spa.md
+ * - docs/design-docs/120-durable-planning-mode.md
+ */
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 

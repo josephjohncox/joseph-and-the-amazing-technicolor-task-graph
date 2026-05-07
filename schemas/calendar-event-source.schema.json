@@ -120,6 +120,10 @@
         "mcp_bearer_token",
         "oauth_access_token",
         "oauth_refresh_token",
+        "oidc_id_token",
+        "oidc_access_token",
+        "oidc_refresh_token",
+        "oidc_on_behalf_of_token",
         "device_auth_session",
         "workload_identity_token",
         "local_cli_session",
@@ -155,6 +159,13 @@
         "github",
         "google",
         "other"
+      ]
+    },
+    "McpAccessMode": {
+      "type": "string",
+      "enum": [
+        "single_user",
+        "multi_user_oidc"
       ]
     },
     "McpAuthRef": {
@@ -217,6 +228,59 @@
           "required": [
             "kind",
             "token_exchange_secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "oidc_delegation"
+            },
+            "principal": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UserPrincipalRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            },
+            "require_user_consent": {
+              "type": "boolean",
+              "default": true
+            },
+            "token_ttl_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "issuer",
+            "audience"
           ]
         },
         {
@@ -294,8 +358,13 @@
       ]
     },
     "McpContextRef": {
+      "description": "MCP context distributed by reference, never by raw credential value.\n\nThe coordinator stores server refs, allowed tools, secret refs, optional\nuser principal refs, and auth-distribution policy. Runners resolve usable\ncredentials locally or through brokers. See\n`docs/design-docs/040-auth-distribution.md` and\n`docs/design-docs/130-multi-user-oidc-mcp.md`.",
       "type": "object",
       "properties": {
+        "access_mode": {
+          "$ref": "#/$defs/McpAccessMode",
+          "default": "single_user"
+        },
         "auth_distribution": {
           "$ref": "#/$defs/AuthDistributionPolicy",
           "default": {
@@ -319,6 +388,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "oidc_delegation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OidcDelegationPolicy"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "propagation": {
@@ -345,6 +424,16 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "user": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserPrincipalRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -387,6 +476,79 @@
         "stdio",
         "http",
         "sse"
+      ]
+    },
+    "OidcDelegationPolicy": {
+      "type": "object",
+      "properties": {
+        "allowed_mcp_servers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "audiences": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "lease_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pass_id_token_to_mcp": {
+          "type": "boolean",
+          "default": false
+        },
+        "requested_scopes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_user_consent": {
+          "type": "boolean",
+          "default": true
+        },
+        "required_runner_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "token_broker": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "token_cache_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "issuer",
+        "client_id",
+        "token_broker"
       ]
     },
     "SecretProvider": {
@@ -437,6 +599,56 @@
       "required": [
         "provider",
         "name"
+      ]
+    },
+    "UserPrincipalRef": {
+      "type": "object",
+      "properties": {
+        "consent_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "issuer",
+        "subject"
       ]
     }
   }

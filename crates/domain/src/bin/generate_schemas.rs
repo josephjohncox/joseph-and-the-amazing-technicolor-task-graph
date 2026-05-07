@@ -1,3 +1,13 @@
+//! JSON Schema generator for public COAT domain contracts.
+//!
+//! Purpose: keep `schemas/` synchronized with `crates/domain` whenever shared
+//! request/result/state contracts change. Operators, dashboards, sidecars, and
+//! tests use these schemas as the JSON-facing API reference.
+//!
+//! Architecture references:
+//! - `docs/design-docs/070-protobuf-goal-store-protocols.md`
+//! - `docs/operations/local-dev.md`
+
 use std::{fs, path::PathBuf};
 
 use anyhow::Context;
@@ -16,15 +26,16 @@ use coat_domain::{
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
     GoalStorePolicy, GoalStoreProjectionMode, GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest,
     GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse, GoalTriggerTemplate, HumanApproval,
-    HumanFeedback, InformationUsePlan, LearningSignal, McpAuthRef, McpContextRef,
+    HumanFeedback, InformationUsePlan, LearningSignal, McpAccessMode, McpAuthRef, McpContextRef,
     MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse, MemoryEpisode, MemoryEvent,
     MemoryJoinRequest, MemoryJoinResponse, MemoryPolicy, MemoryRepairRequest, MemoryRepairResponse,
     MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse, MemoryStoreRef,
-    MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute, NotificationPolicy,
-    NotificationRequest, ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind,
-    ObjectStoreRef, PlanCompileRequest, PlanCompileResult, PlanDecision, PlanDraftRequest,
-    PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata,
-    ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest,
+    MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute, NativeSubagentSpawnPolicy,
+    NotificationPolicy, NotificationRequest, ObjectStorageArtifactRef, ObjectStoragePolicy,
+    ObjectStoreKind, ObjectStoreRef, OidcDelegationPolicy, PlanCompileRequest, PlanCompileResult,
+    PlanDecision, PlanDraftRequest, PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus,
+    PlanningMode, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord,
+    RestartRequest,
     ResultChannelPolicy, RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy,
     ReviewDoctrineOverride, ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding,
     ReviewObjective, ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound,
@@ -33,12 +44,13 @@ use coat_domain::{
     SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
     SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan, SandboxSecurityPlan,
     SandboxSnapshotStrategy, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
-    SourceArtifact, StandardReviewCheck, SteeringDirective, StyleDoctrine, SubgoalProgress,
-    SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind,
-    TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest,
-    TriggeredGoalResponse, TriggeredGoalStatus, ValidationGate, ValidationGateResult,
-    ValidationReport, ValidationRequest, VectorMemoryPolicy, WebhookAuthKind, WebhookAuthPolicy,
-    WebhookEventSource,
+    SourceArtifact, StandardReviewCheck, SteeringDirective, StyleDoctrine, SubagentDelegationMode,
+    SubagentDelegationPolicy, SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority,
+    TaskProgress, TaskPurpose, TaskPurposeKind, TaskQuery, TaskRecord, TestCommandEvidence,
+    TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest, TriggeredGoalResponse, TriggeredGoalStatus,
+    UserPrincipalRef, ValidationGate, ValidationGateResult, ValidationReport, ValidationRequest,
+    VectorMemoryPolicy, WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
+    ChildTaskRequestChannel,
 };
 use schemars::schema_for;
 
@@ -735,6 +747,26 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "subagent-delegation-policy.schema.json",
+        schema_for!(SubagentDelegationPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "subagent-delegation-mode.schema.json",
+        schema_for!(SubagentDelegationMode),
+    )?;
+    write_schema(
+        &out_dir,
+        "native-subagent-spawn-policy.schema.json",
+        schema_for!(NativeSubagentSpawnPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "child-task-request-channel.schema.json",
+        schema_for!(ChildTaskRequestChannel),
+    )?;
+    write_schema(
+        &out_dir,
         "executor-guardrail-policy.schema.json",
         schema_for!(ExecutorGuardrailPolicy),
     )?;
@@ -778,6 +810,21 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "mcp-context.schema.json",
         schema_for!(McpContextRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "mcp-access-mode.schema.json",
+        schema_for!(McpAccessMode),
+    )?;
+    write_schema(
+        &out_dir,
+        "user-principal-ref.schema.json",
+        schema_for!(UserPrincipalRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "oidc-delegation-policy.schema.json",
+        schema_for!(OidcDelegationPolicy),
     )?;
     write_schema(
         &out_dir,

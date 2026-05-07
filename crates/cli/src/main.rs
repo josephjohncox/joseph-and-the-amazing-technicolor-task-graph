@@ -1,3 +1,15 @@
+//! `coat` operator CLI.
+//!
+//! Purpose: give operators a scriptable control surface for initializing the
+//! project, authoring plans and goals, submitting/cancelling/steering work,
+//! inspecting projections, rendering deployment assets, and exercising local
+//! smoke paths.
+//!
+//! Architecture references:
+//! - `README.md` for common commands.
+//! - `docs/operations/local-dev.md` for local smoke workflows.
+//! - `docs/operations/goal-authoring.md` for structured goal authoring.
+
 use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
 
 use anyhow::{Context, bail};

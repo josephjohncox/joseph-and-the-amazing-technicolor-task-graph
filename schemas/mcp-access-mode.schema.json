@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpAccessMode",
+  "type": "string",
+  "enum": [
+    "single_user",
+    "multi_user_oidc"
+  ]
+}

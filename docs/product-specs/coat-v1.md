@@ -36,6 +36,7 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - Sidecars expose a non-secret capability document for operator inspection.
 - MCP tool context is passed with references to auth material rather than embedded tokens.
 - Auth distribution policy supports node-local device sessions, runner-resolved secrets, workload identity, short-lived leases, and brokered user auth without copying raw tokens through task state.
+- Single-user mode is the default MCP access mode; multi-user OIDC is an opt-in extension for user-delegated MCP calls through `UserPrincipalRef`, `OidcDelegationPolicy`, short-lived broker leases, and OIDC-capable runners.
 - Approval policy gates classify task risk before dispatch, notify humans, and resume or block work from durable approval state.
 - Notification policies can keep separate human-feedback threads moving.
 - Operators can inspect local notification thread ledgers during development.

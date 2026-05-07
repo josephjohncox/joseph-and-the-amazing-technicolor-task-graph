@@ -328,6 +328,8 @@ spec:
               value: 0.0.0.0:9084
             - name: TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT
               value: ""
+            - name: TOOL_REGISTRY_SANDBOX_RUNNER_URL
+              value: http://sandbox-runner:9083
             - name: MCP_TOOL_TOKEN
               valueFrom:
                 secretKeyRef:

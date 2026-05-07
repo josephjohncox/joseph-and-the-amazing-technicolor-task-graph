@@ -8,6 +8,7 @@ AGENTS.md
 Agent.md
 ARCHITECTURE.md
 README.md
+docs/README.md
 docs/product-specs/coat-v1.md
 docs/operations/goal-authoring.md
 docs/design-docs/030-distributed-memory-knowledgebases.md
@@ -48,5 +49,31 @@ if [ "$plan_count" -lt 9 ]; then
   printf 'expected active execution plans, found only %s\n' "$plan_count" >&2
   exit 1
 fi
+
+documented_entrypoints="
+crates/cli/src/main.rs
+crates/coordinator/src/main.rs
+crates/domain/src/lib.rs
+crates/domain/src/bin/generate_schemas.rs
+crates/event-gateway/src/main.rs
+crates/goal-store/src/main.rs
+crates/memory-gateway/src/main.rs
+crates/notifier/src/main.rs
+crates/runner-registry/src/main.rs
+crates/sandbox-runner/src/main.rs
+crates/tool-registry/src/main.rs
+crates/validator/src/main.rs
+sidecars/codex-runner-ts/src/index.ts
+sidecars/staff-engineer-runner-ts/src/index.ts
+ui/control-plane-web/src/server.ts
+ui/control-plane-web/src/client.ts
+"
+
+for path in $documented_entrypoints; do
+  if ! grep -q "Architecture reference" "$root/$path"; then
+    printf 'missing architecture reference header in: %s\n' "$path" >&2
+    exit 1
+  fi
+done
 
 printf 'coat doc gardening checks passed\n'

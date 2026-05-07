@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "RunnerRegistration",
+  "description": "Runner-advertised capacity, model inventory, labels, MCP servers, and capabilities.\n\nThe registry and coordinator use this to route a `TaskNode` by role,\ncapability, locality, labels, model route, MCP context, and auth policy.",
   "type": "object",
   "properties": {
     "capabilities": {
@@ -138,6 +139,59 @@
           "required": [
             "kind",
             "token_exchange_secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "oidc_delegation"
+            },
+            "principal": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UserPrincipalRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            },
+            "require_user_consent": {
+              "type": "boolean",
+              "default": true
+            },
+            "token_ttl_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "issuer",
+            "audience"
           ]
         },
         {
@@ -332,6 +386,7 @@
         "test",
         "review",
         "mcp_tools",
+        "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",
@@ -402,6 +457,56 @@
       "required": [
         "provider",
         "name"
+      ]
+    },
+    "UserPrincipalRef": {
+      "type": "object",
+      "properties": {
+        "consent_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "issuer",
+        "subject"
       ]
     },
     "WorkerKind": {

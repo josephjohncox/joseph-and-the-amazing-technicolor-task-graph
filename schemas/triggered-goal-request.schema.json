@@ -207,6 +207,10 @@
         "mcp_bearer_token",
         "oauth_access_token",
         "oauth_refresh_token",
+        "oidc_id_token",
+        "oidc_access_token",
+        "oidc_refresh_token",
+        "oidc_on_behalf_of_token",
         "device_auth_session",
         "workload_identity_token",
         "local_cli_session",
@@ -737,6 +741,7 @@
       ]
     },
     "ExecutionProfile": {
+      "description": "Task-local runner, model, persona, MCP, notification, result, and guardrail policy.\n\nThis is the contract that lets distributed runners and model providers pick\nup work without reading global plan prose. It is documented in\n`docs/design-docs/010-distributed-runners-mcp.md`.",
       "type": "object",
       "properties": {
         "guardrails": {
@@ -1029,6 +1034,7 @@
       }
     },
     "GoalSpec": {
+      "description": "User-authored executable contract for a durable goal.\n\nA `GoalSpec` is not just a prompt. It carries the objective, budget,\nacceptance criteria, review policy, memory/research policy, approval policy,\ndefault execution profile, and optional initial tasks that seed the durable\ntask tree. See `docs/operations/goal-authoring.md`.",
       "type": "object",
       "properties": {
         "approval_policy": {
@@ -1117,6 +1123,7 @@
               "security_reviewer_role": "validator"
             },
             "mcp": {
+              "access_mode": "single_user",
               "auth_distribution": {
                 "allow_node_local_device_session": true,
                 "allow_secret_sync": false,
@@ -1134,10 +1141,12 @@
                 "required_runner_labels": {}
               },
               "context_id": null,
+              "oidc_delegation": null,
               "propagation": "coordinator_issued",
               "secret_refs": [],
               "servers": [],
-              "token_ttl_seconds": 900
+              "token_ttl_seconds": 900,
+              "user": null
             },
             "model": {
               "candidates": [
@@ -1462,6 +1471,13 @@
         "execution"
       ]
     },
+    "McpAccessMode": {
+      "type": "string",
+      "enum": [
+        "single_user",
+        "multi_user_oidc"
+      ]
+    },
     "McpAuthRef": {
       "oneOf": [
         {
@@ -1522,6 +1538,59 @@
           "required": [
             "kind",
             "token_exchange_secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "oidc_delegation"
+            },
+            "principal": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UserPrincipalRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            },
+            "require_user_consent": {
+              "type": "boolean",
+              "default": true
+            },
+            "token_ttl_seconds": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "issuer",
+            "audience"
           ]
         },
         {
@@ -1599,8 +1668,13 @@
       ]
     },
     "McpContextRef": {
+      "description": "MCP context distributed by reference, never by raw credential value.\n\nThe coordinator stores server refs, allowed tools, secret refs, optional\nuser principal refs, and auth-distribution policy. Runners resolve usable\ncredentials locally or through brokers. See\n`docs/design-docs/040-auth-distribution.md` and\n`docs/design-docs/130-multi-user-oidc-mcp.md`.",
       "type": "object",
       "properties": {
+        "access_mode": {
+          "$ref": "#/$defs/McpAccessMode",
+          "default": "single_user"
+        },
         "auth_distribution": {
           "$ref": "#/$defs/AuthDistributionPolicy",
           "default": {
@@ -1624,6 +1698,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "oidc_delegation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OidcDelegationPolicy"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "propagation": {
@@ -1650,6 +1734,16 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "user": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserPrincipalRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2223,6 +2317,79 @@
         "kind",
         "bucket",
         "force_path_style"
+      ]
+    },
+    "OidcDelegationPolicy": {
+      "type": "object",
+      "properties": {
+        "allowed_mcp_servers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "audiences": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "lease_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pass_id_token_to_mcp": {
+          "type": "boolean",
+          "default": false
+        },
+        "requested_scopes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_user_consent": {
+          "type": "boolean",
+          "default": true
+        },
+        "required_runner_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "token_broker": {
+          "$ref": "#/$defs/SecretRef"
+        },
+        "token_cache_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "issuer",
+        "client_id",
+        "token_broker"
       ]
     },
     "PersonaSpec": {
@@ -2917,6 +3084,7 @@
         "test",
         "review",
         "mcp_tools",
+        "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",
@@ -3810,6 +3978,56 @@
         "enabled",
         "on_goal_timeout",
         "on_task_timeout"
+      ]
+    },
+    "UserPrincipalRef": {
+      "type": "object",
+      "properties": {
+        "consent_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "issuer": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "tenant_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "user_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "issuer",
+        "subject"
       ]
     },
     "ValidationGate": {

@@ -10,6 +10,9 @@ The coordinator stores auth intent, references, leases, labels, and approval sta
 
 `McpContextRef` now carries `auth_distribution`:
 
+- `access_mode`: `single_user` by default, or `multi_user_oidc` when the extension is explicitly enabled.
+- `user`: stable `UserPrincipalRef` for OIDC-authenticated user delegation.
+- `oidc_delegation`: issuer, client, audience, scopes, broker, TTL, consent, and runner-label policy.
 - `mode`: how auth may be made available for this task.
 - `allowed_materials`: API tokens, MCP bearer tokens, OAuth tokens, device sessions, local CLI sessions, workload identity tokens, or service accounts.
 - `required_runner_labels`: runner labels required before dispatch, for example `auth.codex.device=true`.
@@ -23,6 +26,7 @@ The coordinator stores auth intent, references, leases, labels, and approval sta
 
 - `secret`: static or rotating material behind `SecretRef`.
 - `workload_identity`: cloud or cluster-native identity.
+- `oidc_delegation`: token broker or on-behalf-of exchange for a logged-in OIDC user.
 - `oauth_delegation`: token exchange through a referenced exchange secret.
 - `device_auth_session`: node-local CLI/app auth such as Codex or Claude Code login state.
 - `brokered_user_session`: a broker-mediated human/device OAuth flow that returns a short-lived lease.
@@ -40,6 +44,8 @@ The coordinator stores auth intent, references, leases, labels, and approval sta
 `oauth_device_broker` means a human completes a browser or device-code flow once, the broker returns a short-lived task lease, and the coordinator records approval plus lease metadata.
 
 `external_broker` covers gateways such as enterprise secret brokers, LLM gateways, or internal auth services.
+
+`multi_user_oidc` is an extension, not the default. It requires `oidc_user_delegation` runner capability, `auth.oidc.user_delegation=true`, tenant labels, a `UserPrincipalRef`, and short-lived brokered OIDC access tokens or leases. Use `single_user` for local personal operation.
 
 ## Codex
 
@@ -86,6 +92,7 @@ MCP auth context is distributable because it is a graph of references:
 - server refs identify tool surfaces;
 - `SecretRef` identifies secret material;
 - auth distribution constrains which runners may receive the task;
+- multi-user OIDC adds principal and tenant refs without token values;
 - approval records which human allowed user-delegated auth;
 - notification threads handle device-code, browser-login, or human-feedback prompts.
 
@@ -95,3 +102,4 @@ Forked tasks inherit the same references, not copied token values. Join/unifier 
 
 - `examples/auth-distribution-codex-device.json`: node-local Codex App Server device session.
 - `examples/auth-distribution-claude-brokered.json`: brokered Claude Code user session.
+- `examples/mcp-context-multi-user-oidc.json`: opt-in multi-user OIDC user delegation for MCP.

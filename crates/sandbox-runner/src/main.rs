@@ -1,4 +1,21 @@
-use std::{path::PathBuf, sync::Arc, time::SystemTime};
+//! Workspace lifecycle, launch-plan, snapshot, cleanup, and command-plan service.
+//!
+//! Purpose: create per-task workspaces, write sandbox manifests and launch
+//! plans, return sandbox attestations, optionally create approved live git
+//! worktrees, and plan command execution without running arbitrary shell in the
+//! control plane.
+//!
+//! Architecture references:
+//! - `docs/design-docs/100-strong-sandboxing-guardrails.md`
+//! - `docs/design-docs/060-result-channels-git-object-storage.md`
+//! - `docs/exec-plans/active/070-sandbox-tooling.md`
+
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+    time::SystemTime,
+};
 
 use axum::{
     Json, Router,
@@ -21,6 +38,9 @@ use uuid::Uuid;
 struct AppState {
     workspace_root: PathBuf,
     supported_backends: Vec<SandboxBackend>,
+    enable_live_git_worktrees: bool,
+    require_live_git_worktree_approval: bool,
+    approved_git_repo_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -34,6 +54,15 @@ struct CreateWorkspaceRequest {
     git: GitResultPolicy,
     #[serde(default)]
     object_storage: ObjectStoragePolicy,
+    #[serde(default)]
+    live_git_worktree: LiveGitWorktreePolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+struct LiveGitWorktreePolicy {
+    enabled: bool,
+    approval_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -70,6 +99,31 @@ struct WorkspaceRecord {
     created_at_unix_seconds: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+struct CommandPlanRequest {
+    workspace_id: Option<Uuid>,
+    goal_id: Option<Uuid>,
+    task_id: Option<Uuid>,
+    #[serde(default)]
+    command: serde_json::Value,
+    approval_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+struct CommandPlanResponse {
+    status: String,
+    requires_approval: bool,
+    approved: bool,
+    workspace_id: Option<Uuid>,
+    workspace_path: Option<String>,
+    command: serde_json::Value,
+    next_service: String,
+    artifact_manifest_path: Option<String>,
+    diagnostics: Vec<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -84,16 +138,24 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/workspaces"));
     let supported_backends = parse_supported_backends();
+    let approved_git_repo_roots = parse_approved_git_repo_roots();
     tokio::fs::create_dir_all(&workspace_root).await?;
     tokio::fs::create_dir_all(registry_dir(&workspace_root)).await?;
     let state = Arc::new(AppState {
         workspace_root,
         supported_backends,
+        enable_live_git_worktrees: env_bool("SANDBOX_ENABLE_LIVE_GIT_WORKTREES", false),
+        require_live_git_worktree_approval: env_bool(
+            "SANDBOX_REQUIRE_LIVE_GIT_WORKTREE_APPROVAL",
+            true,
+        ),
+        approved_git_repo_roots,
     });
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/launch-plan", post(launch_plan))
         .route("/workspaces", post(create_workspace))
+        .route("/commands/plan", post(command_plan))
         .route("/snapshot", post(snapshot))
         .route("/cleanup", post(cleanup))
         .with_state(state)
@@ -121,11 +183,9 @@ async fn create_workspace_inner(
 ) -> anyhow::Result<WorkspaceResponse> {
     let workspace_id = deterministic_workspace_id(request.goal_id, request.task_id);
     let path_buf = workspace_path(&state.workspace_root, request.goal_id, request.task_id);
-    tokio::fs::create_dir_all(path_buf.join("artifacts")).await?;
-    tokio::fs::create_dir_all(path_buf.join("snapshots")).await?;
     let path = path_buf.display().to_string();
-    let attestation = sandbox_attestation(&request.sandbox, &state.supported_backends);
-    let git_result = if request.git.enabled {
+    let mut attestation = sandbox_attestation(&request.sandbox, &state.supported_backends);
+    let mut git_result = if request.git.enabled {
         Some(GitResultRef {
             repo: request.repo.clone(),
             remote: request.git.remote.clone(),
@@ -140,6 +200,37 @@ async fn create_workspace_inner(
     } else {
         None
     };
+    if request.git.enabled && request.live_git_worktree.enabled {
+        match create_live_git_worktree(
+            state,
+            &request,
+            &path_buf,
+            git_result.as_ref().expect("git result initialized"),
+        )
+        .await
+        {
+            Ok(report) => {
+                if let Some(git_result_ref) = git_result.as_mut() {
+                    git_result_ref.repo = Some(report.repo_root.display().to_string());
+                    git_result_ref.worktree_path = Some(report.worktree_path.display().to_string());
+                }
+                attestation.warnings.extend(report.warnings);
+                attestation.evidence.push(ArtifactRef {
+                    kind: ArtifactKind::GitWorktree,
+                    uri: format!("git+worktree://{}", report.branch),
+                    description: format!(
+                        "live git worktree {} for approved repo {}",
+                        report.worktree_path.display(),
+                        report.repo_root.display()
+                    ),
+                    sha256: None,
+                });
+            }
+            Err(error) => attestation
+                .warnings
+                .push(format!("live git worktree creation skipped: {error}")),
+        }
+    }
     let object_prefix = request
         .object_storage
         .store
@@ -174,7 +265,6 @@ async fn create_workspace_inner(
         object_prefix.clone(),
         attestation.warnings.clone(),
     );
-    let mut attestation = attestation;
     attestation.evidence.push(ArtifactRef {
         kind: ArtifactKind::Other,
         uri: format!("workspace://{workspace_id}/sandbox-launch-plan"),
@@ -194,6 +284,8 @@ async fn create_workspace_inner(
         object_prefix: object_prefix.clone(),
         created_at_unix_seconds: unix_seconds(),
     };
+    tokio::fs::create_dir_all(path_buf.join("artifacts")).await?;
+    tokio::fs::create_dir_all(path_buf.join("snapshots")).await?;
     write_record(state, &record).await?;
     write_workspace_manifest(&path_buf, &record).await?;
     write_launch_plan(&path_buf, &launch_plan).await?;
@@ -275,6 +367,76 @@ async fn launch_plan(
         object_prefix,
         attestation.warnings,
     ))
+}
+
+async fn command_plan(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CommandPlanRequest>,
+) -> Json<CommandPlanResponse> {
+    Json(command_plan_inner(&state, request).await)
+}
+
+async fn command_plan_inner(state: &AppState, request: CommandPlanRequest) -> CommandPlanResponse {
+    let workspace_id = request
+        .workspace_id
+        .or_else(|| match (request.goal_id, request.task_id) {
+            (Some(goal_id), Some(task_id)) => Some(deterministic_workspace_id(goal_id, task_id)),
+            _ => None,
+        });
+    let mut diagnostics = Vec::new();
+    let record = match workspace_id {
+        Some(workspace_id) => match read_record(state, workspace_id).await {
+            Ok(record) => record,
+            Err(error) => {
+                diagnostics.push(format!("workspace lookup failed: {error}"));
+                None
+            }
+        },
+        None => {
+            diagnostics
+                .push("command plan requires workspace_id or both goal_id and task_id".to_string());
+            None
+        }
+    };
+    let approved = request
+        .approval_id
+        .as_deref()
+        .map(|approval| !approval.trim().is_empty())
+        .unwrap_or(false);
+    let status = if record.is_none() {
+        "workspace_not_found"
+    } else if approved {
+        "ready_for_executor"
+    } else {
+        "waiting_approval"
+    };
+    if !approved {
+        diagnostics.push(
+            "test command planning requires approval_id before an executor may run it".to_string(),
+        );
+    }
+    let workspace_path = record.as_ref().map(|record| record.path.clone());
+    let artifact_manifest_path = workspace_path.as_ref().map(|path| {
+        Path::new(path)
+            .join("artifacts/artifact-manifest.json")
+            .display()
+            .to_string()
+    });
+    CommandPlanResponse {
+        status: status.to_string(),
+        requires_approval: true,
+        approved,
+        workspace_id,
+        workspace_path,
+        command: request.command,
+        next_service: if approved {
+            "sandbox-executor".to_string()
+        } else {
+            "coordinator-approval".to_string()
+        },
+        artifact_manifest_path,
+        diagnostics,
+    }
 }
 
 async fn snapshot(
@@ -626,6 +788,37 @@ fn parse_supported_backends() -> Vec<SandboxBackend> {
         .unwrap_or_else(|| vec![SandboxBackend::LocalWorkspace])
 }
 
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
+fn parse_approved_git_repo_roots() -> Vec<PathBuf> {
+    std::env::var("SANDBOX_APPROVED_GIT_REPO_ROOTS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|item| {
+                    let item = item.trim();
+                    if item.is_empty() {
+                        None
+                    } else {
+                        std::fs::canonicalize(item).ok()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_sandbox_backend(value: &str) -> Option<SandboxBackend> {
     match value {
         "local_workspace" => Some(SandboxBackend::LocalWorkspace),
@@ -638,6 +831,154 @@ fn parse_sandbox_backend(value: &str) -> Option<SandboxBackend> {
         "provider_sandbox" => Some(SandboxBackend::ProviderSandbox),
         _ => None,
     }
+}
+
+#[derive(Debug)]
+struct GitWorktreeReport {
+    repo_root: PathBuf,
+    worktree_path: PathBuf,
+    branch: String,
+    warnings: Vec<String>,
+}
+
+async fn create_live_git_worktree(
+    state: &AppState,
+    request: &CreateWorkspaceRequest,
+    worktree_path: &Path,
+    git_result: &GitResultRef,
+) -> anyhow::Result<GitWorktreeReport> {
+    if !state.enable_live_git_worktrees {
+        anyhow::bail!("SANDBOX_ENABLE_LIVE_GIT_WORKTREES is not enabled");
+    }
+    if state.require_live_git_worktree_approval
+        && request
+            .live_git_worktree
+            .approval_id
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
+        anyhow::bail!("live worktree creation requires live_git_worktree.approval_id");
+    }
+
+    let repo = request
+        .repo
+        .as_deref()
+        .filter(|repo| !repo.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("live worktree creation requires repo as a local path"))?;
+    let repo_path = std::fs::canonicalize(repo)?;
+    let repo_root = git_repo_root(&repo_path)?;
+    if !state
+        .approved_git_repo_roots
+        .iter()
+        .any(|root| repo_root.starts_with(root))
+    {
+        anyhow::bail!(
+            "repo {} is not under SANDBOX_APPROVED_GIT_REPO_ROOTS",
+            repo_root.display()
+        );
+    }
+    if !worktree_path.starts_with(&state.workspace_root) {
+        anyhow::bail!(
+            "worktree path {} is outside workspace root {}",
+            worktree_path.display(),
+            state.workspace_root.display()
+        );
+    }
+
+    let branch = git_result.branch.clone();
+    let base_ref = git_result.base_ref.as_deref().unwrap_or("HEAD");
+    let mut warnings = Vec::new();
+    if is_git_worktree(worktree_path) {
+        warnings.push(format!(
+            "reused existing live git worktree at {}",
+            worktree_path.display()
+        ));
+        return Ok(GitWorktreeReport {
+            repo_root,
+            worktree_path: worktree_path.to_path_buf(),
+            branch,
+            warnings,
+        });
+    }
+
+    if let Some(parent) = worktree_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let branch_exists = git_branch_exists(&repo_root, &branch)?;
+    let mut command = Command::new("git");
+    command.arg("-C").arg(&repo_root).arg("worktree").arg("add");
+    if !branch_exists {
+        command.arg("-b").arg(&branch);
+    }
+    command.arg(worktree_path);
+    if branch_exists {
+        command.arg(&branch);
+    } else {
+        command.arg(base_ref);
+    }
+    let output = command.output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git worktree add failed: {}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    warnings.push(format!(
+        "created live git worktree for branch {branch} at {}",
+        worktree_path.display()
+    ));
+    Ok(GitWorktreeReport {
+        repo_root,
+        worktree_path: worktree_path.to_path_buf(),
+        branch,
+        warnings,
+    })
+}
+
+fn git_repo_root(repo_path: &Path) -> anyhow::Result<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "{} is not a git repository: {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(std::fs::canonicalize(root)?)
+}
+
+fn git_branch_exists(repo_root: &Path, branch: &str) -> anyhow::Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("show-ref")
+        .arg("--verify")
+        .arg(format!("refs/heads/{branch}"))
+        .output()?;
+    Ok(output.status.success())
+}
+
+fn is_git_worktree(path: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("--is-inside-work-tree")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn sandbox_attestation(
@@ -687,6 +1028,9 @@ mod tests {
         let state = AppState {
             workspace_root: temp.path().to_path_buf(),
             supported_backends: vec![SandboxBackend::LocalWorkspace],
+            enable_live_git_worktrees: false,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: Vec::new(),
         };
         let goal_id = Uuid::new_v4();
         let task_id = Uuid::new_v4();
@@ -700,6 +1044,7 @@ mod tests {
                 ..GitResultPolicy::default()
             },
             object_storage: ObjectStoragePolicy::default(),
+            live_git_worktree: LiveGitWorktreePolicy::default(),
         };
 
         let first = create_workspace_inner(&state, request.clone())
@@ -748,5 +1093,186 @@ mod tests {
 
         let cleanup_again = cleanup_inner(&state, first.workspace_id).await;
         assert_eq!(cleanup_again["status"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn live_git_worktree_requires_enablement_and_approval() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = AppState {
+            workspace_root: temp.path().join("workspaces"),
+            supported_backends: vec![SandboxBackend::LocalWorkspace],
+            enable_live_git_worktrees: false,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: Vec::new(),
+        };
+        let request = CreateWorkspaceRequest {
+            goal_id: Uuid::new_v4(),
+            task_id: Uuid::new_v4(),
+            repo: Some(temp.path().display().to_string()),
+            sandbox: SandboxProfile::default(),
+            git: GitResultPolicy {
+                enabled: true,
+                ..GitResultPolicy::default()
+            },
+            object_storage: ObjectStoragePolicy::default(),
+            live_git_worktree: LiveGitWorktreePolicy {
+                enabled: true,
+                approval_id: None,
+            },
+        };
+
+        let response = create_workspace_inner(&state, request)
+            .await
+            .expect("metadata workspace still succeeds");
+
+        assert!(response.git_result.is_some());
+        assert!(
+            response
+                .attestation
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("SANDBOX_ENABLE_LIVE_GIT_WORKTREES"))
+        );
+    }
+
+    #[tokio::test]
+    async fn live_git_worktree_creates_approved_branch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "coat@example.test"]);
+        run_git(&repo, &["config", "user.name", "COAT Test"]);
+        run_git(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("README.md"), "hello\n").expect("readme");
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "init"]);
+
+        let workspace_root = temp.path().join("workspaces");
+        let state = AppState {
+            workspace_root: workspace_root.clone(),
+            supported_backends: vec![SandboxBackend::LocalWorkspace],
+            enable_live_git_worktrees: true,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: vec![temp.path().canonicalize().expect("canonical temp")],
+        };
+        let goal_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+        let request = CreateWorkspaceRequest {
+            goal_id,
+            task_id,
+            repo: Some(repo.display().to_string()),
+            sandbox: SandboxProfile::default(),
+            git: GitResultPolicy {
+                enabled: true,
+                ..GitResultPolicy::default()
+            },
+            object_storage: ObjectStoragePolicy::default(),
+            live_git_worktree: LiveGitWorktreePolicy {
+                enabled: true,
+                approval_id: Some("approval-123".to_string()),
+            },
+        };
+
+        let response = create_workspace_inner(&state, request)
+            .await
+            .expect("workspace with live git worktree");
+        let git_result = response.git_result.expect("git result");
+        let worktree = PathBuf::from(git_result.worktree_path.expect("worktree path"));
+        assert!(worktree.starts_with(&workspace_root));
+        assert!(worktree.join("README.md").exists());
+        assert_eq!(
+            current_branch(&worktree),
+            git_result.branch,
+            "worktree is checked out on the task branch"
+        );
+        assert!(
+            response
+                .attestation
+                .evidence
+                .iter()
+                .any(|artifact| artifact.kind == ArtifactKind::GitWorktree)
+        );
+    }
+
+    #[tokio::test]
+    async fn command_plan_waits_for_approval_then_targets_executor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = AppState {
+            workspace_root: temp.path().to_path_buf(),
+            supported_backends: vec![SandboxBackend::LocalWorkspace],
+            enable_live_git_worktrees: false,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: Vec::new(),
+        };
+        let goal_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+        let request = CreateWorkspaceRequest {
+            goal_id,
+            task_id,
+            repo: None,
+            sandbox: SandboxProfile::default(),
+            git: GitResultPolicy::default(),
+            object_storage: ObjectStoragePolicy::default(),
+            live_git_worktree: LiveGitWorktreePolicy::default(),
+        };
+        let workspace = create_workspace_inner(&state, request)
+            .await
+            .expect("workspace");
+
+        let waiting = command_plan_inner(
+            &state,
+            CommandPlanRequest {
+                workspace_id: Some(workspace.workspace_id),
+                command: serde_json::json!("cargo test -p parser"),
+                approval_id: None,
+                ..CommandPlanRequest::default()
+            },
+        )
+        .await;
+        assert_eq!(waiting.status, "waiting_approval");
+        assert_eq!(waiting.next_service, "coordinator-approval");
+
+        let approved = command_plan_inner(
+            &state,
+            CommandPlanRequest {
+                workspace_id: Some(workspace.workspace_id),
+                command: serde_json::json!("cargo test -p parser"),
+                approval_id: Some("approval-123".to_string()),
+                ..CommandPlanRequest::default()
+            },
+        )
+        .await;
+        assert_eq!(approved.status, "ready_for_executor");
+        assert_eq!(approved.next_service, "sandbox-executor");
+        assert_eq!(approved.workspace_path, Some(workspace.path));
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}{}",
+            args,
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    fn current_branch(repo: &Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .arg("branch")
+            .arg("--show-current")
+            .output()
+            .expect("branch");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 }

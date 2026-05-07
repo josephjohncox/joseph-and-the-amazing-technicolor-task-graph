@@ -1,3 +1,14 @@
+//! Human notification and feedback delivery service.
+//!
+//! Purpose: record local human-feedback threads and deliver generic webhook
+//! notifications for approval, blocked, failed, completed, and feedback events.
+//! Durable approval and feedback decisions still flow through coordinator
+//! workflow handlers; this service is a delivery and visibility surface.
+//!
+//! Architecture references:
+//! - `docs/design-docs/010-distributed-runners-mcp.md`
+//! - `docs/operations/local-dev.md`
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{

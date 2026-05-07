@@ -1,3 +1,14 @@
+//! Minimal MCP-facing Rust tool registry.
+//!
+//! Purpose: expose controlled tool surfaces such as repo status, sandboxed
+//! command planning, and artifact manifest lookup. This service must not become
+//! an arbitrary shell runner; execution is delegated to sandbox services.
+//!
+//! Architecture references:
+//! - `docs/design-docs/010-distributed-runners-mcp.md`
+//! - `docs/design-docs/100-strong-sandboxing-guardrails.md`
+//! - `docs/exec-plans/active/070-sandbox-tooling.md`
+
 use std::{
     path::{Component, Path, PathBuf},
     process::Command,
@@ -17,6 +28,7 @@ use tower_http::trace::TraceLayer;
 struct AppState {
     workspace_root: PathBuf,
     sandbox_workspace_root: Option<PathBuf>,
+    sandbox_runner_url: Option<String>,
     auth_token: Option<String>,
 }
 
@@ -62,9 +74,14 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    let sandbox_runner_url = std::env::var("TOOL_REGISTRY_SANDBOX_RUNNER_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_end_matches('/').to_string());
     let state = Arc::new(AppState {
         workspace_root,
         sandbox_workspace_root,
+        sandbox_runner_url,
         auth_token: std::env::var("MCP_TOOL_TOKEN")
             .ok()
             .filter(|token| !token.is_empty() && token != "replace-me"),
@@ -90,7 +107,7 @@ fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "test_command",
-            description: "Run an approved test command in an isolated sandbox.",
+            description: "Route an approved test command through the sandbox runner.",
         },
         ToolDescriptor {
             name: "artifact_manifest",
@@ -196,11 +213,15 @@ fn mcp_tools() -> Vec<serde_json::Value> {
         }),
         serde_json::json!({
             "name": "test_command",
-            "description": "Report how test execution should be routed through the sandbox runner.",
+            "description": "Plan test execution through the sandbox runner when TOOL_REGISTRY_SANDBOX_RUNNER_URL is configured.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"}
+                    "command": {"type": "string"},
+                    "workspace_id": {"type": "string"},
+                    "goal_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "approval_id": {"type": "string"}
                 }
             }
         }),
@@ -223,7 +244,7 @@ fn mcp_tools() -> Vec<serde_json::Value> {
 async fn call_tool(state: &AppState, params: ToolCallParams) -> anyhow::Result<serde_json::Value> {
     match params.name.as_str() {
         "repo_status" => repo_status(state, &params.arguments),
-        "test_command" => Ok(test_command(&params.arguments)),
+        "test_command" => test_command(state, &params.arguments).await,
         "artifact_manifest" => artifact_manifest(state, &params.arguments).await,
         other => anyhow::bail!("unknown tool: {other}"),
     }
@@ -279,8 +300,45 @@ fn resolve_repo_path(state: &AppState, arguments: &serde_json::Value) -> anyhow:
     Ok(canonical)
 }
 
-fn test_command(arguments: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
+async fn test_command(
+    state: &AppState,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let requested_command = arguments
+        .get("command")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(sandbox_runner_url) = state.sandbox_runner_url.as_ref() {
+        let response = reqwest::Client::new()
+            .post(format!("{sandbox_runner_url}/commands/plan"))
+            .json(&serde_json::json!({
+                "workspace_id": arguments.get("workspace_id"),
+                "goal_id": arguments.get("goal_id"),
+                "task_id": arguments.get("task_id"),
+                "command": requested_command,
+                "approval_id": arguments.get("approval_id")
+            }))
+            .send()
+            .await?;
+        let status = response.status();
+        let value = response.json::<serde_json::Value>().await?;
+        return Ok(serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "test execution was routed to sandbox-runner for approval-aware command planning"
+                }
+            ],
+            "structuredContent": {
+                "sandbox_runner_url": sandbox_runner_url,
+                "http_status": status.as_u16(),
+                "plan": value
+            },
+            "isError": !status.is_success()
+        }));
+    }
+
+    Ok(serde_json::json!({
         "content": [
             {
                 "type": "text",
@@ -288,12 +346,13 @@ fn test_command(arguments: &serde_json::Value) -> serde_json::Value {
             }
         ],
         "structuredContent": {
-            "requested_command": arguments.get("command").and_then(|value| value.as_str()),
+            "requested_command": requested_command,
             "status": "blocked",
-            "next_service": "sandbox-runner"
+            "next_service": "sandbox-runner",
+            "diagnostics": ["TOOL_REGISTRY_SANDBOX_RUNNER_URL is not configured"]
         },
         "isError": false
-    })
+    }))
 }
 
 async fn artifact_manifest(
@@ -579,6 +638,7 @@ mod tests {
         let state = AppState {
             workspace_root: std::env::current_dir().expect("cwd"),
             sandbox_workspace_root: None,
+            sandbox_runner_url: None,
             auth_token: Some("secret".to_string()),
         };
         let headers = HeaderMap::new();
@@ -597,6 +657,7 @@ mod tests {
                 .canonicalize()
                 .expect("canonical cwd"),
             sandbox_workspace_root: None,
+            sandbox_runner_url: None,
             auth_token: None,
         };
         let inside = resolve_repo_path(&state, &serde_json::json!({})).expect("inside path");
@@ -606,9 +667,17 @@ mod tests {
         assert!(outside.is_err());
     }
 
-    #[test]
-    fn test_command_reports_sandbox_delegation() {
-        let result = test_command(&serde_json::json!({ "command": "cargo test" }));
+    #[tokio::test]
+    async fn test_command_reports_sandbox_delegation() {
+        let state = AppState {
+            workspace_root: std::env::current_dir().expect("cwd"),
+            sandbox_workspace_root: None,
+            sandbox_runner_url: None,
+            auth_token: None,
+        };
+        let result = test_command(&state, &serde_json::json!({ "command": "cargo test" }))
+            .await
+            .expect("test command response");
         assert_eq!(result["isError"], false);
         assert_eq!(result["structuredContent"]["status"], "blocked");
         assert_eq!(
@@ -649,6 +718,7 @@ mod tests {
         let state = AppState {
             workspace_root: std::env::current_dir().expect("cwd"),
             sandbox_workspace_root: Some(temp.path().to_path_buf()),
+            sandbox_runner_url: None,
             auth_token: None,
         };
         let result = artifact_manifest(

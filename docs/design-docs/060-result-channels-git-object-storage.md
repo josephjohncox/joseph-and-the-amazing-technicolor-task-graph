@@ -33,6 +33,16 @@ Workers return `AgentRunResult.git_result` with:
 
 The coordinator and validator treat `git_result` as artifact evidence. Reviewers and unifiers can use the branch/commit to inspect results without trusting the worker summary.
 
+`coat-sandbox-runner` keeps live worktree creation behind an explicit local gate:
+
+- `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`;
+- `SANDBOX_APPROVED_GIT_REPO_ROOTS=/repo/root,/another/repo/root`;
+- `SANDBOX_REQUIRE_LIVE_GIT_WORKTREE_APPROVAL=true` by default;
+- request payload `live_git_worktree.enabled=true`;
+- request payload `live_git_worktree.approval_id` when approval is required.
+
+When any gate is missing, the runner still records the planned git branch/worktree ref and adds a warning to the attestation instead of mutating a repository. When all gates pass, it runs `git worktree add` with argv-safe process execution, only for repos under approved roots, and returns `GitWorktree` evidence.
+
 ## Object Storage Channel
 
 `ExecutionProfile.results.object_storage` defines the large-artifact path:

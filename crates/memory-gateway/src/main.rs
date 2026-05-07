@@ -1,3 +1,15 @@
+//! Durable memory gateway and adapter boundary.
+//!
+//! Purpose: provide a stable local REST/MCP-shaped interface for memory writes,
+//! search, context packs, fork/join consolidation, repair, and event inspection.
+//! Local JSONL durability is the availability boundary; Graphiti/Zep and Qdrant
+//! adapters are best-effort mirrors.
+//!
+//! Architecture references:
+//! - `docs/design-docs/030-distributed-memory-knowledgebases.md`
+//! - `docs/design-docs/020-memory-research-steering.md`
+//! - `docs/exec-plans/active/100-steering-research-memory.md`
+
 use std::{
     collections::BTreeMap,
     fs::OpenOptions,

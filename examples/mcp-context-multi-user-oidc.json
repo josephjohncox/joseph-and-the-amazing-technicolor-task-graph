@@ -1,0 +1,85 @@
+{
+  "context_id": "mcp-context-tenant-a-user-123",
+  "access_mode": "multi_user_oidc",
+  "user": {
+    "user_id": "user-123",
+    "issuer": "https://issuer.example.com",
+    "subject": "00u123",
+    "tenant_id": "tenant-a",
+    "email_hint": "operator@example.com",
+    "groups": ["engineering"],
+    "session_id": "session-123",
+    "consent_ref": "approval://consent-123"
+  },
+  "oidc_delegation": {
+    "issuer": "https://issuer.example.com",
+    "client_id": "coat-mcp",
+    "audiences": ["mcp://github"],
+    "requested_scopes": ["openid", "profile", "repo:read"],
+    "token_broker": {
+      "provider": "external_broker",
+      "name": "oidc-token-broker",
+      "key": "mcp",
+      "namespace": "coat",
+      "audience": "mcp-user-delegation"
+    },
+    "token_cache_ref": null,
+    "lease_ttl_seconds": 600,
+    "require_user_consent": true,
+    "required_runner_labels": {
+      "auth.oidc.user_delegation": "true",
+      "tenant": "tenant-a"
+    },
+    "allowed_mcp_servers": ["github"],
+    "pass_id_token_to_mcp": false
+  },
+  "servers": [
+    {
+      "name": "github",
+      "transport": "http",
+      "uri": "https://mcp.example.com/github",
+      "allowed_tools": ["issues.read", "pull_requests.read"],
+      "auth": {
+        "kind": "oidc_delegation",
+        "broker": {
+          "provider": "external_broker",
+          "name": "oidc-token-broker",
+          "key": "github",
+          "namespace": "coat",
+          "audience": "mcp-user-delegation"
+        },
+        "issuer": "https://issuer.example.com",
+        "audience": "mcp://github",
+        "requested_scopes": ["repo:read"],
+        "principal": {
+          "user_id": "user-123",
+          "issuer": "https://issuer.example.com",
+          "subject": "00u123",
+          "tenant_id": "tenant-a",
+          "email_hint": "operator@example.com",
+          "groups": ["engineering"],
+          "session_id": "session-123",
+          "consent_ref": "approval://consent-123"
+        },
+        "token_ttl_seconds": 600,
+        "require_user_consent": true
+      }
+    }
+  ],
+  "secret_refs": [],
+  "propagation": "external_broker",
+  "token_ttl_seconds": 600,
+  "auth_distribution": {
+    "mode": "external_broker",
+    "allowed_materials": ["oidc_access_token", "oidc_on_behalf_of_token"],
+    "required_runner_labels": {
+      "auth.oidc.user_delegation": "true",
+      "tenant": "tenant-a"
+    },
+    "lease_ttl_seconds": 600,
+    "renewal": "broker_can_refresh",
+    "allow_node_local_device_session": false,
+    "allow_secret_sync": false,
+    "require_human_approval_for_brokered_user_auth": true
+  }
+}

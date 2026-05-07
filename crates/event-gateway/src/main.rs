@@ -1,3 +1,15 @@
+//! Event ingress service for webhooks, generic events, schedules, and triggered goals.
+//!
+//! Purpose: normalize external events into `ExternalEvent`, apply auth and
+//! dedupe policy, then record, route, or hold them for human review. Event
+//! sources never invoke workers directly; they create or steer durable goals
+//! through the coordinator boundary.
+//!
+//! Architecture references:
+//! - `docs/design-docs/080-events-webhooks-schedules.md`
+//! - `docs/api/event-gateway.asyncapi.yaml`
+//! - `docs/exec-plans/active/120-events-webhooks-schedules.md`
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -248,46 +260,7 @@ async fn webhook_event(
         .unwrap_or(EventSourceKind::Webhook);
     let payload: serde_json::Value = serde_json::from_slice(&body)
         .unwrap_or_else(|_| serde_json::json!({ "raw_utf8": String::from_utf8_lossy(&body) }));
-    let event_type = header(&headers, "ce-type")
-        .or_else(|| {
-            payload
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "webhook.received".to_string());
-    let event_id = header(&headers, "ce-id")
-        .or_else(|| {
-            payload
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let subject = header(&headers, "ce-subject").or_else(|| {
-        payload
-            .get("subject")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    });
-    let dedupe_key = source
-        .as_ref()
-        .and_then(|source| source.webhook.as_ref())
-        .and_then(|webhook| webhook.dedupe_header.as_ref())
-        .and_then(|name| header(&headers, name))
-        .unwrap_or_else(|| format!("{source_id}:{event_id}:{event_type}"));
-    let event = ExternalEvent {
-        id: event_id,
-        source_id,
-        source_kind,
-        event_type,
-        subject,
-        dedupe_key,
-        occurred_at: header(&headers, "ce-time"),
-        received_at: None,
-        headers: header_map(&headers),
-        payload,
-    };
+    let event = normalize_webhook_event(source.as_ref(), source_id, source_kind, &headers, payload);
     let deduped = record_event(&state, event.clone()).await?;
 
     if let Some(response) = route_event_from_source(&state, &event, deduped).await? {
@@ -615,6 +588,198 @@ fn render_template(template: &str, event: &ExternalEvent) -> String {
             "{{subject}}",
             event.subject.as_deref().unwrap_or("no subject"),
         )
+}
+
+fn normalize_webhook_event(
+    source: Option<&EventSource>,
+    source_id: String,
+    source_kind: EventSourceKind,
+    headers: &HeaderMap,
+    payload: serde_json::Value,
+) -> ExternalEvent {
+    let base = webhook_base_event(source, &source_id, &source_kind, headers, &payload);
+    let mut event = match source_kind {
+        EventSourceKind::GitHubWebhook => normalize_github_webhook(base, headers, &payload),
+        EventSourceKind::GitLabWebhook => normalize_gitlab_webhook(base, headers, &payload),
+        EventSourceKind::SlackEvent => normalize_slack_event(base, &payload),
+        EventSourceKind::StripeWebhook => normalize_stripe_webhook(base, &payload),
+        EventSourceKind::JiraWebhook => normalize_jira_webhook(base, &payload),
+        EventSourceKind::LinearWebhook => normalize_linear_webhook(base, &payload),
+        _ => base,
+    };
+    if let Some(dedupe_header) = source
+        .and_then(|source| source.webhook.as_ref())
+        .and_then(|webhook| webhook.dedupe_header.as_ref())
+    {
+        if let Some(dedupe_key) = header(headers, dedupe_header) {
+            event.dedupe_key = dedupe_key;
+        }
+    }
+    event
+}
+
+fn webhook_base_event(
+    source: Option<&EventSource>,
+    source_id: &str,
+    source_kind: &EventSourceKind,
+    headers: &HeaderMap,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    let event_type = header(headers, "ce-type")
+        .or_else(|| json_path_string(payload, &["type"]))
+        .unwrap_or_else(|| "webhook.received".to_string());
+    let event_id = header(headers, "ce-id")
+        .or_else(|| json_path_string(payload, &["id"]))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let subject = header(headers, "ce-subject").or_else(|| json_path_string(payload, &["subject"]));
+    let dedupe_key = source
+        .and_then(|source| source.webhook.as_ref())
+        .and_then(|webhook| webhook.dedupe_header.as_ref())
+        .and_then(|name| header(headers, name))
+        .unwrap_or_else(|| format!("{source_id}:{event_id}:{event_type}"));
+    ExternalEvent {
+        id: event_id,
+        source_id: source_id.to_string(),
+        source_kind: source_kind.clone(),
+        event_type,
+        subject,
+        dedupe_key,
+        occurred_at: header(headers, "ce-time"),
+        received_at: None,
+        headers: header_map(headers),
+        payload: payload.clone(),
+    }
+}
+
+fn normalize_github_webhook(
+    mut event: ExternalEvent,
+    headers: &HeaderMap,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    let github_event = header(headers, "x-github-event")
+        .or_else(|| json_path_string(payload, &["event"]))
+        .unwrap_or_else(|| "event".to_string());
+    let action = json_path_string(payload, &["action"]);
+    event.id = header(headers, "x-github-delivery").unwrap_or(event.id);
+    event.event_type = provider_event_type("github", &github_event, action.as_deref());
+    event.subject = json_path_string(payload, &["repository", "full_name"])
+        .map(|repo| {
+            json_path_string(payload, &["pull_request", "number"])
+                .or_else(|| json_path_string(payload, &["issue", "number"]))
+                .map(|number| format!("{repo}#{number}"))
+                .unwrap_or(repo)
+        })
+        .or(event.subject);
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event
+}
+
+fn normalize_gitlab_webhook(
+    mut event: ExternalEvent,
+    headers: &HeaderMap,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    let gitlab_event = header(headers, "x-gitlab-event")
+        .or_else(|| json_path_string(payload, &["object_kind"]))
+        .or_else(|| json_path_string(payload, &["event_name"]))
+        .unwrap_or_else(|| "event".to_string());
+    event.id = header(headers, "x-gitlab-event-uuid")
+        .or_else(|| json_path_string(payload, &["object_attributes", "id"]))
+        .unwrap_or(event.id);
+    event.event_type = provider_event_type("gitlab", &gitlab_event, None);
+    event.subject = json_path_string(payload, &["project", "path_with_namespace"])
+        .or_else(|| json_path_string(payload, &["project", "web_url"]))
+        .or(event.subject);
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event
+}
+
+fn normalize_slack_event(mut event: ExternalEvent, payload: &serde_json::Value) -> ExternalEvent {
+    event.id = json_path_string(payload, &["event_id"]).unwrap_or(event.id);
+    let inner_type = json_path_string(payload, &["event", "type"]);
+    let outer_type = json_path_string(payload, &["type"]).unwrap_or_else(|| "event".to_string());
+    event.event_type = provider_event_type("slack", &inner_type.unwrap_or(outer_type), None);
+    event.subject = json_path_string(payload, &["event", "channel"])
+        .or_else(|| json_path_string(payload, &["event", "user"]))
+        .or(event.subject);
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event
+}
+
+fn normalize_stripe_webhook(
+    mut event: ExternalEvent,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    event.id = json_path_string(payload, &["id"]).unwrap_or(event.id);
+    event.event_type = json_path_string(payload, &["type"])
+        .map(|event_type| format!("stripe.{event_type}"))
+        .unwrap_or_else(|| "stripe.event".to_string());
+    event.subject = json_path_string(payload, &["data", "object", "id"]).or(event.subject);
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event.occurred_at = json_path_string(payload, &["created"]).or(event.occurred_at);
+    event
+}
+
+fn normalize_jira_webhook(mut event: ExternalEvent, payload: &serde_json::Value) -> ExternalEvent {
+    let webhook_event =
+        json_path_string(payload, &["webhookEvent"]).unwrap_or_else(|| "event".to_string());
+    event.id = json_path_string(payload, &["webhookEvent"])
+        .zip(json_path_string(payload, &["issue", "id"]))
+        .map(|(event_type, issue_id)| format!("{event_type}:{issue_id}"))
+        .unwrap_or(event.id);
+    event.event_type = provider_event_type("jira", &webhook_event, None);
+    event.subject = json_path_string(payload, &["issue", "key"]).or(event.subject);
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event
+}
+
+fn normalize_linear_webhook(
+    mut event: ExternalEvent,
+    payload: &serde_json::Value,
+) -> ExternalEvent {
+    let event_type = json_path_string(payload, &["type"]).unwrap_or_else(|| "event".to_string());
+    let action = json_path_string(payload, &["action"]);
+    event.id = json_path_string(payload, &["id"])
+        .or_else(|| json_path_string(payload, &["data", "id"]))
+        .unwrap_or(event.id);
+    event.event_type = provider_event_type("linear", &event_type, action.as_deref());
+    event.subject = json_path_string(payload, &["data", "identifier"])
+        .or_else(|| json_path_string(payload, &["data", "title"]))
+        .or(event.subject);
+    event.dedupe_key = format!("{}:{}", event.source_id, event.id);
+    event
+}
+
+fn provider_event_type(provider: &str, event: &str, action: Option<&str>) -> String {
+    let base = event
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-', ':'], "_");
+    action
+        .filter(|action| !action.trim().is_empty())
+        .map(|action| {
+            format!(
+                "{provider}.{base}.{}",
+                action
+                    .trim()
+                    .to_ascii_lowercase()
+                    .replace([' ', '-', ':'], "_")
+            )
+        })
+        .unwrap_or_else(|| format!("{provider}.{base}"))
+}
+
+fn json_path_string(payload: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = payload;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    match current {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn normalize_generic_event(
@@ -1479,7 +1644,7 @@ mod tests {
     use super::{
         AppState, WebhookSignatureStyle, enforce_event_source_activation_policy,
         event_source_is_risky, goal_from_template, normalize_generic_event,
-        provider_webhook_defaults, render_template, verify_hmac_sha256,
+        normalize_webhook_event, provider_webhook_defaults, render_template, verify_hmac_sha256,
         verify_provider_hmac_sha256,
     };
 
@@ -1539,6 +1704,67 @@ mod tests {
         let stripe = provider_webhook_defaults(&EventSourceKind::StripeWebhook);
         assert_eq!(stripe.signature_header, "stripe-signature");
         assert_eq!(stripe.signature_style, WebhookSignatureStyle::StripeV1);
+    }
+
+    #[test]
+    fn normalizes_github_webhook_subject_and_dedupe() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-github-event", HeaderValue::from_static("pull_request"));
+        headers.insert(
+            "x-github-delivery",
+            HeaderValue::from_static("delivery-123"),
+        );
+        let event = normalize_webhook_event(
+            None,
+            "github-source".to_string(),
+            EventSourceKind::GitHubWebhook,
+            &headers,
+            serde_json::json!({
+                "action": "opened",
+                "repository": {"full_name": "example/repo"},
+                "pull_request": {"number": 42}
+            }),
+        );
+
+        assert_eq!(event.id, "delivery-123");
+        assert_eq!(event.event_type, "github.pull_request.opened");
+        assert_eq!(event.subject.as_deref(), Some("example/repo#42"));
+        assert_eq!(event.dedupe_key, "github-source:delivery-123");
+    }
+
+    #[test]
+    fn normalizes_slack_and_stripe_webhook_shapes() {
+        let slack = normalize_webhook_event(
+            None,
+            "slack-source".to_string(),
+            EventSourceKind::SlackEvent,
+            &HeaderMap::new(),
+            serde_json::json!({
+                "type": "event_callback",
+                "event_id": "Ev123",
+                "event": {"type": "app_mention", "channel": "C123"}
+            }),
+        );
+        assert_eq!(slack.id, "Ev123");
+        assert_eq!(slack.event_type, "slack.app_mention");
+        assert_eq!(slack.subject.as_deref(), Some("C123"));
+
+        let stripe = normalize_webhook_event(
+            None,
+            "stripe-source".to_string(),
+            EventSourceKind::StripeWebhook,
+            &HeaderMap::new(),
+            serde_json::json!({
+                "id": "evt_123",
+                "type": "checkout.session.completed",
+                "created": 1770000000,
+                "data": {"object": {"id": "cs_123"}}
+            }),
+        );
+        assert_eq!(stripe.id, "evt_123");
+        assert_eq!(stripe.event_type, "stripe.checkout.session.completed");
+        assert_eq!(stripe.subject.as_deref(), Some("cs_123"));
+        assert_eq!(stripe.occurred_at.as_deref(), Some("1770000000"));
     }
 
     #[test]

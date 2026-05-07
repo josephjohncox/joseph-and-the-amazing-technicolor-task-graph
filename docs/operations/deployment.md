@@ -25,6 +25,8 @@ The Compose event gateway listens on `:9089`, defaults to a JSONL journal, can s
 
 The Compose control gateway listens on `:9090`. It reads goal-store projections, workflow status/progress, runner status, notifier threads, event gateway sources/triggers/events, and memory gateway results. Set `COAT_CONTROL_GATEWAY_TOKEN` to protect `/api/*` and `COAT_CONTROL_MCP_TOKEN` to protect `/mcp`.
 
+Compose defaults to single-user mode. Multi-user OIDC MCP delegation is an extension path and requires an external OIDC-aware gateway or broker; do not enable user-delegated MCP auth by sharing local browser or CLI tokens.
+
 Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` for production-like event-gateway deployments. With that switch enabled, risky enabled sources such as webhooks, calendars, schedules, or goal-creating routes require an approval reference at registration time. Use `coat event register --approval-id ...` or register proposed sources disabled first when the approval has not happened yet.
 
 For personal Restate Cloud usage, use `infra/compose/docker-compose.restate-cloud.yml` with the `restate-cloud` profile. It starts the Restate Cloud tunnel client, configures coordinator request identity verification through `RESTATE_IDENTITY_KEYS` or `RESTATE_SIGNING_PUBLIC_KEY`, and points the event gateway at the tunnel ingress. See `docs/operations/restate-cloud.md`.
@@ -55,6 +57,7 @@ Expected production hardening:
 - Use managed S3 in AWS/EKS, or a production object-store service, for `ObjectStoreRef` artifacts.
 - Replace local MinIO root credentials and prefer workload identity or External Secrets.
 - Put `control-web` behind ingress/TLS, OAuth proxy, VPN, or private network access before exposing it outside the cluster.
+- For multi-user deployments, put `control-web` behind OIDC-aware ingress or an auth gateway, configure a token broker, and use `McpContextRef.access_mode=multi_user_oidc` only for goals that need user-delegated MCP calls.
 - Add namespace-specific resource requests and limits.
 - Add per-task sandbox Jobs and set `runtimeClassName` for gVisor, Kata, Firecracker, or provider-integrated sandboxes when the node pool supports them.
 - Use `infra/k8s/examples/sandbox-runtimeclasses.yaml` and `infra/k8s/examples/sandbox-task-pod.yaml` as starting points for RuntimeClass, Pod security context, and NetworkPolicy setup.
@@ -71,10 +74,13 @@ Production deployments should distribute auth through standard secret and identi
 - Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, 1Password, Bitwarden, Doppler, or SOPS-backed material for managed secret references.
 - Kubernetes service accounts, cloud workload identity, Bedrock, Vertex, Foundry, or an LLM gateway for non-user service auth.
 - External auth brokers for short-lived user-auth leases.
+- OIDC token brokers for user-delegated MCP access, using on-behalf-of or token-exchange flows with per-MCP audience, scope, TTL, tenant, and consent checks.
 
 Codex and Claude Code device/browser sessions should normally stay node-local. Label those runners and route matching tasks to them. Do not replicate local login stores across nodes unless `allow_secret_sync=true`, the target store is encrypted, scope-limited, audited, and a human approval covers the distribution.
 
 Brokered user auth should create a notification thread, ask the human to complete the login or device-code flow, store only a lease reference in coordinator-visible state, and expire the lease according to `AuthDistributionPolicy.lease_ttl_seconds`.
+
+OIDC-backed MCP user delegation follows the same principle: store `UserPrincipalRef`, `OidcDelegationPolicy`, consent refs, and `SecretRef` broker refs, but never raw user ID tokens, access tokens, refresh tokens, cookies, or browser sessions. Runners must advertise `oidc_user_delegation` and tenant labels before they can receive such tasks.
 
 ## Health Checks
 

@@ -564,6 +564,7 @@
         "test",
         "review",
         "mcp_tools",
+        "oidc_user_delegation",
         "workspace_sandbox",
         "container_sandbox",
         "gvisor_sandbox",

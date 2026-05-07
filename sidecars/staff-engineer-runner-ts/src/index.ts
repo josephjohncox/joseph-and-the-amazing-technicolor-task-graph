@@ -1,3 +1,15 @@
+/**
+ * Staff-engineer runner sidecar.
+ *
+ * Purpose: adapt COAT task contracts to the optional `@ctxr/agent-staff-engineer`
+ * lifecycle worker. It is a specialized issue-to-PR/review-loop executor, not
+ * the durable coordinator. Stub mode keeps local smoke tests independent of
+ * Claude Code or package availability.
+ *
+ * Architecture references:
+ * - docs/exec-plans/active/040-staff-engineer-worker.md
+ * - docs/design-docs/010-distributed-runners-mcp.md
+ */
 import http from "node:http";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -14,6 +26,13 @@ const leaseTtlSeconds = numberEnv("RUNNER_LEASE_TTL_SECONDS", 300);
 const heartbeatIntervalMs = numberEnv("RUNNER_HEARTBEAT_INTERVAL_MS", 30_000);
 const maxConcurrency = numberEnv("RUNNER_MAX_CONCURRENCY", 1);
 let runningTasks = 0;
+
+const durableSubagentContext = [
+  "Treat any request to use a subagent as a request to create a COAT durable child task.",
+  "Do not spawn native Claude Code, Codex, SDK, MCP-client, or framework-local subagents from inside this runner.",
+  "Return proposed child work only through AgentRunResult.child_requests.",
+  "The coordinator validates budgets, approval policy, routing, memory context, and sandbox policy before dispatch.",
+];
 
 type WorkerKind =
   | "planner"
@@ -33,6 +52,8 @@ type RunnerCapability =
   | "test"
   | "review"
   | "mcp_tools"
+  | "durable_child_tasks"
+  | "oidc_user_delegation"
   | "workspace_sandbox"
   | "git_worktree"
   | "git"
@@ -129,6 +150,7 @@ type AgentRunRequest = {
         candidates?: unknown[];
       };
       mcp?: unknown;
+      subagents?: unknown;
       results?: unknown;
     };
   };
@@ -356,6 +378,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
         `runner_id=${runnerId}`,
         `node_id=${nodeId}`,
         `task_purpose=${JSON.stringify(request.task.purpose ?? { kind: "work" })}`,
+        ...subagentDiagnostics(request.task.execution?.subagents),
         ...mcpDiagnostics(request.task.execution?.mcp),
         ...memoryContextDiagnostics(memoryContext, memoryContextError),
       ],
@@ -855,6 +878,7 @@ function buildRegistration(): RunnerRegistration {
     capabilities: parseJsonEnv("RUNNER_CAPABILITIES_JSON", [
       "code",
       "review",
+      "durable_child_tasks",
       "workspace_sandbox",
       "git_worktree",
       "git",
@@ -926,7 +950,15 @@ function buildCapabilities(): Record<string, unknown> {
         "oauth_device_broker",
         "external_broker",
       ],
+      access_modes_supported: ["single_user", ...(registration.capabilities.includes("oidc_user_delegation") ? ["multi_user_oidc"] : [])],
       secret_values_exposed: false,
+    },
+    subagents: {
+      durable_task_queue_required: true,
+      native_subagent_spawn_disabled: true,
+      child_request_channel: "AgentRunResult.child_requests",
+      runner_context_injected: true,
+      instructions: durableSubagentContext,
     },
     review_contract: {
       supports_review_output: true,
@@ -946,11 +978,28 @@ function buildCapabilities(): Record<string, unknown> {
   };
 }
 
+function subagentDiagnostics(subagents: unknown): string[] {
+  const mode = isRecord(subagents) && typeof subagents.mode === "string" ? subagents.mode : "coordinator_durable_tasks";
+  const nativeSpawn = isRecord(subagents) && typeof subagents.native_spawn === "string" ? subagents.native_spawn : "disabled";
+  const childChannel =
+    isRecord(subagents) && typeof subagents.child_request_channel === "string"
+      ? subagents.child_request_channel
+      : "agent_run_result_child_requests";
+  return [
+    `subagent_mode=${mode}`,
+    `native_subagent_spawn=${nativeSpawn}`,
+    `child_request_channel=${childChannel}`,
+    "subagent_runner_context=durable_child_tasks_only",
+  ];
+}
+
 function mcpDiagnostics(mcp: unknown): string[] {
   if (!isRecord(mcp)) return ["mcp_context=none"];
   const servers = Array.isArray(mcp.servers) ? mcp.servers : [];
   const secretRefs = collectSecretRefs(mcp);
   const authDistribution = isRecord(mcp.auth_distribution) ? mcp.auth_distribution : undefined;
+  const oidcDelegation = isRecord(mcp.oidc_delegation) ? mcp.oidc_delegation : undefined;
+  const user = isRecord(mcp.user) ? mcp.user : undefined;
   const requiredLabels = isRecord(authDistribution?.required_runner_labels)
     ? Object.entries(authDistribution.required_runner_labels).map(([key, value]) => `${key}=${String(value)}`)
     : [];
@@ -959,6 +1008,9 @@ function mcpDiagnostics(mcp: unknown): string[] {
     : [];
   return [
     `mcp_servers=${servers.length}`,
+    `mcp_access_mode=${typeof mcp.access_mode === "string" ? mcp.access_mode : "single_user"}`,
+    `mcp_oidc_delegation=${Boolean(oidcDelegation)}`,
+    `mcp_user_ref=${typeof user?.user_id === "string" ? user.user_id : "none"}`,
     `mcp_secret_refs=${secretRefs.length}`,
     `mcp_auth_distribution=${typeof authDistribution?.mode === "string" ? authDistribution.mode : "default"}`,
     `mcp_auth_materials=${materials.length ? materials.join(",") : "default"}`,
@@ -974,6 +1026,10 @@ function collectSecretRefs(mcp: Record<string, unknown>): SecretRef[] {
   if (Array.isArray(mcp.secret_refs)) {
     refs.push(...mcp.secret_refs.filter(isSecretRef));
   }
+  if (isRecord(mcp.oidc_delegation)) {
+    if (isSecretRef(mcp.oidc_delegation.token_broker)) refs.push(mcp.oidc_delegation.token_broker);
+    if (isSecretRef(mcp.oidc_delegation.token_cache_ref)) refs.push(mcp.oidc_delegation.token_cache_ref);
+  }
   if (Array.isArray(mcp.servers)) {
     for (const server of mcp.servers.filter(isRecord)) {
       const auth = server.auth;
@@ -981,6 +1037,9 @@ function collectSecretRefs(mcp: Record<string, unknown>): SecretRef[] {
       if (auth.kind === "secret" && isSecretRef(auth.secret)) refs.push(auth.secret);
       if (auth.kind === "oauth_delegation" && isSecretRef(auth.token_exchange_secret)) {
         refs.push(auth.token_exchange_secret);
+      }
+      if (auth.kind === "oidc_delegation" && isSecretRef(auth.broker)) {
+        refs.push(auth.broker);
       }
       if (auth.kind === "device_auth_session") {
         if (isSecretRef(auth.session_ref)) refs.push(auth.session_ref);

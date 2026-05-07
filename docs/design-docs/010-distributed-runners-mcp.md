@@ -73,6 +73,7 @@ MCP context never carries raw tokens.
 
 Tasks carry:
 
+- access mode, defaulting to `single_user`;
 - MCP server names and URIs;
 - allowed tool lists;
 - auth mode;
@@ -80,6 +81,8 @@ Tasks carry:
 - `AuthDistributionPolicy`, which constrains whether credentials are runner-local, runner-resolved, coordinator-issued, workload-identity based, device-brokered, or externally brokered.
 
 The runner resolves the secret reference at execution time using its node identity and local secret mounts. The coordinator can also issue short-lived context when `propagation = coordinator_issued`. Device/browser auth for Codex and Claude Code should usually use `propagation = runner_local_only` plus runner labels such as `auth.codex.device=true`; brokered user auth should use `oauth_device_broker` or `external_broker`.
+
+Multi-user OIDC is not the default. A task that sets `access_mode = multi_user_oidc` must include `UserPrincipalRef` and `OidcDelegationPolicy`, and dispatch requires a runner with `oidc_user_delegation` plus labels such as `auth.oidc.user_delegation=true` and the tenant label. MCP servers authenticate as that user only through short-lived brokered OIDC access tokens or leases. See `docs/design-docs/130-multi-user-oidc-mcp.md`.
 
 The bundled sidecars inspect MCP context during `/run-task` and report redacted secret availability diagnostics. They never include secret values in `AgentRunResult`.
 

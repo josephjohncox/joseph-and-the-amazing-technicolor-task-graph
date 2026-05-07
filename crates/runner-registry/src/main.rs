@@ -1,3 +1,13 @@
+//! Distributed runner registry and dispatch policy service.
+//!
+//! Purpose: collect runner registrations and heartbeats, expose runner status,
+//! and choose a compatible runner/model for each task using role, capabilities,
+//! labels, locality, MCP context, auth policy, and model route.
+//!
+//! Architecture references:
+//! - `docs/design-docs/010-distributed-runners-mcp.md`
+//! - `docs/exec-plans/active/090-distributed-runners-mcp-notifications.md`
+
 use std::{
     collections::BTreeMap,
     sync::Arc,

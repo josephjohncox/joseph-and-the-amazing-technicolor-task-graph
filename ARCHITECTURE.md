@@ -92,6 +92,17 @@ buf lint
 
 `proto/coat/v1/common.proto` owns shared protocol types, `goal_store.proto` owns queryable durable projections, and `runner.proto` owns runner and registry envelopes. Full Rust domain payloads are carried as JSON-schema envelopes so the protocol keeps typed indexes without forcing two divergent domain models.
 
+## Documentation Cross-References
+
+Architecture should be discoverable from both docs and code:
+
+- `docs/README.md` is the documentation map and reading order.
+- Each Rust service crate and TypeScript sidecar starts with a purpose header and architecture references.
+- Public cross-service contracts in `crates/domain` carry doc comments when they affect state, routing, auth, validation, or satisfaction.
+- `scripts/coat-doc-gardener.sh` checks for required source-of-truth docs and architecture-reference headers.
+
+When a service boundary or public contract changes, update the relevant design doc, execution plan, generated schema, and entrypoint header in the same change.
+
 ## Control Gateway And Dashboards
 
 `ui/control-plane-web` is an optional TypeScript gateway and SPA for operators and agent/chat clients. It composes backend APIs for visibility and steering:

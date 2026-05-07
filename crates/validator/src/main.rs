@@ -1,3 +1,13 @@
+//! Standalone validation service.
+//!
+//! Purpose: convert `AgentRunResult` evidence into `ValidationReport` decisions
+//! using shared domain rules. The coordinator applies reports to durable state;
+//! the validator does not own the task tree.
+//!
+//! Architecture references:
+//! - `docs/exec-plans/active/060-test-review-validator.md`
+//! - `docs/design-docs/090-review-doctrine-stdlib.md`
+
 use axum::{Json, Router, routing::get, routing::post};
 use coat_domain::{ValidationReport, ValidationRequest};
 use tower_http::trace::TraceLayer;

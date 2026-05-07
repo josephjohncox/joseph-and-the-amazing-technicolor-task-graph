@@ -6,6 +6,16 @@
     "artifact": {
       "$ref": "#/$defs/ArtifactRef"
     },
+    "checkpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CheckpointRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "created_at": {
       "type": [
         "string",
@@ -60,6 +70,7 @@
         "report",
         "pull_request",
         "workspace_snapshot",
+        "checkpoint",
         "git_branch",
         "git_commit",
         "git_worktree",
@@ -93,6 +104,101 @@
         "kind",
         "uri",
         "description"
+      ]
+    },
+    "CheckpointKind": {
+      "type": "string",
+      "enum": [
+        "git_commit",
+        "git_tag",
+        "git_branch",
+        "workspace_snapshot",
+        "object_storage_archive",
+        "metadata",
+        "external"
+      ]
+    },
+    "CheckpointRef": {
+      "description": "Durable history marker returned by a worker or subagent.\n\nA checkpoint points at externally inspectable state: a git commit/tag/branch,\na workspace snapshot, an object-store archive, or a metadata marker. It lets\noperators and reviewers reconstruct task history without trusting prose\nsummaries or storing large blobs in workflow state.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitResultRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/CheckpointKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "object_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStorageArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "task_id",
+        "kind",
+        "label",
+        "summary",
+        "artifact"
       ]
     },
     "GitResultRef": {

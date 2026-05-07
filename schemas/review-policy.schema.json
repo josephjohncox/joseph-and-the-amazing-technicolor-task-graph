@@ -111,6 +111,7 @@
         "report",
         "pull_request",
         "workspace_snapshot",
+        "checkpoint",
         "git_branch",
         "git_commit",
         "git_worktree",

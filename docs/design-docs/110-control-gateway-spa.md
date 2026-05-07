@@ -62,7 +62,7 @@ The UI should show:
 - task ID, goal ID, parent task, subgoal, role, purpose, status, depth, priority, attempts, and runnable flag;
 - current prompt from `payload_json.prompt`;
 - execution profile, model route, persona, MCP refs, result channels, budget, sandbox profile, and done criteria;
-- result refs, git refs, object artifacts, recent task events, and child task IDs.
+- result refs, git refs, object artifacts, checkpoint history, recent task events, and child task IDs.
 
 This is intentionally projection-based. If exact live state is needed, the gateway also calls `GoalWorkflow/status` and `GoalWorkflow/progress`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
 

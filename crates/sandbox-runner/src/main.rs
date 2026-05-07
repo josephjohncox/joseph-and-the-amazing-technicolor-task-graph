@@ -286,9 +286,11 @@ async fn create_workspace_inner(
     };
     tokio::fs::create_dir_all(path_buf.join("artifacts")).await?;
     tokio::fs::create_dir_all(path_buf.join("snapshots")).await?;
+    tokio::fs::create_dir_all(path_buf.join("checkpoints")).await?;
     write_record(state, &record).await?;
     write_workspace_manifest(&path_buf, &record).await?;
     write_launch_plan(&path_buf, &launch_plan).await?;
+    write_checkpoint_manifest(&path_buf, &record).await?;
     Ok(WorkspaceResponse {
         workspace_id,
         path: path.clone(),
@@ -596,6 +598,7 @@ fn error_response(error: anyhow::Error) -> WorkspaceResponse {
             image: None,
             workspace_path: String::new(),
             artifact_manifest_path: String::new(),
+            checkpoint_manifest_path: String::new(),
             command: Vec::new(),
             environment: std::collections::BTreeMap::new(),
             required_capabilities: vec![
@@ -692,6 +695,24 @@ async fn write_launch_plan(
     Ok(())
 }
 
+async fn write_checkpoint_manifest(
+    path: &std::path::Path,
+    record: &WorkspaceRecord,
+) -> anyhow::Result<()> {
+    let manifest_path = path.join("checkpoints/checkpoint-manifest.json");
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+        "goal_id": record.goal_id,
+        "task_id": record.task_id,
+        "workspace_id": record.workspace_id,
+        "created_at_unix_seconds": record.created_at_unix_seconds,
+        "git_result": record.git_result,
+        "object_prefix": record.object_prefix,
+        "checkpoints": []
+    }))?;
+    tokio::fs::write(manifest_path, bytes).await?;
+    Ok(())
+}
+
 fn sandbox_launch_plan(
     goal_id: Uuid,
     task_id: Uuid,
@@ -706,6 +727,10 @@ fn sandbox_launch_plan(
         .join("artifacts/artifact-manifest.json")
         .display()
         .to_string();
+    let checkpoint_manifest_path = std::path::Path::new(&workspace_path)
+        .join("checkpoints/checkpoint-manifest.json")
+        .display()
+        .to_string();
     let mut environment = std::collections::BTreeMap::new();
     environment.insert("COAT_GOAL_ID".to_string(), goal_id.to_string());
     environment.insert("COAT_TASK_ID".to_string(), task_id.to_string());
@@ -713,6 +738,10 @@ fn sandbox_launch_plan(
     environment.insert(
         "COAT_ARTIFACT_MANIFEST".to_string(),
         artifact_manifest_path.clone(),
+    );
+    environment.insert(
+        "COAT_CHECKPOINT_MANIFEST".to_string(),
+        checkpoint_manifest_path.clone(),
     );
 
     SandboxLaunchPlan {
@@ -724,6 +753,7 @@ fn sandbox_launch_plan(
         image: sandbox.isolation.image.clone(),
         workspace_path,
         artifact_manifest_path,
+        checkpoint_manifest_path,
         command: Vec::new(),
         environment,
         required_capabilities: sandbox.required_runner_capabilities(),

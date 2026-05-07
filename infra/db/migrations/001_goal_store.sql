@@ -218,6 +218,9 @@ CREATE TABLE IF NOT EXISTS coat.artifacts (
     git_remote text,
     git_ref text,
     git_commit_sha text,
+    checkpoint_id uuid,
+    checkpoint_kind text,
+    checkpoint_label text,
     object_bucket text,
     object_key text,
     sha256 text,
@@ -237,6 +240,10 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_task
 CREATE INDEX IF NOT EXISTS idx_artifacts_git_ref
     ON coat.artifacts(git_ref)
     WHERE git_ref IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_checkpoint
+    ON coat.artifacts(goal_id, checkpoint_id, recorded_at DESC)
+    WHERE checkpoint_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_object
     ON coat.artifacts(object_bucket, object_key)

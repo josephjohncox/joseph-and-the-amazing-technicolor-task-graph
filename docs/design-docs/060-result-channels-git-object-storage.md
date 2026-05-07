@@ -5,7 +5,8 @@
 Workers need a durable way to tell the coordinator where their work landed. Small structured summaries can stay in `AgentRunResult`, but code changes and large artifacts should move through external result channels:
 
 - git branches and worktrees for code, diffs, commits, and PR-ready work;
-- S3-compatible object storage for large reports, simulation outputs, datasets, screenshots, traces, and binary bundles.
+- S3-compatible object storage for large reports, simulation outputs, datasets, screenshots, traces, and binary bundles;
+- checkpoint refs for reviewable task history across git commits, branches, workspace snapshots, object archives, metadata milestones, or external history systems.
 
 The coordinator stores references. It does not copy full diffs, credentials, or large blobs into workflow state.
 
@@ -56,10 +57,29 @@ Workers return `AgentRunResult.object_artifacts`, each with store, key, URI, con
 
 Local Compose runs a MinIO S3-compatible service as `object-store` and initializes the `coat-artifacts` bucket. Kubernetes includes the same development object-store Deployment and Job. In AWS/EKS, use real S3 by setting the object store endpoint/region/bucket and resolving credentials through IAM roles for service accounts or another `SecretRef` provider.
 
+## Checkpoint Channel
+
+`ExecutionProfile.results.checkpoints` defines how much task history the worker should return:
+
+- `enabled`: whether checkpoints are accepted from the worker;
+- `mode`: `on_result`, `periodic`, `manual_only`, or `disabled`;
+- `git_checkpoint_on_result`: emit git branch, commit, or tag checkpoints when a git result exists;
+- `workspace_snapshot_on_result`: emit snapshot refs when the sandbox runner captures workspace history;
+- `object_checkpoint_on_result`: emit object archive checkpoints for large external bundles;
+- `require_for_code_changes`: fail validation for code-like tasks that complete without a checkpoint;
+- `branch_prefix` and `tag_prefix`: suggested prefixes for checkpoint branches or tags.
+
+Workers return `AgentRunResult.checkpoints`, each carrying a `CheckpointRef` with goal ID, task ID, kind, label, summary, artifact ref, optional git result, optional object artifact, sequence, and timestamp. Checkpoints are references, not the history payload itself.
+
+`coat-sandbox-runner` creates `checkpoints/checkpoint-manifest.json` and includes `COAT_CHECKPOINT_MANIFEST` in the launch environment. Executors can append local checkpoint metadata there, then return the final `CheckpointRef` values in `AgentRunResult.checkpoints`. The tool registry exposes `checkpoint_history` for MCP clients that need to inspect the workspace manifest directly.
+
+The goal store projects checkpoint refs as artifact rows and exposes `/goal-store/goals/{goal_id}/checkpoints`. The control gateway includes that history in per-goal snapshots and exposes `coat_checkpoint_history` over MCP.
+
 ## Runner Rules
 
 - Never write raw object-store credentials into task state.
 - Prefer git for source changes and object storage for large generated outputs.
+- Prefer checkpoints for historical milestones and review handoffs; do not put full diffs or large snapshots in checkpoint payloads.
 - Use one branch per task unless a unifier explicitly joins branches.
 - Branch names should include goal ID and task ID.
 - Object keys should include goal ID and task ID.

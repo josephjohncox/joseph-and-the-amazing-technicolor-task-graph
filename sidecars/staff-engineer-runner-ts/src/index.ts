@@ -170,6 +170,7 @@ type AgentRunResult = {
   artifacts: Array<{ kind: string; uri: string; description: string; sha256?: string | null }>;
   git_result: unknown | null;
   object_artifacts: unknown[];
+  checkpoints: unknown[];
   test_evidence: TestCommandEvidence[];
   child_requests: unknown[];
   confidence: number;
@@ -344,6 +345,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
     });
     const gitResult = buildGitResult(request);
     const objectArtifacts = buildObjectArtifacts(request);
+    const checkpoints = buildCheckpoints(request, gitResult, objectArtifacts);
     return {
       task_id: request.task.id,
       status: taskStatus(request),
@@ -366,6 +368,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
       ],
       git_result: gitResult,
       object_artifacts: objectArtifacts,
+      checkpoints,
       test_evidence: testEvidence(request),
       child_requests: [],
       confidence: taskPurposeKind(request.task.purpose) === "work" ? 0.2 : 0.7,
@@ -748,6 +751,96 @@ function buildObjectArtifacts(request: AgentRunRequest): Record<string, unknown>
       description: "stub object storage artifact manifest location",
     },
   ];
+}
+
+function buildCheckpoints(
+  request: AgentRunRequest,
+  gitResult: Record<string, unknown> | null,
+  objectArtifacts: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const checkpointPolicy = resultPolicy(request, "checkpoints");
+  if (isRecord(checkpointPolicy) && checkpointPolicy.enabled === false) return [];
+  const checkpoints: Record<string, unknown>[] = [];
+  if (gitResult) {
+    checkpoints.push({
+      id: deterministicUuid(`${request.goal_id}:${request.task.id}:git`),
+      goal_id: request.goal_id,
+      task_id: request.task.id,
+      parent_checkpoint_id: null,
+      kind: gitResult.commit ? "git_commit" : "git_branch",
+      label: "task-git-result",
+      summary: "Git checkpoint for the task result branch.",
+      artifact: {
+        kind: "checkpoint",
+        uri: `git+checkpoint://${String(gitResult.branch)}`,
+        description: "git task checkpoint",
+        sha256: null,
+      },
+      git_result: gitResult,
+      object_artifact: null,
+      sequence: 1,
+      created_at: null,
+      payload_json: {},
+    });
+  }
+  objectArtifacts.forEach((artifact, index) => {
+    checkpoints.push({
+      id: deterministicUuid(`${request.goal_id}:${request.task.id}:object:${index}`),
+      goal_id: request.goal_id,
+      task_id: request.task.id,
+      parent_checkpoint_id: null,
+      kind: "object_storage_archive",
+      label: `object-artifact-${index + 1}`,
+      summary: "Object storage checkpoint for large task artifacts.",
+      artifact: {
+        kind: "checkpoint",
+        uri: typeof artifact.uri === "string" ? artifact.uri : `s3://unknown/${request.task.id}`,
+        description: "object storage checkpoint",
+        sha256: typeof artifact.sha256 === "string" ? artifact.sha256 : null,
+      },
+      git_result: null,
+      object_artifact: artifact,
+      sequence: index + 2,
+      created_at: null,
+      payload_json: {},
+    });
+  });
+  if (checkpoints.length === 0) {
+    checkpoints.push({
+      id: deterministicUuid(`${request.goal_id}:${request.task.id}:metadata`),
+      goal_id: request.goal_id,
+      task_id: request.task.id,
+      parent_checkpoint_id: null,
+      kind: "metadata",
+      label: "runner-result",
+      summary: "Metadata checkpoint for a task result without git or object artifacts.",
+      artifact: {
+        kind: "checkpoint",
+        uri: `checkpoint://goal/${request.goal_id}/task/${request.task.id}/runner-result`,
+        description: "metadata checkpoint",
+        sha256: null,
+      },
+      git_result: null,
+      object_artifact: null,
+      sequence: 1,
+      created_at: null,
+      payload_json: {},
+    });
+  }
+  return checkpoints;
+}
+
+function deterministicUuid(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < input.length; i += 1) {
+    h1 ^= input.charCodeAt(i);
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= input.charCodeAt(input.length - i - 1);
+    h2 = Math.imul(h2, 0x811c9dc5);
+  }
+  const hex = `${(h1 >>> 0).toString(16).padStart(8, "0")}${(h2 >>> 0).toString(16).padStart(8, "0")}0000000000000000`;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 function resultChannelArtifacts(

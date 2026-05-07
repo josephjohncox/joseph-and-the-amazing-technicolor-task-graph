@@ -43,6 +43,13 @@
           ],
           "default": null
         },
+        "checkpoints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CheckpointRef"
+          }
+        },
         "child_requests": {
           "type": "array",
           "default": [],
@@ -193,6 +200,7 @@
         "report",
         "pull_request",
         "workspace_snapshot",
+        "checkpoint",
         "git_branch",
         "git_commit",
         "git_worktree",
@@ -410,6 +418,150 @@
         "max_patch_size"
       ]
     },
+    "CheckpointKind": {
+      "type": "string",
+      "enum": [
+        "git_commit",
+        "git_tag",
+        "git_branch",
+        "workspace_snapshot",
+        "object_storage_archive",
+        "metadata",
+        "external"
+      ]
+    },
+    "CheckpointMode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "on_result",
+        "periodic",
+        "manual_only"
+      ]
+    },
+    "CheckpointPolicy": {
+      "description": "Task-local checkpoint policy for reviewable worker history.\n\nCheckpoints are durable references, not large inline state. A worker may\ncreate git commits/tags, workspace snapshots, object-store archives, or\nmetadata-only checkpoints and return them in `AgentRunResult.checkpoints`.",
+      "type": "object",
+      "properties": {
+        "branch_prefix": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "git_checkpoint_on_result": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/CheckpointMode"
+        },
+        "object_checkpoint_on_result": {
+          "type": "boolean"
+        },
+        "require_for_code_changes": {
+          "type": "boolean"
+        },
+        "tag_prefix": {
+          "type": "string"
+        },
+        "workspace_snapshot_on_result": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "mode",
+        "git_checkpoint_on_result",
+        "workspace_snapshot_on_result",
+        "object_checkpoint_on_result",
+        "require_for_code_changes",
+        "branch_prefix",
+        "tag_prefix"
+      ]
+    },
+    "CheckpointRef": {
+      "description": "Durable history marker returned by a worker or subagent.\n\nA checkpoint points at externally inspectable state: a git commit/tag/branch,\na workspace snapshot, an object-store archive, or a metadata marker. It lets\noperators and reviewers reconstruct task history without trusting prose\nsummaries or storing large blobs in workflow state.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitResultRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/CheckpointKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "object_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStorageArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "task_id",
+        "kind",
+        "label",
+        "summary",
+        "artifact"
+      ]
+    },
     "ChildTaskRequest": {
       "description": "Only worker-to-coordinator channel for requesting subagent work.\n\nA `ChildTaskRequest` is a proposal. The coordinator owns budget checks,\napproval gates, execution-profile inheritance, durable task materialization,\nand runner dispatch.",
       "type": "object",
@@ -599,6 +751,16 @@
         "results": {
           "$ref": "#/$defs/ResultChannelPolicy",
           "default": {
+            "checkpoints": {
+              "branch_prefix": "coat/checkpoint",
+              "enabled": true,
+              "git_checkpoint_on_result": true,
+              "mode": "on_result",
+              "object_checkpoint_on_result": true,
+              "require_for_code_changes": false,
+              "tag_prefix": "coat-checkpoint",
+              "workspace_snapshot_on_result": true
+            },
             "git": {
               "base_ref": "HEAD",
               "branch_prefix": "coat/task",
@@ -1697,6 +1859,19 @@
     "ResultChannelPolicy": {
       "type": "object",
       "properties": {
+        "checkpoints": {
+          "$ref": "#/$defs/CheckpointPolicy",
+          "default": {
+            "branch_prefix": "coat/checkpoint",
+            "enabled": true,
+            "git_checkpoint_on_result": true,
+            "mode": "on_result",
+            "object_checkpoint_on_result": true,
+            "require_for_code_changes": false,
+            "tag_prefix": "coat-checkpoint",
+            "workspace_snapshot_on_result": true
+          }
+        },
         "git": {
           "$ref": "#/$defs/GitResultPolicy",
           "default": {

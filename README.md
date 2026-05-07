@@ -164,6 +164,7 @@ cargo run -p coat-cli -- store approvals --limit 50
 cargo run -p coat-cli -- store goal --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 cargo run -p coat-cli -- store tasks --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 cargo run -p coat-cli -- store events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+cargo run -p coat-cli -- store checkpoints --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 cargo run -p coat-cli -- store goal-approvals --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 cargo run -p coat-cli -- store record-artifacts --file examples/goal-store-record-artifacts.json
 ```
@@ -251,7 +252,9 @@ Set `COAT_CONTROL_GATEWAY_TOKEN` for `/api/*` bearer auth and `COAT_CONTROL_MCP_
 
 ## Result Channels
 
-Workers report durable result locations through `AgentRunResult.git_result` and `AgentRunResult.object_artifacts`. Use git worktrees and task branches for source changes; use S3-compatible object storage for large generated outputs such as simulation runs, traces, datasets, screenshots, or reports. The coordinator stores refs, not large blobs or credentials.
+Workers report durable result locations through `AgentRunResult.git_result`, `AgentRunResult.object_artifacts`, and `AgentRunResult.checkpoints`. Use git worktrees and task branches for source changes; use S3-compatible object storage for large generated outputs such as simulation runs, traces, datasets, screenshots, or reports; use checkpoints for reviewable task history such as branch milestones, commits, tags, workspace snapshots, object archives, or metadata markers. The coordinator stores refs, not large blobs or credentials.
+
+The goal store exposes checkpoint history at `/goal-store/goals/{goal_id}/checkpoints`; the control gateway includes it in goal snapshots and exposes `coat_checkpoint_history` over MCP.
 
 Compose starts MinIO as `object-store` and initializes the `coat-artifacts` bucket. Kubernetes includes the same development object-store deployment; AWS/EKS should use real S3 by setting the `ObjectStoreRef` endpoint/region/bucket and resolving auth with workload identity or `SecretRef`.
 
@@ -308,6 +311,8 @@ cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-reques
 `SandboxProfile.isolation` can request local workspace, container, gVisor, Kata, Firecracker, Kubernetes Job, namespace-jail, or provider-backed execution. `sandbox plan` renders the launch contract that a real executor can consume; `sandbox create` stores it as `sandbox-launch-plan.json` beside the workspace manifest. Local Compose only attests metadata-only workspaces. Production runners should return enforced `SandboxAttestation` evidence and can require executor output/security guardrail reviews through `ExecutionProfile.guardrails`; see `docs/design-docs/100-strong-sandboxing-guardrails.md`.
 
 Git result channels are metadata-only by default. To create real task worktrees, set `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`, set `SANDBOX_APPROVED_GIT_REPO_ROOTS` to comma-separated local repo roots, and include `live_git_worktree.enabled=true` plus an approval ID in the sandbox request. This keeps branch/worktree communication available while preventing workers from creating worktrees against arbitrary repos.
+
+Sandbox workspaces include `checkpoints/checkpoint-manifest.json`, and launch plans expose `COAT_CHECKPOINT_MANIFEST` so executors can append git-style or snapshot-style history refs without relying on prompt convention.
 
 Set `MEMORY_GATEWAY_JOURNAL_PATH` to make the local gateway replay an append-only JSONL journal on startup. Compose enables this with the `memory-gateway-data` volume.
 

@@ -114,6 +114,10 @@ fn tool_descriptors() -> Vec<ToolDescriptor> {
             description: "List artifacts produced by a task.",
         },
         ToolDescriptor {
+            name: "checkpoint_history",
+            description: "List checkpoint manifests and git/object refs for a task workspace.",
+        },
+        ToolDescriptor {
             name: "subagent_policy",
             description: "Return COAT's durable subagent delegation policy for MCP clients.",
         },
@@ -243,6 +247,19 @@ fn mcp_tools() -> Vec<serde_json::Value> {
             }
         }),
         serde_json::json!({
+            "name": "checkpoint_history",
+            "description": "Return checkpoint history refs from a task workspace.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "workspace_id": {"type": "string"},
+                    "manifest_path": {"type": "string"}
+                }
+            }
+        }),
+        serde_json::json!({
             "name": "subagent_policy",
             "description": "Explain that subagents are coordinator-owned durable child tasks and native runner subagent spawning is disabled.",
             "inputSchema": {
@@ -259,6 +276,7 @@ async fn call_tool(state: &AppState, params: ToolCallParams) -> anyhow::Result<s
         "repo_status" => repo_status(state, &params.arguments),
         "test_command" => test_command(state, &params.arguments).await,
         "artifact_manifest" => artifact_manifest(state, &params.arguments).await,
+        "checkpoint_history" => checkpoint_history(state, &params.arguments).await,
         "subagent_policy" => Ok(subagent_policy()),
         other => anyhow::bail!("unknown tool: {other}"),
     }
@@ -465,6 +483,7 @@ async fn artifact_manifest(
                 "workspace_manifest": lookup.workspace_manifest,
                 "sandbox_launch_plan": lookup.sandbox_launch_plan,
                 "snapshot_manifest": lookup.snapshot_manifest,
+                "checkpoint_manifest": lookup.checkpoint_manifest,
                 "artifact_manifest": lookup.artifact_manifest
             },
             "workspace_manifest": workspace_manifest,
@@ -472,6 +491,65 @@ async fn artifact_manifest(
             "snapshot_manifest": snapshot_manifest,
             "artifact_manifest": artifact_manifest,
             "artifacts": artifacts,
+            "diagnostics": diagnostics
+        },
+        "isError": false
+    }))
+}
+
+async fn checkpoint_history(
+    state: &AppState,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let Some(sandbox_root) = state.sandbox_workspace_root.as_ref() else {
+        return Ok(serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "checkpoint lookup requires TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT"
+                }
+            ],
+            "structuredContent": {
+                "configured": false,
+                "checkpoints": [],
+                "diagnostics": ["TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT is not configured"]
+            },
+            "isError": false
+        }));
+    };
+
+    let lookup = resolve_artifact_lookup(sandbox_root, arguments)?;
+    let mut diagnostics = Vec::new();
+    let checkpoint_manifest = match lookup.checkpoint_manifest.as_ref() {
+        Some(path) => read_json_file(path, "checkpoint manifest", &mut diagnostics).await,
+        None => None,
+    };
+    let checkpoints = checkpoint_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("checkpoints"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(serde_json::json!({
+        "content": [
+            {
+                "type": "text",
+                "text": if checkpoint_manifest.is_some() { "checkpoint manifest found" } else { "no checkpoint manifest found for lookup" }
+            }
+        ],
+        "structuredContent": {
+            "configured": true,
+            "found": checkpoint_manifest.is_some(),
+            "goal_id": lookup.goal_id,
+            "task_id": lookup.task_id,
+            "workspace_id": lookup.workspace_id,
+            "paths": {
+                "workspace": lookup.workspace_path,
+                "checkpoint_manifest": lookup.checkpoint_manifest
+            },
+            "checkpoint_manifest": checkpoint_manifest,
+            "checkpoints": checkpoints,
             "diagnostics": diagnostics
         },
         "isError": false
@@ -487,6 +565,7 @@ struct ArtifactLookup {
     workspace_manifest: Option<PathBuf>,
     sandbox_launch_plan: Option<PathBuf>,
     snapshot_manifest: Option<PathBuf>,
+    checkpoint_manifest: Option<PathBuf>,
     artifact_manifest: Option<PathBuf>,
 }
 
@@ -537,6 +616,9 @@ fn resolve_artifact_lookup(
         snapshot_manifest: workspace_path
             .as_ref()
             .map(|path| path.join("snapshots/latest.json")),
+        checkpoint_manifest: workspace_path
+            .as_ref()
+            .map(|path| path.join("checkpoints/checkpoint-manifest.json")),
         workspace_path,
         artifact_manifest,
     })
@@ -669,7 +751,8 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
     use super::{
-        AppState, artifact_manifest, authorize, resolve_repo_path, subagent_policy, test_command,
+        AppState, artifact_manifest, authorize, checkpoint_history, resolve_repo_path,
+        subagent_policy, test_command,
     };
 
     #[test]
@@ -751,6 +834,7 @@ mod tests {
         let task_root = temp.path().join(goal_id).join(task_id);
         std::fs::create_dir_all(task_root.join("artifacts")).expect("artifact dir");
         std::fs::create_dir_all(task_root.join("snapshots")).expect("snapshot dir");
+        std::fs::create_dir_all(task_root.join("checkpoints")).expect("checkpoint dir");
         std::fs::write(
             task_root.join("workspace-manifest.json"),
             r#"{"workspace_id":"workspace-1"}"#,
@@ -771,6 +855,11 @@ mod tests {
             r#"{"artifacts":[{"uri":"workspace://workspace-1/report.json"}]}"#,
         )
         .expect("artifact manifest");
+        std::fs::write(
+            task_root.join("checkpoints/checkpoint-manifest.json"),
+            r#"{"checkpoints":[{"label":"before-review","uri":"git+checkpoint://branch"}]}"#,
+        )
+        .expect("checkpoint manifest");
 
         let state = AppState {
             workspace_root: std::env::current_dir().expect("cwd"),
@@ -793,6 +882,49 @@ mod tests {
         assert_eq!(
             result["structuredContent"]["artifacts"][0]["uri"],
             "workspace://workspace-1/report.json"
+        );
+        assert_eq!(
+            result["structuredContent"]["paths"]["checkpoint_manifest"],
+            task_root
+                .join("checkpoints/checkpoint-manifest.json")
+                .to_string_lossy()
+                .as_ref()
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_history_reads_checkpoint_manifest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let goal_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756611";
+        let task_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756612";
+        let task_root = temp.path().join(goal_id).join(task_id);
+        std::fs::create_dir_all(task_root.join("checkpoints")).expect("checkpoint dir");
+        std::fs::write(
+            task_root.join("checkpoints/checkpoint-manifest.json"),
+            r#"{"checkpoints":[{"label":"checkpoint-1","uri":"git+checkpoint://branch"}]}"#,
+        )
+        .expect("checkpoint manifest");
+        let state = AppState {
+            workspace_root: std::env::current_dir().expect("cwd"),
+            sandbox_workspace_root: Some(temp.path().to_path_buf()),
+            sandbox_runner_url: None,
+            auth_token: None,
+        };
+        let result = checkpoint_history(
+            &state,
+            &serde_json::json!({
+                "goal_id": goal_id,
+                "task_id": task_id
+            }),
+        )
+        .await
+        .expect("checkpoint lookup");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["found"], true);
+        assert_eq!(
+            result["structuredContent"]["checkpoints"][0]["label"],
+            "checkpoint-1"
         );
     }
 }

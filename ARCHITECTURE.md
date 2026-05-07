@@ -209,7 +209,9 @@ clients.
 
 Workers communicate durable results through structured refs. Code changes should use git worktrees and task branches, returning `AgentRunResult.git_result` with branch, worktree path, commit, push status, optional PR URL, and optional diff URI. Large outputs should use S3-compatible object storage, returning `AgentRunResult.object_artifacts` with bucket/key/URI/hash metadata.
 
-The coordinator stores these refs and treats them as artifact evidence. It does not store full diffs, large generated files, or object-store credentials in workflow state. Compose runs a local MinIO-compatible `object-store` for development; AWS/EKS deployments should point the same `ObjectStoreRef` contract at S3 and resolve credentials through workload identity or `SecretRef`.
+Workers also return `AgentRunResult.checkpoints` for inspectable history: git branch/commit/tag checkpoints, workspace snapshots, object-store archives, metadata milestones, or external history refs. `CheckpointPolicy` controls whether checkpointing is disabled, manual, periodic, or automatic on result, and code tasks can require a checkpoint before validation passes.
+
+The coordinator stores these refs and treats them as artifact evidence. It does not store full diffs, large generated files, checkpoint bundles, or object-store credentials in workflow state. Compose runs a local MinIO-compatible `object-store` for development; AWS/EKS deployments should point the same `ObjectStoreRef` contract at S3 and resolve credentials through workload identity or `SecretRef`.
 
 ## Approval Policies
 

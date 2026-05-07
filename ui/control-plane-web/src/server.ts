@@ -217,11 +217,12 @@ async function overview(): Promise<JsonMap> {
 
 async function goalSnapshot(goalId: string): Promise<JsonMap> {
   const encodedGoalId = encodeURIComponent(goalId);
-  const [goal, tasks, events, artifacts, approvals, workflowStatus, progress] = await Promise.all([
+  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress] = await Promise.all([
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/tasks`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/events`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/artifacts`, { method: "GET" }),
+    proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/checkpoints`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/approvals`, { method: "GET" }),
     workflowPost(goalId, "status", {}),
     workflowPost(goalId, "progress", {}),
@@ -235,6 +236,7 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     tasks,
     events,
     artifacts,
+    checkpoints,
     approvals,
     agent_activity: buildAgentActivity(tasks.data, progress.data, events.data, artifacts.data),
   };
@@ -664,6 +666,16 @@ function mcpTools(): unknown[] {
       inputSchema: { type: "object", additionalProperties: false, properties: {} },
     },
     {
+      name: "coat_checkpoint_history",
+      description: "Read projected checkpoint history for a goal, including git and snapshot refs.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["goal_id"],
+        properties: { goal_id: { type: "string" } },
+      },
+    },
+    {
       name: "coat_memory_search",
       description: "Search the memory gateway using the standard MemorySearchRequest payload.",
       inputSchema: { type: "object", additionalProperties: true },
@@ -742,6 +754,13 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
         "let the coordinator apply budget, approval, runner routing, memory, and sandbox policy",
       ],
     };
+  }
+  if (name === "coat_checkpoint_history") {
+    const goalId = String(args.goal_id ?? "");
+    if (!goalId) {
+      throw new Error("goal_id is required");
+    }
+    return proxyJson(goalStoreUrl, `/goal-store/goals/${encodeURIComponent(goalId)}/checkpoints`, { method: "GET" });
   }
   if (name === "coat_memory_search") {
     return proxyJson(memoryGatewayUrl, "/memory/search", {

@@ -150,6 +150,8 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Distributed memory context is passed by reference; use scoped retrieval and provenance instead of prompt dumps.
 - Code results should return `git_result` refs for task branches, worktrees, commits, and PRs.
 - Large generated assets should return `object_artifacts` refs to S3-compatible storage; do not put large blobs in workflow state.
+- Workers and subagents should return `checkpoints` for git commits, git branches, workspace snapshots, object archives, or metadata milestones so operators can inspect task history.
+- Checkpoint refs are history pointers. Keep checkpoint payloads small and store full diffs, snapshots, or large bundles in git, workspace snapshot storage, or S3-compatible object storage.
 - Use one branch and one object prefix per task unless a unifier explicitly joins branches or promotes artifacts.
 - Sandbox workspaces are rooted at `SANDBOX_WORKSPACE_ROOT`; snapshot and cleanup must be idempotent and must not remove paths outside that root.
 - Sandbox launch plans are durable contracts; real executors consume `sandbox-launch-plan.json` and return attestation/evidence instead of inferring runtime setup from prompts.

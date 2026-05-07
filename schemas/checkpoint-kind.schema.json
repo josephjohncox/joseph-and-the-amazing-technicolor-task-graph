@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CheckpointKind",
+  "type": "string",
+  "enum": [
+    "git_commit",
+    "git_tag",
+    "git_branch",
+    "workspace_snapshot",
+    "object_storage_archive",
+    "metadata",
+    "external"
+  ]
+}

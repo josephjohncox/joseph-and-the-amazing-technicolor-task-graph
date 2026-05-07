@@ -38,6 +38,7 @@ message AgentRunnerServiceRunTaskResponse {
   repeated string diagnostics = 12;
   JsonSchemaEnvelope payload = 13;
   BranchVoteOutputEnvelope branch_vote = 14;
+  repeated CheckpointRef checkpoints = 15;
 }
 
 message RunnerRegistrationEnvelope {

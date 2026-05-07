@@ -46,6 +46,7 @@
         "report",
         "pull_request",
         "workspace_snapshot",
+        "checkpoint",
         "git_branch",
         "git_commit",
         "git_worktree",
@@ -229,6 +230,55 @@
         "max_patch_size"
       ]
     },
+    "CheckpointMode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "on_result",
+        "periodic",
+        "manual_only"
+      ]
+    },
+    "CheckpointPolicy": {
+      "description": "Task-local checkpoint policy for reviewable worker history.\n\nCheckpoints are durable references, not large inline state. A worker may\ncreate git commits/tags, workspace snapshots, object-store archives, or\nmetadata-only checkpoints and return them in `AgentRunResult.checkpoints`.",
+      "type": "object",
+      "properties": {
+        "branch_prefix": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "git_checkpoint_on_result": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/CheckpointMode"
+        },
+        "object_checkpoint_on_result": {
+          "type": "boolean"
+        },
+        "require_for_code_changes": {
+          "type": "boolean"
+        },
+        "tag_prefix": {
+          "type": "string"
+        },
+        "workspace_snapshot_on_result": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "mode",
+        "git_checkpoint_on_result",
+        "workspace_snapshot_on_result",
+        "object_checkpoint_on_result",
+        "require_for_code_changes",
+        "branch_prefix",
+        "tag_prefix"
+      ]
+    },
     "ChildTaskRequestChannel": {
       "type": "string",
       "enum": [
@@ -304,6 +354,16 @@
         "results": {
           "$ref": "#/$defs/ResultChannelPolicy",
           "default": {
+            "checkpoints": {
+              "branch_prefix": "coat/checkpoint",
+              "enabled": true,
+              "git_checkpoint_on_result": true,
+              "mode": "on_result",
+              "object_checkpoint_on_result": true,
+              "require_for_code_changes": false,
+              "tag_prefix": "coat-checkpoint",
+              "workspace_snapshot_on_result": true
+            },
             "git": {
               "base_ref": "HEAD",
               "branch_prefix": "coat/task",
@@ -1198,6 +1258,19 @@
     "ResultChannelPolicy": {
       "type": "object",
       "properties": {
+        "checkpoints": {
+          "$ref": "#/$defs/CheckpointPolicy",
+          "default": {
+            "branch_prefix": "coat/checkpoint",
+            "enabled": true,
+            "git_checkpoint_on_result": true,
+            "mode": "on_result",
+            "object_checkpoint_on_result": true,
+            "require_for_code_changes": false,
+            "tag_prefix": "coat-checkpoint",
+            "workspace_snapshot_on_result": true
+          }
+        },
         "git": {
           "$ref": "#/$defs/GitResultPolicy",
           "default": {

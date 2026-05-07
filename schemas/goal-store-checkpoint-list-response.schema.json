@@ -1,15 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "GoalStoreArtifactRecordRequest",
+  "title": "GoalStoreCheckpointListResponse",
   "type": "object",
   "properties": {
-    "artifacts": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      }
-    },
     "checkpoints": {
       "type": "array",
       "default": [],
@@ -17,37 +10,12 @@
         "$ref": "#/$defs/CheckpointRef"
       }
     },
-    "git_results": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/GitResultRef"
-      }
-    },
     "goal_id": {
       "type": "string",
-      "format": "uuid"
-    },
-    "metadata": {
-      "$ref": "#/$defs/ProtocolMetadata"
-    },
-    "object_artifacts": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ObjectStorageArtifactRef"
-      }
-    },
-    "task_id": {
-      "type": [
-        "string",
-        "null"
-      ],
       "format": "uuid"
     }
   },
   "required": [
-    "metadata",
     "goal_id"
   ],
   "$defs": {
@@ -346,45 +314,6 @@
         "kind",
         "bucket",
         "force_path_style"
-      ]
-    },
-    "ProtocolMetadata": {
-      "type": "object",
-      "properties": {
-        "causation_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "correlation_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "created_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "idempotency_key": {
-          "type": "string"
-        },
-        "protocol_version": {
-          "type": "string"
-        },
-        "trace_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "protocol_version",
-        "idempotency_key"
       ]
     },
     "SecretProvider": {

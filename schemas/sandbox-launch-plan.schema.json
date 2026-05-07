@@ -9,6 +9,9 @@
     "backend": {
       "$ref": "#/$defs/SandboxBackend"
     },
+    "checkpoint_manifest_path": {
+      "type": "string"
+    },
     "command": {
       "type": "array",
       "default": [],
@@ -101,6 +104,7 @@
     "backend",
     "workspace_path",
     "artifact_manifest_path",
+    "checkpoint_manifest_path",
     "resources",
     "security",
     "network"

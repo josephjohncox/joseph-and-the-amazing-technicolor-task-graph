@@ -159,6 +159,7 @@ enum ArtifactKind {
   ARTIFACT_KIND_ARTIFACT_MANIFEST = 11;
   ARTIFACT_KIND_SCHEMA = 12;
   ARTIFACT_KIND_OTHER = 13;
+  ARTIFACT_KIND_CHECKPOINT = 14;
 }
 
 message ArtifactRef {
@@ -178,6 +179,33 @@ message GitResultRef {
   bool pushed = 7;
   string pull_request_url = 8;
   string diff_uri = 9;
+}
+
+enum CheckpointKind {
+  CHECKPOINT_KIND_UNSPECIFIED = 0;
+  CHECKPOINT_KIND_GIT_COMMIT = 1;
+  CHECKPOINT_KIND_GIT_TAG = 2;
+  CHECKPOINT_KIND_GIT_BRANCH = 3;
+  CHECKPOINT_KIND_WORKSPACE_SNAPSHOT = 4;
+  CHECKPOINT_KIND_OBJECT_STORAGE_ARCHIVE = 5;
+  CHECKPOINT_KIND_METADATA = 6;
+  CHECKPOINT_KIND_EXTERNAL = 7;
+}
+
+message CheckpointRef {
+  string checkpoint_id = 1;
+  string goal_id = 2;
+  string task_id = 3;
+  string parent_checkpoint_id = 4;
+  CheckpointKind kind = 5;
+  string label = 6;
+  string summary = 7;
+  ArtifactRef artifact = 8;
+  GitResultRef git_result = 9;
+  ObjectStorageArtifactRef object_artifact = 10;
+  uint64 sequence = 11;
+  google.protobuf.Timestamp created_at = 12;
+  JsonSchemaEnvelope payload = 13;
 }
 
 enum ObjectStoreKind {

@@ -30,5 +30,37 @@
       "diff_uri": null
     }
   ],
-  "object_artifacts": []
+  "object_artifacts": [],
+  "checkpoints": [
+    {
+      "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756613",
+      "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756611",
+      "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+      "parent_checkpoint_id": null,
+      "kind": "git_branch",
+      "label": "task-result",
+      "summary": "Task branch checkpoint for review before merge.",
+      "artifact": {
+        "kind": "checkpoint",
+        "uri": "git+checkpoint://coat/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+        "description": "task branch checkpoint",
+        "sha256": null
+      },
+      "git_result": {
+        "repo": "joseph-and-the-amazing-technicolor-task-graph",
+        "remote": null,
+        "base_ref": "main",
+        "branch": "coat/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+        "worktree_path": "/workspaces/018f8f2f-1fd8-7688-bb12-8bfb6b756611/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+        "commit": null,
+        "pushed": false,
+        "pull_request_url": null,
+        "diff_uri": null
+      },
+      "object_artifact": null,
+      "sequence": 1,
+      "created_at": null,
+      "payload_json": {}
+    }
+  ]
 }

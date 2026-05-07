@@ -18,7 +18,7 @@ The local scaffold uses `coat-goal-store` with an append-only JSONL journal. Tha
 
 ## Protocol Layers
 
-`proto/coat/v1/common.proto` defines shared IDs, statuses, worker roles, artifact refs, git refs, object-store refs, model candidates, budgets, done criteria, and protocol metadata.
+`proto/coat/v1/common.proto` defines shared IDs, statuses, worker roles, artifact refs, git refs, object-store refs, checkpoint refs, model candidates, budgets, done criteria, and protocol metadata.
 
 `proto/coat/v1/goal_store.proto` defines:
 
@@ -29,9 +29,9 @@ The local scaffold uses `coat-goal-store` with an append-only JSONL journal. Tha
 - `ApprovalRecord`
 - `GoalStoreSnapshot`
 - `DurablePlanRecord`
-- snapshot upsert, durable plan upsert/list/get/compile, event append, goal/task/event query, and artifact record RPCs.
+- snapshot upsert, durable plan upsert/list/get/compile, event append, goal/task/event/checkpoint query, and artifact record RPCs.
 
-HTTP local development mirrors the artifact record RPC with `POST /goal-store/artifacts`, allowing workers or smoke tests to append artifact, git-result, and object-artifact refs without rewriting a full snapshot.
+HTTP local development mirrors the artifact record RPC with `POST /goal-store/artifacts`, allowing workers or smoke tests to append artifact, git-result, object-artifact, and checkpoint refs without rewriting a full snapshot.
 
 `proto/coat/v1/runner.proto` defines:
 
@@ -70,7 +70,7 @@ Recommended Postgres tables:
 - `tasks(task_id primary key, goal_id, parent_task_id, subgoal_id, role, status, purpose_kind, depth, priority_rank, runnable, result_uri, payload jsonb)`
 - `goal_events(goal_id, sequence, event_id, kind, task_id, message, actor, idempotency_key unique, payload jsonb)`
 - `approvals(approval_id primary key, goal_id, task_id, status, risk, requested_action, payload jsonb)`
-- `artifacts(goal_id, task_id, kind, uri, sha256, git_ref jsonb, object_ref jsonb, payload jsonb)`
+- `artifacts(goal_id, task_id, kind, uri, sha256, git_ref jsonb, object_ref jsonb, checkpoint_id, checkpoint_kind, checkpoint_label, payload jsonb)`
 
 Indexes should cover `goal_id`, `status`, `role`, `subgoal_id`, `runnable`, `kind`, and `updated_at`. Add pgvector only for operational semantic search; do not put long-lived agent memory exclusively in the goal store.
 
@@ -87,6 +87,7 @@ Operators and dashboards query the goal store for:
 - blocked work;
 - event timelines;
 - artifact refs;
+- checkpoint history;
 - cross-goal audit and reporting.
 
 ## Deployment

@@ -27,6 +27,7 @@ use uuid::Uuid;
 pub type GoalId = Uuid;
 pub type PlanId = Uuid;
 pub type TaskId = Uuid;
+pub type CheckpointId = Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -698,6 +699,8 @@ pub struct GoalState {
     #[serde(default)]
     pub final_artifacts: Vec<ArtifactRef>,
     #[serde(default)]
+    pub checkpoints: Vec<CheckpointRef>,
+    #[serde(default)]
     pub review_rounds: Vec<ReviewRound>,
     #[serde(default)]
     pub satisfaction: Option<SatisfactionReport>,
@@ -755,6 +758,7 @@ impl GoalState {
             status: GoalStatus::Running,
             approvals: Vec::new(),
             final_artifacts: Vec::new(),
+            checkpoints: Vec::new(),
             review_rounds: Vec::new(),
             satisfaction: None,
             learning_signals: Vec::new(),
@@ -1419,6 +1423,7 @@ impl GoalState {
         task.status = report.status_after_validation.clone();
         if report.passed {
             self.final_artifacts.extend(report.artifacts.clone());
+            self.checkpoints.extend(report.checkpoints.clone());
         }
         if matches!(purpose, TaskPurpose::Unification { .. }) && report.passed {
             for round in &mut self.review_rounds {
@@ -1894,6 +1899,7 @@ impl GoalState {
         }
         if !preserve_artifacts {
             self.final_artifacts.clear();
+            self.checkpoints.clear();
         }
         if matches!(
             self.status,
@@ -3538,6 +3544,7 @@ pub struct SandboxLaunchPlan {
     pub image: Option<String>,
     pub workspace_path: String,
     pub artifact_manifest_path: String,
+    pub checkpoint_manifest_path: String,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
@@ -6375,6 +6382,50 @@ pub struct ResultChannelPolicy {
     pub git: GitResultPolicy,
     #[serde(default)]
     pub object_storage: ObjectStoragePolicy,
+    #[serde(default)]
+    pub checkpoints: CheckpointPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Task-local checkpoint policy for reviewable worker history.
+///
+/// Checkpoints are durable references, not large inline state. A worker may
+/// create git commits/tags, workspace snapshots, object-store archives, or
+/// metadata-only checkpoints and return them in `AgentRunResult.checkpoints`.
+pub struct CheckpointPolicy {
+    pub enabled: bool,
+    pub mode: CheckpointMode,
+    pub git_checkpoint_on_result: bool,
+    pub workspace_snapshot_on_result: bool,
+    pub object_checkpoint_on_result: bool,
+    pub require_for_code_changes: bool,
+    pub branch_prefix: String,
+    pub tag_prefix: String,
+}
+
+impl Default for CheckpointPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: CheckpointMode::OnResult,
+            git_checkpoint_on_result: true,
+            workspace_snapshot_on_result: true,
+            object_checkpoint_on_result: true,
+            require_for_code_changes: false,
+            branch_prefix: "coat/checkpoint".to_string(),
+            tag_prefix: "coat-checkpoint".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointMode {
+    Disabled,
+    OnResult,
+    Periodic,
+    ManualOnly,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -7832,6 +7883,7 @@ pub enum ArtifactKind {
     Report,
     PullRequest,
     WorkspaceSnapshot,
+    Checkpoint,
     GitBranch,
     GitCommit,
     GitWorktree,
@@ -7873,6 +7925,121 @@ impl GitResultRef {
             sha256: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Durable history marker returned by a worker or subagent.
+///
+/// A checkpoint points at externally inspectable state: a git commit/tag/branch,
+/// a workspace snapshot, an object-store archive, or a metadata marker. It lets
+/// operators and reviewers reconstruct task history without trusting prose
+/// summaries or storing large blobs in workflow state.
+pub struct CheckpointRef {
+    pub id: CheckpointId,
+    pub goal_id: GoalId,
+    pub task_id: TaskId,
+    pub parent_checkpoint_id: Option<CheckpointId>,
+    pub kind: CheckpointKind,
+    pub label: String,
+    pub summary: String,
+    pub artifact: ArtifactRef,
+    pub git_result: Option<GitResultRef>,
+    pub object_artifact: Option<ObjectStorageArtifactRef>,
+    pub sequence: Option<u64>,
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub payload_json: serde_json::Value,
+}
+
+impl CheckpointRef {
+    pub fn metadata_for_task(
+        task: &TaskNode,
+        label: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        let label = label.into();
+        let uri = format!(
+            "checkpoint://goal/{}/task/{}/{}",
+            task.goal_id, task.id, label
+        );
+        Self {
+            id: Uuid::new_v4(),
+            goal_id: task.goal_id,
+            task_id: task.id,
+            parent_checkpoint_id: None,
+            kind: CheckpointKind::Metadata,
+            label,
+            summary: summary.into(),
+            artifact: ArtifactRef {
+                kind: ArtifactKind::Checkpoint,
+                uri,
+                description: "metadata checkpoint".to_string(),
+                sha256: None,
+            },
+            git_result: None,
+            object_artifact: None,
+            sequence: None,
+            created_at: Some(now_unix_timestamp_string()),
+            payload_json: serde_json::Value::Null,
+        }
+    }
+
+    pub fn from_git_result(
+        task: &TaskNode,
+        git_result: GitResultRef,
+        label: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        let label = label.into();
+        let commit_or_branch = git_result
+            .commit
+            .as_deref()
+            .unwrap_or(git_result.branch.as_str());
+        Self {
+            id: Uuid::new_v4(),
+            goal_id: task.goal_id,
+            task_id: task.id,
+            parent_checkpoint_id: None,
+            kind: if git_result.commit.is_some() {
+                CheckpointKind::GitCommit
+            } else {
+                CheckpointKind::GitBranch
+            },
+            label,
+            summary: summary.into(),
+            artifact: ArtifactRef {
+                kind: ArtifactKind::Checkpoint,
+                uri: format!(
+                    "git+checkpoint://{}?ref={commit_or_branch}",
+                    git_result.branch
+                ),
+                description: format!("git checkpoint for task {}", task.id),
+                sha256: None,
+            },
+            git_result: Some(git_result),
+            object_artifact: None,
+            sequence: None,
+            created_at: Some(now_unix_timestamp_string()),
+            payload_json: serde_json::Value::Null,
+        }
+    }
+
+    pub fn as_artifact(&self) -> ArtifactRef {
+        self.artifact.clone()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointKind {
+    GitCommit,
+    GitTag,
+    GitBranch,
+    WorkspaceSnapshot,
+    ObjectStorageArchive,
+    Metadata,
+    External,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -7946,6 +8113,8 @@ pub struct AgentRunResult {
     #[serde(default)]
     pub object_artifacts: Vec<ObjectStorageArtifactRef>,
     #[serde(default)]
+    pub checkpoints: Vec<CheckpointRef>,
+    #[serde(default)]
     pub test_evidence: Vec<TestCommandEvidence>,
     #[serde(default)]
     pub child_requests: Vec<ChildTaskRequest>,
@@ -8010,6 +8179,11 @@ impl AgentRunResult {
                 None
             },
             object_artifacts: Vec::new(),
+            checkpoints: vec![CheckpointRef::metadata_for_task(
+                task,
+                "stub-result",
+                "stub worker result checkpoint",
+            )],
             test_evidence: if task.done_criteria.tests_pass && task.purpose.is_work_like() {
                 vec![TestCommandEvidence::stub_pass(task.id)]
             } else {
@@ -8240,6 +8414,8 @@ pub struct ValidationReport {
     #[serde(default)]
     pub object_artifacts: Vec<ObjectStorageArtifactRef>,
     #[serde(default)]
+    pub checkpoints: Vec<CheckpointRef>,
+    #[serde(default)]
     pub test_evidence: Vec<TestCommandEvidence>,
 }
 
@@ -8283,15 +8459,33 @@ impl ValidationReport {
                 artifacts,
                 git_result: req.result.git_result,
                 object_artifacts: req.result.object_artifacts,
+                checkpoints: req.result.checkpoints,
                 test_evidence: req.result.test_evidence,
             };
         }
 
         let artifact_exists = !req.result.artifacts.is_empty()
             || req.result.git_result.is_some()
-            || !req.result.object_artifacts.is_empty();
+            || !req.result.object_artifacts.is_empty()
+            || !req.result.checkpoints.is_empty();
         if req.task.done_criteria.artifact_exists && !artifact_exists {
             missing_criteria.push("artifact_exists".to_string());
+        }
+        if req.task.execution.results.checkpoints.enabled
+            && req
+                .task
+                .execution
+                .results
+                .checkpoints
+                .require_for_code_changes
+            && req.task.purpose.is_work_like()
+            && matches!(
+                req.task.role,
+                WorkerKind::Codex | WorkerKind::StaffEngineerClaude | WorkerKind::RustTool
+            )
+            && req.result.checkpoints.is_empty()
+        {
+            missing_criteria.push("checkpoint_required".to_string());
         }
         if req.task.done_criteria.tests_pass
             && (req.task.purpose.is_work_like() || req.task.role == WorkerKind::Tester)
@@ -8436,6 +8630,7 @@ impl ValidationReport {
             artifacts,
             git_result: req.result.git_result,
             object_artifacts: req.result.object_artifacts,
+            checkpoints: req.result.checkpoints,
             test_evidence: req.result.test_evidence,
         }
     }
@@ -9110,6 +9305,7 @@ pub struct GoalArtifactRecord {
     pub artifact: ArtifactRef,
     pub git_result: Option<GitResultRef>,
     pub object_artifact: Option<ObjectStorageArtifactRef>,
+    pub checkpoint: Option<CheckpointRef>,
     pub created_at: Option<String>,
     #[serde(default)]
     pub payload_json: serde_json::Value,
@@ -9194,6 +9390,8 @@ pub struct GoalStoreArtifactRecordRequest {
     pub git_results: Vec<GitResultRef>,
     #[serde(default)]
     pub object_artifacts: Vec<ObjectStorageArtifactRef>,
+    #[serde(default)]
+    pub checkpoints: Vec<CheckpointRef>,
 }
 
 impl GoalStoreArtifactRecordRequest {
@@ -9206,6 +9404,7 @@ impl GoalStoreArtifactRecordRequest {
                 artifact,
                 git_result: None,
                 object_artifact: None,
+                checkpoint: None,
                 created_at: None,
                 payload_json: serde_json::Value::Null,
             });
@@ -9217,6 +9416,7 @@ impl GoalStoreArtifactRecordRequest {
                 artifact: git_result.as_artifact(),
                 git_result: Some(git_result),
                 object_artifact: None,
+                checkpoint: None,
                 created_at: None,
                 payload_json: serde_json::Value::Null,
             });
@@ -9228,6 +9428,19 @@ impl GoalStoreArtifactRecordRequest {
                 artifact: object_artifact.as_artifact(),
                 git_result: None,
                 object_artifact: Some(object_artifact),
+                checkpoint: None,
+                created_at: None,
+                payload_json: serde_json::Value::Null,
+            });
+        }
+        for checkpoint in self.checkpoints {
+            records.push(GoalArtifactRecord {
+                goal_id: self.goal_id,
+                task_id: Some(checkpoint.task_id),
+                artifact: checkpoint.as_artifact(),
+                git_result: checkpoint.git_result.clone(),
+                object_artifact: checkpoint.object_artifact.clone(),
+                checkpoint: Some(checkpoint),
                 created_at: None,
                 payload_json: serde_json::Value::Null,
             });
@@ -9276,6 +9489,14 @@ pub struct GoalStoreArtifactListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+pub struct GoalStoreCheckpointListResponse {
+    pub goal_id: GoalId,
+    #[serde(default)]
+    pub checkpoints: Vec<CheckpointRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub struct GoalStoreApprovalListResponse {
     pub goal_id: GoalId,
     #[serde(default)]
@@ -9290,7 +9511,7 @@ impl GoalStoreSnapshot {
             .values()
             .find(|task| task.parent_id.is_none())
             .map(|task| task.id);
-        let artifacts = state
+        let mut artifacts: Vec<GoalArtifactRecord> = state
             .final_artifacts
             .iter()
             .cloned()
@@ -9300,10 +9521,27 @@ impl GoalStoreSnapshot {
                 artifact,
                 git_result: None,
                 object_artifact: None,
+                checkpoint: None,
                 created_at: None,
                 payload_json: serde_json::Value::Null,
             })
             .collect();
+        artifacts.extend(
+            state
+                .checkpoints
+                .iter()
+                .cloned()
+                .map(|checkpoint| GoalArtifactRecord {
+                    goal_id: state.goal.id,
+                    task_id: Some(checkpoint.task_id),
+                    artifact: checkpoint.as_artifact(),
+                    git_result: checkpoint.git_result.clone(),
+                    object_artifact: checkpoint.object_artifact.clone(),
+                    checkpoint: Some(checkpoint),
+                    created_at: None,
+                    payload_json: serde_json::Value::Null,
+                }),
+        );
         let approvals = state
             .approvals
             .iter()
@@ -9732,6 +9970,7 @@ mod tests {
         let task = state.runnable_tasks().remove(0);
         let result = AgentRunResult {
             artifacts: Vec::new(),
+            checkpoints: Vec::new(),
             ..AgentRunResult::stub_done(&task)
         };
         let report = ValidationReport::from_result(ValidationRequest {
@@ -9849,6 +10088,75 @@ mod tests {
                 .artifacts
                 .iter()
                 .any(|artifact| artifact.kind == ArtifactKind::GitBranch)
+        );
+    }
+
+    #[test]
+    fn checkpoint_result_satisfies_artifact_evidence_and_is_projected() {
+        let mut goal = GoalSpec::new("checkpoint", "write reviewable checkpoints");
+        goal.default_execution
+            .results
+            .checkpoints
+            .require_for_code_changes = true;
+        let mut state = GoalState::new(goal);
+        let mut task = state.runnable_tasks().remove(0);
+        task.role = WorkerKind::Codex;
+        let checkpoint =
+            CheckpointRef::metadata_for_task(&task, "before-review", "ready for review");
+        let result = AgentRunResult {
+            artifacts: Vec::new(),
+            git_result: None,
+            object_artifacts: Vec::new(),
+            checkpoints: vec![checkpoint.clone()],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result,
+        });
+
+        assert!(report.passed);
+        assert_eq!(report.checkpoints[0].id, checkpoint.id);
+        state
+            .apply_validation(report)
+            .expect("checkpoint validation");
+        let snapshot = GoalStoreSnapshot::from_state(&state);
+        assert!(snapshot.artifacts.iter().any(|record| {
+            record
+                .checkpoint
+                .as_ref()
+                .is_some_and(|recorded| recorded.id == checkpoint.id)
+        }));
+    }
+
+    #[test]
+    fn required_checkpoint_blocks_code_task_without_history_ref() {
+        let mut goal = GoalSpec::new("checkpoint", "require checkpoint history");
+        goal.default_execution
+            .results
+            .checkpoints
+            .require_for_code_changes = true;
+        let state = GoalState::new(goal);
+        let mut task = state.runnable_tasks().remove(0);
+        task.role = WorkerKind::Codex;
+        let result = AgentRunResult {
+            checkpoints: Vec::new(),
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"checkpoint_required".to_string())
         );
     }
 
@@ -10495,6 +10803,7 @@ mod tests {
             artifacts: Vec::new(),
             git_result: None,
             object_artifacts: Vec::new(),
+            checkpoints: Vec::new(),
             test_evidence: Vec::new(),
         };
 

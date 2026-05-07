@@ -705,6 +705,7 @@ enum StoreSubcommand {
     Tasks(StoreGoalArgs),
     Events(StoreGoalArgs),
     Artifacts(StoreGoalArgs),
+    Checkpoints(StoreGoalArgs),
     RecordArtifacts(StoreRecordArtifactsArgs),
     GoalApprovals(StoreGoalArgs),
 }
@@ -998,6 +999,17 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}/artifacts",
+                    args.goal_store_url.trim_end_matches('/'),
+                    args.goal_id
+                ),
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::Checkpoints(args) => {
+            get_url(
+                &format!(
+                    "{}/goal-store/goals/{}/checkpoints",
                     args.goal_store_url.trim_end_matches('/'),
                     args.goal_id
                 ),

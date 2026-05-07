@@ -20,14 +20,14 @@ use axum::{
     routing::{get, post},
 };
 use coat_domain::{
-    ApprovalRecord, ApprovalStatus, DurablePlan, DurablePlanListResponse, DurablePlanResponse,
-    GoalArtifactRecord, GoalEventRecord, GoalId, GoalRecord, GoalStatus,
+    ApprovalRecord, ApprovalStatus, CheckpointRef, DurablePlan, DurablePlanListResponse,
+    DurablePlanResponse, GoalArtifactRecord, GoalEventRecord, GoalId, GoalRecord, GoalStatus,
     GoalStoreApprovalListResponse, GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest,
-    GoalStoreArtifactRecordResponse, GoalStoreEventAppendRequest, GoalStoreEventAppendResponse,
-    GoalStoreEventListResponse, GoalStoreGoalResponse, GoalStoreSnapshot,
-    GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse,
-    PlanCompileRequest, PlanCompileResult, PlanDraftRequest, PlanId, PlanRevisionRequest,
-    PlanStatus, TaskId, TaskRecord, TaskStatus, WorkerKind,
+    GoalStoreArtifactRecordResponse, GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest,
+    GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
+    GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
+    GoalStoreTaskListResponse, PlanCompileRequest, PlanCompileResult, PlanDraftRequest, PlanId,
+    PlanRevisionRequest, PlanStatus, TaskId, TaskRecord, TaskStatus, WorkerKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -223,6 +223,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/goal-store/goals/{goal_id}/tasks", get(list_tasks))
         .route("/goal-store/goals/{goal_id}/events", get(list_events))
         .route("/goal-store/goals/{goal_id}/artifacts", get(list_artifacts))
+        .route(
+            "/goal-store/goals/{goal_id}/checkpoints",
+            get(list_checkpoints),
+        )
         .route("/goal-store/goals/{goal_id}/approvals", get(list_approvals))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -575,6 +579,44 @@ async fn list_artifacts(
     Ok(Json(GoalStoreArtifactListResponse { goal_id, artifacts }))
 }
 
+async fn list_checkpoints(
+    State(state): State<AppState>,
+    Path(goal_id): Path<Uuid>,
+) -> Result<Json<GoalStoreCheckpointListResponse>, ApiError> {
+    let artifacts = if let Some(pool) = &state.postgres {
+        list_artifacts_postgres(pool, goal_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state
+            .store
+            .read()
+            .await
+            .artifacts
+            .get(&goal_id)
+            .cloned()
+            .unwrap_or_default()
+    };
+    Ok(Json(GoalStoreCheckpointListResponse {
+        goal_id,
+        checkpoints: checkpoints_from_artifacts(&artifacts),
+    }))
+}
+
+fn checkpoints_from_artifacts(artifacts: &[GoalArtifactRecord]) -> Vec<CheckpointRef> {
+    let mut checkpoints: Vec<CheckpointRef> = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.checkpoint.clone())
+        .collect();
+    checkpoints.sort_by(|left, right| {
+        left.task_id
+            .cmp(&right.task_id)
+            .then_with(|| left.sequence.cmp(&right.sequence))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    checkpoints
+}
+
 fn filter_goals(mut goals: Vec<GoalRecord>, filter: &GoalFilter) -> Vec<GoalRecord> {
     goals.retain(|goal| {
         filter
@@ -862,10 +904,10 @@ async fn upsert_snapshot_postgres(
             r#"
             INSERT INTO coat.artifacts (
                 id, goal_id, task_id, artifact_type, uri, description, git_remote, git_ref,
-                git_commit_sha, object_bucket, object_key, sha256, created_at_text, payload_json,
-                record_json
+                git_commit_sha, checkpoint_id, checkpoint_kind, checkpoint_label, object_bucket,
+                object_key, sha256, created_at_text, payload_json, record_json
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             "#,
         )
         .bind(artifact_record_id(artifact))
@@ -886,6 +928,20 @@ async fn upsert_snapshot_postgres(
                 .git_result
                 .as_ref()
                 .and_then(|git| git.commit.clone()),
+        )
+        .bind(artifact.checkpoint.as_ref().map(|checkpoint| checkpoint.id))
+        .bind(
+            artifact
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| json_string(&checkpoint.kind))
+                .transpose()?,
+        )
+        .bind(
+            artifact
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.label.clone()),
         )
         .bind(
             artifact
@@ -945,10 +1001,10 @@ async fn insert_artifact_postgres(
         r#"
         INSERT INTO coat.artifacts (
             id, goal_id, task_id, artifact_type, uri, description, git_remote, git_ref,
-            git_commit_sha, object_bucket, object_key, sha256, created_at_text, payload_json,
-            record_json
+            git_commit_sha, checkpoint_id, checkpoint_kind, checkpoint_label, object_bucket,
+            object_key, sha256, created_at_text, payload_json, record_json
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         ON CONFLICT (id) DO UPDATE SET
             artifact_type = EXCLUDED.artifact_type,
             uri = EXCLUDED.uri,
@@ -956,6 +1012,9 @@ async fn insert_artifact_postgres(
             git_remote = EXCLUDED.git_remote,
             git_ref = EXCLUDED.git_ref,
             git_commit_sha = EXCLUDED.git_commit_sha,
+            checkpoint_id = EXCLUDED.checkpoint_id,
+            checkpoint_kind = EXCLUDED.checkpoint_kind,
+            checkpoint_label = EXCLUDED.checkpoint_label,
             object_bucket = EXCLUDED.object_bucket,
             object_key = EXCLUDED.object_key,
             sha256 = EXCLUDED.sha256,
@@ -982,6 +1041,20 @@ async fn insert_artifact_postgres(
             .git_result
             .as_ref()
             .and_then(|git| git.commit.clone()),
+    )
+    .bind(artifact.checkpoint.as_ref().map(|checkpoint| checkpoint.id))
+    .bind(
+        artifact
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| json_string(&checkpoint.kind))
+            .transpose()?,
+    )
+    .bind(
+        artifact
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.label.clone()),
     )
     .bind(
         artifact
@@ -1339,11 +1412,12 @@ async fn append_journal(state: &AppState, entry: JournalEntry) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use coat_domain::{
-        ArtifactKind, ArtifactRef, GoalSpec, GoalState, GoalStoreArtifactRecordRequest,
-        GoalStoreSnapshotUpsertRequest, PlanDraftRequest, ProtocolMetadata,
+        ArtifactKind, ArtifactRef, CheckpointRef, GoalSpec, GoalState,
+        GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest, PlanDraftRequest,
+        ProtocolMetadata,
     };
 
-    use super::GoalStore;
+    use super::{GoalStore, checkpoints_from_artifacts};
 
     #[test]
     fn snapshot_indexes_goal_tasks_and_events() {
@@ -1406,6 +1480,7 @@ mod tests {
             }],
             git_results: Vec::new(),
             object_artifacts: Vec::new(),
+            checkpoints: Vec::new(),
         };
         let records = request.into_records();
         let mut store = GoalStore::default();
@@ -1418,5 +1493,31 @@ mod tests {
             store.artifacts[&goal_id][0].artifact.uri,
             "workspace://artifact/report.json"
         );
+    }
+
+    #[test]
+    fn checkpoint_records_are_queryable_history() {
+        let state = GoalState::new(GoalSpec::new("checkpoint", "record checkpoint history"));
+        let task = state.tasks.values().next().expect("root task");
+        let checkpoint =
+            CheckpointRef::metadata_for_task(task, "before-review", "checkpoint before review");
+        let request = GoalStoreArtifactRecordRequest {
+            metadata: ProtocolMetadata::new(format!("goal:{}:checkpoint:test", task.goal_id)),
+            goal_id: task.goal_id,
+            task_id: Some(task.id),
+            artifacts: Vec::new(),
+            git_results: Vec::new(),
+            object_artifacts: Vec::new(),
+            checkpoints: vec![checkpoint.clone()],
+        };
+        let records = request.into_records();
+        let mut store = GoalStore::default();
+
+        store.apply_artifacts(records);
+
+        let checkpoints = checkpoints_from_artifacts(&store.artifacts[&task.goal_id]);
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].id, checkpoint.id);
+        assert_eq!(checkpoints[0].label, "before-review");
     }
 }

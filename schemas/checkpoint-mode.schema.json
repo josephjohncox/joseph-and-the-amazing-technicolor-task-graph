@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CheckpointMode",
+  "type": "string",
+  "enum": [
+    "disabled",
+    "on_result",
+    "periodic",
+    "manual_only"
+  ]
+}

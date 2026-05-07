@@ -59,6 +59,8 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - The local memory gateway can replay an append-only JSONL journal for development durability.
 - Workers can return git branch/worktree/commit refs as durable result evidence.
 - Workers can return S3-compatible object artifact refs for large generated outputs.
+- Workers can return checkpoint refs for git-style task history, workspace snapshots, object archives, and metadata milestones.
+- Operators can query checkpoint history through the goal store, control gateway, and MCP dashboard surface.
 - Local Compose and Kubernetes development manifests include an S3-compatible object-store path, while AWS/EKS can use S3 through the same object-store contract.
 - Production goal-store deployments use Postgres as the standard read model, with JSONB for exact payloads and optional pgvector for operational semantic search.
 - Recurring work is modeled as event sources, triggered goals, Restate timers, or Kubernetes CronJobs, not worker-owned sleep loops.

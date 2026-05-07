@@ -303,7 +303,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "coat-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "coat-coordinator"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "coat-domain",
  "reqwest",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "coat-domain"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "schemars 1.2.1",
@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "coat-event-gateway"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "coat-goal-store"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "coat-memory-gateway"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "coat-notifier"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "coat-runner-registry"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "coat-sandbox-runner"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "coat-tool-registry"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "coat-validator"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",

@@ -21,6 +21,17 @@
       "format": "uint32",
       "minimum": 0
     },
+    "color": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraphColorRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "dependency_count": {
       "type": "integer",
       "format": "uint32",
@@ -140,6 +151,30 @@
         "kind",
         "uri",
         "description"
+      ]
+    },
+    "GraphColorRef": {
+      "description": "Stable visual metadata for the Technicolor Task Graph.\n\nColors are semantic graph state, not dashboard decoration. They let\noperators, reviewers, dashboards, and MCP clients preserve a consistent\nlegend across task projections, branches, reviews, and subgoals.",
+      "type": "object",
+      "properties": {
+        "hex": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "meaning": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "hex",
+        "meaning"
       ]
     },
     "TaskPriority": {

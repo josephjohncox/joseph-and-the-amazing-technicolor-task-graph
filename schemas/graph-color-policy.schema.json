@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GraphColorPolicy",
+  "description": "Goal-level color policy and legend for the task graph.",
+  "type": "object",
+  "properties": {
+    "assignment_mode": {
+      "$ref": "#/$defs/GraphColorAssignmentMode",
+      "default": "purpose"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "palette": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GraphColorRef"
+      }
+    }
+  },
+  "$defs": {
+    "GraphColorAssignmentMode": {
+      "type": "string",
+      "enum": [
+        "purpose",
+        "status",
+        "custom"
+      ]
+    },
+    "GraphColorRef": {
+      "description": "Stable visual metadata for the Technicolor Task Graph.\n\nColors are semantic graph state, not dashboard decoration. They let\noperators, reviewers, dashboards, and MCP clients preserve a consistent\nlegend across task projections, branches, reviews, and subgoals.",
+      "type": "object",
+      "properties": {
+        "hex": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "meaning": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "hex",
+        "meaning"
+      ]
+    }
+  }
+}

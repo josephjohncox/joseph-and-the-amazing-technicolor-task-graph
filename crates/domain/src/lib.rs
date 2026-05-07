@@ -480,7 +480,10 @@ impl Default for GraphColorPolicy {
 
 impl GraphColorPolicy {
     pub fn color_for_root(&self) -> Option<GraphColorRef> {
-        self.enabled.then(GraphColorRef::root)
+        if !self.enabled {
+            return None;
+        }
+        Some(self.palette_color_or(GraphColorRef::root()))
     }
 
     pub fn color_for_task(
@@ -491,12 +494,21 @@ impl GraphColorPolicy {
         if !self.enabled {
             return None;
         }
-        Some(match self.assignment_mode {
+        let fallback = match self.assignment_mode {
             GraphColorAssignmentMode::Purpose | GraphColorAssignmentMode::Custom => {
                 GraphColorRef::for_purpose_kind(&TaskPurposeKind::from(purpose))
             }
             GraphColorAssignmentMode::Status => GraphColorRef::for_status(status),
-        })
+        };
+        Some(self.palette_color_or(fallback))
+    }
+
+    fn palette_color_or(&self, fallback: GraphColorRef) -> GraphColorRef {
+        self.palette
+            .iter()
+            .rfind(|color| color.key == fallback.key)
+            .cloned()
+            .unwrap_or(fallback)
     }
 }
 
@@ -10132,6 +10144,13 @@ mod tests {
             "#f59e0b",
             "implementation subgoal owned by Codex",
         );
+        let palette_work_color = GraphColorRef::new(
+            "work",
+            "Palette Work",
+            "#0ea5e9",
+            "operator-overridden work color",
+        );
+        goal.color_policy.palette.push(palette_work_color.clone());
         goal.plan.subgoals.push(SubgoalSpec {
             id: "implementation".to_string(),
             title: "Implementation".to_string(),
@@ -10160,6 +10179,23 @@ mod tests {
             priority: TaskPriority::High,
             tags: vec!["graph".to_string()],
         });
+        goal.initial_tasks.push(ChildTaskRequest {
+            role: WorkerKind::Codex,
+            purpose: Some(TaskPurpose::Work),
+            title: Some("Use palette work color".to_string()),
+            subgoal_id: None,
+            color: None,
+            prompt: "use palette color metadata".to_string(),
+            reason: "palette overrides should be observable in task state".to_string(),
+            dependencies: Vec::new(),
+            budget: None,
+            sandbox: None,
+            done_criteria: None,
+            review_doctrine: None,
+            execution: None,
+            priority: TaskPriority::Normal,
+            tags: vec!["graph".to_string()],
+        });
 
         let state = GoalState::new(goal);
         let root = state
@@ -10177,6 +10213,12 @@ mod tests {
             .find(|task| task.subgoal_id.as_deref() == Some("implementation"))
             .expect("implementation task");
         assert_eq!(child.color, Some(implementation_color.clone()));
+        let palette_child = state
+            .tasks
+            .values()
+            .find(|task| task.title == "Use palette work color")
+            .expect("palette-colored task");
+        assert_eq!(palette_child.color, Some(palette_work_color));
 
         let progress = state.progress();
         assert_eq!(

@@ -33,6 +33,7 @@ const host = process.env.HOST ?? "0.0.0.0";
 const gatewayToken = process.env.COAT_CONTROL_GATEWAY_TOKEN ?? "";
 
 const restateIngress = trimSlash(process.env.COAT_RESTATE_INGRESS ?? "http://localhost:8080");
+const restateAdminUrl = trimSlash(process.env.COAT_RESTATE_ADMIN_URL ?? "http://localhost:9070");
 const goalStoreUrl = trimSlash(process.env.COAT_GOAL_STORE_URL ?? "http://localhost:9088");
 const eventGatewayUrl = trimSlash(process.env.COAT_EVENT_GATEWAY_URL ?? "http://localhost:9089");
 const eventGatewayToken = process.env.COAT_EVENT_GATEWAY_TOKEN ?? "";
@@ -59,9 +60,10 @@ const workflowHandlers = new Set([
   "approve",
   "inject_feedback",
 ]);
+const workflowReadHandlers = new Set(["status", "progress", "tasks"]);
 
 const services: ServiceRef[] = [
-  { name: "restate", baseUrl: restateIngress, healthPath: "/" },
+  { name: "restate", baseUrl: restateAdminUrl, healthPath: "/health" },
   { name: "goal-store", baseUrl: goalStoreUrl, healthPath: "/healthz" },
   { name: "event-gateway", baseUrl: eventGatewayUrl, healthPath: "/healthz" },
   { name: "notifier", baseUrl: notifierUrl, healthPath: "/healthz" },
@@ -325,8 +327,8 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/artifacts`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/checkpoints`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/approvals`, { method: "GET" }),
-    workflowPost(goalId, "status", {}),
-    workflowPost(goalId, "progress", {}),
+    workflowReadPost(goalId, "status", {}),
+    workflowReadPost(goalId, "progress", {}),
   ]);
   return {
     generated_at: new Date().toISOString(),
@@ -588,6 +590,26 @@ async function workflowPost(goalId: string, handler: string, body: unknown): Pro
   );
 }
 
+async function workflowReadPost(goalId: string, handler: string, body: unknown): Promise<ProxyResult> {
+  return normalizeWorkflowReadResult(await workflowPost(goalId, handler, body), handler);
+}
+
+function normalizeWorkflowReadResult(result: ProxyResult, handler: string): ProxyResult {
+  if (result.status !== 404) {
+    return result;
+  }
+  return {
+    ...result,
+    data: {
+      unavailable: true,
+      handler,
+      reason:
+        "Restate returned 404 for this workflow read. The workflow may not be started yet, or the coordinator deployment may still be registering.",
+      restate_response: result.data,
+    },
+  };
+}
+
 async function routeApi(req: any, res: any, url: URL): Promise<void> {
   if (!isAuthorized(req)) {
     sendJson(res, 401, { error: "missing or invalid COAT_CONTROL_GATEWAY_TOKEN bearer token" });
@@ -606,6 +628,7 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
         notifier: notifierUrl,
         runner_registry: runnerRegistryUrl,
         memory_gateway: memoryGatewayUrl,
+        restate_admin: restateAdminUrl,
         execution_plan_dir: executionPlanDirs[0],
         execution_plan_dirs: executionPlanDirs,
       },
@@ -708,7 +731,10 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
         return;
       }
       const body = await readJson(req);
-      sendJson(res, 200, await workflowPost(goalId, handler, body));
+      const result = workflowReadHandlers.has(handler)
+        ? await workflowReadPost(goalId, handler, body)
+        : await workflowPost(goalId, handler, body);
+      sendJson(res, 200, result);
       return;
     }
   }

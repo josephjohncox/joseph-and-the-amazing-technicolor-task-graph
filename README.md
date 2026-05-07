@@ -197,6 +197,8 @@ coat plan compile --plan-id <plan-id> --strict-review --human-steered
 
 Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit the goal.
 
+Task graph colors are durable contract metadata, not just dashboard styling. `GoalSpec.color_policy` supplies a default technicolor palette, subgoals can set stable semantic colors, tasks inherit those colors unless overridden, and `coat goal tasks --color <key>` filters the runnable frontier by workstream. The SPA shows these colors in goal task tables, agent activity, and plan continuity views.
+
 ## Events And Schedules
 
 External events enter through `coat-event-gateway` on `:9089`. Generic JSON events, webhooks, CloudEvents-style payloads, calendar checks, queue messages, and cron jobs are normalized into `ExternalEvent`, deduped, and routed through `TriggeredGoalRequest`. They create or steer goals through Restate instead of invoking workers directly.

@@ -10,6 +10,7 @@ A submit-ready goal has:
 
 - a concrete objective with a clear artifact or state change;
 - stable subgoal IDs that split the goal into coordinator-visible slices of work;
+- stable graph color keys for major workstreams when the goal needs visible task topology;
 - initial tasks linked to those subgoal IDs when the first frontier is already known;
 - done criteria that can be validated by tests, artifacts, reviewer scores, or explicit evidence;
 - constraints that should not be violated, including repo scope, safety, compliance, latency, budget, and model/provider limits;
@@ -188,7 +189,13 @@ Include concrete edits when changes are requested.
 
 `plan`: Define stable `subgoals` with IDs, titles, owners, expected artifacts, acceptance evidence, and dependencies. Coordinators and dashboards should use these IDs to group progress and find work.
 
+`color_policy`: Keep the default technicolor purpose palette for most goals. Use `assignment_mode = purpose` when colors should follow work/research/review/validation/unification semantics, `status` when operators mainly need state-oriented dashboards, or `custom` when subgoals and child tasks carry explicit colors. Color keys are durable semantic labels; `hex` is only a display hint.
+
+`plan.subgoals[].color`: Set this when a subgoal represents a distinct workstream that should stay visually stable across child tasks, branch candidates, reviewer tasks, notifications, and dashboard views. Use keys like `research_green`, `implementation_blue`, `review_purple`, or goal-specific keys such as `parser_gold`.
+
 `initial_tasks`: Add only known first-frontier tasks. Set `title`, `role`, `subgoal_id`, `priority`, `tags`, `done_criteria`, `budget`, `sandbox`, and `execution` enough for a runner to pick up the work without reading the entire goal prose.
+
+`initial_tasks[].color`: Omit this when the task should inherit its subgoal color. Set it only when a seeded task intentionally differs from the subgoal, such as a red-team review task inside an implementation subgoal.
 
 `execution.subagents`: Leave this at the default for almost every goal. In COAT, "subagent" means a durable child task created by the coordinator and routed through the runner registry. Do not write goals that ask Codex, Claude Code, an SDK harness, or an MCP client to spawn its own hidden subagents. Workers request more help by returning `ChildTaskRequest` values in `AgentRunResult.child_requests`.
 
@@ -235,7 +242,17 @@ coat goal draft \
   --out examples/drafts/typed-memory-retrieval.json
 ```
 
-`--subgoal` and `--initial-task` accept comma-separated `key=value` fields. Use `|` inside list fields such as `tags`, `dependencies`, and `acceptance_evidence`. For anything more complex than a seed frontier, draft JSON and then run the critic pass.
+`--subgoal` and `--initial-task` accept comma-separated `key=value` fields. Use `|` inside list fields such as `tags`, `dependencies`, and `acceptance_evidence`. Color fields are `color`, `color_label`, `color_hex`, and `color_meaning`; omit task color when the task should inherit its subgoal color. For anything more complex than a seed frontier, draft JSON and then run the critic pass.
+
+Example technicolor seed:
+
+```sh
+coat goal draft \
+  --title "Technicolor graph smoke" \
+  --objective "Show semantic graph colors across research, implementation, and review." \
+  --subgoal "id=implement,title=Implement,objective=Make the contract real,role=codex,color=implementation_blue,color_label=Implementation Blue,color_hex=#2563eb" \
+  --initial-task "role=codex,title=Implement,prompt=Add the contract,subgoal_id=implement"
+```
 
 List built-in standard checks:
 
@@ -273,6 +290,11 @@ Find subgoal tasks:
 coat goal tasks \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/task-query-subgoal.json
+coat goal tasks \
+  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
+  --subgoal-id implement-progress-contract \
+  --color implementation_blue \
+  --runnable
 ```
 
 Steer with research:

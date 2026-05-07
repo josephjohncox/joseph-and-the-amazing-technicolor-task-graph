@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GraphColorAssignmentMode",
+  "type": "string",
+  "enum": [
+    "purpose",
+    "status",
+    "custom"
+  ]
+}

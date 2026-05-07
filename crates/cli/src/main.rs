@@ -21,13 +21,13 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use coat_domain::{
     BranchRequest, BranchSelectionRequest, ChildTaskRequest, ControlLoopMode, EventSource,
-    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalSpec, HumanApproval, MemoryContextRequest,
-    MemoryJoinRequest, MemoryRepairRequest, MemorySearchRequest, MemoryWriteRequest,
-    NotificationRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion, PlanQuestionStatus,
-    PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine, ReviewDoctrinePreset,
-    RunnerDispatchRequest, RunnerRegistration, StandardReviewCheck, SteeringDirective,
-    SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose, TaskPurposeKind, TaskQuery,
-    TaskStatus, TriggeredGoalRequest, WorkerKind,
+    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalSpec, GraphColorRef, HumanApproval,
+    MemoryContextRequest, MemoryJoinRequest, MemoryRepairRequest, MemorySearchRequest,
+    MemoryWriteRequest, NotificationRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion,
+    PlanQuestionStatus, PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine,
+    ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration, StandardReviewCheck,
+    SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose,
+    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
 };
 use uuid::Uuid;
 
@@ -2287,7 +2287,7 @@ fn parse_subgoal_spec(raw: &str) -> anyhow::Result<SubgoalSpec> {
         title: required_kv(&kv, "title")?,
         objective: required_kv(&kv, "objective")?,
         owner_role: role,
-        color: None,
+        color: parse_graph_color(&kv),
         priority,
         dependencies: split_list(kv.get("dependencies")),
         tags: split_list(kv.get("tags")),
@@ -2334,7 +2334,7 @@ fn parse_initial_task_spec(raw: &str) -> anyhow::Result<ChildTaskRequest> {
         purpose,
         title: kv.get("title").cloned(),
         subgoal_id: kv.get("subgoal_id").or_else(|| kv.get("subgoal")).cloned(),
-        color: None,
+        color: parse_graph_color(&kv),
         prompt,
         reason: kv
             .get("reason")
@@ -2349,6 +2349,23 @@ fn parse_initial_task_spec(raw: &str) -> anyhow::Result<ChildTaskRequest> {
         priority,
         tags: split_list(kv.get("tags")),
     })
+}
+
+fn parse_graph_color(kv: &BTreeMap<String, String>) -> Option<GraphColorRef> {
+    let key = kv.get("color").or_else(|| kv.get("color_key"))?.clone();
+    let label = kv
+        .get("color_label")
+        .cloned()
+        .unwrap_or_else(|| key.clone());
+    let hex = kv
+        .get("color_hex")
+        .cloned()
+        .unwrap_or_else(|| "#9aa6ad".to_string());
+    let meaning = kv
+        .get("color_meaning")
+        .cloned()
+        .unwrap_or_else(|| format!("custom graph color {key}"));
+    Some(GraphColorRef::new(key, label, hex, meaning))
 }
 
 fn parse_kv_spec(raw: &str) -> anyhow::Result<BTreeMap<String, String>> {

@@ -3,6 +3,7 @@
   "statuses": ["runnable", "running", "needs_validation"],
   "roles": ["codex", "planner"],
   "purpose_kinds": ["work", "actor_retry"],
+  "color_keys": ["implementation_blue"],
   "tags": ["progress"],
   "runnable_only": false,
   "limit": 20

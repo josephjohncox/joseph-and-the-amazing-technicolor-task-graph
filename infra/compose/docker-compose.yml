@@ -60,11 +60,27 @@ services:
       - /bin/sh
       - -lc
       - |
-        sleep 5
-        curl -fsS -X POST http://restate:9070/deployments \
-          -H 'content-type: application/json' \
-          -d '{"uri":"http://coordinator:9080"}'
-    restart: "no"
+        set -eu
+        attempt=1
+        response=/tmp/restate-register-response.json
+        while [ "$$attempt" -le 60 ]; do
+          status=$$(curl -sS -o "$$response" -w "%{http_code}" -X POST http://restate:9070/deployments \
+            -H 'content-type: application/json' \
+            -d '{"uri":"http://coordinator:9080"}' || true)
+          case "$$status" in
+            200|201|202|204|409)
+              cat "$$response"
+              exit 0
+              ;;
+          esac
+          echo "waiting to register coordinator with Restate (attempt $$attempt, status $$status)"
+          cat "$$response" || true
+          attempt=$$((attempt + 1))
+          sleep 2
+        done
+        echo "failed to register coordinator with Restate after $$attempt attempts"
+        exit 1
+    restart: on-failure
 
   validator:
     build:
@@ -230,9 +246,24 @@ services:
       - /bin/sh
       - -lc
       - |
-        mc alias set local http://object-store:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc mb -p "local/$$COAT_OBJECT_STORE_BUCKET"
-        mc anonymous set none "local/$$COAT_OBJECT_STORE_BUCKET"
+        set -eu
+        alias_name=coat-object-store
+        attempt=1
+        while [ "$$attempt" -le 60 ]; do
+          if mc alias set "$$alias_name" http://object-store:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; then
+            break
+          fi
+          echo "waiting for object-store to accept connections (attempt $$attempt)"
+          attempt=$$((attempt + 1))
+          sleep 2
+        done
+        if [ "$$attempt" -gt 60 ]; then
+          echo "object-store did not become ready"
+          exit 1
+        fi
+        mc mb -p "$$alias_name/$$COAT_OBJECT_STORE_BUCKET"
+        mc anonymous set none "$$alias_name/$$COAT_OBJECT_STORE_BUCKET"
+    restart: on-failure
 
   control-web:
     build:
@@ -243,6 +274,7 @@ services:
     environment:
       PORT: 9090
       COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_RESTATE_ADMIN_URL: http://restate:9070
       COAT_GOAL_STORE_URL: http://goal-store:9088
       COAT_EVENT_GATEWAY_URL: http://event-gateway:9089
       COAT_EVENT_GATEWAY_TOKEN: ${COAT_EVENT_GATEWAY_TOKEN:-}

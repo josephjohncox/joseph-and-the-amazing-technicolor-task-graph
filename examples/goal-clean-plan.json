@@ -26,6 +26,12 @@
         "title": "Research current contract needs",
         "objective": "Find current constraints that affect the goal/task contract.",
         "owner_role": "research",
+        "color": {
+          "key": "research_green",
+          "label": "Research Green",
+          "hex": "#16a34a",
+          "meaning": "sourced discovery and information-use planning"
+        },
         "priority": "high",
         "dependencies": [],
         "tags": ["research", "preflight"],
@@ -36,6 +42,12 @@
         "title": "Implement progress and task query contract",
         "objective": "Add structured progress and subgoal lookup to domain and coordinator APIs.",
         "owner_role": "codex",
+        "color": {
+          "key": "implementation_blue",
+          "label": "Implementation Blue",
+          "hex": "#2563eb",
+          "meaning": "bounded code and contract implementation"
+        },
         "priority": "critical",
         "dependencies": ["research-current-contract"],
         "tags": ["implementation", "progress"],
@@ -46,6 +58,12 @@
         "title": "Review satisfaction evidence",
         "objective": "Critic verifies the goal evidence and satisfaction criteria.",
         "owner_role": "reviewer",
+        "color": {
+          "key": "review_purple",
+          "label": "Review Purple",
+          "hex": "#9333ea",
+          "meaning": "critic review, satisfaction, and gate evidence"
+        },
         "priority": "high",
         "dependencies": ["implement-progress-contract"],
         "tags": ["review"],
@@ -82,6 +100,12 @@
       },
       "title": "Research goal contract constraints",
       "subgoal_id": "research-current-contract",
+      "color": {
+        "key": "research_green",
+        "label": "Research Green",
+        "hex": "#16a34a",
+        "meaning": "sourced discovery and information-use planning"
+      },
       "prompt": "Answer the research question with sources, confidence, and an information-use plan.",
       "reason": "Current facts and constraints should be captured before implementation.",
       "priority": "high",
@@ -94,6 +118,12 @@
       },
       "title": "Implement progress contract",
       "subgoal_id": "implement-progress-contract",
+      "color": {
+        "key": "implementation_blue",
+        "label": "Implementation Blue",
+        "hex": "#2563eb",
+        "meaning": "bounded code and contract implementation"
+      },
       "prompt": "Implement structured goal progress, task lookup, and initial task distribution.",
       "reason": "The coordinator needs durable task state that can be queried by subgoal.",
       "priority": "critical",

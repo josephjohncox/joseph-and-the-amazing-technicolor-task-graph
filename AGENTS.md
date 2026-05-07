@@ -114,6 +114,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 
 - Every `TaskNode` has an `execution` profile.
 - Every `TaskNode` also has a `purpose`: work, review, unification, or actor retry.
+- Every `TaskNode` may carry a `color` from `GoalSpec.color_policy`, subgoal metadata, or explicit child-task metadata; use stable color keys as semantic graph labels, not one-off UI decoration.
 - Goals have `control_policy`, `research_policy`, `memory_policy`, and `approval_policy`; preserve them when editing contracts.
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
 - Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.

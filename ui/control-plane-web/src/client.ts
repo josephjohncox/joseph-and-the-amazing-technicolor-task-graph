@@ -581,9 +581,10 @@ function renderGoalTables(data: JsonValue): void {
   const html: string[] = [];
   html.push("<h3>Tasks</h3>");
   html.push(tasks.length
-    ? table(["Task", "Role", "Status", "Purpose"], tasks.slice(0, 20).map((item) => {
+    ? table(["Color", "Task", "Role", "Status", "Purpose"], tasks.slice(0, 20).map((item) => {
       const row = item as Record<string, unknown>;
       return [
+        colorLabel(row.color),
         String(row.task_id ?? row.id ?? ""),
         String(row.role ?? row.worker_kind ?? ""),
         String(row.status ?? ""),

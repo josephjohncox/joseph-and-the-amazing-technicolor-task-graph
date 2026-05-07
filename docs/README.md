@@ -23,6 +23,7 @@ COAT builds a durable task-tree control plane for long-running agent work. The c
 4. `product-specs/coat-v1.md`: product intent, non-goals, and success criteria.
 5. `operations/local-dev.md`: local validation and smoke workflows.
 6. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
+7. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
 
 ## Design Docs
 
@@ -57,7 +58,7 @@ Run:
 
 ```sh
 sh scripts/coat-doc-gardener.sh
-cargo run -p coat-domain --bin generate-schemas -- schemas
+make schemas
 buf lint
 ```
 

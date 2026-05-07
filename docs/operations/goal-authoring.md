@@ -77,13 +77,13 @@ Planning mode is appropriate when:
 Create a plan:
 
 ```sh
-cargo run -p coat-cli -- plan draft --file examples/plan-draft-durable-mode.json
+coat plan draft --file examples/plan-draft-durable-mode.json
 ```
 
 Revise it after questions are answered:
 
 ```sh
-cargo run -p coat-cli -- plan revise \
+coat plan revise \
   --plan-id <plan-id> \
   --file examples/plan-revision-answer-questions.json
 ```
@@ -91,7 +91,7 @@ cargo run -p coat-cli -- plan revise \
 Compile it into a `GoalSpec` without submitting:
 
 ```sh
-cargo run -p coat-cli -- plan compile \
+coat plan compile \
   --plan-id <plan-id> \
   --strict-review \
   --human-steered \
@@ -225,7 +225,7 @@ Standard review steering: Use `request_standard_review` to inject bounded checks
 Draft a starter goal without hand-writing the full contract:
 
 ```sh
-cargo run -p coat-cli -- goal draft \
+coat goal draft \
   --title "Typed memory retrieval review" \
   --objective "Review and implement typed memory retrieval for runner-distributed tasks. Success means schemas regenerate, cargo tests pass, docs explain operator use, and reviewer doctrine accepts the evidence." \
   --strict-review \
@@ -240,37 +240,37 @@ cargo run -p coat-cli -- goal draft \
 List built-in standard checks:
 
 ```sh
-cargo run -p coat-cli -- goal review-checks
+coat goal review-checks
 ```
 
 Lint before submit:
 
 ```sh
-cargo run -p coat-cli -- goal lint --file examples/goal-clean-plan.json --strict
+coat goal lint --file examples/goal-clean-plan.json --strict
 ```
 
 Submit from JSON:
 
 ```sh
-cargo run -p coat-cli -- goal submit --file examples/goal-template-structured.json
+coat goal submit --file examples/goal-template-structured.json
 ```
 
 Check status:
 
 ```sh
-cargo run -p coat-cli -- goal status --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat goal status --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 ```
 
 Check progress:
 
 ```sh
-cargo run -p coat-cli -- goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 ```
 
 Find subgoal tasks:
 
 ```sh
-cargo run -p coat-cli -- goal tasks \
+coat goal tasks \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/task-query-subgoal.json
 ```
@@ -278,7 +278,7 @@ cargo run -p coat-cli -- goal tasks \
 Steer with research:
 
 ```sh
-cargo run -p coat-cli -- goal steer \
+coat goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/steering-request-research.json
 ```
@@ -286,7 +286,7 @@ cargo run -p coat-cli -- goal steer \
 Steer with a standard check directly:
 
 ```sh
-cargo run -p coat-cli -- goal steer-standard \
+coat goal steer-standard \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --check deep_research \
   --topic "memory substrate and vector RAG libraries" \
@@ -296,7 +296,7 @@ cargo run -p coat-cli -- goal steer-standard \
 Approve a waiting task:
 
 ```sh
-cargo run -p coat-cli -- approve \
+coat approve \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --approval-id <approval-request-id> \
   --approved true

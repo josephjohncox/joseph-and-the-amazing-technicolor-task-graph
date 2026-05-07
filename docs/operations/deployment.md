@@ -66,6 +66,25 @@ Expected production hardening:
 - For Restate Cloud-backed clusters, prefer the Restate Operator `RestateCloudEnvironment` and `RestateDeployment` path in `infra/k8s/examples/restate-cloud-environment.yaml`.
 - For self-hosted Restate clusters, use the operator pattern in `infra/k8s/examples/restate-operator-cluster.yaml` as the starting point and replace local storage with reviewed persistent or object-store-backed configuration.
 
+## Helm
+
+The Helm chart lives in `infra/helm/coat`. It follows the same logical service boundaries as `infra/k8s/base/all.yaml`, but is values-driven for release installation.
+
+Local validation:
+
+```sh
+helm lint infra/helm/coat
+helm template coat infra/helm/coat > /tmp/coat-helm.yaml
+```
+
+Package locally:
+
+```sh
+CHART_VERSION=0.2.0 APP_VERSION=0.2.0 scripts/package-helm-chart.sh
+```
+
+GitHub chart releases are separate from binary releases. See `docs/operations/releases.md`.
+
 ## Auth Distribution
 
 Production deployments should distribute auth through standard secret and identity systems:

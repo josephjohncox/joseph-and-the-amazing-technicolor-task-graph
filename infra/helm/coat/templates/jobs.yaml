@@ -1,0 +1,52 @@
+{{- $root := . -}}
+{{- range $name, $job := .Values.jobs }}
+{{- if $job.enabled }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "coat.namespace" $root }}
+  labels:
+    {{- include "coat.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "coat.name" $root }}
+        app.kubernetes.io/instance: {{ $root.Release.Name }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: {{ $name }}
+          image: {{ include "coat.image" (dict "root" $root "image" $job.image) | quote }}
+          imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $job.imagePullPolicy }}
+          {{- with $job.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or $job.env $job.configEnv $job.secretEnv }}
+          env:
+            {{- range $envName, $envValue := $job.env }}
+            - name: {{ $envName }}
+              value: {{ tpl (toString $envValue) $root | quote }}
+            {{- end }}
+            {{- range $envName, $configKey := $job.configEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: {{ $configKey }}
+            {{- end }}
+            {{- range $envName, $secretKey := $job.secretEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: {{ $secretKey }}
+            {{- end }}
+          {{- end }}
+{{- end }}
+{{- end }}

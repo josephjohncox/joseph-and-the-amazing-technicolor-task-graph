@@ -1,0 +1,9 @@
+COAT has been installed into namespace {{ include "coat.namespace" . }}.
+
+Key service endpoints inside the cluster:
+- Restate ingress: http://restate:8080
+- Coordinator: http://coordinator:9080
+- Goal store: http://goal-store:9088
+- Control gateway: http://control-web:9090
+
+Before production use, replace placeholder secrets and set reviewed image tags.

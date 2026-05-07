@@ -1,0 +1,84 @@
+{{- $root := . -}}
+{{- range $name, $workload := .Values.workloads }}
+{{- if $workload.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "coat.namespace" $root }}
+  labels:
+    {{- include "coat.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: {{ default 1 $workload.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "coat.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "coat.name" $root }}
+        app.kubernetes.io/instance: {{ $root.Release.Name }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      containers:
+        - name: {{ $name }}
+          image: {{ include "coat.image" (dict "root" $root "image" $workload.image) | quote }}
+          imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $workload.imagePullPolicy }}
+          {{- with $workload.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $workload.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or $workload.env $workload.configEnv $workload.secretEnv $workload.fieldEnv }}
+          env:
+            {{- range $envName, $envValue := $workload.env }}
+            - name: {{ $envName }}
+              value: {{ tpl (toString $envValue) $root | quote }}
+            {{- end }}
+            {{- range $envName, $configKey := $workload.configEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: {{ $configKey }}
+            {{- end }}
+            {{- range $envName, $secretKey := $workload.secretEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: {{ $secretKey }}
+            {{- end }}
+            {{- range $envName, $fieldPath := $workload.fieldEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                fieldRef:
+                  fieldPath: {{ $fieldPath }}
+            {{- end }}
+          {{- end }}
+          {{- with $workload.ports }}
+          ports:
+            {{- range . }}
+            - name: {{ .name }}
+              containerPort: {{ .containerPort }}
+            {{- end }}
+          {{- end }}
+          {{- with $workload.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml (default $root.Values.defaultResources $workload.resources) | nindent 12 }}
+      {{- with $workload.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

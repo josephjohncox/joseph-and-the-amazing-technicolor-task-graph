@@ -67,7 +67,7 @@ Restate remains authoritative once a plan becomes a submitted goal. Before that 
 Create a durable plan:
 
 ```sh
-cargo run -p coat-cli -- plan draft \
+coat plan draft \
   --title "Durable planning mode" \
   --objective "Design and compile a plan into a typed GoalSpec before execution." \
   --prompt "Capture questions, decisions, subgoals, and first tasks before starting agents." \
@@ -77,14 +77,14 @@ cargo run -p coat-cli -- plan draft \
 List and inspect plans:
 
 ```sh
-cargo run -p coat-cli -- plan list
-cargo run -p coat-cli -- plan show --plan-id <plan-id>
+coat plan list
+coat plan show --plan-id <plan-id>
 ```
 
 Revise from JSON:
 
 ```sh
-cargo run -p coat-cli -- plan revise \
+coat plan revise \
   --plan-id <plan-id> \
   --file examples/plan-revision-answer-questions.json
 ```
@@ -92,7 +92,7 @@ cargo run -p coat-cli -- plan revise \
 Compile into `GoalSpec`:
 
 ```sh
-cargo run -p coat-cli -- plan compile \
+coat plan compile \
   --plan-id <plan-id> \
   --strict-review \
   --human-steered \

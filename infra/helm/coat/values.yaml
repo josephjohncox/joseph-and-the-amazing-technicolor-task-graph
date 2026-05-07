@@ -1,0 +1,423 @@
+namespace:
+  create: true
+  name: coat
+
+global:
+  imagePullPolicy: IfNotPresent
+  imageTag: local
+
+config:
+  RUST_LOG: info
+  CODEX_RUNNER_MODE: stub
+  STAFF_ENGINEER_RUNNER_MODE: stub
+  COAT_GOAL_STORE_BACKEND: jsonl
+  COAT_EVENT_GATEWAY_BACKEND: jsonl
+  COAT_REQUIRE_EVENT_SOURCE_APPROVAL: "true"
+  COAT_MEMORY_MCP_URL: http://graphiti-mcp:8000/mcp/
+  MEMORY_GATEWAY_GRAPHITI_MCP_URL: ""
+  MEMORY_GATEWAY_GRAPHITI_GROUP_ID: coat
+  MEMORY_GATEWAY_QDRANT_URL: http://qdrant:6333
+  MEMORY_GATEWAY_QDRANT_COLLECTION: coat_memory
+  COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
+  COAT_OBJECT_STORE_BUCKET: coat-artifacts
+  MEMORY_GATEWAY_EMBEDDING_URL: https://api.openai.com/v1/embeddings
+  MEMORY_GATEWAY_EMBEDDING_MODEL: text-embedding-3-large
+  MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
+  MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: "false"
+  CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret"}'
+  STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret"}'
+
+secrets:
+  create: true
+  values:
+    OPENAI_API_KEY: replace-me
+    ANTHROPIC_API_KEY: replace-me
+    ANTHROPIC_AUTH_TOKEN: ""
+    CLAUDE_CODE_OAUTH_TOKEN: ""
+    TRACKER_TOKEN: replace-me
+    MCP_TOOL_TOKEN: replace-me
+    QDRANT_API_KEY: ""
+    EMBEDDING_API_KEY: replace-me
+    OBJECT_STORE_ACCESS_KEY: coat
+    OBJECT_STORE_SECRET_KEY: coat-local-secret
+    EVENT_GATEWAY_TOKEN: ""
+    COAT_CONTROL_GATEWAY_TOKEN: ""
+    COAT_CONTROL_MCP_TOKEN: ""
+    POSTGRES_PASSWORD: coat-local-secret
+    COAT_GOAL_STORE_DATABASE_URL: postgresql://coat:coat-local-secret@postgres:5432/coat
+
+defaultResources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+workloads:
+  restate:
+    enabled: true
+    image:
+      repository: docker.restate.dev/restatedev/restate
+      tag: latest
+    args: ["--node-name=restate-1"]
+    ports:
+      - name: ingress
+        containerPort: 8080
+        servicePort: 8080
+      - name: admin
+        containerPort: 9070
+        servicePort: 9070
+      - name: node
+        containerPort: 5122
+        service: false
+    volumeMounts:
+      - name: restate-data
+        mountPath: /restate-data
+    volumes:
+      - name: restate-data
+        emptyDir: {}
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+  coordinator:
+    enabled: true
+    image:
+      repository: coat/coordinator
+    env:
+      BIND_ADDR: 0.0.0.0:9080
+      COAT_RUNNER_REGISTRY: http://runner-registry:9085
+      COAT_NOTIFIER_URL: http://notifier:9086
+      COAT_GOAL_STORE_URL: http://goal-store:9088
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_ALLOW_LOCAL_STUB_FALLBACK: "true"
+    configEnv:
+      COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
+      COAT_OBJECT_STORE_ENDPOINT: COAT_OBJECT_STORE_ENDPOINT
+      COAT_OBJECT_STORE_BUCKET: COAT_OBJECT_STORE_BUCKET
+      RUST_LOG: RUST_LOG
+    ports:
+      - name: http
+        containerPort: 9080
+        servicePort: 9080
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+  validator:
+    enabled: true
+    image:
+      repository: coat/validator
+    env:
+      BIND_ADDR: 0.0.0.0:9082
+    ports:
+      - name: http
+        containerPort: 9082
+        servicePort: 9082
+
+  sandbox-runner:
+    enabled: true
+    image:
+      repository: coat/sandbox-runner
+    env:
+      BIND_ADDR: 0.0.0.0:9083
+      SANDBOX_WORKSPACE_ROOT: /workspaces
+      SANDBOX_SUPPORTED_BACKENDS: local_workspace,kubernetes_job,gvisor,kata,firecracker,provider_sandbox
+    ports:
+      - name: http
+        containerPort: 9083
+        servicePort: 9083
+    volumeMounts:
+      - name: workspaces
+        mountPath: /workspaces
+    volumes:
+      - name: workspaces
+        emptyDir: {}
+
+  tool-registry:
+    enabled: true
+    image:
+      repository: coat/tool-registry
+    env:
+      BIND_ADDR: 0.0.0.0:9084
+      TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT: /workspaces
+      TOOL_REGISTRY_SANDBOX_RUNNER_URL: http://sandbox-runner:9083
+    secretEnv:
+      MCP_TOOL_TOKEN: MCP_TOOL_TOKEN
+    ports:
+      - name: http
+        containerPort: 9084
+        servicePort: 9084
+
+  runner-registry:
+    enabled: true
+    image:
+      repository: coat/runner-registry
+    env:
+      BIND_ADDR: 0.0.0.0:9085
+    ports:
+      - name: http
+        containerPort: 9085
+        servicePort: 9085
+
+  notifier:
+    enabled: true
+    image:
+      repository: coat/notifier
+    env:
+      BIND_ADDR: 0.0.0.0:9086
+    ports:
+      - name: http
+        containerPort: 9086
+        servicePort: 9086
+
+  goal-store:
+    enabled: true
+    image:
+      repository: coat/goal-store
+    env:
+      BIND_ADDR: 0.0.0.0:9088
+      COAT_GOAL_STORE_JOURNAL_PATH: /data/goal-store.jsonl
+    configEnv:
+      COAT_GOAL_STORE_BACKEND: COAT_GOAL_STORE_BACKEND
+    secretEnv:
+      COAT_GOAL_STORE_DATABASE_URL: COAT_GOAL_STORE_DATABASE_URL
+    ports:
+      - name: http
+        containerPort: 9088
+        servicePort: 9088
+    volumeMounts:
+      - name: goal-store-data
+        mountPath: /data
+    volumes:
+      - name: goal-store-data
+        emptyDir: {}
+
+  event-gateway:
+    enabled: true
+    image:
+      repository: coat/event-gateway
+    env:
+      BIND_ADDR: 0.0.0.0:9089
+      COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_EVENT_GATEWAY_JOURNAL_PATH: /data/event-gateway.jsonl
+    configEnv:
+      COAT_EVENT_GATEWAY_BACKEND: COAT_EVENT_GATEWAY_BACKEND
+      COAT_REQUIRE_EVENT_SOURCE_APPROVAL: COAT_REQUIRE_EVENT_SOURCE_APPROVAL
+    secretEnv:
+      COAT_EVENT_GATEWAY_TOKEN: EVENT_GATEWAY_TOKEN
+      COAT_EVENT_GATEWAY_DATABASE_URL: COAT_GOAL_STORE_DATABASE_URL
+    ports:
+      - name: http
+        containerPort: 9089
+        servicePort: 9089
+    volumeMounts:
+      - name: event-gateway-data
+        mountPath: /data
+    volumes:
+      - name: event-gateway-data
+        emptyDir: {}
+
+  memory-gateway:
+    enabled: true
+    image:
+      repository: coat/memory-gateway
+    env:
+      BIND_ADDR: 0.0.0.0:9087
+      MEMORY_GATEWAY_JOURNAL_PATH: /data/memory-gateway.jsonl
+    configEnv:
+      MEMORY_GATEWAY_GRAPHITI_MCP_URL: MEMORY_GATEWAY_GRAPHITI_MCP_URL
+      MEMORY_GATEWAY_GRAPHITI_GROUP_ID: MEMORY_GATEWAY_GRAPHITI_GROUP_ID
+      MEMORY_GATEWAY_QDRANT_URL: MEMORY_GATEWAY_QDRANT_URL
+      MEMORY_GATEWAY_QDRANT_COLLECTION: MEMORY_GATEWAY_QDRANT_COLLECTION
+      MEMORY_GATEWAY_EMBEDDING_URL: MEMORY_GATEWAY_EMBEDDING_URL
+      MEMORY_GATEWAY_EMBEDDING_MODEL: MEMORY_GATEWAY_EMBEDDING_MODEL
+      MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: MEMORY_GATEWAY_EMBEDDING_DIMENSIONS
+      MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS
+    secretEnv:
+      MEMORY_GATEWAY_TOKEN: MCP_TOOL_TOKEN
+      MEMORY_GATEWAY_QDRANT_TOKEN: QDRANT_API_KEY
+      MEMORY_GATEWAY_EMBEDDING_TOKEN: EMBEDDING_API_KEY
+    ports:
+      - name: http
+        containerPort: 9087
+        servicePort: 9087
+    volumeMounts:
+      - name: memory-gateway-data
+        mountPath: /data
+    volumes:
+      - name: memory-gateway-data
+        emptyDir: {}
+
+  control-web:
+    enabled: true
+    image:
+      repository: coat/control-web
+    env:
+      PORT: "9090"
+      COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_GOAL_STORE_URL: http://goal-store:9088
+      COAT_EVENT_GATEWAY_URL: http://event-gateway:9089
+      COAT_NOTIFIER_URL: http://notifier:9086
+      COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+    secretEnv:
+      COAT_EVENT_GATEWAY_TOKEN: EVENT_GATEWAY_TOKEN
+      COAT_MEMORY_GATEWAY_TOKEN: MCP_TOOL_TOKEN
+      COAT_CONTROL_GATEWAY_TOKEN: COAT_CONTROL_GATEWAY_TOKEN
+      COAT_CONTROL_MCP_TOKEN: COAT_CONTROL_MCP_TOKEN
+    ports:
+      - name: http
+        containerPort: 9090
+        servicePort: 9090
+
+  qdrant:
+    enabled: true
+    image:
+      repository: qdrant/qdrant
+      tag: v1.15.5
+    ports:
+      - name: http
+        containerPort: 6333
+        servicePort: 6333
+      - name: grpc
+        containerPort: 6334
+        servicePort: 6334
+    volumeMounts:
+      - name: qdrant-data
+        mountPath: /qdrant/storage
+    volumes:
+      - name: qdrant-data
+        emptyDir: {}
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+  object-store:
+    enabled: true
+    image:
+      repository: minio/minio
+      tag: latest
+    args: ["server", "/data", "--console-address", ":9001"]
+    secretEnv:
+      MINIO_ROOT_USER: OBJECT_STORE_ACCESS_KEY
+      MINIO_ROOT_PASSWORD: OBJECT_STORE_SECRET_KEY
+    ports:
+      - name: s3
+        containerPort: 9000
+        servicePort: 9000
+      - name: console
+        containerPort: 9001
+        servicePort: 9001
+    volumeMounts:
+      - name: object-store-data
+        mountPath: /data
+    volumes:
+      - name: object-store-data
+        emptyDir: {}
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+  codex-runner:
+    enabled: true
+    image:
+      repository: coat/codex-runner
+    env:
+      PORT: "9091"
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://codex-runner:9091
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+    fieldEnv:
+      RUNNER_ID: metadata.name
+      NODE_ID: spec.nodeName
+    configEnv:
+      CODEX_RUNNER_MODE: CODEX_RUNNER_MODE
+      RUNNER_LABELS_JSON: CODEX_RUNNER_LABELS_JSON
+      COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
+      COAT_OBJECT_STORE_ENDPOINT: COAT_OBJECT_STORE_ENDPOINT
+      COAT_OBJECT_STORE_BUCKET: COAT_OBJECT_STORE_BUCKET
+    secretEnv:
+      OPENAI_API_KEY: OPENAI_API_KEY
+    ports:
+      - name: http
+        containerPort: 9091
+        servicePort: 9091
+
+  staff-engineer-runner:
+    enabled: true
+    image:
+      repository: coat/staff-engineer-runner
+    env:
+      PORT: "9092"
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://staff-engineer-runner:9092
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+    fieldEnv:
+      RUNNER_ID: metadata.name
+      NODE_ID: spec.nodeName
+    configEnv:
+      STAFF_ENGINEER_RUNNER_MODE: STAFF_ENGINEER_RUNNER_MODE
+      RUNNER_LABELS_JSON: STAFF_ENGINEER_RUNNER_LABELS_JSON
+      COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
+    secretEnv:
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+      ANTHROPIC_AUTH_TOKEN: ANTHROPIC_AUTH_TOKEN
+      CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_CODE_OAUTH_TOKEN
+      TRACKER_TOKEN: TRACKER_TOKEN
+    ports:
+      - name: http
+        containerPort: 9092
+        servicePort: 9092
+
+jobs:
+  restate-register-coordinator:
+    enabled: true
+    image:
+      repository: curlimages/curl
+      tag: 8.16.0
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        sleep 5
+        curl -fsS -X POST http://restate:9070/deployments \
+          -H 'content-type: application/json' \
+          -d '{"uri":"http://coordinator:9080"}'
+  object-store-init:
+    enabled: true
+    image:
+      repository: minio/mc
+      tag: latest
+    secretEnv:
+      MINIO_ROOT_USER: OBJECT_STORE_ACCESS_KEY
+      MINIO_ROOT_PASSWORD: OBJECT_STORE_SECRET_KEY
+    configEnv:
+      COAT_OBJECT_STORE_BUCKET: COAT_OBJECT_STORE_BUCKET
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        until mc alias set local http://object-store:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do sleep 2; done
+        mc mb -p "local/$COAT_OBJECT_STORE_BUCKET"
+        mc anonymous set none "local/$COAT_OBJECT_STORE_BUCKET"
+
+networkPolicy:
+  enabled: true

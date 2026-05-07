@@ -30,6 +30,6 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 ## Acceptance
 
 - `cargo test --workspace` passes.
-- `cargo run -p coat-domain --bin generate-schemas -- schemas` writes new schemas.
+- `make schemas` writes new schemas.
 - Operators can register a vLLM runner using `examples/runner-vllm.json`.
 - Notifier records human-feedback threads and can deliver generic webhook targets with `SecretRef` bearer auth.

@@ -19,7 +19,7 @@ Make Restate Cloud a supported durable substrate for personal COAT usage and cor
 - `docker compose -f infra/compose/docker-compose.yml config`
 - `docker compose -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud config`
 - CI verifies the Restate Cloud Compose profile with placeholder env.
-- `cargo run -p coat-cli -- restate register-cloud --dry-run`
+- `coat restate register-cloud --dry-run`
 
 ## Follow-Ups
 

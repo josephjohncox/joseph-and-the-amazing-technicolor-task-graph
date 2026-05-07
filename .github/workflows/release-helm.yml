@@ -1,0 +1,63 @@
+name: release-helm
+
+on:
+  push:
+    tags:
+      - "chart-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Chart version without v prefix"
+        required: true
+        type: string
+      app_version:
+        description: "Application version without v prefix"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Normalize release versions
+        id: version
+        shell: bash
+        run: |
+          raw="${{ inputs.version || github.ref_name }}"
+          version="${raw#chart-v}"
+          version="${version#v}"
+          app_version="${{ inputs.app_version }}"
+          if [ -z "$app_version" ]; then
+            app_version="$version"
+          fi
+          app_version="${app_version#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=chart-v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Package chart
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/chart-v${{ steps.version.outputs.version }}
+        run: scripts/package-helm-chart.sh
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: COAT Helm chart ${{ steps.version.outputs.version }}
+          files: |
+            dist/helm/coat-${{ steps.version.outputs.version }}.tgz
+            dist/helm/coat-${{ steps.version.outputs.version }}.tgz.sha256
+            dist/helm/index.yaml
+            dist/helm/index.yaml.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true

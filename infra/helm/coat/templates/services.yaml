@@ -1,0 +1,27 @@
+{{- $root := . -}}
+{{- range $name, $workload := .Values.workloads }}
+{{- if and $workload.enabled $workload.ports }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "coat.namespace" $root }}
+  labels:
+    {{- include "coat.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "coat.name" $root }}
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    {{- range $workload.ports }}
+    {{- if ne .service false }}
+    - name: {{ .name }}
+      port: {{ default .containerPort .servicePort }}
+      targetPort: {{ .name }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

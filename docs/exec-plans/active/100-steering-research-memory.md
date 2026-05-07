@@ -32,5 +32,5 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 ## Acceptance
 
 - `cargo test --workspace` passes.
-- `cargo run -p coat-domain --bin generate-schemas -- schemas` writes the new schemas.
+- `make schemas` writes the new schemas.
 - Operators can submit `examples/steering-request-research.json`.

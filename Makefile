@@ -1,4 +1,4 @@
-.PHONY: ci fmt fmt-check test check schemas proto-lint proto-format docs-check sidecars-build control-web-build ts-build compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down k8s-render
+.PHONY: ci fmt fmt-check test check schemas proto-lint proto-format docs-check sidecars-build control-web-build ts-build helm-lint helm-package compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down k8s-render
 
 fmt:
 	cargo fmt --all
@@ -33,6 +33,12 @@ control-web-build:
 
 ts-build: sidecars-build control-web-build
 
+helm-lint:
+	helm lint infra/helm/coat
+
+helm-package:
+	scripts/package-helm-chart.sh
+
 ci: fmt-check check test schemas proto-lint docs-check ts-build
 	git diff --check
 	git diff --exit-code schemas
@@ -56,4 +62,4 @@ compose-cloud-down:
 	docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml down
 
 k8s-render:
-	cargo run -p coat-cli -- k8s render --output infra/k8s/rendered.yaml
+	coat k8s render --output infra/k8s/rendered.yaml

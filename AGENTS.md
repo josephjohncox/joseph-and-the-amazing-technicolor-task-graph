@@ -36,6 +36,7 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Active implementation plans: `docs/exec-plans/active/`
 - Completed plans: `docs/exec-plans/completed/`
 - Operational runbooks: `docs/operations/`
+- Release runbook: `docs/operations/releases.md`
 - Protobuf contracts: `proto/coat/v1/`
 - JSON schemas: `schemas/`
 - Shared Rust contracts: `crates/domain/`
@@ -169,7 +170,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 ## Testing
 
 - Run `cargo test --workspace` for Rust logic.
-- Run `cargo run -p coat-domain --bin generate-schemas -- schemas` after contract edits.
+- Run `make schemas` after contract edits.
 - Run `buf lint` after proto edits.
 - Run `cargo check --workspace` before handing off.
 - Validate Compose with `docker compose -f infra/compose/docker-compose.yml config`.
@@ -179,10 +180,10 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 
 - Local stack: `docker compose -f infra/compose/docker-compose.yml up --build`
 - Personal Restate Cloud stack: `docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud up --build`
-- CLI local stack: `cargo run -p coat-cli -- compose up`
-- CLI Restate Cloud stack: `cargo run -p coat-cli -- compose up --restate-cloud`
-- Restate Cloud registration: `cargo run -p coat-cli -- restate register-cloud --tunnel-name coat-personal --service-url http://coordinator:9080`
-- Kubernetes render: `cargo run -p coat-cli -- k8s render --output infra/k8s/rendered.yaml`
+- CLI local stack: `coat compose up`
+- CLI Restate Cloud stack: `coat compose up --restate-cloud`
+- Restate Cloud registration: `coat restate register-cloud --tunnel-name coat-personal --service-url http://coordinator:9080`
+- Kubernetes render: `coat k8s render --output infra/k8s/rendered.yaml`
 - Restate ingress defaults to `http://localhost:8080`.
 - Coordinator service listens on `:9080`.
 - Runner registry listens on `:9085`.

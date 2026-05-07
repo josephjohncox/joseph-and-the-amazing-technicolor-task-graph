@@ -18,7 +18,7 @@ docker compose \
   -f infra/compose/docker-compose.restate-cloud.yml \
   --profile restate-cloud \
   up --build
-cargo run -p coat-cli -- compose up --restate-cloud
+coat compose up --restate-cloud
 ```
 
 The tunnel container maps Restate Cloud's ingress/admin proxies to host ports `18080` and `19070` by default so the local self-hosted Restate ports can still exist on `8080` and `9070`.
@@ -27,7 +27,7 @@ Register the coordinator through the tunnel:
 
 ```sh
 source infra/compose/restate-cloud.env
-cargo run -p coat-cli -- restate register-cloud \
+coat restate register-cloud \
   --tunnel-name "$RESTATE_TUNNEL_NAME" \
   --service-url http://coordinator:9080
 ```
@@ -36,7 +36,7 @@ Submit and inspect goals through the cloud ingress proxy:
 
 ```sh
 COAT_RESTATE_INGRESS=http://localhost:18080 \
-  cargo run -p coat-cli -- goal submit --file examples/goal-template-structured.json
+  coat goal submit --file examples/goal-template-structured.json
 ```
 
 The coordinator validates Restate request identity when `RESTATE_IDENTITY_KEYS` or `RESTATE_SIGNING_PUBLIC_KEY` is set. Keep it set for any service reachable by Restate Cloud, including local tunnel scenarios.

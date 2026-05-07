@@ -46,6 +46,7 @@ enum Commands {
     Notify(NotifyArgs),
     Store(StoreCommand),
     Sandbox(SandboxCommand),
+    Release(ReleaseCommand),
     Compose(ComposeCommand),
     K8s(K8sCommand),
     Restate(RestateCommand),
@@ -761,6 +762,44 @@ struct StoreRecordArtifactsArgs {
 }
 
 #[derive(Debug, Args)]
+struct ReleaseCommand {
+    #[command(subcommand)]
+    command: ReleaseSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ReleaseSubcommand {
+    Plan(ReleasePlanArgs),
+    Bump(ReleaseBumpArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReleasePlanArgs {
+    #[arg(long)]
+    version: String,
+    #[arg(long)]
+    chart_version: Option<String>,
+    #[arg(long)]
+    app_version: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseBumpArgs {
+    #[arg(long)]
+    version: String,
+    #[arg(long)]
+    chart_version: Option<String>,
+    #[arg(long)]
+    app_version: Option<String>,
+    #[arg(long, default_value = "Cargo.toml")]
+    cargo_toml: PathBuf,
+    #[arg(long, default_value = "infra/helm/coat/Chart.yaml")]
+    chart_yaml: PathBuf,
+    #[arg(long)]
+    allow_dirty: bool,
+}
+
+#[derive(Debug, Args)]
 struct ComposeCommand {
     #[command(subcommand)]
     command: ComposeSubcommand,
@@ -888,10 +927,184 @@ async fn main() -> anyhow::Result<()> {
         Commands::Notify(args) => notify(args).await,
         Commands::Store(args) => store(args).await,
         Commands::Sandbox(args) => sandbox(args).await,
+        Commands::Release(args) => release(args),
         Commands::Compose(args) => compose(args),
         Commands::K8s(args) => k8s(args),
         Commands::Restate(args) => restate(args),
     }
+}
+
+fn release(args: ReleaseCommand) -> anyhow::Result<()> {
+    match args.command {
+        ReleaseSubcommand::Plan(args) => {
+            let plan = release_plan_json(
+                &args.version,
+                args.chart_version.as_deref(),
+                args.app_version.as_deref(),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+            Ok(())
+        }
+        ReleaseSubcommand::Bump(args) => {
+            let plan = release_plan_json(
+                &args.version,
+                args.chart_version.as_deref(),
+                args.app_version.as_deref(),
+            )?;
+            if !args.allow_dirty {
+                ensure_clean_git_worktree()?;
+            }
+            bump_release_versions(
+                &args.cargo_toml,
+                &args.chart_yaml,
+                plan["app_version"].as_str().expect("app version"),
+                plan["chart_version"].as_str().expect("chart version"),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+            Ok(())
+        }
+    }
+}
+
+fn release_plan_json(
+    version: &str,
+    chart_version: Option<&str>,
+    app_version: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    let app_version = app_version.unwrap_or(version).trim_start_matches('v');
+    let chart_version = chart_version.unwrap_or(app_version).trim_start_matches('v');
+    let version = version.trim_start_matches('v');
+    validate_semver(version).context("invalid release version")?;
+    validate_semver(app_version).context("invalid app version")?;
+    validate_semver(chart_version).context("invalid chart version")?;
+
+    Ok(serde_json::json!({
+        "version": version,
+        "app_version": app_version,
+        "chart_version": chart_version,
+        "binary_tag": format!("v{version}"),
+        "chart_tag": format!("chart-v{chart_version}"),
+        "bump_files": [
+            "Cargo.toml",
+            "infra/helm/coat/Chart.yaml"
+        ],
+        "binary_workflow": ".github/workflows/release-binaries.yml",
+        "helm_workflow": ".github/workflows/release-helm.yml",
+        "binary_assets": [
+            format!("coat-binaries-{version}-x86_64-unknown-linux-gnu.tar.gz"),
+            format!("coat-binaries-{version}-aarch64-unknown-linux-gnu.tar.gz"),
+            format!("coat-binaries-{version}-aarch64-apple-darwin.tar.gz"),
+            format!("coat-binaries-{version}-x86_64-apple-darwin.tar.gz")
+        ],
+        "helm_assets": [
+            format!("coat-{chart_version}.tgz"),
+            "index.yaml"
+        ],
+        "publish_steps": [
+            format!("git tag v{version}"),
+            format!("git tag chart-v{chart_version}"),
+            format!("git push origin v{version} chart-v{chart_version}")
+        ]
+    }))
+}
+
+fn validate_semver(version: &str) -> anyhow::Result<()> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()))
+    {
+        bail!("expected MAJOR.MINOR.PATCH, got {version}");
+    }
+    Ok(())
+}
+
+fn ensure_clean_git_worktree() -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output()
+        .context("checking git status")?;
+    if !output.status.success() {
+        bail!("git status failed");
+    }
+    if !output.stdout.is_empty() {
+        bail!("worktree is dirty; pass --allow-dirty to bump release files anyway");
+    }
+    Ok(())
+}
+
+fn bump_release_versions(
+    cargo_toml_path: &PathBuf,
+    chart_yaml_path: &PathBuf,
+    app_version: &str,
+    chart_version: &str,
+) -> anyhow::Result<()> {
+    let cargo_toml = fs::read_to_string(cargo_toml_path)
+        .with_context(|| format!("reading {}", cargo_toml_path.display()))?;
+    let cargo_toml = replace_toml_section_value(
+        &cargo_toml,
+        "workspace.package",
+        "version",
+        &format!("\"{app_version}\""),
+    )?;
+    fs::write(cargo_toml_path, cargo_toml)
+        .with_context(|| format!("writing {}", cargo_toml_path.display()))?;
+
+    let chart_yaml = fs::read_to_string(chart_yaml_path)
+        .with_context(|| format!("reading {}", chart_yaml_path.display()))?;
+    let chart_yaml = replace_yaml_root_value(&chart_yaml, "version", chart_version)?;
+    let chart_yaml = replace_yaml_root_value(&chart_yaml, "appVersion", app_version)?;
+    fs::write(chart_yaml_path, chart_yaml)
+        .with_context(|| format!("writing {}", chart_yaml_path.display()))?;
+    Ok(())
+}
+
+fn replace_toml_section_value(
+    contents: &str,
+    section: &str,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<String> {
+    let section_header = format!("[{section}]");
+    let mut in_section = false;
+    let mut replaced = false;
+    let mut lines = Vec::new();
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed == section_header;
+        }
+        if in_section && trimmed.starts_with(&format!("{key} =")) {
+            lines.push(format!("{key} = {value}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        bail!("could not find {key} in TOML section {section}");
+    }
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn replace_yaml_root_value(contents: &str, key: &str, value: &str) -> anyhow::Result<String> {
+    let mut replaced = false;
+    let mut lines = Vec::new();
+    for line in contents.lines() {
+        if !line.starts_with(' ') && line.trim_start().starts_with(&format!("{key}:")) {
+            lines.push(format!("{key}: {value}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        bail!("could not find root YAML key {key}");
+    }
+    Ok(format!("{}\n", lines.join("\n")))
 }
 
 async fn store(args: StoreCommand) -> anyhow::Result<()> {

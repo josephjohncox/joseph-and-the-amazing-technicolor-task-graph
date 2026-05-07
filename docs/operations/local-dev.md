@@ -7,7 +7,7 @@ make ci
 cargo check --workspace
 cargo test --workspace
 buf lint
-cargo run -p coat-domain --bin generate-schemas -- schemas
+make schemas
 sh scripts/coat-doc-gardener.sh
 npm run --prefix sidecars/codex-runner-ts build
 npm run --prefix sidecars/staff-engineer-runner-ts build
@@ -53,87 +53,87 @@ Then include `live_git_worktree.enabled=true` and `live_git_worktree.approval_id
 ## CLI
 
 ```sh
-cargo run -p coat-cli -- init
-cargo run -p coat-cli -- plan draft --file examples/plan-draft-durable-mode.json
-cargo run -p coat-cli -- plan list
-cargo run -p coat-cli -- plan revise \
+coat init
+coat plan draft --file examples/plan-draft-durable-mode.json
+coat plan list
+coat plan revise \
   --plan-id <plan-id> \
   --file examples/plan-revision-answer-questions.json
-cargo run -p coat-cli -- plan compile \
+coat plan compile \
   --plan-id <plan-id> \
   --strict-review \
   --human-steered \
   --out examples/drafts/compiled-goal.json
-cargo run -p coat-cli -- compose up --restate-cloud
-cargo run -p coat-cli -- goal draft \
+coat compose up --restate-cloud
+coat goal draft \
   --title "Local strict review smoke" \
   --objective "Create a strict-review goal draft with typed doctrine and a bounded initial frontier." \
   --strict-review \
   --human-steered \
   --out examples/drafts/local-strict-review.json
-cargo run -p coat-cli -- goal review-checks
-cargo run -p coat-cli -- goal submit --title "Smoke" --objective "Run a registered stub sidecar task"
-cargo run -p coat-cli -- goal submit --file examples/goal-template-structured.json
-cargo run -p coat-cli -- runner register --file examples/runner-vllm.json
-cargo run -p coat-cli -- runner list
-cargo run -p coat-cli -- runner status
-cargo run -p coat-cli -- runner dispatch --file examples/dispatch-smoke.json
-cargo run -p coat-cli -- event register --file examples/event-source-calendar-schedule.json
-cargo run -p coat-cli -- event register --file examples/event-source-webhook-hmac.json
-cargo run -p coat-cli -- event register --file examples/event-source-generic-ci.json
-cargo run -p coat-cli -- event register --file examples/event-source-slack-event.json
-cargo run -p coat-cli -- event register --file examples/event-source-stripe-webhook.json
-cargo run -p coat-cli -- event register \
+coat goal review-checks
+coat goal submit --title "Smoke" --objective "Run a registered stub sidecar task"
+coat goal submit --file examples/goal-template-structured.json
+coat runner register --file examples/runner-vllm.json
+coat runner list
+coat runner status
+coat runner dispatch --file examples/dispatch-smoke.json
+coat event register --file examples/event-source-calendar-schedule.json
+coat event register --file examples/event-source-webhook-hmac.json
+coat event register --file examples/event-source-generic-ci.json
+coat event register --file examples/event-source-slack-event.json
+coat event register --file examples/event-source-stripe-webhook.json
+coat event register \
   --file examples/event-source-webhook-hmac.json \
   --approval-id approval-123
-cargo run -p coat-cli -- event ingest --file examples/external-event-calendar.json
-cargo run -p coat-cli -- event emit \
+coat event ingest --file examples/external-event-calendar.json
+coat event emit \
   --source-id ci-events \
   --file examples/generic-event-ci-failed.json
-cargo run -p coat-cli -- event trigger --file examples/triggered-goal-webhook.json
-cargo run -p coat-cli -- event triggers
-cargo run -p coat-cli -- goal steer \
+coat event trigger --file examples/triggered-goal-webhook.json
+coat event triggers
+coat goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602 \
   --file examples/steering-request-research.json
-cargo run -p coat-cli -- goal steer \
+coat goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
   --file examples/steering-standard-abstraction.json
-cargo run -p coat-cli -- goal steer \
+coat goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
   --file examples/steering-standard-deep-research.json
-cargo run -p coat-cli -- goal steer-standard \
+coat goal steer-standard \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
   --check abstraction \
   --topic "durable coordinator task graph" \
   --emit-only
-cargo run -p coat-cli -- goal branch \
+coat goal branch \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/branch-request-root.json
-cargo run -p coat-cli -- goal select-branch \
+coat goal select-branch \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/branch-selection.json
-cargo run -p coat-cli -- goal restart \
+coat goal restart \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/restart-request-task.json
-cargo run -p coat-cli -- notify --file examples/notification-approval.json
-cargo run -p coat-cli -- notify --file examples/notification-webhook.json
-cargo run -p coat-cli -- notify --threads
-cargo run -p coat-cli -- notify --thread-key local-model-coding-smoke
-cargo run -p coat-cli -- store policy
-cargo run -p coat-cli -- store goals
-cargo run -p coat-cli -- store plans
-cargo run -p coat-cli -- store all-tasks
-cargo run -p coat-cli -- store approvals --limit 50
-cargo run -p coat-cli -- store record-artifacts --file examples/goal-store-record-artifacts.json
-cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request.json
-cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request-live-git.json
-cargo run -p coat-cli -- memory write --file examples/memory-write-fact.json
-cargo run -p coat-cli -- memory search --file examples/memory-search.json
-cargo run -p coat-cli -- memory join --file examples/memory-join.json
-cargo run -p coat-cli -- memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602
-cargo run -p coat-cli -- restate cloud-env
-cargo run -p coat-cli -- restate register-cloud --dry-run
-cargo run -p coat-cli -- k8s render --output infra/k8s/rendered.yaml
+coat notify --file examples/notification-approval.json
+coat notify --file examples/notification-webhook.json
+coat notify --threads
+coat notify --thread-key local-model-coding-smoke
+coat store policy
+coat store goals
+coat store plans
+coat store all-tasks
+coat store approvals --limit 50
+coat store record-artifacts --file examples/goal-store-record-artifacts.json
+coat sandbox create --file examples/sandbox-workspace-request.json
+coat sandbox create --file examples/sandbox-workspace-request-live-git.json
+coat memory write --file examples/memory-write-fact.json
+coat memory search --file examples/memory-search.json
+coat memory join --file examples/memory-join.json
+coat memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602
+coat restate cloud-env
+coat restate register-cloud --dry-run
+coat k8s render --output infra/k8s/rendered.yaml
 ```
 
 Manual runner registration is only needed for external workers such as a vLLM node. Sidecars use:
@@ -205,13 +205,13 @@ The event API contract lives at `docs/api/event-gateway.asyncapi.yaml`. The clus
 Inspect projections with:
 
 ```sh
-cargo run -p coat-cli -- store policy
-cargo run -p coat-cli -- store goal --goal-id <goal-id>
-cargo run -p coat-cli -- store tasks --goal-id <goal-id>
-cargo run -p coat-cli -- store events --goal-id <goal-id>
-cargo run -p coat-cli -- store artifacts --goal-id <goal-id>
-cargo run -p coat-cli -- store goal-approvals --goal-id <goal-id>
-cargo run -p coat-cli -- store record-artifacts --file examples/goal-store-record-artifacts.json
+coat store policy
+coat store goal --goal-id <goal-id>
+coat store tasks --goal-id <goal-id>
+coat store events --goal-id <goal-id>
+coat store artifacts --goal-id <goal-id>
+coat store goal-approvals --goal-id <goal-id>
+coat store record-artifacts --file examples/goal-store-record-artifacts.json
 ```
 
 The web gateway uses the goal-store list endpoints for dashboard views:
@@ -251,7 +251,7 @@ Keep full contract payloads in JSONB and use typed columns for IDs, statuses, ro
 Approval requests appear in goal state under `approvals` and in notifier threads when the task notification policy includes `approval_requested`. Approve or reject with:
 
 ```sh
-cargo run -p coat-cli -- approve \
+coat approve \
   --goal-id <goal-id> \
   --approval-id <approval-request-id> \
   --approved true
@@ -278,7 +278,7 @@ Compose runs Qdrant on `http://localhost:6333` and configures `MEMORY_GATEWAY_QD
 Build a bounded worker context pack with:
 
 ```sh
-cargo run -p coat-cli -- memory context --file examples/memory-context.json
+coat memory context --file examples/memory-context.json
 ```
 
 The response includes ranked memory hits, adapter reports, and an `InformationUsePlan` that tells the worker which facts are usable, which assumptions to avoid, and which validation checks to carry forward.
@@ -300,7 +300,7 @@ Qdrant and embedding adapter failures are returned in `adapter_reports`. They do
 After Graphiti, Qdrant, or embedding credentials come online, replay the local journal into external adapters:
 
 ```sh
-cargo run -p coat-cli -- memory repair --file examples/memory-repair.json
+coat memory repair --file examples/memory-repair.json
 ```
 
 Use `"dry_run": true` first to count selected records and adapter operations. Set `"store_kinds": ["qdrant"]` or `"store_kinds": ["zep_graphiti"]` to repair one adapter at a time.
@@ -338,9 +338,9 @@ Local Compose advertises only `SANDBOX_SUPPORTED_BACKENDS=local_workspace`. A re
 Snapshot and cleanup are idempotent:
 
 ```sh
-cargo run -p coat-cli -- sandbox plan --file examples/sandbox-workspace-request-gvisor.json
-cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request.json
-cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request-gvisor.json
-cargo run -p coat-cli -- sandbox snapshot --workspace-id <workspace-id>
-cargo run -p coat-cli -- sandbox cleanup --workspace-id <workspace-id>
+coat sandbox plan --file examples/sandbox-workspace-request-gvisor.json
+coat sandbox create --file examples/sandbox-workspace-request.json
+coat sandbox create --file examples/sandbox-workspace-request-gvisor.json
+coat sandbox snapshot --workspace-id <workspace-id>
+coat sandbox cleanup --workspace-id <workspace-id>
 ```

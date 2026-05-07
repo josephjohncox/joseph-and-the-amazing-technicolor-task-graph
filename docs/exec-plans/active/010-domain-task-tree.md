@@ -25,4 +25,4 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 ## Acceptance
 
 - `cargo test -p coat-domain` passes.
-- `cargo run -p coat-domain --bin generate-schemas -- schemas` writes schemas.
+- `make schemas` writes schemas.

@@ -5,6 +5,6 @@ This placeholder overlay is reserved for local image names, NodePorts, and devel
 The base manifest is intentionally self-contained for the first scaffold:
 
 ```sh
-cargo run -p coat-cli -- k8s render --output infra/k8s/rendered.yaml
+coat k8s render --output infra/k8s/rendered.yaml
 kubectl apply --dry-run=client -f infra/k8s/rendered.yaml
 ```

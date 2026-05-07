@@ -10,12 +10,14 @@ The core idea is simple: Restate owns durable time and replay, Rust owns policy 
 
 ## Quick Start
 
+The docs assume the `coat` CLI is installed and available on `PATH`.
+
 ```sh
 make ci
 cargo test --workspace
 buf lint
-cargo run -p coat-domain --bin generate-schemas -- schemas
-cargo run -p coat-cli -- init
+make schemas
+coat init
 ```
 
 Run the local stack:
@@ -37,8 +39,8 @@ docker compose \
   -f infra/compose/docker-compose.restate-cloud.yml \
   --profile restate-cloud \
   up --build
-cargo run -p coat-cli -- compose up --restate-cloud
-cargo run -p coat-cli -- restate register-cloud \
+coat compose up --restate-cloud
+coat restate register-cloud \
   --tunnel-name coat-personal \
   --service-url http://coordinator:9080
 ```
@@ -54,7 +56,7 @@ docker compose -f infra/compose/docker-compose.yml --profile db up postgres
 Submit a goal through Restate ingress. In local development, unmatched tasks can fall back to the local stub runner:
 
 ```sh
-cargo run -p coat-cli -- goal submit \
+coat goal submit \
   --title "Smoke goal" \
   --objective "Prove the durable task tree can accept and validate a task"
 ```
@@ -62,26 +64,26 @@ cargo run -p coat-cli -- goal submit \
 For non-trivial work, author a full `GoalSpec` instead of relying on title/objective defaults:
 
 ```sh
-cargo run -p coat-cli -- plan draft \
+coat plan draft \
   --title "Strict review goal plan" \
   --objective "Plan a bounded implementation with review doctrine before creating a GoalSpec." \
   --prompt "Capture questions, decisions, subgoals, and first tasks before agents execute."
-cargo run -p coat-cli -- plan list
-cargo run -p coat-cli -- plan compile \
+coat plan list
+coat plan compile \
   --plan-id <plan-id> \
   --strict-review \
   --human-steered \
   --out examples/drafts/strict-review-goal.json
-cargo run -p coat-cli -- goal draft \
+coat goal draft \
   --title "Strict review goal" \
   --objective "Implement a bounded change with typed review doctrine, sourced research, passing tests, regenerated schemas, and reviewer acceptance." \
   --strict-review \
   --human-steered \
   --out examples/drafts/strict-review-goal.json
-cargo run -p coat-cli -- goal lint --file examples/goal-clean-plan.json --strict
-cargo run -p coat-cli -- goal submit --file examples/goal-template-structured.json
-cargo run -p coat-cli -- goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
-cargo run -p coat-cli -- goal tasks \
+coat goal lint --file examples/goal-clean-plan.json --strict
+coat goal submit --file examples/goal-template-structured.json
+coat goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat goal tasks \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/task-query-subgoal.json
 ```
@@ -92,9 +94,9 @@ Use `docs/design-docs/120-durable-planning-mode.md` when the request needs a cha
 Strict goals can opt in to a review-doctrine standard library for code quality, testing, formal-methods, DDD/functional-DDD, style, and simplicity checks:
 
 ```sh
-cargo run -p coat-cli -- goal review-checks
-cargo run -p coat-cli -- goal lint --file examples/goal-review-doctrine.json --strict
-cargo run -p coat-cli -- goal steer-standard \
+coat goal review-checks
+coat goal lint --file examples/goal-review-doctrine.json --strict
+coat goal steer-standard \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
   --check deep_research \
   --topic "state-of-the-art libraries and review doctrine"
@@ -105,14 +107,14 @@ The doctrine library is typed and extensible: use built-in presets, add custom o
 Goals also carry restart, timeout, and branch-competition policy. Operators can restart a blocked/timed-out goal without creating a new workflow, branch a goal or subgoal into multiple candidate implementations, and select the winning branch after reviewer/tester votes:
 
 ```sh
-cargo run -p coat-cli -- goal submit --file examples/goal-branching-competition.json
-cargo run -p coat-cli -- goal branch \
+coat goal submit --file examples/goal-branching-competition.json
+coat goal branch \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/branch-request-root.json
-cargo run -p coat-cli -- goal select-branch \
+coat goal select-branch \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/branch-selection.json
-cargo run -p coat-cli -- goal restart \
+coat goal restart \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/restart-request-task.json
 ```
@@ -134,6 +136,15 @@ cargo run -p coat-cli -- goal restart \
 - `codex-runner-ts`: Codex App Server or MCP worker boundary.
 - `staff-engineer-runner-ts`: `@ctxr/agent-staff-engineer` worker boundary.
 - `object-store`: local S3-compatible artifact store for large task outputs.
+
+## Releases
+
+Release packaging and version bumps are documented in `docs/operations/releases.md`. Use `coat release plan --version ...` to preview binary and chart tags, and `coat release bump --version ...` to update `Cargo.toml` plus the Helm chart metadata.
+
+GitHub publishes binaries and Helm charts through separate workflows:
+
+- `.github/workflows/release-binaries.yml` on tags like `v0.2.0`;
+- `.github/workflows/release-helm.yml` on tags like `chart-v0.2.0`.
 
 ## Protocols And Goal Store
 
@@ -157,16 +168,16 @@ COAT_GOAL_STORE_BACKEND=postgres \
 Inspect the projection surface:
 
 ```sh
-cargo run -p coat-cli -- store policy
-cargo run -p coat-cli -- store goals
-cargo run -p coat-cli -- store plans
-cargo run -p coat-cli -- store approvals --limit 50
-cargo run -p coat-cli -- store goal --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
-cargo run -p coat-cli -- store tasks --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
-cargo run -p coat-cli -- store events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
-cargo run -p coat-cli -- store checkpoints --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
-cargo run -p coat-cli -- store goal-approvals --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
-cargo run -p coat-cli -- store record-artifacts --file examples/goal-store-record-artifacts.json
+coat store policy
+coat store goals
+coat store plans
+coat store approvals --limit 50
+coat store goal --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat store tasks --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat store events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat store checkpoints --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat store goal-approvals --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat store record-artifacts --file examples/goal-store-record-artifacts.json
 ```
 
 The web gateway reads the same projection surface. It uses global goal and task lists for dashboard views, and per-goal snapshots combine `GoalWorkflow/status`, `GoalWorkflow/progress`, tasks, events, artifacts, and `TaskRecord.payload_json.prompt` for agent prompt visibility.
@@ -174,9 +185,9 @@ The web gateway reads the same projection surface. It uses global goal and task 
 Durable planning mode is stored in the same service:
 
 ```sh
-cargo run -p coat-cli -- plan draft --file examples/plan-draft-durable-mode.json
-cargo run -p coat-cli -- plan revise --plan-id <plan-id> --file examples/plan-revision-answer-questions.json
-cargo run -p coat-cli -- plan compile --plan-id <plan-id> --strict-review --human-steered
+coat plan draft --file examples/plan-draft-durable-mode.json
+coat plan revise --plan-id <plan-id> --file examples/plan-revision-answer-questions.json
+coat plan compile --plan-id <plan-id> --strict-review --human-steered
 ```
 
 Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit the goal.
@@ -186,16 +197,16 @@ Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit t
 External events enter through `coat-event-gateway` on `:9089`. Generic JSON events, webhooks, CloudEvents-style payloads, calendar checks, queue messages, and cron jobs are normalized into `ExternalEvent`, deduped, and routed through `TriggeredGoalRequest`. They create or steer goals through Restate instead of invoking workers directly.
 
 ```sh
-cargo run -p coat-cli -- event register --file examples/event-source-calendar-schedule.json
-cargo run -p coat-cli -- event register --file examples/event-source-webhook-hmac.json
-cargo run -p coat-cli -- event register --file examples/event-source-generic-ci.json
-cargo run -p coat-cli -- event register \
+coat event register --file examples/event-source-calendar-schedule.json
+coat event register --file examples/event-source-webhook-hmac.json
+coat event register --file examples/event-source-generic-ci.json
+coat event register \
   --file examples/event-source-webhook-hmac.json \
   --approval-id approval-123
-cargo run -p coat-cli -- event ingest --file examples/external-event-calendar.json
-cargo run -p coat-cli -- event emit --source-id ci-events --file examples/generic-event-ci-failed.json
-cargo run -p coat-cli -- event trigger --file examples/triggered-goal-webhook.json
-cargo run -p coat-cli -- event triggers
+coat event ingest --file examples/external-event-calendar.json
+coat event emit --source-id ci-events --file examples/generic-event-ci-failed.json
+coat event trigger --file examples/triggered-goal-webhook.json
+coat event triggers
 ```
 
 Generic sources are the default adapter for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before a provider-specific adapter exists. Webhook sources can require shared-secret headers, bearer tokens, or HMAC-SHA256 signatures with secrets resolved from `SecretRef`; production-only providers such as mTLS or OIDC JWT should be terminated by ingress or secret middleware until a provider adapter is installed. Use Kubernetes CronJobs for cluster scheduled triggers, provider push APIs or bounded pollers for calendars, and Restate timers for durable waits inside a running goal. Agent-proposed monitors or schedules should be reviewed and installed as event sources, not self-started by workers.
@@ -211,10 +222,10 @@ Subagents are durable COAT child tasks. Runner contexts, skills, MCP clients, Co
 Example local vLLM runner registration:
 
 ```sh
-cargo run -p coat-cli -- runner register --file examples/runner-vllm.json
-cargo run -p coat-cli -- runner list
-cargo run -p coat-cli -- runner status
-cargo run -p coat-cli -- runner dispatch --file examples/dispatch-smoke.json
+coat runner register --file examples/runner-vllm.json
+coat runner list
+coat runner status
+coat runner dispatch --file examples/dispatch-smoke.json
 ```
 
 The bundled Codex and staff-engineer sidecars auto-register when `RUNNER_REGISTRY_URL` and `RUNNER_ENDPOINT` are set, which Compose and Kubernetes do by default.
@@ -238,8 +249,8 @@ The tool registry exposes `/mcp` and requires `Authorization: Bearer ...` whenev
 The notifier records local in-memory feedback threads. Operators can inspect them with:
 
 ```sh
-cargo run -p coat-cli -- notify --threads
-cargo run -p coat-cli -- notify --thread-key local-model-coding-smoke
+coat notify --threads
+coat notify --thread-key local-model-coding-smoke
 ```
 
 ## Control Gateway And SPA
@@ -269,7 +280,7 @@ Critics return structured `ReviewOutput` with a decision, reward, findings, and 
 Goals carry `control_policy`, `research_policy`, and `memory_policy`. Operators can steer a running goal by submitting `SteeringDirective` JSON:
 
 ```sh
-cargo run -p coat-cli -- goal steer \
+coat goal steer \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602 \
   --file examples/steering-request-research.json
 ```
@@ -281,7 +292,7 @@ Clean goals carry `authoring` notes and a `plan` with stable subgoal IDs. `initi
 Approval gates are task-local but governed by `GoalSpec.approval_policy`. Dangerous tasks move to `waiting_approval`, send an `approval_requested` notification, and resume when approved:
 
 ```sh
-cargo run -p coat-cli -- approve \
+coat approve \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602 \
   --approval-id <approval-request-id> \
   --approved true
@@ -292,20 +303,20 @@ The default memory substrate is hybrid: Zep/Graphiti exposed as an MCP memory se
 Local memory gateway commands:
 
 ```sh
-cargo run -p coat-cli -- memory write --file examples/memory-write-fact.json
-cargo run -p coat-cli -- memory search --file examples/memory-search.json
-cargo run -p coat-cli -- memory context --file examples/memory-context.json
-cargo run -p coat-cli -- memory join --file examples/memory-join.json
-cargo run -p coat-cli -- memory repair --file examples/memory-repair.json
-cargo run -p coat-cli -- memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602
+coat memory write --file examples/memory-write-fact.json
+coat memory search --file examples/memory-search.json
+coat memory context --file examples/memory-context.json
+coat memory join --file examples/memory-join.json
+coat memory repair --file examples/memory-repair.json
+coat memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602
 ```
 
 Create a sandbox workspace through the CLI:
 
 ```sh
-cargo run -p coat-cli -- sandbox plan --file examples/sandbox-workspace-request-gvisor.json
-cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request.json
-cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request-gvisor.json
+coat sandbox plan --file examples/sandbox-workspace-request-gvisor.json
+coat sandbox create --file examples/sandbox-workspace-request.json
+coat sandbox create --file examples/sandbox-workspace-request-gvisor.json
 ```
 
 `SandboxProfile.isolation` can request local workspace, container, gVisor, Kata, Firecracker, Kubernetes Job, namespace-jail, or provider-backed execution. `sandbox plan` renders the launch contract that a real executor can consume; `sandbox create` stores it as `sandbox-launch-plan.json` beside the workspace manifest. Local Compose only attests metadata-only workspaces. Production runners should return enforced `SandboxAttestation` evidence and can require executor output/security guardrail reviews through `ExecutionProfile.guardrails`; see `docs/design-docs/100-strong-sandboxing-guardrails.md`.

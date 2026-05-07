@@ -102,7 +102,7 @@ Use:
 
 ```sh
 buf lint
-cargo run -p coat-domain --bin generate-schemas -- schemas
+make schemas
 cargo test --workspace
-cargo run -p coat-cli -- store policy
+coat store policy
 ```

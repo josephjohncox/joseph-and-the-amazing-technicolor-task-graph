@@ -29,7 +29,7 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 - AsyncAPI docs live at `docs/api/event-gateway.asyncapi.yaml`.
 - Kubernetes examples cover suspended CronJob triggers and optional pgvector-backed Postgres.
 
-## Future Work
+## Follow-Ups
 
 - Add Google Calendar and Outlook source adapters using MCP or provider APIs.
 - Persist event-source approval records in the goal store instead of only requiring an approval reference header.

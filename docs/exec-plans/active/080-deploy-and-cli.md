@@ -19,6 +19,11 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 - `kubectl apply --dry-run=client` validates when available.
 - Stub goal can be submitted to a running local Restate stack.
 
+## Follow-Ups
+
+- Keep Compose, Kubernetes, Helm, and release workflows aligned when service names, ports, secrets, or image names change.
+- Add published binary and Helm chart smoke installs after the first GitHub Release is created.
+
 ## Acceptance
 
 - Operators can bring up the local stack from a clean checkout.

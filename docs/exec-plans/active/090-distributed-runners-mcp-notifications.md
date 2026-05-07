@@ -27,6 +27,11 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Schema generation includes runner, model, MCP, execution, and notification contracts.
 - Compose config validates.
 
+## Follow-Ups
+
+- Add runner-registry persistence and multi-node integration tests that prove stale heartbeats, locality labels, and capacity limits affect dispatch.
+- Add notification adapters for Slack, email, webhook, and dashboard queues while keeping durable workflow state authoritative.
+
 ## Acceptance
 
 - `cargo test --workspace` passes.

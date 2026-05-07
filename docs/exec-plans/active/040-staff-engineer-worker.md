@@ -18,6 +18,11 @@ Use `@ctxr/agent-staff-engineer` as a specialized issue-to-PR worker after depen
 - Stub `/run-task` returns a blocked result with actionable setup blockers.
 - Live install tests are gated by credentials and explicit environment.
 
+## Follow-Ups
+
+- Verify the current `@ctxr/kit` and `@ctxr/agent-staff-engineer` package behavior before making the adapter a hard dependency.
+- Add a live issue-to-PR smoke test in an isolated repository once tracker and Claude Code auth distribution are approved.
+
 ## Acceptance
 
 - Worker can be deployed in stub mode.

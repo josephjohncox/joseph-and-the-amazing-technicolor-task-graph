@@ -24,6 +24,11 @@ Make Restate the durable outer loop for goals and task-tree state.
 - Branch and select-branch mutate durable state and project the updated goal store snapshot.
 - Restart-resume integration test is added once Restate testcontainers are introduced.
 
+## Follow-Ups
+
+- Add restart/resume integration tests with a real Restate runtime or testcontainer once the test harness is selected.
+- Add metrics and trace assertions for durable fanout, approval pauses, restarts, validation retries, and projection failures.
+
 ## Acceptance
 
 - `coat-coordinator` starts on `:9080`.

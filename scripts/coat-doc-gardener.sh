@@ -51,6 +51,13 @@ if [ "$plan_count" -lt 9 ]; then
   exit 1
 fi
 
+for plan in "$root"/docs/exec-plans/active/*.md; do
+  if ! grep -q '^## Follow-Ups$' "$plan"; then
+    printf 'active execution plan missing ## Follow-Ups: %s\n' "$plan" >&2
+    exit 1
+  fi
+done
+
 documented_entrypoints="
 crates/cli/src/main.rs
 crates/coordinator/src/main.rs

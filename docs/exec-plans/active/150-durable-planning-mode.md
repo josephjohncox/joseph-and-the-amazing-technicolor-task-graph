@@ -20,6 +20,11 @@ Add durable planning-mode artifacts so operators can draft, revise, review, and 
 - Unit test goal-store plan indexing.
 - Run schema generation, Rust tests, TypeScript compile, protobuf lint, and whitespace checks.
 
+## Follow-Ups
+
+- Add plan continuity views in the SPA and MCP surface so unresolved questions, decisions, subgoals, and next actions survive follow-up sessions.
+- Add examples for branching from an existing plan and compiling revised plans into new goals without overwriting prior goal history.
+
 ## Acceptance
 
 - A rough planning prompt can become a durable plan record.

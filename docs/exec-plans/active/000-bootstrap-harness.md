@@ -15,6 +15,11 @@ Create the repo harness that lets agents and engineers navigate the project with
 - Require service and sidecar entrypoints to include purpose and architecture-reference headers.
 - Add doc comments for public cross-service domain contracts.
 
+## Follow-Ups
+
+- Keep `docs/exec-plans/active/` current as new work appears, and move finished plans to `docs/exec-plans/completed/` only after acceptance evidence is recorded.
+- Extend doc-gardening checks when a new source-of-truth doc, service entrypoint, or public contract becomes mandatory.
+
 ## Acceptance
 
 - Root docs explain mission, service boundaries, tests, and deployment entrypoints.

@@ -22,6 +22,11 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 - Branch groups spawn candidate tasks, vote tasks, and durable selections.
 - Schema generation round-trips all public contracts.
 
+## Follow-Ups
+
+- Keep adding focused domain tests when goal lifecycle contracts grow, especially for restart, checkpoint, branch, approval, memory, and review gates.
+- Regenerate schemas and update dependent protobuf/goal-store projection docs whenever a cross-service type changes.
+
 ## Acceptance
 
 - `cargo test -p coat-domain` passes.

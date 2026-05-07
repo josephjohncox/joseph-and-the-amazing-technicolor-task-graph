@@ -27,7 +27,7 @@ Initial DDL lives in `infra/db/migrations/001_goal_store.sql` and `infra/db/migr
 
 `POST /goal-store/artifacts` and `coat store record-artifacts` append artifact refs without replacing the full projected snapshot.
 
-## Open Follow-Ups
+## Follow-Ups
 
 - Add generated Rust/TypeScript SDKs from Buf once the final SDK target is selected.
 - Add integration tests proving Restate replay does not duplicate projected events.

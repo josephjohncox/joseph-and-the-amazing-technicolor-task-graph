@@ -23,6 +23,11 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 - Critic decisions block `SatisfactionReport.satisfied` even when reward is high.
 - Patch merger refuses unknown or unvalidated branch candidates.
 
+## Follow-Ups
+
+- Add richer reviewer fixtures for formal-methods, type-soundness, hypothesis-testing, DDD, readability, abstraction, and security doctrines.
+- Add patch-merger and review-unifier tests over real git checkpoint branches once live git worktrees are part of CI.
+
 ## Acceptance
 
 - Validator can run standalone and through Restate.

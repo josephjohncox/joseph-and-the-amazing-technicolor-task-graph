@@ -26,6 +26,11 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 - MCP health-check mode fails clearly when `codex mcp-server` is unavailable.
 - Live App Server tests are gated by `CODEX_APP_SERVER_URL`.
 
+## Follow-Ups
+
+- Replace stub-only Codex execution with live App Server and MCP adapters once credentials, sandbox isolation, and package verification are available in CI.
+- Capture live session/thread IDs, checkpoint refs, git refs, and artifact manifests in a fixture that can be replayed without re-running Codex.
+
 ## Acceptance
 
 - Sidecar starts with `npm run dev`.

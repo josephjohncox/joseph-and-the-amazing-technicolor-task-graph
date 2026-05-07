@@ -17,6 +17,11 @@ Create a bounded research worker that can collect current facts without owning t
 - Live web/tool tests are gated and cite sources.
 - Validator rejects uncited current-fact claims when citations are required.
 
+## Follow-Ups
+
+- Add live research adapters behind explicit network and citation gates, with source capture that can be replayed by reviewers.
+- Add research-to-plan examples showing how `InformationUsePlan` updates goals, tasks, memory, and review doctrines.
+
 ## Acceptance
 
 - Research can run as a sidecar or Rust service.

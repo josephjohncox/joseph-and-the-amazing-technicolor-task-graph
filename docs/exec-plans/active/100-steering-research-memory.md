@@ -29,6 +29,11 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 - Examples parse against the domain contracts.
 - Schemas include control, steering, research, and memory contracts.
 
+## Follow-Ups
+
+- Add live Graphiti/Zep and Qdrant adapter tests gated by service URLs and credentials.
+- Add UI and MCP workflows for editing memory entries, repairing adapter drift, and applying research findings back into durable goals.
+
 ## Acceptance
 
 - `cargo test --workspace` passes.

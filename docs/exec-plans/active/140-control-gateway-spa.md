@@ -21,6 +21,11 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 - Validate Kubernetes with `kubectl apply --dry-run=client -f infra/k8s/base/all.yaml` when `kubectl` is available.
 - Start the gateway locally and verify `/healthz` and `/mcp` tool listing.
 
+## Follow-Ups
+
+- Add browser-level smoke tests for goal snapshots, checkpoint history, human queues, plan compilation, memory search, and steering forms.
+- Add authenticated OIDC/multi-user gateway examples while keeping single-user mode as the default.
+
 ## Acceptance
 
 - The browser UI can inspect all projected goals and agent/task rows without becoming durable state.

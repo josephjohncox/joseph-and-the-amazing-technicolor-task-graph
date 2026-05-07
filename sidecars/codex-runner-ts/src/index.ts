@@ -17,7 +17,9 @@ import { existsSync } from "node:fs";
 type WorkerKind =
   | "planner"
   | "codex"
+  | "claude_code"
   | "staff_engineer_claude"
+  | "model_provider"
   | "research"
   | "reviewer"
   | "tester"
@@ -52,6 +54,7 @@ type ModelProviderKind =
   | "codex"
   | "open_ai"
   | "open_ai_compatible"
+  | "bedrock"
   | "vllm"
   | "ollama"
   | "llama_cpp"

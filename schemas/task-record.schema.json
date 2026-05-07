@@ -166,7 +166,9 @@
       "enum": [
         "planner",
         "codex",
+        "claude_code",
         "staff_engineer_claude",
+        "model_provider",
         "research",
         "reviewer",
         "tester",

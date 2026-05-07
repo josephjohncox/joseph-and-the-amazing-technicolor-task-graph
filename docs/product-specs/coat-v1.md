@@ -30,8 +30,8 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - Kubernetes manifests render and can be dry-run validated.
 - A stub goal can complete through the coordinator contract.
 - Goal satisfaction can require actor work, critic review, review unification, and score thresholds.
-- Live Codex and staff-engineer integrations can be enabled behind environment gates.
-- Distributed runner registrations can route tasks to separate nodes and local model providers.
+- Live Codex, Claude Code, staff-engineer, and generic model-provider integrations can be enabled behind environment gates.
+- Distributed runner registrations can route tasks to separate nodes, Claude Code wrappers, Bedrock, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, and local model providers.
 - Dispatch responses expose ranked runner/model candidates and explicit rejection reasons.
 - Sidecars expose a non-secret capability document for operator inspection.
 - MCP tool context is passed with references to auth material rather than embedded tokens.

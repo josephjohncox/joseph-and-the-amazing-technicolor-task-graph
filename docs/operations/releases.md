@@ -24,6 +24,7 @@ coat release bump --version 0.2.0 --allow-dirty
 The bump command updates:
 
 - `Cargo.toml` workspace package version;
+- `Cargo.lock` workspace package versions;
 - `infra/helm/coat/Chart.yaml` chart `version`;
 - `infra/helm/coat/Chart.yaml` chart `appVersion`.
 
@@ -49,6 +50,7 @@ coat release cut --version 0.2.0
 That command performs:
 
 - version bump in `Cargo.toml`;
+- lockfile refresh in `Cargo.lock`;
 - chart `version` and `appVersion` bump in `infra/helm/coat/Chart.yaml`;
 - release commit `chore(release): v0.2.0`;
 - annotated binary tag `v0.2.0`;
@@ -64,6 +66,14 @@ coat release cut \
 ```
 
 That creates binary tag `v0.2.0` and chart tag `chart-v0.2.1`.
+
+If a release tag already ran but a build/publish issue requires a fresh cut from the fixed commit without changing the app or chart versions, add a tag suffix:
+
+```sh
+coat release cut --version 0.2.0 --tag-suffix ghcr.1
+```
+
+This creates retry tags such as `v0.2.0-ghcr.1` and `chart-v0.2.0-ghcr.1`. If `Cargo.toml`, `Cargo.lock`, and `Chart.yaml` already match the requested versions, the CLI tags the current commit instead of requiring a no-op release commit.
 
 Push the release commit and tags, triggering both GitHub release workflows, by passing `--push`:
 

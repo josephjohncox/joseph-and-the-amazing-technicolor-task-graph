@@ -11,7 +11,12 @@ metadata:
 data:
   RUST_LOG: info
   CODEX_RUNNER_MODE: stub
+  CLAUDE_CODE_RUNNER_MODE: stub
   STAFF_ENGINEER_RUNNER_MODE: stub
+  MODEL_PROVIDER_RUNNER_MODE: stub
+  MODEL_PROVIDER_KIND: open_ai_compatible
+  MODEL_PROVIDER_MODEL: openai-compatible-model
+  MODEL_PROVIDER_ENDPOINT: ""
   COAT_GOAL_STORE_BACKEND: jsonl
   COAT_EVENT_GATEWAY_BACKEND: jsonl
   COAT_REQUIRE_EVENT_SOURCE_APPROVAL: "true"
@@ -27,7 +32,9 @@ data:
   MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
   MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: "false"
   CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret"}'
+  CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret"}'
   STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret"}'
+  MODEL_PROVIDER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","provider":"open_ai_compatible"}'
 ---
 apiVersion: v1
 kind: Secret
@@ -41,6 +48,9 @@ stringData:
   ANTHROPIC_AUTH_TOKEN: ""
   CLAUDE_CODE_OAUTH_TOKEN: ""
   TRACKER_TOKEN: replace-me
+  AWS_REGION: ""
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
   MCP_TOOL_TOKEN: replace-me
   QDRANT_API_KEY: ""
   EMBEDDING_API_KEY: replace-me
@@ -1025,6 +1035,227 @@ spec:
     app: codex-runner
   ports:
     - port: 9091
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-code-runner
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude-code-runner
+  template:
+    metadata:
+      labels:
+        app: claude-code-runner
+    spec:
+      containers:
+        - name: claude-code-runner
+          image: coat/claude-code-runner:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "9094"
+            - name: CLAUDE_CODE_RUNNER_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: CLAUDE_CODE_RUNNER_MODE
+            - name: RUNNER_REGISTRY_URL
+              value: http://runner-registry:9085
+            - name: RUNNER_ENDPOINT
+              value: http://claude-code-runner:9094
+            - name: RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RUNNER_LABELS_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: CLAUDE_CODE_RUNNER_LABELS_JSON
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: ANTHROPIC_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: ANTHROPIC_AUTH_TOKEN
+                  optional: true
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: CLAUDE_CODE_OAUTH_TOKEN
+                  optional: true
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_MEMORY_MCP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_MEMORY_MCP_URL
+            - name: COAT_OBJECT_STORE_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_ENDPOINT
+            - name: COAT_OBJECT_STORE_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_OBJECT_STORE_BUCKET
+          ports:
+            - containerPort: 9094
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-code-runner
+  namespace: coat
+spec:
+  selector:
+    app: claude-code-runner
+  ports:
+    - port: 9094
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-provider-runner
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-provider-runner
+  template:
+    metadata:
+      labels:
+        app: model-provider-runner
+    spec:
+      containers:
+        - name: model-provider-runner
+          image: coat/model-provider-runner:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "9093"
+            - name: MODEL_PROVIDER_RUNNER_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MODEL_PROVIDER_RUNNER_MODE
+            - name: MODEL_PROVIDER_KIND
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MODEL_PROVIDER_KIND
+            - name: MODEL_PROVIDER_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MODEL_PROVIDER_MODEL
+            - name: MODEL_PROVIDER_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MODEL_PROVIDER_ENDPOINT
+            - name: RUNNER_REGISTRY_URL
+              value: http://runner-registry:9085
+            - name: RUNNER_ENDPOINT
+              value: http://model-provider-runner:9093
+            - name: RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: RUNNER_LABELS_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: MODEL_PROVIDER_RUNNER_LABELS_JSON
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: AWS_REGION
+                  optional: true
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_MEMORY_MCP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_MEMORY_MCP_URL
+          ports:
+            - containerPort: 9093
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-provider-runner
+  namespace: coat
+spec:
+  selector:
+    app: model-provider-runner
+  ports:
+    - port: 9093
       targetPort: http
 ---
 apiVersion: apps/v1

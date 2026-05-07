@@ -9,7 +9,12 @@ global:
 config:
   RUST_LOG: info
   CODEX_RUNNER_MODE: stub
+  CLAUDE_CODE_RUNNER_MODE: stub
   STAFF_ENGINEER_RUNNER_MODE: stub
+  MODEL_PROVIDER_RUNNER_MODE: stub
+  MODEL_PROVIDER_KIND: open_ai_compatible
+  MODEL_PROVIDER_MODEL: openai-compatible-model
+  MODEL_PROVIDER_ENDPOINT: ""
   COAT_GOAL_STORE_BACKEND: jsonl
   COAT_EVENT_GATEWAY_BACKEND: jsonl
   COAT_REQUIRE_EVENT_SOURCE_APPROVAL: "true"
@@ -25,7 +30,9 @@ config:
   MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
   MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: "false"
   CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret"}'
+  CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret"}'
   STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret"}'
+  MODEL_PROVIDER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","provider":"open_ai_compatible"}'
 
 secrets:
   create: true
@@ -35,6 +42,9 @@ secrets:
     ANTHROPIC_AUTH_TOKEN: ""
     CLAUDE_CODE_OAUTH_TOKEN: ""
     TRACKER_TOKEN: replace-me
+    AWS_REGION: ""
+    AWS_ACCESS_KEY_ID: ""
+    AWS_SECRET_ACCESS_KEY: ""
     MCP_TOOL_TOKEN: replace-me
     QDRANT_API_KEY: ""
     EMBEDDING_API_KEY: replace-me
@@ -361,6 +371,63 @@ workloads:
       - name: http
         containerPort: 9091
         servicePort: 9091
+
+  claude-code-runner:
+    enabled: true
+    image:
+      repository: coat/claude-code-runner
+    env:
+      PORT: "9094"
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://claude-code-runner:9094
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+    fieldEnv:
+      RUNNER_ID: metadata.name
+      NODE_ID: spec.nodeName
+    configEnv:
+      CLAUDE_CODE_RUNNER_MODE: CLAUDE_CODE_RUNNER_MODE
+      RUNNER_LABELS_JSON: CLAUDE_CODE_RUNNER_LABELS_JSON
+      COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
+      COAT_OBJECT_STORE_ENDPOINT: COAT_OBJECT_STORE_ENDPOINT
+      COAT_OBJECT_STORE_BUCKET: COAT_OBJECT_STORE_BUCKET
+    secretEnv:
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+      ANTHROPIC_AUTH_TOKEN: ANTHROPIC_AUTH_TOKEN
+      CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_CODE_OAUTH_TOKEN
+    ports:
+      - name: http
+        containerPort: 9094
+        servicePort: 9094
+
+  model-provider-runner:
+    enabled: true
+    image:
+      repository: coat/model-provider-runner
+    env:
+      PORT: "9093"
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://model-provider-runner:9093
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+    fieldEnv:
+      RUNNER_ID: metadata.name
+      NODE_ID: spec.nodeName
+    configEnv:
+      MODEL_PROVIDER_RUNNER_MODE: MODEL_PROVIDER_RUNNER_MODE
+      MODEL_PROVIDER_KIND: MODEL_PROVIDER_KIND
+      MODEL_PROVIDER_MODEL: MODEL_PROVIDER_MODEL
+      MODEL_PROVIDER_ENDPOINT: MODEL_PROVIDER_ENDPOINT
+      RUNNER_LABELS_JSON: MODEL_PROVIDER_RUNNER_LABELS_JSON
+      COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
+    secretEnv:
+      OPENAI_API_KEY: OPENAI_API_KEY
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+      AWS_REGION: AWS_REGION
+      AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID
+      AWS_SECRET_ACCESS_KEY: AWS_SECRET_ACCESS_KEY
+    ports:
+      - name: http
+        containerPort: 9093
+        servicePort: 9093
 
   staff-engineer-runner:
     enabled: true

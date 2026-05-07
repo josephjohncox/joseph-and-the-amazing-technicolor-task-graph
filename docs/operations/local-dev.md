@@ -40,7 +40,7 @@ Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
 The control gateway and SPA listen on `http://localhost:9090`.
-The Codex and staff-engineer sidecars auto-register with `runner-registry` when Compose starts.
+The Codex, Claude Code, staff-engineer, and generic model-provider sidecars auto-register with `runner-registry` when Compose starts.
 The sandbox runner uses `SANDBOX_WORKSPACE_ROOT=/workspaces` in Compose and writes per-task manifests under the `sandbox-workspaces` volume.
 Live git worktree creation is disabled by default. For an explicitly approved local development run, start the sandbox runner with:
 
@@ -152,6 +152,8 @@ Use `docs/operations/goal-authoring.md` before submitting non-trivial goals. It 
 - `RUNNER_MCP_SERVERS_JSON`
 - `OPENAI_API_KEY` for Codex API-key mode
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` for non-interactive Claude Code modes
+- `MODEL_PROVIDER_KIND`, `MODEL_PROVIDER_MODEL`, and `MODEL_PROVIDER_ENDPOINT` for the generic provider runner
+- `AWS_REGION` plus workload identity or AWS credentials for Bedrock provider smoke tests
 
 Sidecars also expose `GET /capabilities`, which is the quickest way to verify model candidates, review support, MCP propagation support, and remaining capacity without reading environment variables.
 
@@ -160,9 +162,12 @@ Use sidecar verification endpoints for non-mutating dependency checks:
 ```sh
 curl -sS http://localhost:9091/verify
 curl -sS http://localhost:9092/verify
+curl -sS http://localhost:9093/verify
+curl -sS http://localhost:9094/verify
 ```
 
 Codex MCP and App Server probes are opt-in through `CODEX_VERIFY_MCP=1` and `CODEX_VERIFY_APP_SERVER=1` so a basic health check never starts live agent infrastructure by accident.
+Claude Code CLI probing is opt-in through `CLAUDE_CODE_VERIFY_CLI=1`. Model-provider endpoint probing is opt-in through `MODEL_PROVIDER_VERIFY_ENDPOINT=1`.
 
 Local MCP smoke call:
 

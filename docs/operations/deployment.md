@@ -114,3 +114,5 @@ OIDC-backed MCP user delegation follows the same principle: store `UserPrincipal
 - Control gateway: `:9090/healthz`
 - Codex runner: `:9091/healthz`
 - Staff-engineer runner: `:9092/healthz`
+- Model-provider runner: `:9093/healthz`
+- Claude Code runner: `:9094/healthz`

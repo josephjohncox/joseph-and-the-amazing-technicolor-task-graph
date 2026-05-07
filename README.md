@@ -135,7 +135,9 @@ coat goal restart \
 - `coat-tool-registry`: HTTP and MCP-shaped tool registry with confined repo status, sandbox delegation, and artifact lookup.
 - `coat`: operator CLI, built from the `coat-cli` package.
 - `codex-runner-ts`: Codex App Server or MCP worker boundary.
+- `claude-code-runner-ts`: generic Claude Code worker boundary for bounded tasks.
 - `staff-engineer-runner-ts`: `@ctxr/agent-staff-engineer` worker boundary.
+- `model-provider-runner-ts`: hosted/local model-provider boundary for Bedrock, OpenAI-compatible APIs, vLLM, Ollama, llama.cpp, Hugging Face, and local processes.
 - `object-store`: local S3-compatible artifact store for large task outputs.
 
 ## Releases
@@ -230,6 +232,8 @@ Example local vLLM runner registration:
 
 ```sh
 coat runner register --file examples/runner-vllm.json
+coat runner register --file examples/runner-claude-code.json
+coat runner register --file examples/runner-bedrock-provider.json
 coat runner list
 coat runner status
 coat runner dispatch --file examples/dispatch-smoke.json

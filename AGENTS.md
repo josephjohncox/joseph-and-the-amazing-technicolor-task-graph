@@ -104,7 +104,9 @@ Update docs when behavior or public contracts change.
 ## Sidecars
 
 - `sidecars/codex-runner-ts`: Codex App Server or MCP adapter.
+- `sidecars/claude-code-runner-ts`: generic Claude Code task adapter.
 - `sidecars/staff-engineer-runner-ts`: `@ctxr/agent-staff-engineer` adapter.
+- `sidecars/model-provider-runner-ts`: Bedrock, OpenAI-compatible, vLLM, Ollama, llama.cpp, Hugging Face, and local-process adapter.
 - `ui/control-plane-web`: optional TypeScript control gateway, SPA, and MCP dashboard surface.
 
 Sidecars must return domain-compatible JSON and must support stub mode.
@@ -124,6 +126,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Steering directives are the human control surface for pausing, resuming, injecting tasks, and requesting research.
 - Runner selection uses role, capabilities, labels, locality, and optional runner ID.
 - Model routing can target Codex, OpenAI, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, or local processes.
+- Provider runners are wrappers, not coordinators. Codex, Claude Code, Bedrock, vLLM, Ollama, llama.cpp, Hugging Face, and local-process runners must register capabilities and return structured `AgentRunResult` values through the durable runner queue.
 - Dispatch decisions should preserve ranked candidates and rejected-runner reasons for operator debugging.
 - Sidecars should expose `/capabilities` without leaking MCP or provider secrets.
 - Sandbox-capable runners should advertise backend capabilities and labels such as `sandbox.backend`, `sandbox.runtime_class`, and `network.egress`.

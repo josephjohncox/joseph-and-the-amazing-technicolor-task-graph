@@ -2,7 +2,7 @@
   "runner_id": "vllm-coder-a",
   "node_id": "gpu-node-1",
   "endpoint": "http://vllm-coder-a:9099",
-  "roles": ["planner", "codex", "tester", "formal_methods", "reviewer", "validator", "patch_merger", "research"],
+  "roles": ["planner", "codex", "model_provider", "tester", "formal_methods", "reviewer", "validator", "patch_merger", "research"],
   "capabilities": ["code", "test", "review", "formal_verification", "mcp_tools", "durable_child_tasks", "workspace_sandbox", "git_worktree", "git", "object_storage", "s3_compatible", "local_models", "vllm", "open_ai_compatible", "gpu"],
   "models": [
     {

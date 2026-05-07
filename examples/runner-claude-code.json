@@ -1,0 +1,30 @@
+{
+  "runner_id": "claude-code-a",
+  "node_id": "mac-mini-1",
+  "endpoint": "http://claude-code-runner:9094",
+  "roles": ["claude_code", "planner", "tester", "reviewer", "validator", "patch_merger", "research"],
+  "capabilities": ["code", "test", "review", "mcp_tools", "durable_child_tasks", "workspace_sandbox", "git_worktree", "git", "object_storage", "s3_compatible", "notifications"],
+  "models": [
+    {
+      "provider": "anthropic",
+      "model": "claude-code-default",
+      "endpoint": null,
+      "priority": 20,
+      "weight": 1,
+      "context_window": null,
+      "features": ["tool_use", "json_schema", "streaming"],
+      "labels": {
+        "runtime": "claude-code",
+        "auth.claude.device": "runner_local_only"
+      }
+    }
+  ],
+  "labels": {
+    "pool": "local-mac",
+    "runtime": "claude-code",
+    "auth.claude.device": "true"
+  },
+  "mcp_servers": [],
+  "max_concurrency": 1,
+  "lease_ttl_seconds": 300
+}

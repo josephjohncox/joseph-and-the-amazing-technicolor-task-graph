@@ -790,6 +790,8 @@ struct ReleasePlanArgs {
     chart_version: Option<String>,
     #[arg(long)]
     app_version: Option<String>,
+    #[arg(long)]
+    tag_suffix: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -816,8 +818,12 @@ struct ReleaseCutArgs {
     chart_version: Option<String>,
     #[arg(long)]
     app_version: Option<String>,
+    #[arg(long)]
+    tag_suffix: Option<String>,
     #[arg(long, default_value = "Cargo.toml")]
     cargo_toml: PathBuf,
+    #[arg(long, default_value = "Cargo.lock")]
+    cargo_lock: PathBuf,
     #[arg(long, default_value = "infra/helm/coat/Chart.yaml")]
     chart_yaml: PathBuf,
     #[arg(long, default_value = "origin")]
@@ -1080,6 +1086,7 @@ fn release(args: ReleaseCommand) -> anyhow::Result<()> {
                 &args.version,
                 args.chart_version.as_deref(),
                 args.app_version.as_deref(),
+                args.tag_suffix.as_deref(),
             )?;
             println!("{}", serde_json::to_string_pretty(&plan)?);
             Ok(())
@@ -1089,6 +1096,7 @@ fn release(args: ReleaseCommand) -> anyhow::Result<()> {
                 &args.version,
                 args.chart_version.as_deref(),
                 args.app_version.as_deref(),
+                None,
             )?;
             if !args.allow_dirty {
                 ensure_clean_git_worktree()?;
@@ -1099,6 +1107,7 @@ fn release(args: ReleaseCommand) -> anyhow::Result<()> {
                 plan["app_version"].as_str().expect("app version"),
                 plan["chart_version"].as_str().expect("chart version"),
             )?;
+            refresh_cargo_lock(&args.cargo_toml)?;
             println!("{}", serde_json::to_string_pretty(&plan)?);
             Ok(())
         }
@@ -1111,17 +1120,26 @@ fn release_cut(args: ReleaseCutArgs) -> anyhow::Result<()> {
         &args.version,
         args.chart_version.as_deref(),
         args.app_version.as_deref(),
+        args.tag_suffix.as_deref(),
     )?;
     let app_version = required_plan_str(&plan, "app_version")?;
     let chart_version = required_plan_str(&plan, "chart_version")?;
     let binary_tag = required_plan_str(&plan, "binary_tag")?;
     let chart_tag = required_plan_str(&plan, "chart_tag")?;
     let release_commit = format!("chore(release): {binary_tag}");
+    let tag_suffix = plan
+        .get("tag_suffix")
+        .and_then(serde_json::Value::as_str)
+        .filter(|suffix| !suffix.is_empty());
 
     if args.dry_run {
         let mut dry_run_plan = plan.clone();
         if let Some(object) = dry_run_plan.as_object_mut() {
             object.insert("release_commit".to_string(), release_commit.into());
+            object.insert(
+                "release_commit_required".to_string(),
+                tag_suffix.is_none().into(),
+            );
             object.insert("remote".to_string(), args.remote.into());
             object.insert("push".to_string(), args.push.into());
             object.insert("dry_run".to_string(), true.into());
@@ -1142,9 +1160,23 @@ fn release_cut(args: ReleaseCutArgs) -> anyhow::Result<()> {
         app_version,
         chart_version,
     )?;
-    git_add_paths(&[args.cargo_toml.as_path(), args.chart_yaml.as_path()])?;
-    ensure_staged_release_changes(&[args.cargo_toml.as_path(), args.chart_yaml.as_path()])?;
-    git_commit(&release_commit, args.no_verify)?;
+    refresh_cargo_lock(&args.cargo_toml)?;
+    git_add_paths(&[
+        args.cargo_toml.as_path(),
+        args.cargo_lock.as_path(),
+        args.chart_yaml.as_path(),
+    ])?;
+    let release_paths = [
+        args.cargo_toml.as_path(),
+        args.cargo_lock.as_path(),
+        args.chart_yaml.as_path(),
+    ];
+    let release_changes = staged_release_changes_exist(&release_paths)?;
+    if release_changes {
+        git_commit(&release_commit, args.no_verify)?;
+    } else if tag_suffix.is_none() {
+        bail!("release bump produced no staged changes");
+    }
     git_tag(binary_tag, &format!("COAT {app_version} binaries"))?;
     git_tag(chart_tag, &format!("COAT Helm chart {chart_version}"))?;
 
@@ -1155,7 +1187,15 @@ fn release_cut(args: ReleaseCutArgs) -> anyhow::Result<()> {
 
     let mut cut_result = plan.clone();
     if let Some(object) = cut_result.as_object_mut() {
-        object.insert("release_commit".to_string(), release_commit.into());
+        object.insert(
+            "release_commit".to_string(),
+            if release_changes {
+                release_commit.into()
+            } else {
+                serde_json::Value::Null
+            },
+        );
+        object.insert("release_commit_created".to_string(), release_changes.into());
         object.insert("remote".to_string(), args.remote.into());
         object.insert("pushed".to_string(), args.push.into());
     }
@@ -1167,10 +1207,12 @@ fn release_plan_json(
     version: &str,
     chart_version: Option<&str>,
     app_version: Option<&str>,
+    tag_suffix: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     let app_version = app_version.unwrap_or(version).trim_start_matches('v');
     let chart_version = chart_version.unwrap_or(app_version).trim_start_matches('v');
     let version = version.trim_start_matches('v');
+    let tag_suffix = normalize_tag_suffix(tag_suffix)?;
     validate_semver(version).context("invalid release version")?;
     validate_semver(app_version).context("invalid app version")?;
     validate_semver(chart_version).context("invalid chart version")?;
@@ -1181,55 +1223,96 @@ fn release_plan_json(
     if chart_version != version {
         cut_command.push_str(&format!(" --chart-version {chart_version}"));
     }
+    if let Some(suffix) = tag_suffix.as_deref() {
+        cut_command.push_str(&format!(" --tag-suffix {suffix}"));
+    }
+    let binary_tag = release_tag("v", version, tag_suffix.as_deref());
+    let chart_tag = release_tag("chart-v", chart_version, tag_suffix.as_deref());
+    let image_version_tag = version_with_tag_suffix(version, tag_suffix.as_deref());
+    let tag_suffix_value = tag_suffix.clone().unwrap_or_default();
 
     Ok(serde_json::json!({
         "version": version,
         "app_version": app_version,
         "chart_version": chart_version,
-        "binary_tag": format!("v{version}"),
-        "chart_tag": format!("chart-v{chart_version}"),
+        "tag_suffix": tag_suffix_value,
+        "binary_tag": binary_tag,
+        "chart_tag": chart_tag,
         "bump_files": [
             "Cargo.toml",
+            "Cargo.lock",
             "infra/helm/coat/Chart.yaml"
         ],
         "binary_workflow": ".github/workflows/release-binaries.yml",
         "helm_workflow": ".github/workflows/release-helm.yml",
         "binary_assets": [
-            format!("coat-binaries-{version}-x86_64-unknown-linux-gnu.tar.gz"),
-            format!("coat-binaries-{version}-aarch64-unknown-linux-gnu.tar.gz"),
-            format!("coat-binaries-{version}-aarch64-apple-darwin.tar.gz")
+            format!("coat-binaries-{image_version_tag}-x86_64-unknown-linux-gnu.tar.gz"),
+            format!("coat-binaries-{image_version_tag}-aarch64-unknown-linux-gnu.tar.gz"),
+            format!("coat-binaries-{image_version_tag}-aarch64-apple-darwin.tar.gz")
         ],
         "container_registry": "ghcr.io/<owner>/<repo>",
         "container_images": [
-            format!("ghcr.io/<owner>/<repo>/coat-coordinator:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-event-gateway:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-goal-store:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-memory-gateway:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-notifier:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-runner-registry:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-sandbox-runner:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-tool-registry:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-validator:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-control-web:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-codex-runner:v{version}"),
-            format!("ghcr.io/<owner>/<repo>/coat-staff-engineer-runner:v{version}")
+            format!("ghcr.io/<owner>/<repo>/coat-coordinator:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-event-gateway:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-goal-store:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-memory-gateway:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-notifier:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-runner-registry:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-sandbox-runner:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-tool-registry:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-validator:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-control-web:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-codex-runner:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-claude-code-runner:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-model-provider-runner:v{image_version_tag}"),
+            format!("ghcr.io/<owner>/<repo>/coat-staff-engineer-runner:v{image_version_tag}")
         ],
         "container_image_tags": [
-            format!("v{version}"),
-            version,
+            format!("v{image_version_tag}"),
+            image_version_tag,
             "latest"
         ],
         "helm_assets": [
-            format!("coat-{chart_version}.tgz"),
+            format!("coat-{}.tgz", version_with_tag_suffix(chart_version, tag_suffix.as_deref())),
             "index.yaml"
         ],
         "publish_steps": [
             cut_command,
-            format!("git tag v{version}"),
-            format!("git tag chart-v{chart_version}"),
-            format!("git push origin v{version} chart-v{chart_version}")
+            format!("git tag {binary_tag}"),
+            format!("git tag {chart_tag}"),
+            format!("git push origin {binary_tag} {chart_tag}")
         ]
     }))
+}
+
+fn normalize_tag_suffix(tag_suffix: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(raw) = tag_suffix else {
+        return Ok(None);
+    };
+    let suffix = raw
+        .trim()
+        .trim_start_matches(|c| c == '-' || c == '_' || c == '.');
+    if suffix.is_empty() {
+        bail!("tag suffix must not be empty");
+    }
+    if !suffix
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        bail!("tag suffix may only contain ASCII letters, digits, '.', '-', or '_'");
+    }
+    Ok(Some(suffix.to_string()))
+}
+
+fn version_with_tag_suffix(version: &str, tag_suffix: Option<&str>) -> String {
+    match tag_suffix {
+        Some(suffix) => format!("{version}-{suffix}"),
+        None => version.to_string(),
+    }
+}
+
+fn release_tag(prefix: &str, version: &str, tag_suffix: Option<&str>) -> String {
+    format!("{prefix}{}", version_with_tag_suffix(version, tag_suffix))
 }
 
 fn required_plan_str<'a>(plan: &'a serde_json::Value, key: &str) -> anyhow::Result<&'a str> {
@@ -1285,7 +1368,7 @@ fn git_add_paths(paths: &[&Path]) -> anyhow::Result<()> {
     run_command(command, "stage release version files")
 }
 
-fn ensure_staged_release_changes(paths: &[&Path]) -> anyhow::Result<()> {
+fn staged_release_changes_exist(paths: &[&Path]) -> anyhow::Result<bool> {
     let mut command = Command::new("git");
     command.arg("diff").arg("--cached").arg("--quiet").arg("--");
     for path in paths {
@@ -1294,10 +1377,7 @@ fn ensure_staged_release_changes(paths: &[&Path]) -> anyhow::Result<()> {
     let status = command
         .status()
         .context("checking staged release version changes")?;
-    if status.success() {
-        bail!("release bump produced no staged changes");
-    }
-    Ok(())
+    Ok(!status.success())
 }
 
 fn git_commit(message: &str, no_verify: bool) -> anyhow::Result<()> {
@@ -1335,6 +1415,16 @@ fn run_command(mut command: Command, description: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+fn refresh_cargo_lock(cargo_toml_path: &Path) -> anyhow::Result<()> {
+    let mut command = Command::new("cargo");
+    command
+        .arg("update")
+        .arg("--workspace")
+        .arg("--manifest-path")
+        .arg(cargo_toml_path);
+    run_command(command, "update Cargo.lock after release version bump")
 }
 
 fn bump_release_versions(
@@ -2761,8 +2851,8 @@ mod tests {
 
     #[test]
     fn release_plan_includes_cut_command_and_tags() {
-        let plan =
-            release_plan_json("v1.2.3", Some("v1.2.4"), Some("v1.2.3")).expect("release plan");
+        let plan = release_plan_json("v1.2.3", Some("v1.2.4"), Some("v1.2.3"), None)
+            .expect("release plan");
 
         assert_eq!(plan["version"], "1.2.3");
         assert_eq!(plan["app_version"], "1.2.3");
@@ -2783,6 +2873,13 @@ mod tests {
             serde_json::json!(["v1.2.3", "1.2.3", "latest"])
         );
         assert!(
+            plan["bump_files"]
+                .as_array()
+                .expect("bump files")
+                .iter()
+                .any(|file| file == "Cargo.lock")
+        );
+        assert!(
             plan["container_images"]
                 .as_array()
                 .expect("container images")
@@ -2795,6 +2892,27 @@ mod tests {
                 .expect("publish steps")
                 .iter()
                 .any(|step| step == "coat release cut --version 1.2.3 --chart-version 1.2.4")
+        );
+    }
+
+    #[test]
+    fn release_plan_supports_tag_suffix_for_retry_cuts() {
+        let plan = release_plan_json("v1.2.3", None, None, Some("ghcr.1")).expect("release plan");
+
+        assert_eq!(plan["version"], "1.2.3");
+        assert_eq!(plan["tag_suffix"], "ghcr.1");
+        assert_eq!(plan["binary_tag"], "v1.2.3-ghcr.1");
+        assert_eq!(plan["chart_tag"], "chart-v1.2.3-ghcr.1");
+        assert_eq!(
+            plan["container_image_tags"],
+            serde_json::json!(["v1.2.3-ghcr.1", "1.2.3-ghcr.1", "latest"])
+        );
+        assert!(
+            plan["publish_steps"]
+                .as_array()
+                .expect("publish steps")
+                .iter()
+                .any(|step| step == "coat release cut --version 1.2.3 --tag-suffix ghcr.1")
         );
     }
 

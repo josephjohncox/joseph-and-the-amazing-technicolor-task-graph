@@ -548,6 +548,7 @@
         "codex",
         "open_ai",
         "open_ai_compatible",
+        "bedrock",
         "vllm",
         "ollama",
         "llama_cpp",

@@ -1,0 +1,31 @@
+{
+  "runner_id": "bedrock-provider-a",
+  "node_id": "aws-worker-1",
+  "endpoint": "http://model-provider-runner:9093",
+  "roles": ["model_provider", "planner", "research", "reviewer", "tester", "validator", "patch_merger"],
+  "capabilities": ["research", "review", "test", "mcp_tools", "durable_child_tasks", "open_ai_compatible"],
+  "models": [
+    {
+      "provider": "bedrock",
+      "model": "anthropic.claude-3-5-sonnet",
+      "endpoint": null,
+      "priority": 30,
+      "weight": 1,
+      "context_window": 200000,
+      "features": ["tool_use", "json_schema", "streaming", "long_context"],
+      "labels": {
+        "cloud": "aws",
+        "auth": "workload_identity"
+      }
+    }
+  ],
+  "labels": {
+    "pool": "aws",
+    "runtime": "model-provider",
+    "provider": "bedrock",
+    "auth.aws": "workload_identity"
+  },
+  "mcp_servers": [],
+  "max_concurrency": 2,
+  "lease_ttl_seconds": 300
+}

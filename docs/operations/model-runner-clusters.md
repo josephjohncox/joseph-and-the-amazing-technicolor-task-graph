@@ -8,13 +8,13 @@ Use four logical pools:
 
 - `control`: Restate, coordinator, goal store, event gateway, notifier, runner registry, memory gateway.
 - `memory`: Postgres/pgvector, Qdrant, Graphiti/Zep MCP, object storage, embedding services.
-- `models`: vLLM, Ollama, llama.cpp, Hugging Face Text Embeddings Inference, rerankers, and local OpenAI-compatible APIs.
-- `executors`: Codex, staff-engineer, tester, reviewer, and sandbox Job runners.
+- `models`: Bedrock access points, vLLM, Ollama, llama.cpp, Hugging Face Text Embeddings Inference, rerankers, and local OpenAI-compatible APIs.
+- `executors`: Codex, Claude Code, staff-engineer, generic model-provider, tester, reviewer, and sandbox Job runners.
 
 Each runner registers with:
 
 - node identity: `node_id`, `runner_id`, endpoint;
-- roles: `codex`, `tester`, `reviewer`, `research`, `formal_methods`;
+- roles: `codex`, `claude_code`, `model_provider`, `tester`, `reviewer`, `research`, `formal_methods`;
 - model candidates: provider, model, endpoint, route label, context window, features;
 - capabilities: `local_models`, `vllm`, `open_ai_compatible`, `gpu`, `workspace_sandbox`, `gvisor_sandbox`, `kata_sandbox`;
 - labels: `node_pool`, `hardware`, `model_family`, `sandbox.backend`, `auth.locality`, `network.egress`.
@@ -62,6 +62,7 @@ Good Mac mini roles:
 - reviewer and research agents;
 - local Ollama/MLX model endpoints;
 - Codex or Claude Code runners with node-local device auth;
+- model-provider runners for Ollama or OpenAI-compatible endpoints;
 - embedding or reranking services for personal use;
 - UI, notifier, and low-risk automation workers.
 

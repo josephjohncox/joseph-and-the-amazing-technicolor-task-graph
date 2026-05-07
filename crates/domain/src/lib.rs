@@ -3252,7 +3252,9 @@ impl TaskPriority {
 pub enum WorkerKind {
     Planner,
     Codex,
+    ClaudeCode,
     StaffEngineerClaude,
+    ModelProvider,
     Research,
     Reviewer,
     Tester,
@@ -7270,6 +7272,7 @@ pub enum ModelProviderKind {
     Codex,
     OpenAi,
     OpenAiCompatible,
+    Bedrock,
     Vllm,
     Ollama,
     LlamaCpp,
@@ -7285,6 +7288,7 @@ impl ModelProviderKind {
             Self::Codex => "codex",
             Self::OpenAi => "open_ai",
             Self::OpenAiCompatible => "open_ai_compatible",
+            Self::Bedrock => "bedrock",
             Self::Vllm => "vllm",
             Self::Ollama => "ollama",
             Self::LlamaCpp => "llama_cpp",
@@ -8776,7 +8780,11 @@ impl ValidationReport {
             && req.task.purpose.is_work_like()
             && matches!(
                 req.task.role,
-                WorkerKind::Codex | WorkerKind::StaffEngineerClaude | WorkerKind::RustTool
+                WorkerKind::Codex
+                    | WorkerKind::ClaudeCode
+                    | WorkerKind::StaffEngineerClaude
+                    | WorkerKind::ModelProvider
+                    | WorkerKind::RustTool
             )
             && req.result.checkpoints.is_empty()
         {
@@ -9978,7 +9986,9 @@ impl WorkerKind {
         &[
             "planner",
             "codex",
+            "claude_code",
             "staff_engineer_claude",
+            "model_provider",
             "research",
             "reviewer",
             "tester",
@@ -9993,7 +10003,9 @@ impl WorkerKind {
         match self {
             Self::Planner => "planner",
             Self::Codex => "codex",
+            Self::ClaudeCode => "claude_code",
             Self::StaffEngineerClaude => "staff_engineer_claude",
+            Self::ModelProvider => "model_provider",
             Self::Research => "research",
             Self::Reviewer => "reviewer",
             Self::Tester => "tester",
@@ -12201,6 +12213,14 @@ mod tests {
             "../../../examples/runner-vllm.json"
         ))
         .expect("runner-vllm example parses");
+        serde_json::from_str::<RunnerRegistration>(include_str!(
+            "../../../examples/runner-claude-code.json"
+        ))
+        .expect("runner-claude-code example parses");
+        serde_json::from_str::<RunnerRegistration>(include_str!(
+            "../../../examples/runner-bedrock-provider.json"
+        ))
+        .expect("runner-bedrock-provider example parses");
         serde_json::from_str::<RunnerDispatchRequest>(include_str!(
             "../../../examples/dispatch-smoke.json"
         ))

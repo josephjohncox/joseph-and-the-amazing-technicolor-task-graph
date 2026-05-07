@@ -2,7 +2,7 @@
 
 ## Intent
 
-Durable tasks must be runnable by different worker processes on different nodes. Some workers may use Codex, some may use hosted OpenAI models, and others may use local OpenAI-compatible providers such as vLLM. The same routing layer is used for actor work, critic review, and review-unification tasks.
+Durable tasks must be runnable by different worker processes on different nodes. Some workers may use Codex, some may use Claude Code, some may use hosted OpenAI or Bedrock models, and others may use local OpenAI-compatible providers such as vLLM, Ollama, or llama.cpp. The same routing layer is used for actor work, critic review, and review-unification tasks.
 
 ## Execution Profile
 
@@ -43,6 +43,21 @@ redacted diagnostics in every `/run-task` result. The Rust tool registry exposes
 `coat_subagent_policy`, so external chat/agent surfaces can initialize their
 skill or system context with the same rule.
 
+## Runner Wrappers
+
+COAT treats harnesses and providers as replaceable wrappers below the durable
+task queue:
+
+- `codex-runner-ts`: Codex App Server or Codex MCP boundary for bounded coding work.
+- `claude-code-runner-ts`: generic Claude Code boundary for bounded tasks without the staff-engineer process bundle.
+- `staff-engineer-runner-ts`: specialized `@ctxr/agent-staff-engineer` issue-to-PR lifecycle worker.
+- `model-provider-runner-ts`: generic provider boundary for Bedrock, OpenAI-compatible APIs, vLLM, Ollama, llama.cpp, Hugging Face endpoints, and local processes.
+
+Each wrapper exposes `/registration`, `/capabilities`, `/verify`, and
+`/run-task`, supports stub mode for local smoke tests, self-registers when
+`RUNNER_REGISTRY_URL` is set, and reports MCP/auth capabilities without leaking
+secret values.
+
 ## Branch Competition
 
 `GoalSpec.branching_policy` lets the coordinator create a `BranchGroup` for a root task, subgoal task, or explicit task ID. The target task can be cancelled, then multiple `candidate_branch` tasks run against the same prompt and dependencies. Each candidate may override role, execution profile, persona, model route, or prompt.
@@ -74,7 +89,9 @@ Dispatch decisions include:
 Model routing is data, not hard-coded worker logic. A task can request:
 
 - Codex;
+- Claude Code;
 - hosted OpenAI;
+- Bedrock;
 - OpenAI-compatible endpoints;
 - vLLM;
 - Ollama;

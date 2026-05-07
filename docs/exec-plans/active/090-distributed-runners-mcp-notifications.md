@@ -8,7 +8,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 
 - Add `ExecutionProfile` to `GoalSpec`, `TaskNode`, and `ChildTaskRequest`.
 - Add runner registration, heartbeat, dispatch, and capability matching contracts.
-- Add model-route contracts for Codex, OpenAI, OpenAI-compatible, vLLM, Ollama, llama.cpp, Hugging Face, and local-process providers.
+- Add model-route contracts for Codex, Claude Code, Bedrock, OpenAI, OpenAI-compatible, vLLM, Ollama, llama.cpp, Hugging Face, and local-process providers.
 - Add task-local persona contracts.
 - Add MCP server refs, secret refs, and context propagation policy.
 - Add default `single_user` MCP access mode and opt-in `multi_user_oidc` delegation contracts.
@@ -16,6 +16,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Add `coat-runner-registry` and `coat-notifier` service surfaces.
 - Rank dispatch candidates by model-route strategy and return rejected runners with mismatch reasons.
 - Add sidecar `/capabilities` endpoints for model, MCP, capacity, and review-contract inspection.
+- Add generic Claude Code and model-provider sidecars beside Codex and staff-engineer wrappers.
 - Wire services into Compose, Kubernetes, CLI, examples, and schemas.
 
 ## Tests
@@ -36,5 +37,5 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 
 - `cargo test --workspace` passes.
 - `make schemas` writes new schemas.
-- Operators can register a vLLM runner using `examples/runner-vllm.json`.
+- Operators can register vLLM, Claude Code, and Bedrock runners using `examples/runner-vllm.json`, `examples/runner-claude-code.json`, and `examples/runner-bedrock-provider.json`.
 - Notifier records human-feedback threads and can deliver generic webhook targets with `SecretRef` bearer auth.

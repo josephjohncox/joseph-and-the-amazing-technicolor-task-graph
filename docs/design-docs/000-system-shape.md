@@ -8,10 +8,10 @@ The coordinator stores the task tree and chooses the next runnable frontier. Wor
 
 - Rust is the contract and control-plane language.
 - Restate is the durable execution substrate.
-- TypeScript sidecars wrap agent ecosystems where TS support is stronger.
+- TypeScript sidecars wrap agent ecosystems and model-provider APIs where TS support is stronger.
 - Compose and Kubernetes share the same service boundaries.
 - Stub mode is required for every live-agent worker.
 
 ## First Scaffold
 
-The first scaffold makes the contracts and deploy surfaces concrete. It does not attempt to complete live Codex App Server or Claude Code execution. Those are implementation-plan items with verification gates.
+The first scaffold makes the contracts and deploy surfaces concrete. Live Codex App Server, Claude Code, staff-engineer, Bedrock, vLLM, Ollama, llama.cpp, Hugging Face, and other provider execution remains behind verification gates and stub-safe wrappers.

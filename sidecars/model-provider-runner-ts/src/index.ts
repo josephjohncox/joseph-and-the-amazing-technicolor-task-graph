@@ -9,6 +9,11 @@
  * It intentionally starts in stub mode. Live provider calls are enabled only by
  * explicit mode/config because durable task state, MCP auth refs, sandboxing,
  * and human approvals must stay coordinator-owned.
+ *
+ * Architecture reference:
+ * - docs/design-docs/010-distributed-runners-mcp.md
+ * - docs/operations/model-runner-clusters.md
+ * - docs/operations/ephemeral-kubernetes-runners.md
  */
 import http from "node:http";
 import { execFile } from "node:child_process";

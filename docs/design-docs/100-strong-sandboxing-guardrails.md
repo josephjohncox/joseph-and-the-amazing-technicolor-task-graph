@@ -6,6 +6,12 @@ Strong sandboxing is an optional production layer. Local Compose keeps a metadat
 
 The coordinator does not execute untrusted code. It assigns a durable task to a runner whose registration matches the task role, capabilities, labels, model route, MCP context, and `SandboxProfile`.
 
+Ephemeral Kubernetes runners are capacity, not authority. A Job may host a
+runner sidecar or temporary Restate service executor, but the coordinator still
+owns task state, approvals, budgets, and validation. Use
+`jattg-agent-toolbox` for bounded Jobs when the task needs the shared toolset;
+use slim service images for always-on control-plane Deployments.
+
 `SandboxProfile.isolation` describes the requested boundary:
 
 - `local_workspace`: creates a task workspace and manifest only. Use for trusted local smoke tests.
@@ -17,6 +23,39 @@ The coordinator does not execute untrusted code. It assigns a durable task to a 
 - `provider_sandbox`: delegate execution to a managed sandbox provider and require an attestation artifact.
 
 `approval_policy = never` is only acceptable when the runner can attest an enforced strong sandbox. Otherwise the default approval policy forces a human gate.
+
+## Network Guardrails
+
+Treat network access as a separate blast-radius boundary from filesystem or
+process isolation. `SandboxProfile.network` sets the high-level intent:
+
+- `disabled`: no ingress or egress except what the runtime itself requires to
+  start and report failure.
+- `restricted`: deny by default, then allow only named internal services, model
+  endpoints, object stores, or approved research/search gateways.
+- `open`: broad network access and therefore an approval-triggering risk.
+
+`SandboxProfile.isolation.egress_policy_ref`,
+`ingress_policy_ref`, and `network_policy_labels` bind that intent to concrete
+cluster policy such as Kubernetes NetworkPolicy, Cilium policy, Calico policy,
+cloud firewall rules, or a provider sandbox egress profile. The coordinator and
+validators should store policy refs and labels, not raw credentials or ad hoc
+firewall syntax.
+
+NetworkPolicy should normally be split into small allowlists:
+
+- namespace-level deny-by-default for runner and sandbox pods;
+- DNS egress only when name resolution is required;
+- control-plane egress to coordinator, runner registry, memory gateway, tool
+  registry, notifier, goal store, Restate, and object storage by service port;
+- model egress only to labeled model-serving namespaces or services;
+- external web/search egress only through an approved gateway;
+- ingress only from the coordinator or Restate when a runner exposes `/run-task`
+  or a temporary service handler.
+
+Security reviewers should treat missing policy refs, broad CIDR egress,
+namespace-wide ingress, or `network = open` as evidence that goal satisfaction
+needs explicit approval or stronger guardrail review.
 
 ## Runner Registration
 
@@ -71,6 +110,11 @@ Executor pods should set:
 - `seccompProfile.type: RuntimeDefault`;
 - CPU, memory, ephemeral-storage, and PID limits;
 - namespace default deny ingress/egress, then allow only coordinator, registry, tool registry, object store, and model endpoints.
+
+The toolbox image supports controlled injection at `/opt/coat/injections`.
+Mount ConfigMaps for non-secret scripts/config and Secrets or workload identity
+for credentials. Keep injection scripts disabled unless
+`COAT_ENABLE_INJECTION_SCRIPTS=true` is explicitly set for that Job.
 
 Kata is the better default when the workload needs a VM boundary or GPU passthrough support. gVisor is attractive for syscall isolation on CPU executor pods. Firecracker is the strongest fit for custom microVM task runners and high-risk untrusted code, but it requires more cluster/runtime work.
 

@@ -1,0 +1,180 @@
+{{- $root := . -}}
+{{- range $name, $job := .Values.ephemeralJobs }}
+{{- if $job.enabled }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "jattg.namespace" $root }}
+  labels:
+    {{- include "jattg.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+    jattg.dev/ephemeral-job: "true"
+spec:
+  backoffLimit: {{ default 0 $job.backoffLimit }}
+  ttlSecondsAfterFinished: {{ default 3600 $job.ttlSecondsAfterFinished }}
+  {{- with $job.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "jattg.name" $root }}
+        app.kubernetes.io/instance: {{ $root.Release.Name }}
+        app.kubernetes.io/component: {{ $name }}
+        jattg.dev/ephemeral-job: "true"
+        {{- with $job.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $job.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: {{ default "Never" $job.restartPolicy }}
+      {{- with $job.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $job.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      automountServiceAccountToken: {{ default false $job.automountServiceAccountToken }}
+      {{- with $job.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $job.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with $job.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $job.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $job.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "jattg.image" (dict "root" $root "image" $job.image) | quote }}
+          imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $job.imagePullPolicy }}
+          {{- with $job.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $job.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: COAT_EPHEMERAL_KIND
+              value: {{ required "ephemeralJobs entry requires kind" $job.kind | quote }}
+            {{- range $envName, $envValue := $job.env }}
+            - name: {{ $envName }}
+              value: {{ tpl (toString $envValue) $root | quote }}
+            {{- end }}
+            {{- range $envName, $configKey := $job.configEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: {{ $configKey }}
+            {{- end }}
+            {{- range $envName, $secretKey := $job.secretEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: {{ $secretKey }}
+                  optional: true
+            {{- end }}
+            {{- range $envName, $fieldPath := $job.fieldEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                fieldRef:
+                  fieldPath: {{ $fieldPath }}
+            {{- end }}
+          {{- with $job.ports }}
+          ports:
+            {{- range . }}
+            - name: {{ .name }}
+              containerPort: {{ .containerPort }}
+            {{- end }}
+          {{- end }}
+          {{- with $job.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $job.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml (default $root.Values.defaultResources $job.resources) | nindent 12 }}
+      {{- with $job.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $job.service }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "jattg.namespace" $root }}
+  labels:
+    {{- include "jattg.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+    jattg.dev/ephemeral-job: "true"
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "jattg.name" $root }}
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    {{- range $job.ports }}
+    {{- if (default true .service) }}
+    - name: {{ .name }}
+      port: {{ default .containerPort .servicePort }}
+      targetPort: {{ .name }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- with $job.networkPolicy }}
+{{- if .enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ default (printf "%s-network" $name) .name }}
+  namespace: {{ include "jattg.namespace" $root }}
+  labels:
+    {{- include "jattg.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+    jattg.dev/ephemeral-job: "true"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "jattg.name" $root }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $name }}
+  policyTypes:
+    {{- toYaml (default (list "Ingress" "Egress") .policyTypes) | nindent 4 }}
+  {{- if hasKey . "ingress" }}
+  ingress:
+    {{- toYaml .ingress | nindent 4 }}
+  {{- end }}
+  {{- if hasKey . "egress" }}
+  egress:
+    {{- toYaml .egress | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

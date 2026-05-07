@@ -53,7 +53,7 @@
     "vector": {
       "$ref": "#/$defs/VectorMemoryPolicy",
       "default": {
-        "collection": "coat_memory",
+        "collection": "jattg_memory",
         "enabled": true,
         "hybrid_search": true,
         "min_score": 0.20000000298023224,
@@ -62,7 +62,7 @@
           "endpoint": "http://qdrant:6333",
           "kind": "qdrant",
           "mcp_server_name": "qdrant-memory",
-          "namespace": "coat_memory",
+          "namespace": "jattg_memory",
           "secret_refs": []
         },
         "top_k": 8,

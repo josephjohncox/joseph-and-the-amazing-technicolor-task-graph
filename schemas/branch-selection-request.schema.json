@@ -5,7 +5,8 @@
   "properties": {
     "goal_id": {
       "type": "string",
-      "format": "uuid"
+      "format": "uuid",
+      "default": "00000000-0000-0000-0000-000000000000"
     },
     "group_id": {
       "type": "string",
@@ -23,7 +24,6 @@
     }
   },
   "required": [
-    "goal_id",
     "group_id",
     "selected_task_id",
     "selector",

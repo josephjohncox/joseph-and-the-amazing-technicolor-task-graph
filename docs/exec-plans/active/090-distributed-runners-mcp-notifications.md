@@ -15,6 +15,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Add notification policy and delivery-report contracts.
 - Add `coat-runner-registry` and `coat-notifier` service surfaces.
 - Rank dispatch candidates by model-route strategy and return rejected runners with mismatch reasons.
+- Persist runner registrations and heartbeats through `COAT_RUNNER_REGISTRY_JOURNAL_PATH` for local multi-node restarts while still honoring heartbeat TTL and capacity.
 - Add sidecar `/capabilities` endpoints for model, MCP, capacity, and review-contract inspection.
 - Add generic Claude Code and model-provider sidecars beside Codex and staff-engineer wrappers.
 - Wire services into Compose, Kubernetes, CLI, examples, and schemas.
@@ -30,7 +31,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 
 ## Follow-Ups
 
-- Add runner-registry persistence and multi-node integration tests that prove stale heartbeats, locality labels, and capacity limits affect dispatch.
+- Add multi-node integration tests that prove replayed stale heartbeats, locality labels, and capacity limits affect dispatch.
 - Add notification adapters for Slack, email, webhook, and dashboard queues while keeping durable workflow state authoritative.
 
 ## Acceptance

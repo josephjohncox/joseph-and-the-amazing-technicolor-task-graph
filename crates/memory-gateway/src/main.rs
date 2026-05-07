@@ -185,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
     let graphiti_group_id = std::env::var("MEMORY_GATEWAY_GRAPHITI_GROUP_ID")
         .ok()
         .filter(|group| !group.is_empty())
-        .unwrap_or_else(|| "coat".to_string());
+        .unwrap_or_else(|| "jattg".to_string());
     let graphiti_token = std::env::var("MEMORY_GATEWAY_GRAPHITI_TOKEN")
         .ok()
         .filter(|token| !token.is_empty());
@@ -199,7 +199,7 @@ async fn main() -> anyhow::Result<()> {
     let qdrant_collection = std::env::var("MEMORY_GATEWAY_QDRANT_COLLECTION")
         .ok()
         .filter(|collection| !collection.is_empty())
-        .unwrap_or_else(|| "coat_memory".to_string());
+        .unwrap_or_else(|| "jattg_memory".to_string());
     let qdrant_token = std::env::var("MEMORY_GATEWAY_QDRANT_TOKEN")
         .ok()
         .filter(|token| !token.is_empty());
@@ -1904,10 +1904,10 @@ mod tests {
                 bearer_token: None,
                 journal_path: None,
                 graphiti_mcp_url: Some("http://graphiti:8000/mcp".to_string()),
-                graphiti_group_id: "coat".to_string(),
+                graphiti_group_id: "jattg".to_string(),
                 graphiti_token: None,
                 qdrant_url: Some("http://qdrant:6333".to_string()),
-                qdrant_collection: "coat_memory".to_string(),
+                qdrant_collection: "jattg_memory".to_string(),
                 qdrant_token: None,
                 embedding_url: None,
                 embedding_model: "text-embedding-3-large".to_string(),
@@ -1973,10 +1973,10 @@ mod tests {
                 bearer_token: None,
                 journal_path: None,
                 graphiti_mcp_url: None,
-                graphiti_group_id: "coat".to_string(),
+                graphiti_group_id: "jattg".to_string(),
                 graphiti_token: None,
                 qdrant_url: None,
-                qdrant_collection: "coat_memory".to_string(),
+                qdrant_collection: "jattg_memory".to_string(),
                 qdrant_token: None,
                 embedding_url: None,
                 embedding_model: "text-embedding-3-large".to_string(),

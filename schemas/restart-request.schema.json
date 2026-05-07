@@ -5,7 +5,8 @@
   "properties": {
     "goal_id": {
       "type": "string",
-      "format": "uuid"
+      "format": "uuid",
+      "default": "00000000-0000-0000-0000-000000000000"
     },
     "message": {
       "type": "string"
@@ -45,7 +46,6 @@
     }
   },
   "required": [
-    "goal_id",
     "scope",
     "reason",
     "message"

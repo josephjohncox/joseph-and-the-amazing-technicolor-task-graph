@@ -38,6 +38,7 @@ pub type CheckpointId = Uuid;
 /// default execution profile, and optional initial tasks that seed the durable
 /// task tree. See `docs/operations/goal-authoring.md`.
 pub struct GoalSpec {
+    #[serde(default = "new_goal_id")]
     pub id: GoalId,
     pub title: String,
     pub objective: String,
@@ -70,6 +71,14 @@ pub struct GoalSpec {
     pub default_execution: ExecutionProfile,
     #[serde(default)]
     pub initial_tasks: Vec<ChildTaskRequest>,
+}
+
+fn new_goal_id() -> GoalId {
+    Uuid::new_v4()
+}
+
+fn nil_goal_id() -> GoalId {
+    Uuid::nil()
 }
 
 impl GoalSpec {
@@ -1855,6 +1864,11 @@ impl GoalState {
         directive: SteeringDirective,
         spawn_policy: &SpawnPolicy,
     ) -> Result<(), DomainError> {
+        if directive.goal_id != self.goal.id {
+            return Err(DomainError::SteeringDenied(
+                "steering directive goal_id does not match workflow goal".to_string(),
+            ));
+        }
         if !self.goal.control_policy.human_steering_enabled {
             return Err(DomainError::SteeringDenied(
                 "human steering is disabled for this goal".to_string(),
@@ -3662,6 +3676,10 @@ pub struct SandboxIsolationProfile {
     #[serde(default)]
     pub egress_policy_ref: Option<String>,
     #[serde(default)]
+    pub ingress_policy_ref: Option<String>,
+    #[serde(default)]
+    pub network_policy_labels: BTreeMap<String, String>,
+    #[serde(default)]
     pub snapshot_strategy: SandboxSnapshotStrategy,
 }
 
@@ -3681,6 +3699,8 @@ impl Default for SandboxIsolationProfile {
             memory_limit_mb: None,
             pids_limit: None,
             egress_policy_ref: None,
+            ingress_policy_ref: None,
+            network_policy_labels: BTreeMap::new(),
             snapshot_strategy: SandboxSnapshotStrategy::FilesystemManifest,
         }
     }
@@ -3882,6 +3902,9 @@ pub struct SandboxNetworkPlan {
     pub access: NetworkAccess,
     pub deny_by_default: bool,
     pub egress_policy_ref: Option<String>,
+    pub ingress_policy_ref: Option<String>,
+    #[serde(default)]
+    pub network_policy_labels: BTreeMap<String, String>,
     #[serde(default)]
     pub allowed_internal_services: Vec<String>,
 }
@@ -5437,6 +5460,7 @@ pub enum TimeoutAction {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct RestartRequest {
+    #[serde(default = "nil_goal_id")]
     pub goal_id: GoalId,
     pub scope: RestartScope,
     pub reason: RestartReason,
@@ -5561,6 +5585,7 @@ pub enum BranchSelectionStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct BranchRequest {
+    #[serde(default = "nil_goal_id")]
     pub goal_id: GoalId,
     pub target_task_id: Option<TaskId>,
     pub subgoal_id: Option<String>,
@@ -5579,6 +5604,7 @@ pub struct BranchRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct BranchSelectionRequest {
+    #[serde(default = "nil_goal_id")]
     pub goal_id: GoalId,
     pub group_id: Uuid,
     pub selected_task_id: TaskId,
@@ -5673,6 +5699,7 @@ pub struct BranchVoteRecord {
 #[serde(rename_all = "snake_case")]
 pub struct SteeringDirective {
     pub id: Uuid,
+    #[serde(default = "nil_goal_id")]
     pub goal_id: GoalId,
     pub task_id: Option<TaskId>,
     pub operator: Option<String>,
@@ -6072,7 +6099,7 @@ impl Default for MemoryPolicy {
             store: MemoryStoreRef {
                 kind: MemoryStoreKind::ZepGraphiti,
                 endpoint: Some("http://graphiti-mcp:8000/mcp/".to_string()),
-                namespace: Some("coat".to_string()),
+                namespace: Some("jattg".to_string()),
                 mcp_server_name: Some("graphiti-memory".to_string()),
                 secret_refs: Vec::new(),
             },
@@ -6134,11 +6161,11 @@ impl Default for VectorMemoryPolicy {
             store: MemoryStoreRef {
                 kind: MemoryStoreKind::Qdrant,
                 endpoint: Some("http://qdrant:6333".to_string()),
-                namespace: Some("coat_memory".to_string()),
+                namespace: Some("jattg_memory".to_string()),
                 mcp_server_name: Some("qdrant-memory".to_string()),
                 secret_refs: Vec::new(),
             },
-            collection: "coat_memory".to_string(),
+            collection: "jattg_memory".to_string(),
             write_embeddings: true,
             search_embeddings: true,
             hybrid_search: true,
@@ -6708,8 +6735,8 @@ impl Default for CheckpointPolicy {
             workspace_snapshot_on_result: true,
             object_checkpoint_on_result: true,
             require_for_code_changes: false,
-            branch_prefix: "coat/checkpoint".to_string(),
-            tag_prefix: "coat-checkpoint".to_string(),
+            branch_prefix: "jattg/checkpoint".to_string(),
+            tag_prefix: "jattg-checkpoint".to_string(),
         }
     }
 }
@@ -6749,7 +6776,7 @@ impl Default for GitResultPolicy {
             enabled: false,
             remote: Some("origin".to_string()),
             base_ref: Some("HEAD".to_string()),
-            branch_prefix: "coat/task".to_string(),
+            branch_prefix: "jattg/task".to_string(),
             worktree_root: Some("/worktrees".to_string()),
             push_on_success: false,
             require_clean_diff: true,
@@ -10092,6 +10119,24 @@ mod tests {
     }
 
     #[test]
+    fn goal_spec_deserializes_without_operator_supplied_id() {
+        let mut value = serde_json::to_value(GoalSpec::new(
+            "Generated ID",
+            "The CLI or deserializer should assign a durable ID.",
+        ))
+        .expect("serialize goal");
+        value
+            .as_object_mut()
+            .expect("goal object")
+            .remove("id")
+            .expect("remove generated id");
+        let goal: GoalSpec = serde_json::from_value(value).expect("goal parses without id");
+
+        assert_ne!(goal.id, Uuid::nil());
+        assert_eq!(goal.title, "Generated ID");
+    }
+
+    #[test]
     fn initial_tasks_become_queryable_subgoal_tasks() {
         let mut goal = GoalSpec::new(
             "planned",
@@ -10768,7 +10813,7 @@ mod tests {
                     provider: SecretProvider::KubernetesSecret,
                     name: "mcp-token".to_string(),
                     key: Some("token".to_string()),
-                    namespace: Some("coat".to_string()),
+                    namespace: Some("jattg".to_string()),
                     audience: Some("tool-registry".to_string()),
                 },
             },
@@ -11955,7 +12000,7 @@ mod tests {
                     provider: SecretProvider::ExternalBroker,
                     name: "human-auth-broker".to_string(),
                     key: Some("claude".to_string()),
-                    namespace: Some("coat".to_string()),
+                    namespace: Some("jattg".to_string()),
                     audience: Some("claude-code".to_string()),
                 },
                 provider: DeviceAuthProvider::ClaudeCode,
@@ -12032,7 +12077,7 @@ mod tests {
             provider: SecretProvider::ExternalBroker,
             name: "oidc-token-broker".to_string(),
             key: Some("mcp".to_string()),
-            namespace: Some("coat".to_string()),
+            namespace: Some("jattg".to_string()),
             audience: Some("mcp-user-delegation".to_string()),
         };
         let principal = UserPrincipalRef {

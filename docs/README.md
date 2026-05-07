@@ -23,7 +23,8 @@ COAT builds a durable task-tree control plane for long-running agent work. The c
 4. `product-specs/coat-v1.md`: product intent, non-goals, and success criteria.
 5. `operations/local-dev.md`: local validation and smoke workflows.
 6. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
-7. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
+7. `operations/ephemeral-kubernetes-runners.md`: burst runners, temporary Restate executors, and toolbox injection.
+8. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
 
 ## Design Docs
 

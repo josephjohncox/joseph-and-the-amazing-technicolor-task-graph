@@ -4,7 +4,10 @@
 
 A durable task-tree control plane for long-running agentic engineering work.
 
-`coat` is the short operational slug for commands, packages, environment variables, service images, and deployment names.
+`coat` is the short operational slug for the installed CLI and `COAT_*`
+runtime environment variables. Deployable package surfaces use `jattg`: Helm
+chart name, Kubernetes namespace/labels, GitHub release artifacts, and
+published service images.
 
 The core idea is simple: Restate owns durable time and replay, Rust owns policy and state, Codex owns bounded code execution, and specialized workers produce structured evidence for the coordinator to validate.
 
@@ -42,7 +45,7 @@ docker compose \
   up --build
 coat compose up --restate-cloud
 coat restate register-cloud \
-  --tunnel-name coat-personal \
+  --tunnel-name jattg-personal \
   --service-url http://coordinator:9080
 ```
 
@@ -60,6 +63,8 @@ Submit a goal through Restate ingress. In local development, unmatched tasks can
 coat goal submit \
   --title "Smoke goal" \
   --objective "Prove the durable task tree can accept and validate a task"
+export COAT_GOAL_ID=<goal-id-from-submit-output>
+coat goal progress
 ```
 
 For non-trivial work, author a full `GoalSpec` instead of relying on title/objective defaults:
@@ -83,11 +88,17 @@ coat goal draft \
   --out examples/drafts/strict-review-goal.json
 coat goal lint --file examples/goal-clean-plan.json --strict
 coat goal submit --file examples/goal-template-structured.json
-coat goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat goal list
+coat goal progress --latest
 coat goal tasks \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
+  --latest \
   --file examples/task-query-subgoal.json
 ```
+
+`GoalSpec.id` is optional in authored JSON. `coat goal submit` assigns one
+when omitted and prints `goal_id`, `workflow_url`, and an `export COAT_GOAL_ID=...`
+helper. Follow-up commands accept `--goal-id`, `COAT_GOAL_ID`, or `--latest`
+through the goal-store projection.
 
 See `docs/operations/goal-authoring.md` for the intake, memory preflight, research preflight, compiler, and critic loop used to turn vague operator requests into structured goals.
 Use `docs/design-docs/120-durable-planning-mode.md` when the request needs a chat-style planning session before it becomes a durable goal.
@@ -98,7 +109,7 @@ Strict goals can opt in to a review-doctrine standard library for code quality, 
 coat goal review-checks
 coat goal lint --file examples/goal-review-doctrine.json --strict
 coat goal steer-standard \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756800 \
+  --latest \
   --check deep_research \
   --topic "state-of-the-art libraries and review doctrine"
 ```
@@ -110,13 +121,13 @@ Goals also carry restart, timeout, and branch-competition policy. Operators can 
 ```sh
 coat goal submit --file examples/goal-branching-competition.json
 coat goal branch \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --latest \
   --file examples/branch-request-root.json
 coat goal select-branch \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --latest \
   --file examples/branch-selection.json
 coat goal restart \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --latest \
   --file examples/restart-request-task.json
 ```
 
@@ -139,6 +150,7 @@ coat goal restart \
 - `staff-engineer-runner-ts`: `@ctxr/agent-staff-engineer` worker boundary.
 - `model-provider-runner-ts`: hosted/local model-provider boundary for Bedrock, OpenAI-compatible APIs, vLLM, Ollama, llama.cpp, Hugging Face, and local processes.
 - `object-store`: local S3-compatible artifact store for large task outputs.
+- `jattg-agent-toolbox`: tool-rich ephemeral Kubernetes Job image with Rust services, `coat`, runner sidecars, git, curl, jq, Python, Node, and controlled injection hooks.
 
 ## Releases
 
@@ -240,6 +252,20 @@ coat runner dispatch --file examples/dispatch-smoke.json
 ```
 
 The bundled Codex and staff-engineer sidecars auto-register when `RUNNER_REGISTRY_URL` and `RUNNER_ENDPOINT` are set, which Compose and Kubernetes do by default.
+The runner registry can persist registrations and heartbeats through `COAT_RUNNER_REGISTRY_JOURNAL_PATH`, so local multi-node smoke runs can restart the registry without losing the visible runner set. Stale heartbeat TTL and capacity still determine dispatchability after replay.
+
+Ephemeral Kubernetes runners and temporary Restate executors use the same
+runner registry and service contracts. Build or publish `jattg-agent-toolbox`
+from the `agent-toolbox` target in `infra/containers/rust-service.Dockerfile`,
+then create bounded Jobs with `COAT_EPHEMERAL_KIND=codex-runner`,
+`claude-code-runner`, `model-provider-runner`, `staff-engineer-runner`, or a
+Rust service name. See `docs/operations/ephemeral-kubernetes-runners.md`.
+Render the reusable example set with:
+
+```sh
+coat k8s ephemeral-jobs render \
+  --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
+```
 
 Dispatch returns ranked candidates and rejected runners with reasons. Model routes can prefer first available, lowest latency, lowest cost, highest quality, weighted, or sticky-per-goal selection across Codex, hosted, and local OpenAI-compatible providers.
 
@@ -278,7 +304,7 @@ Workers report durable result locations through `AgentRunResult.git_result`, `Ag
 
 The goal store exposes checkpoint history at `/goal-store/goals/{goal_id}/checkpoints`; the control gateway includes it in goal snapshots and exposes `coat_checkpoint_history` over MCP.
 
-Compose starts MinIO as `object-store` and initializes the `coat-artifacts` bucket. Kubernetes includes the same development object-store deployment; AWS/EKS should use real S3 by setting the `ObjectStoreRef` endpoint/region/bucket and resolving auth with workload identity or `SecretRef`.
+Compose starts MinIO as `object-store` and initializes the `jattg-artifacts` bucket. Kubernetes includes the same development object-store deployment; AWS/EKS should use real S3 by setting the `ObjectStoreRef` endpoint/region/bucket and resolving auth with workload identity or `SecretRef`.
 
 ## Review Gate
 

@@ -21,7 +21,7 @@
     "watch_channel_id": null,
     "sync_token_ref": {
       "provider": "kubernetes_secret",
-      "name": "coat-agent-secrets",
+      "name": "jattg-agent-secrets",
       "key": "GOOGLE_CALENDAR_SYNC_TOKEN",
       "namespace": "coat",
       "audience": "calendar-poller"

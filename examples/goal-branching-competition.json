@@ -1,5 +1,4 @@
 {
-  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
   "title": "Branch candidate implementations",
   "objective": "Implement the same durable subgoal through multiple isolated candidate branches, collect reviewer votes, and select one implementation before the goal can be satisfied.",
   "repo": null,
@@ -125,7 +124,7 @@
         "enabled": true,
         "remote": "origin",
         "base_ref": "HEAD",
-        "branch_prefix": "coat/task",
+        "branch_prefix": "jattg/task",
         "worktree_root": "/worktrees",
         "push_on_success": false,
         "require_clean_diff": true,

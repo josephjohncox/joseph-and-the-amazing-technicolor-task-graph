@@ -1,4 +1,4 @@
-COAT has been installed into namespace {{ include "coat.namespace" . }}.
+JATTG has been installed into namespace {{ include "jattg.namespace" . }}.
 
 Key service endpoints inside the cluster:
 - Restate ingress: http://restate:8080

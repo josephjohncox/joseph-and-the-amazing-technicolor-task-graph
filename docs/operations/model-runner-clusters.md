@@ -11,6 +11,14 @@ Use four logical pools:
 - `models`: Bedrock access points, vLLM, Ollama, llama.cpp, Hugging Face Text Embeddings Inference, rerankers, and local OpenAI-compatible APIs.
 - `executors`: Codex, Claude Code, staff-engineer, generic model-provider, tester, reviewer, and sandbox Job runners.
 
+Always-on runners can run as Deployments or host processes. Burst runners,
+short-lived model experiments, and temporary Restate service executors should
+run as Kubernetes Jobs from the `jattg-agent-toolbox` image when a cluster is
+available. The toolbox carries the Rust services, `coat`, runner sidecars, and
+common operator tools; inject only cluster-local env, scripts, or binaries
+through mounted ConfigMaps/Secrets. See
+`docs/operations/ephemeral-kubernetes-runners.md`.
+
 Each runner registers with:
 
 - node identity: `node_id`, `runner_id`, endpoint;
@@ -125,6 +133,13 @@ Use a heterogeneous Kubernetes cluster when possible:
 - VM executor nodes: Kata RuntimeClass for stronger isolation;
 - high-risk executor nodes: Firecracker-backed runtime or external microVM runner;
 - GPU sandbox nodes: Kata plus NVIDIA GPU Operator sandbox mode where the platform supports it.
+
+Every executor pool should have an explicit network profile. A typical split is
+`control-plane-only`, `model-provider`, `research-gateway`, `object-store-only`,
+and `restate-executor`. Register the same profile as a runner label and enforce
+it with Kubernetes NetworkPolicy, Cilium, Calico, cloud firewall policy, or a
+provider sandbox egress profile. Avoid routing open-network work to device-auth
+runners unless the goal has a human approval and an output/security review gate.
 
 Register each executor runner with its exact backend. Example labels:
 

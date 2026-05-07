@@ -6,27 +6,27 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}
-  namespace: {{ include "coat.namespace" $root }}
+  namespace: {{ include "jattg.namespace" $root }}
   labels:
-    {{- include "coat.labels" $root | nindent 4 }}
+    {{- include "jattg.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $name }}
 spec:
   replicas: {{ default 1 $workload.replicas }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "coat.name" $root }}
+      app.kubernetes.io/name: {{ include "jattg.name" $root }}
       app.kubernetes.io/instance: {{ $root.Release.Name }}
       app.kubernetes.io/component: {{ $name }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "coat.name" $root }}
+        app.kubernetes.io/name: {{ include "jattg.name" $root }}
         app.kubernetes.io/instance: {{ $root.Release.Name }}
         app.kubernetes.io/component: {{ $name }}
     spec:
       containers:
         - name: {{ $name }}
-          image: {{ include "coat.image" (dict "root" $root "image" $workload.image) | quote }}
+          image: {{ include "jattg.image" (dict "root" $root "image" $workload.image) | quote }}
           imagePullPolicy: {{ default $root.Values.global.imagePullPolicy $workload.imagePullPolicy }}
           {{- with $workload.command }}
           command:
@@ -46,14 +46,14 @@ spec:
             - name: {{ $envName }}
               valueFrom:
                 configMapKeyRef:
-                  name: coat-config
+                  name: jattg-config
                   key: {{ $configKey }}
             {{- end }}
             {{- range $envName, $secretKey := $workload.secretEnv }}
             - name: {{ $envName }}
               valueFrom:
                 secretKeyRef:
-                  name: coat-agent-secrets
+                  name: jattg-agent-secrets
                   key: {{ $secretKey }}
             {{- end }}
             {{- range $envName, $fieldPath := $workload.fieldEnv }}

@@ -1,10 +1,10 @@
 namespace:
   create: true
-  name: coat
+  name: jattg
 
 global:
   imagePullPolicy: IfNotPresent
-  imageTag: local
+  imageTag: 0.0.2
 
 config:
   RUST_LOG: info
@@ -20,11 +20,11 @@ config:
   COAT_REQUIRE_EVENT_SOURCE_APPROVAL: "true"
   COAT_MEMORY_MCP_URL: http://graphiti-mcp:8000/mcp/
   MEMORY_GATEWAY_GRAPHITI_MCP_URL: ""
-  MEMORY_GATEWAY_GRAPHITI_GROUP_ID: coat
+  MEMORY_GATEWAY_GRAPHITI_GROUP_ID: jattg
   MEMORY_GATEWAY_QDRANT_URL: http://qdrant:6333
-  MEMORY_GATEWAY_QDRANT_COLLECTION: coat_memory
+  MEMORY_GATEWAY_QDRANT_COLLECTION: jattg_memory
   COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
-  COAT_OBJECT_STORE_BUCKET: coat-artifacts
+  COAT_OBJECT_STORE_BUCKET: jattg-artifacts
   MEMORY_GATEWAY_EMBEDDING_URL: https://api.openai.com/v1/embeddings
   MEMORY_GATEWAY_EMBEDDING_MODEL: text-embedding-3-large
   MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
@@ -33,6 +33,7 @@ config:
   CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret"}'
   STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret"}'
   MODEL_PROVIDER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","provider":"open_ai_compatible"}'
+  COAT_AGENT_TOOLBOX_IMAGE: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:0.0.2
 
 secrets:
   create: true
@@ -48,13 +49,13 @@ secrets:
     MCP_TOOL_TOKEN: replace-me
     QDRANT_API_KEY: ""
     EMBEDDING_API_KEY: replace-me
-    OBJECT_STORE_ACCESS_KEY: coat
-    OBJECT_STORE_SECRET_KEY: coat-local-secret
+    OBJECT_STORE_ACCESS_KEY: jattg
+    OBJECT_STORE_SECRET_KEY: jattg-local-secret
     EVENT_GATEWAY_TOKEN: ""
     COAT_CONTROL_GATEWAY_TOKEN: ""
     COAT_CONTROL_MCP_TOKEN: ""
-    POSTGRES_PASSWORD: coat-local-secret
-    COAT_GOAL_STORE_DATABASE_URL: postgresql://coat:coat-local-secret@postgres:5432/coat
+    POSTGRES_PASSWORD: jattg-local-secret
+    COAT_GOAL_STORE_DATABASE_URL: postgresql://jattg:jattg-local-secret@postgres:5432/jattg
 
 defaultResources:
   requests:
@@ -98,7 +99,7 @@ workloads:
   coordinator:
     enabled: true
     image:
-      repository: coat/coordinator
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator
     env:
       BIND_ADDR: 0.0.0.0:9080
       COAT_RUNNER_REGISTRY: http://runner-registry:9085
@@ -126,7 +127,7 @@ workloads:
   validator:
     enabled: true
     image:
-      repository: coat/validator
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-validator
     env:
       BIND_ADDR: 0.0.0.0:9082
     ports:
@@ -137,7 +138,7 @@ workloads:
   sandbox-runner:
     enabled: true
     image:
-      repository: coat/sandbox-runner
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-sandbox-runner
     env:
       BIND_ADDR: 0.0.0.0:9083
       SANDBOX_WORKSPACE_ROOT: /workspaces
@@ -156,7 +157,7 @@ workloads:
   tool-registry:
     enabled: true
     image:
-      repository: coat/tool-registry
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-tool-registry
     env:
       BIND_ADDR: 0.0.0.0:9084
       TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT: /workspaces
@@ -171,18 +172,25 @@ workloads:
   runner-registry:
     enabled: true
     image:
-      repository: coat/runner-registry
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-runner-registry
     env:
       BIND_ADDR: 0.0.0.0:9085
+      COAT_RUNNER_REGISTRY_JOURNAL_PATH: /data/runner-registry.jsonl
     ports:
       - name: http
         containerPort: 9085
         servicePort: 9085
+    volumeMounts:
+      - name: runner-registry-data
+        mountPath: /data
+    volumes:
+      - name: runner-registry-data
+        emptyDir: {}
 
   notifier:
     enabled: true
     image:
-      repository: coat/notifier
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-notifier
     env:
       BIND_ADDR: 0.0.0.0:9086
     ports:
@@ -193,7 +201,7 @@ workloads:
   goal-store:
     enabled: true
     image:
-      repository: coat/goal-store
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-goal-store
     env:
       BIND_ADDR: 0.0.0.0:9088
       COAT_GOAL_STORE_JOURNAL_PATH: /data/goal-store.jsonl
@@ -215,7 +223,7 @@ workloads:
   event-gateway:
     enabled: true
     image:
-      repository: coat/event-gateway
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-event-gateway
     env:
       BIND_ADDR: 0.0.0.0:9089
       COAT_RESTATE_INGRESS: http://restate:8080
@@ -240,7 +248,7 @@ workloads:
   memory-gateway:
     enabled: true
     image:
-      repository: coat/memory-gateway
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-memory-gateway
     env:
       BIND_ADDR: 0.0.0.0:9087
       MEMORY_GATEWAY_JOURNAL_PATH: /data/memory-gateway.jsonl
@@ -271,7 +279,7 @@ workloads:
   control-web:
     enabled: true
     image:
-      repository: coat/control-web
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-control-web
     env:
       PORT: "9090"
       COAT_RESTATE_INGRESS: http://restate:8080
@@ -350,7 +358,7 @@ workloads:
   codex-runner:
     enabled: true
     image:
-      repository: coat/codex-runner
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-codex-runner
     env:
       PORT: "9091"
       RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -375,7 +383,7 @@ workloads:
   claude-code-runner:
     enabled: true
     image:
-      repository: coat/claude-code-runner
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-claude-code-runner
     env:
       PORT: "9094"
       RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -402,7 +410,7 @@ workloads:
   model-provider-runner:
     enabled: true
     image:
-      repository: coat/model-provider-runner
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-model-provider-runner
     env:
       PORT: "9093"
       RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -432,7 +440,7 @@ workloads:
   staff-engineer-runner:
     enabled: true
     image:
-      repository: coat/staff-engineer-runner
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-staff-engineer-runner
     env:
       PORT: "9092"
       RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -489,3 +497,61 @@ jobs:
 
 networkPolicy:
   enabled: true
+  # Optional extra NetworkPolicies for runner/sandbox blast-radius control.
+  # Use these to add deny-by-default, restricted model egress, object-store-only
+  # egress, or ingress allowlists without changing service templates.
+  extraPolicies: {}
+
+ephemeralJobs: {}
+
+# Example:
+# ephemeralJobs:
+#   model-provider-burst:
+#     enabled: true
+#     kind: model-provider-runner
+#     image:
+#       repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox
+#     ttlSecondsAfterFinished: 3600
+#     activeDeadlineSeconds: 7200
+#     podSecurityContext:
+#       runAsNonRoot: true
+#       runAsUser: 1000
+#       runAsGroup: 1000
+#       fsGroup: 1000
+#       seccompProfile:
+#         type: RuntimeDefault
+#     securityContext:
+#       allowPrivilegeEscalation: false
+#       capabilities:
+#         drop: ["ALL"]
+#     env:
+#       HOME: /workspace
+#       PORT: "9093"
+#       MODEL_PROVIDER_RUNNER_MODE: stub
+#       MODEL_PROVIDER_KIND: vllm
+#       MODEL_PROVIDER_ENDPOINT: http://vllm:8000/v1
+#       RUNNER_REGISTRY_URL: http://runner-registry:9085
+#       RUNNER_ENDPOINT: http://model-provider-burst:9093
+#     ports:
+#       - name: http
+#         containerPort: 9093
+#         servicePort: 9093
+#     networkPolicy:
+#       enabled: true
+#       policyTypes: ["Ingress", "Egress"]
+#       ingress:
+#         - from:
+#             - podSelector:
+#                 matchLabels:
+#                   app.kubernetes.io/component: coordinator
+#           ports:
+#             - protocol: TCP
+#               port: 9093
+#       egress:
+#         - to:
+#             - podSelector:
+#                 matchLabels:
+#                   app.kubernetes.io/component: runner-registry
+#           ports:
+#             - protocol: TCP
+#               port: 9085

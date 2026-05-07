@@ -530,18 +530,18 @@
           "$ref": "#/$defs/ResultChannelPolicy",
           "default": {
             "checkpoints": {
-              "branch_prefix": "coat/checkpoint",
+              "branch_prefix": "jattg/checkpoint",
               "enabled": true,
               "git_checkpoint_on_result": true,
               "mode": "on_result",
               "object_checkpoint_on_result": true,
               "require_for_code_changes": false,
-              "tag_prefix": "coat-checkpoint",
+              "tag_prefix": "jattg-checkpoint",
               "workspace_snapshot_on_result": true
             },
             "git": {
               "base_ref": "HEAD",
-              "branch_prefix": "coat/task",
+              "branch_prefix": "jattg/task",
               "enabled": false,
               "include_patch_artifact": true,
               "push_on_success": false,
@@ -1725,13 +1725,13 @@
         "checkpoints": {
           "$ref": "#/$defs/CheckpointPolicy",
           "default": {
-            "branch_prefix": "coat/checkpoint",
+            "branch_prefix": "jattg/checkpoint",
             "enabled": true,
             "git_checkpoint_on_result": true,
             "mode": "on_result",
             "object_checkpoint_on_result": true,
             "require_for_code_changes": false,
-            "tag_prefix": "coat-checkpoint",
+            "tag_prefix": "jattg-checkpoint",
             "workspace_snapshot_on_result": true
           }
         },
@@ -1739,7 +1739,7 @@
           "$ref": "#/$defs/GitResultPolicy",
           "default": {
             "base_ref": "HEAD",
-            "branch_prefix": "coat/task",
+            "branch_prefix": "jattg/task",
             "enabled": false,
             "include_patch_artifact": true,
             "push_on_success": false,
@@ -2300,6 +2300,13 @@
           ],
           "default": null
         },
+        "ingress_policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "memory_limit_mb": {
           "type": [
             "integer",
@@ -2308,6 +2315,13 @@
           "format": "uint64",
           "default": null,
           "minimum": 0
+        },
+        "network_policy_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
         },
         "no_new_privileges": {
           "type": "boolean",
@@ -2368,7 +2382,9 @@
             "egress_policy_ref": null,
             "enforce": false,
             "image": null,
+            "ingress_policy_ref": null,
             "memory_limit_mb": null,
+            "network_policy_labels": {},
             "no_new_privileges": true,
             "pids_limit": null,
             "read_only_rootfs": false,

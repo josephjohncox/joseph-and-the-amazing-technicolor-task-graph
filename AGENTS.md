@@ -2,7 +2,8 @@
 
 This repo builds a durable agent control plane.
 
-Use `coat` as the short slug for commands, packages, environment variables, service images, and deployment names.
+Use `coat` as the short slug for the operator CLI and `COAT_*` runtime environment variables.
+Use `jattg` for Helm charts, Kubernetes names, release artifacts, and published service images.
 
 Agents do work.
 The coordinator owns truth.
@@ -33,6 +34,7 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
 - Restate Cloud runbook: `docs/operations/restate-cloud.md`
+- Ephemeral Kubernetes runners: `docs/operations/ephemeral-kubernetes-runners.md`
 - Active implementation plans: `docs/exec-plans/active/`
 - Completed plans: `docs/exec-plans/completed/`
 - Operational runbooks: `docs/operations/`
@@ -73,6 +75,7 @@ Update docs when behavior or public contracts change.
 - Codex MCP is the fallback callable-tool integration.
 - `@ctxr/agent-staff-engineer` is a specialized worker, not the platform core.
 - Compose and Kubernetes must run the same logical service boundaries.
+- Ephemeral Kubernetes Jobs may provide burst runner or Restate executor capacity, but Restate/coordinator state remains authoritative.
 - The TypeScript control gateway and SPA are optional operator surfaces; they must use backend APIs and must not own durable workflow state.
 
 ## Subagent Routing
@@ -111,6 +114,7 @@ Update docs when behavior or public contracts change.
 
 Sidecars must return domain-compatible JSON and must support stub mode.
 Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL` is set.
+Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they need a smaller purpose-built sidecar image.
 
 ## Distributed Execution
 
@@ -119,6 +123,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Every `TaskNode` may carry a `color` from `GoalSpec.color_policy`, subgoal metadata, or explicit child-task metadata; use stable color keys as semantic graph labels, not one-off UI decoration.
 - Goals have `control_policy`, `research_policy`, `memory_policy`, and `approval_policy`; preserve them when editing contracts.
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
+- `GoalSpec.id` is optional in normal authored JSON; the CLI/deserializer assigns a durable workflow key unless an operator intentionally supplies one for idempotency.
 - Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.
 - Non-trivial goals should include `authoring`, `plan.subgoals`, and stable `subgoal_id`s on known `initial_tasks`.
 - Use `GoalProgress`, `TaskQuery`, and `TaskList` for progress and task distribution; do not ask workers to discover subgoals from prose.
@@ -160,6 +165,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Use one branch and one object prefix per task unless a unifier explicitly joins branches or promotes artifacts.
 - Sandbox workspaces are rooted at `SANDBOX_WORKSPACE_ROOT`; snapshot and cleanup must be idempotent and must not remove paths outside that root.
 - Sandbox launch plans are durable contracts; real executors consume `sandbox-launch-plan.json` and return attestation/evidence instead of inferring runtime setup from prompts.
+- Runner and sandbox network access should default to restricted or disabled; use egress/ingress policy refs and network-policy labels for Kubernetes, Cilium, Calico, cloud firewall, or provider sandbox enforcement instead of broad open network.
 - Strict executor tasks should require `ExecutionProfile.guardrails`, artifact manifests, sandbox attestations, and bounded output/security review tasks before goal satisfaction.
 - Model-serving pools and executor pools should be separate when possible; GB10/DGX Spark, Mac mini, GPU, and CPU nodes should register their real model and sandbox capabilities instead of relying on prompt convention.
 - Postgres is the standard production goal read model. Restate remains authoritative; the goal store is a projection.
@@ -186,7 +192,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Personal Restate Cloud stack: `docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud up --build`
 - CLI local stack: `coat compose up`
 - CLI Restate Cloud stack: `coat compose up --restate-cloud`
-- Restate Cloud registration: `coat restate register-cloud --tunnel-name coat-personal --service-url http://coordinator:9080`
+- Restate Cloud registration: `coat restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
 - Kubernetes render: `coat k8s render --output infra/k8s/rendered.yaml`
 - Restate ingress defaults to `http://localhost:8080`.
 - Coordinator service listens on `:9080`.

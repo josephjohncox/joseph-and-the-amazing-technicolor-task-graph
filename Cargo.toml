@@ -44,3 +44,4 @@ uuid = { version = "1.19", features = ["v4", "v5", "serde"] }
 [workspace.metadata.coat]
 name = "Joseph and the Amazing Technicolor Task Graph"
 short_name = "coat"
+deployment_slug = "jattg"

@@ -1,20 +1,20 @@
-{{- define "coat.name" -}}
+{{- define "jattg.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "coat.namespace" -}}
+{{- define "jattg.namespace" -}}
 {{- default .Release.Namespace .Values.namespace.name -}}
 {{- end -}}
 
-{{- define "coat.labels" -}}
-app.kubernetes.io/name: {{ include "coat.name" . }}
+{{- define "jattg.labels" -}}
+app.kubernetes.io/name: {{ include "jattg.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- end -}}
 
-{{- define "coat.image" -}}
+{{- define "jattg.image" -}}
 {{- $root := index . "root" -}}
 {{- $image := index . "image" -}}
 {{- $tag := default $root.Values.global.imageTag $image.tag -}}

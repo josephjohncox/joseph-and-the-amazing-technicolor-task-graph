@@ -622,6 +622,8 @@ fn error_response(error: anyhow::Error) -> WorkspaceResponse {
                 access: NetworkAccess::Restricted,
                 deny_by_default: true,
                 egress_policy_ref: None,
+                ingress_policy_ref: None,
+                network_policy_labels: std::collections::BTreeMap::new(),
                 allowed_internal_services: Vec::new(),
             },
             git_result: None,
@@ -775,6 +777,8 @@ fn sandbox_launch_plan(
             access: sandbox.network.clone(),
             deny_by_default: sandbox.network != NetworkAccess::Open,
             egress_policy_ref: sandbox.isolation.egress_policy_ref.clone(),
+            ingress_policy_ref: sandbox.isolation.ingress_policy_ref.clone(),
+            network_policy_labels: sandbox.isolation.network_policy_labels.clone(),
             allowed_internal_services: if sandbox.network == NetworkAccess::Disabled {
                 Vec::new()
             } else {

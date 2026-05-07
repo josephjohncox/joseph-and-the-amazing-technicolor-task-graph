@@ -51,7 +51,7 @@
         "kind": "secret",
         "secret": {
           "provider": "kubernetes_secret",
-          "name": "coat-agent-secrets",
+          "name": "jattg-agent-secrets",
           "key": "MCP_TOOL_TOKEN",
           "namespace": "coat",
           "audience": "tool-registry"

@@ -15,6 +15,8 @@ Compose is the default local deployment. It includes:
 - Rust tool registry
 - TypeScript control gateway and SPA
 - Codex runner sidecar
+- Claude Code runner sidecar
+- Model-provider runner sidecar
 - Staff-engineer runner sidecar
 - MinIO S3-compatible object store for local large-artifact refs
 - OpenTelemetry collector
@@ -59,22 +61,37 @@ Expected production hardening:
 - Put `control-web` behind ingress/TLS, OAuth proxy, VPN, or private network access before exposing it outside the cluster.
 - For multi-user deployments, put `control-web` behind OIDC-aware ingress or an auth gateway, configure a token broker, and use `McpContextRef.access_mode=multi_user_oidc` only for goals that need user-delegated MCP calls.
 - Add namespace-specific resource requests and limits.
+- Use namespace default-deny NetworkPolicies for runner and sandbox namespaces, then allow only DNS, coordinator/registry/memory/object-store, approved model endpoints, approved research gateways, and Restate service registration paths needed by that runner profile.
 - Add per-task sandbox Jobs and set `runtimeClassName` for gVisor, Kata, Firecracker, or provider-integrated sandboxes when the node pool supports them.
 - Use `infra/k8s/examples/sandbox-runtimeclasses.yaml` and `infra/k8s/examples/sandbox-task-pod.yaml` as starting points for RuntimeClass, Pod security context, and NetworkPolicy setup.
 - Keep model-serving nodes separate from executor nodes when possible. See `docs/operations/model-runner-clusters.md` for GB10/DGX Spark, Mac mini, and mixed GPU/CPU runner fleets.
+- Use `infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` and `docs/operations/ephemeral-kubernetes-runners.md` for burst runner Jobs, short-lived Claude Code/Codex/model-provider runners, and temporary Restate service executors.
 - Add ingress and TLS according to the target cluster.
 - For Restate Cloud-backed clusters, prefer the Restate Operator `RestateCloudEnvironment` and `RestateDeployment` path in `infra/k8s/examples/restate-cloud-environment.yaml`.
 - For self-hosted Restate clusters, use the operator pattern in `infra/k8s/examples/restate-operator-cluster.yaml` as the starting point and replace local storage with reviewed persistent or object-store-backed configuration.
 
 ## Helm
 
-The Helm chart lives in `infra/helm/coat`. It follows the same logical service boundaries as `infra/k8s/base/all.yaml`, but is values-driven for release installation.
+The Helm chart lives in `infra/helm/jattg`. It follows the same logical service boundaries as `infra/k8s/base/all.yaml`, but is values-driven for release installation.
+
+The chart also supports disabled-by-default `.Values.ephemeralJobs` entries.
+Use them for bounded runner or executor Jobs that run the `jattg-agent-toolbox`
+image, register with the runner registry or Restate, and terminate by
+`activeDeadlineSeconds` plus `ttlSecondsAfterFinished`.
+`infra/helm/jattg/values-ephemeral-example.yaml` renders a model-provider burst
+runner example against the same chart.
+For raw manifest workflows, render the reusable example Jobs with:
+
+```sh
+coat k8s ephemeral-jobs render \
+  --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
+```
 
 Local validation:
 
 ```sh
-helm lint infra/helm/coat
-helm template coat infra/helm/coat > /tmp/coat-helm.yaml
+helm lint infra/helm/jattg
+helm template jattg infra/helm/jattg > /tmp/jattg-helm.yaml
 ```
 
 Package locally:

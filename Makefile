@@ -34,7 +34,7 @@ control-web-build:
 ts-build: sidecars-build control-web-build
 
 helm-lint:
-	helm lint infra/helm/coat
+	helm lint infra/helm/jattg
 
 helm-package:
 	scripts/package-helm-chart.sh

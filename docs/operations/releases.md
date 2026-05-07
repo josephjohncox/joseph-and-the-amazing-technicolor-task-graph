@@ -25,8 +25,8 @@ The bump command updates:
 
 - `Cargo.toml` workspace package version;
 - `Cargo.lock` workspace package versions;
-- `infra/helm/coat/Chart.yaml` chart `version`;
-- `infra/helm/coat/Chart.yaml` chart `appVersion`.
+- `infra/helm/jattg/Chart.yaml` chart `version`;
+- `infra/helm/jattg/Chart.yaml` chart `appVersion`.
 
 By default `release bump` refuses to run in a dirty worktree. Pass `--allow-dirty` while preparing an unreleased branch or active scaffold.
 
@@ -51,7 +51,7 @@ That command performs:
 
 - version bump in `Cargo.toml`;
 - lockfile refresh in `Cargo.lock`;
-- chart `version` and `appVersion` bump in `infra/helm/coat/Chart.yaml`;
+- chart `version` and `appVersion` bump in `infra/helm/jattg/Chart.yaml`;
 - release commit `chore(release): v0.2.0`;
 - annotated binary tag `v0.2.0`;
 - annotated chart tag `chart-v0.2.0`.
@@ -100,22 +100,31 @@ The workflow builds release binaries for:
 - `aarch64-unknown-linux-gnu`;
 - `aarch64-apple-darwin`.
 
-It uploads tarballs plus SHA-256 files to the GitHub Release. After the binary build matrix passes, the same workflow publishes multi-arch service images to GHCR under `ghcr.io/<owner>/<repo>/...` with `vX.Y.Z`, `X.Y.Z`, and `latest` tags.
+It uploads tarballs plus SHA-256 files to the GitHub Release. After the binary build matrix passes, the same workflow publishes multi-arch service images to GHCR under `ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/...` with `vX.Y.Z`, `X.Y.Z`, and `latest` tags.
+Release binary jobs use Rust dependency caches, and GHCR image publishing uses GitHub Actions BuildKit caches by default. Set `BUILDX_CACHE=false` when manually debugging the image script without remote cache state.
+Rust service images are built from the `service` target in
+`infra/containers/rust-service.Dockerfile`. The `jattg-agent-toolbox` image is
+built from the same Dockerfile's `agent-toolbox` target so ephemeral Kubernetes
+Jobs can share the released Rust binaries and runner sidecars without creating a
+second Rust base image.
 
-Published COAT images:
+Published JATTG images:
 
-- `coat-coordinator`;
-- `coat-event-gateway`;
-- `coat-goal-store`;
-- `coat-memory-gateway`;
-- `coat-notifier`;
-- `coat-runner-registry`;
-- `coat-sandbox-runner`;
-- `coat-tool-registry`;
-- `coat-validator`;
-- `coat-control-web`;
-- `coat-codex-runner`;
-- `coat-staff-engineer-runner`.
+- `jattg-coordinator`;
+- `jattg-event-gateway`;
+- `jattg-goal-store`;
+- `jattg-memory-gateway`;
+- `jattg-notifier`;
+- `jattg-runner-registry`;
+- `jattg-sandbox-runner`;
+- `jattg-tool-registry`;
+- `jattg-validator`;
+- `jattg-agent-toolbox`;
+- `jattg-control-web`;
+- `jattg-codex-runner`;
+- `jattg-claude-code-runner`;
+- `jattg-model-provider-runner`;
+- `jattg-staff-engineer-runner`.
 
 Local binary packaging after a release build:
 
@@ -127,7 +136,7 @@ VERSION=0.2.0 scripts/package-binaries.sh
 ## Helm Chart Release
 
 Helm chart releases are handled by `.github/workflows/release-helm.yml`.
-When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/coat/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`.
+When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/jattg/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`.
 
 Trigger it manually only when the release was already cut locally:
 
@@ -136,7 +145,7 @@ git tag chart-v0.2.0
 git push origin chart-v0.2.0
 ```
 
-The workflow runs `helm lint`, packages `infra/helm/coat`, generates `index.yaml`, and uploads the chart, index, and SHA-256 files to a separate GitHub Release.
+The workflow runs `helm lint`, packages `infra/helm/jattg`, generates `index.yaml`, and uploads the chart, index, and SHA-256 files to a separate GitHub Release.
 
 Local chart packaging:
 
@@ -147,7 +156,7 @@ CHART_VERSION=0.2.0 APP_VERSION=0.2.0 scripts/package-helm-chart.sh
 Install from a chart release:
 
 ```sh
-helm install coat https://github.com/OWNER/REPO/releases/download/chart-v0.2.0/coat-0.2.0.tgz
+helm install jattg https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.2.0/jattg-0.2.0.tgz
 ```
 
 ## Guardrails
@@ -156,4 +165,4 @@ helm install coat https://github.com/OWNER/REPO/releases/download/chart-v0.2.0/c
 - Do not put live secrets in chart defaults.
 - Keep binary and chart tags separate.
 - Prefer `coat release cut --version X --push` over hand-written release tags.
-- Run `cargo test --workspace`, `buf lint`, `make ts-build`, and `helm lint infra/helm/coat` before tagging when local tools are available.
+- Run `cargo test --workspace`, `buf lint`, `make ts-build`, and `helm lint infra/helm/jattg` before tagging when local tools are available.

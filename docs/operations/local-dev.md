@@ -76,6 +76,9 @@ coat goal draft \
   --out examples/drafts/local-strict-review.json
 coat goal review-checks
 coat goal submit --title "Smoke" --objective "Run a registered stub sidecar task"
+export COAT_GOAL_ID=<goal-id-from-submit-output>
+coat goal progress
+coat goal list
 coat goal submit --file examples/goal-template-structured.json
 coat runner register --file examples/runner-vllm.json
 coat runner list
@@ -156,6 +159,12 @@ Use `docs/operations/goal-authoring.md` before submitting non-trivial goals. It 
 - `AWS_REGION` plus workload identity or AWS credentials for Bedrock provider smoke tests
 
 Sidecars also expose `GET /capabilities`, which is the quickest way to verify model candidates, review support, MCP propagation support, and remaining capacity without reading environment variables.
+
+The runner registry records registrations and heartbeats in
+`COAT_RUNNER_REGISTRY_JOURNAL_PATH` when configured. Compose sets this to
+`/data/runner-registry.jsonl` on a named volume, so restarting
+`runner-registry` preserves the visible runner set while stale heartbeat TTL and
+capacity still decide whether a runner is dispatchable.
 
 Use sidecar verification endpoints for non-mutating dependency checks:
 
@@ -281,7 +290,7 @@ Graphiti/Zep memory is configured as a policy and MCP endpoint in this scaffold.
 
 Set `MEMORY_GATEWAY_JOURNAL_PATH` to enable the local append-only JSONL journal. Compose sets it to `/data/memory-gateway.jsonl` and mounts `memory-gateway-data`, so local memory records replay after service restart.
 
-Set `MEMORY_GATEWAY_GRAPHITI_MCP_URL=http://localhost:8000/mcp/` when a Graphiti MCP server is running and the gateway should mirror local memory operations into the graph. `MEMORY_GATEWAY_GRAPHITI_GROUP_ID` defaults to `coat`; per-goal `MemoryStoreRef.namespace` overrides it. Use `MEMORY_GATEWAY_GRAPHITI_TOKEN` only when the remote MCP endpoint requires bearer auth.
+Set `MEMORY_GATEWAY_GRAPHITI_MCP_URL=http://localhost:8000/mcp/` when a Graphiti MCP server is running and the gateway should mirror local memory operations into the graph. `MEMORY_GATEWAY_GRAPHITI_GROUP_ID` defaults to `jattg`; per-goal `MemoryStoreRef.namespace` overrides it. Use `MEMORY_GATEWAY_GRAPHITI_TOKEN` only when the remote MCP endpoint requires bearer auth.
 
 Compose runs Qdrant on `http://localhost:6333` and configures `MEMORY_GATEWAY_QDRANT_URL=http://qdrant:6333`. The gateway mirrors memory writes and joins into Qdrant when an embedding endpoint is available, then merges vector hits into `memory_search`.
 
@@ -331,9 +340,9 @@ Compose runs an S3-compatible MinIO object store:
 
 - endpoint: `http://localhost:9000`
 - console: `http://localhost:9001`
-- bucket: `coat-artifacts`
+- bucket: `jattg-artifacts`
 - access key: `coat`
-- secret key: `coat-local-secret`
+- secret key: `jattg-local-secret`
 
 Tasks that enable `ExecutionProfile.results.git` should return `git_result` with the task branch and worktree path. Tasks that enable `ExecutionProfile.results.object_storage` should return `object_artifacts` with `s3://...` URIs. Use git for code/diffs and object storage for large generated assets.
 
@@ -354,3 +363,16 @@ coat sandbox create --file examples/sandbox-workspace-request-gvisor.json
 coat sandbox snapshot --workspace-id <workspace-id>
 coat sandbox cleanup --workspace-id <workspace-id>
 ```
+
+## Ephemeral Kubernetes Runner Jobs
+
+Render the reusable bounded Job example set from the CLI:
+
+```sh
+coat k8s ephemeral-jobs render \
+  --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
+```
+
+The rendered file contains default-deny network policy, a restricted service
+account, injection ConfigMap, model-provider runner, Claude Code runner, and a
+temporary Restate executor pattern using the `jattg-agent-toolbox` image.

@@ -44,16 +44,16 @@ jobs:
         env:
           CHART_VERSION: ${{ steps.version.outputs.version }}
           APP_VERSION: ${{ steps.version.outputs.app_version }}
-          RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/chart-v${{ steps.version.outputs.version }}
+          RELEASE_URL: https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${{ steps.version.outputs.version }}
         run: scripts/package-helm-chart.sh
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: COAT Helm chart ${{ steps.version.outputs.version }}
+          name: JATTG Helm chart ${{ steps.version.outputs.version }}
           files: |
-            dist/helm/coat-${{ steps.version.outputs.version }}.tgz
-            dist/helm/coat-${{ steps.version.outputs.version }}.tgz.sha256
+            dist/helm/jattg-${{ steps.version.outputs.version }}.tgz
+            dist/helm/jattg-${{ steps.version.outputs.version }}.tgz.sha256
             dist/helm/index.yaml
             dist/helm/index.yaml.sha256
           fail_on_unmatched_files: true

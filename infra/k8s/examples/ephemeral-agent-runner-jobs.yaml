@@ -1,0 +1,490 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jattg-ephemeral
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jattg-ephemeral-runner
+  namespace: jattg-ephemeral
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jattg-ephemeral-injection
+  namespace: jattg-ephemeral
+data:
+  runner.env: |
+    RUNNER_LEASE_TTL_SECONDS=300
+    RUNNER_HEARTBEAT_INTERVAL_MS=30000
+  README: |
+    Mount this ConfigMap at /opt/coat/injections/env for env injection.
+    Mount scripts at /opt/coat/injections/init.d only when COAT_ENABLE_INJECTION_SCRIPTS=true.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-by-default
+  namespace: jattg-ephemeral
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: jattg-ephemeral
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: jattg-ephemeral
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-runner-ingress-from-jattg
+  namespace: jattg-ephemeral
+spec:
+  podSelector:
+    matchLabels:
+      jattg.dev/expose-runner: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jattg
+      ports:
+        - protocol: TCP
+          port: 9080
+        - protocol: TCP
+          port: 9093
+        - protocol: TCP
+          port: 9094
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane-egress
+  namespace: jattg-ephemeral
+spec:
+  podSelector:
+    matchLabels:
+      jattg.dev/network-profile: control-plane-only
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jattg
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9070
+        - protocol: TCP
+          port: 9080
+        - protocol: TCP
+          port: 9085
+        - protocol: TCP
+          port: 9087
+        - protocol: TCP
+          port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-model-endpoint-egress
+  namespace: jattg-ephemeral
+spec:
+  podSelector:
+    matchLabels:
+      jattg.dev/network-profile: model-provider
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jattg-models
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 11434
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-restate-executor-egress
+  namespace: jattg-ephemeral
+spec:
+  podSelector:
+    matchLabels:
+      jattg.dev/network-profile: restate-executor
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jattg
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9070
+        - protocol: TCP
+          port: 9085
+        - protocol: TCP
+          port: 9086
+        - protocol: TCP
+          port: 9087
+        - protocol: TCP
+          port: 9088
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ephemeral-model-provider-runner
+  namespace: jattg-ephemeral
+spec:
+  selector:
+    app.kubernetes.io/name: ephemeral-model-provider-runner
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ephemeral-model-provider-runner
+  namespace: jattg-ephemeral
+  labels:
+    app.kubernetes.io/name: ephemeral-model-provider-runner
+    app.kubernetes.io/part-of: jattg-ephemeral
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ephemeral-model-provider-runner
+        app.kubernetes.io/part-of: jattg-ephemeral
+        jattg.dev/expose-runner: "true"
+        jattg.dev/network-profile: model-provider
+    spec:
+      restartPolicy: Never
+      serviceAccountName: jattg-ephemeral-runner
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: COAT_EPHEMERAL_KIND
+              value: model-provider-runner
+            - name: HOME
+              value: /workspace
+            - name: PORT
+              value: "9093"
+            - name: MODEL_PROVIDER_RUNNER_MODE
+              value: stub
+            - name: MODEL_PROVIDER_KIND
+              value: vllm
+            - name: MODEL_PROVIDER_ENDPOINT
+              value: http://vllm:8000/v1
+            - name: RUNNER_REGISTRY_URL
+              value: http://runner-registry.jattg.svc.cluster.local:9085
+            - name: RUNNER_ENDPOINT
+              value: http://ephemeral-model-provider-runner.jattg-ephemeral.svc.cluster.local:9093
+            - name: RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: 9093
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+              ephemeral-storage: 4Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+              ephemeral-storage: 16Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: injection-env
+              mountPath: /opt/coat/injections/env
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: injection-env
+          configMap:
+            name: jattg-ephemeral-injection
+            items:
+              - key: runner.env
+                path: runner.env
+        - name: workspace
+          emptyDir:
+            sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ephemeral-claude-code-runner
+  namespace: jattg-ephemeral
+spec:
+  selector:
+    app.kubernetes.io/name: ephemeral-claude-code-runner
+  ports:
+    - name: http
+      port: 9094
+      targetPort: http
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ephemeral-claude-code-runner
+  namespace: jattg-ephemeral
+  labels:
+    app.kubernetes.io/name: ephemeral-claude-code-runner
+    app.kubernetes.io/part-of: jattg-ephemeral
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ephemeral-claude-code-runner
+        app.kubernetes.io/part-of: jattg-ephemeral
+        jattg.dev/expose-runner: "true"
+        jattg.dev/network-profile: control-plane-only
+    spec:
+      restartPolicy: Never
+      serviceAccountName: jattg-ephemeral-runner
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: COAT_EPHEMERAL_KIND
+              value: claude-code-runner
+            - name: HOME
+              value: /workspace
+            - name: PORT
+              value: "9094"
+            - name: CLAUDE_CODE_RUNNER_MODE
+              value: stub
+            - name: RUNNER_REGISTRY_URL
+              value: http://runner-registry.jattg.svc.cluster.local:9085
+            - name: RUNNER_ENDPOINT
+              value: http://ephemeral-claude-code-runner.jattg-ephemeral.svc.cluster.local:9094
+            - name: RUNNER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: 9094
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: injection-env
+              mountPath: /opt/coat/injections/env
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: injection-env
+          configMap:
+            name: jattg-ephemeral-injection
+            items:
+              - key: runner.env
+                path: runner.env
+        - name: workspace
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ephemeral-coordinator-executor
+  namespace: jattg-ephemeral
+spec:
+  selector:
+    app.kubernetes.io/name: ephemeral-coordinator-executor
+  ports:
+    - name: http
+      port: 9080
+      targetPort: http
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ephemeral-coordinator-executor
+  namespace: jattg-ephemeral
+  labels:
+    app.kubernetes.io/name: ephemeral-coordinator-executor
+    app.kubernetes.io/part-of: jattg-ephemeral
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ephemeral-coordinator-executor
+        app.kubernetes.io/part-of: jattg-ephemeral
+        jattg.dev/expose-runner: "true"
+        jattg.dev/network-profile: restate-executor
+    spec:
+      restartPolicy: Never
+      serviceAccountName: jattg-ephemeral-runner
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: COAT_EPHEMERAL_KIND
+              value: coordinator
+            - name: HOME
+              value: /workspace
+            - name: BIND_ADDR
+              value: 0.0.0.0:9080
+            - name: COAT_RUNNER_REGISTRY
+              value: http://runner-registry.jattg.svc.cluster.local:9085
+            - name: COAT_NOTIFIER_URL
+              value: http://notifier.jattg.svc.cluster.local:9086
+            - name: COAT_GOAL_STORE_URL
+              value: http://goal-store.jattg.svc.cluster.local:9088
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway.jattg.svc.cluster.local:9087
+          ports:
+            - name: http
+              containerPort: 9080
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restate-register-ephemeral-coordinator
+  namespace: jattg-ephemeral
+  labels:
+    app.kubernetes.io/name: restate-register-ephemeral-coordinator
+    app.kubernetes.io/part-of: jattg-ephemeral
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: restate-register-ephemeral-coordinator
+        app.kubernetes.io/part-of: jattg-ephemeral
+        jattg.dev/network-profile: restate-executor
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: register
+          image: curlimages/curl:8.16.0
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              curl -fsS -X POST http://restate.jattg.svc.cluster.local:9070/deployments \
+                -H 'content-type: application/json' \
+                -d '{"uri":"http://ephemeral-coordinator-executor.jattg-ephemeral.svc.cluster.local:9080"}'
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

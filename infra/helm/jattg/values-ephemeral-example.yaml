@@ -1,0 +1,81 @@
+ephemeralJobs:
+  model-provider-burst:
+    enabled: true
+    kind: model-provider-runner
+    image:
+      repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox
+      tag: 0.0.2
+    activeDeadlineSeconds: 7200
+    ttlSecondsAfterFinished: 3600
+    service: true
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+    env:
+      HOME: /workspace
+      PORT: "9093"
+      MODEL_PROVIDER_RUNNER_MODE: stub
+      MODEL_PROVIDER_KIND: vllm
+      MODEL_PROVIDER_ENDPOINT: http://vllm:8000/v1
+      RUNNER_REGISTRY_URL: http://runner-registry:9085
+      RUNNER_ENDPOINT: http://model-provider-burst:9093
+    fieldEnv:
+      RUNNER_ID: metadata.name
+      NODE_ID: spec.nodeName
+    ports:
+      - name: http
+        containerPort: 9093
+        servicePort: 9093
+    networkPolicy:
+      enabled: true
+      policyTypes:
+        - Ingress
+        - Egress
+      ingress:
+        - from:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: coordinator
+          ports:
+            - protocol: TCP
+              port: 9093
+      egress:
+        - to:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: runner-registry
+          ports:
+            - protocol: TCP
+              port: 9085
+        - to:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: memory-gateway
+          ports:
+            - protocol: TCP
+              port: 9087
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: kube-system
+          ports:
+            - protocol: UDP
+              port: 53
+            - protocol: TCP
+              port: 53
+    volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+    volumes:
+      - name: workspace
+        emptyDir:
+          sizeLimit: 16Gi

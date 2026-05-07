@@ -1,5 +1,4 @@
 {
-  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756611",
   "title": "Structured goal authoring and memory guidance",
   "objective": "Add operator guidance for writing high-quality structured goals and for using distributed durable memory across workers. Success means docs exist, examples parse, schemas regenerate, and tests pass.",
   "repo": null,
@@ -74,7 +73,7 @@
         "mcp_server_name": "qdrant-memory",
         "secret_refs": []
       },
-      "collection": "coat_memory",
+      "collection": "jattg_memory",
       "write_embeddings": true,
       "search_embeddings": true,
       "hybrid_search": true,

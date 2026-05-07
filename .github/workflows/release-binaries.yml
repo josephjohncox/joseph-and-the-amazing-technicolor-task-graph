@@ -36,6 +36,8 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Install Linux cross linker
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -64,10 +66,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: coat-binaries-${{ matrix.target }}
+          name: jattg-binaries-${{ matrix.target }}
           path: |
-            dist/coat-binaries-*.tar.gz
-            dist/coat-binaries-*.tar.gz.sha256
+            dist/jattg-binaries-*.tar.gz
+            dist/jattg-binaries-*.tar.gz.sha256
 
   publish:
     name: Publish binary release assets
@@ -91,7 +93,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: COAT ${{ steps.version.outputs.version }} binaries
+          name: JATTG ${{ steps.version.outputs.version }} binaries
           files: |
             dist/*.tar.gz
             dist/*.sha256
@@ -126,12 +128,12 @@ jobs:
         run: |
           raw="${{ inputs.version || github.ref_name }}"
           version="${raw#v}"
-          repository="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "namespace=${repository}" >> "$GITHUB_OUTPUT"
+          echo "namespace=josephjohncox/joseph-and-the-amazing-technicolor-task-graph" >> "$GITHUB_OUTPUT"
 
       - name: Build and push GHCR images
         env:
           VERSION: ${{ steps.image-release.outputs.version }}
           IMAGE_NAMESPACE: ${{ steps.image-release.outputs.namespace }}
+          BUILDX_CACHE: true
         run: scripts/publish-ghcr-images.sh

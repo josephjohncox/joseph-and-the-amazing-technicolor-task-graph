@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: coat-config
-  namespace: {{ include "coat.namespace" . }}
+  name: jattg-config
+  namespace: {{ include "jattg.namespace" . }}
   labels:
-    {{- include "coat.labels" . | nindent 4 }}
+    {{- include "jattg.labels" . | nindent 4 }}
 data:
   {{- range $key, $value := .Values.config }}
   {{ $key }}: {{ tpl (toString $value) $ | quote }}

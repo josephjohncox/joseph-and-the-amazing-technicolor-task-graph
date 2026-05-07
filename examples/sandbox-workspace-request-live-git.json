@@ -12,7 +12,7 @@
     "enabled": true,
     "remote": "origin",
     "base_ref": "HEAD",
-    "branch_prefix": "coat/task",
+    "branch_prefix": "jattg/task",
     "worktree_root": "/workspaces",
     "push_on_success": false,
     "require_clean_diff": true,

@@ -2,12 +2,13 @@
 
 ## Purpose
 
-Goals should enter the durable system as clean work contracts, not as vague prompts. The coordinator needs stable subgoal IDs, immediate work seeds, and queryable progress so it can distribute work across runners and subagents without asking any worker to own the global plan.
+Goals should enter the durable system as clean work contracts, not as vague prompts. The coordinator needs stable subgoal IDs, immediate work seeds, and queryable progress so it can distribute work across runners and subagents without asking any worker to own the global plan. The durable `goal_id` is required internally, but normal authors should not need to hand-write it.
 
 ## Contract Shape
 
 `GoalSpec` carries three goal-authoring surfaces:
 
+- `id`: optional in normal JSON authoring; generated on submit or deserialization unless the operator intentionally supplies a deterministic workflow key.
 - `authoring`: operator intent, assumptions, open questions, constraints, acceptance evidence, and out-of-scope work.
 - `plan.subgoals`: stable subgoal records with ID, title, owner, expected artifacts, acceptance evidence, dependencies, and tags.
 - `initial_tasks`: known first-frontier `ChildTaskRequest`s with matching `subgoal_id`, role, budget, sandbox, execution profile, and done criteria.
@@ -50,7 +51,7 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 1. Draft the goal with the authoring loop in `docs/operations/goal-authoring.md`.
 2. Use `coat goal draft` when the operator wants a starter `GoalSpec` with subgoals, initial tasks, strict review doctrine, human-steered mode, or branching enabled from CLI flags.
 3. Run `coat goal lint --file <goal.json> --strict`.
-4. Submit the goal.
+4. Submit the goal and capture the printed `goal_id` with `export COAT_GOAL_ID=...`, or use `--latest` against the goal store for quick local workflows.
 5. Inspect durable status with `coat goal progress`.
 6. Find distributable subgoal work with `coat goal tasks`.
 7. Branch risky or high-value work with `coat goal branch --file examples/branch-request-root.json`.
@@ -68,6 +69,7 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 - Graph colors must use stable keys. UI hex values are presentation hints; the durable meaning is the color key plus `meaning`.
 - A task without a subgoal is allowed only for root planning, global review, unification, or operator-injected emergency work.
 - Progress must be calculated from durable state and validation reports, not sidecar-local thread state.
+- Follow-up commands select workflows with `--goal-id`, `COAT_GOAL_ID`, or `--latest`; goal-scoped command JSON may omit `goal_id` when the CLI already selected the workflow.
 - Branching is a durable task-tree operation: the original target task, candidate tasks, vote tasks, unifier task, and final selection are all queryable state.
 - Timeouts and restarts are policy-controlled. A timed-out runner call may restart a task only if `RestartPolicy` allows the reason and scope.
 - Doctrine coverage is a validation concern. If a goal requires objective or gate results, reviewer/tester/formal-methods outputs must return structured `ReviewOutput.objective_results` and `ReviewOutput.gate_results`.

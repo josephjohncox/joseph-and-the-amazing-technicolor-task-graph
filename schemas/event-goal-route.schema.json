@@ -331,18 +331,18 @@
           "$ref": "#/$defs/ResultChannelPolicy",
           "default": {
             "checkpoints": {
-              "branch_prefix": "coat/checkpoint",
+              "branch_prefix": "jattg/checkpoint",
               "enabled": true,
               "git_checkpoint_on_result": true,
               "mode": "on_result",
               "object_checkpoint_on_result": true,
               "require_for_code_changes": false,
-              "tag_prefix": "coat-checkpoint",
+              "tag_prefix": "jattg-checkpoint",
               "workspace_snapshot_on_result": true
             },
             "git": {
               "base_ref": "HEAD",
-              "branch_prefix": "coat/task",
+              "branch_prefix": "jattg/task",
               "enabled": false,
               "include_patch_artifact": true,
               "push_on_success": false,
@@ -1267,13 +1267,13 @@
         "checkpoints": {
           "$ref": "#/$defs/CheckpointPolicy",
           "default": {
-            "branch_prefix": "coat/checkpoint",
+            "branch_prefix": "jattg/checkpoint",
             "enabled": true,
             "git_checkpoint_on_result": true,
             "mode": "on_result",
             "object_checkpoint_on_result": true,
             "require_for_code_changes": false,
-            "tag_prefix": "coat-checkpoint",
+            "tag_prefix": "jattg-checkpoint",
             "workspace_snapshot_on_result": true
           }
         },
@@ -1281,7 +1281,7 @@
           "$ref": "#/$defs/GitResultPolicy",
           "default": {
             "base_ref": "HEAD",
-            "branch_prefix": "coat/task",
+            "branch_prefix": "jattg/task",
             "enabled": false,
             "include_patch_artifact": true,
             "push_on_success": false,
@@ -1471,7 +1471,8 @@
       "properties": {
         "goal_id": {
           "type": "string",
-          "format": "uuid"
+          "format": "uuid",
+          "default": "00000000-0000-0000-0000-000000000000"
         },
         "id": {
           "type": "string",
@@ -1499,7 +1500,6 @@
       },
       "required": [
         "id",
-        "goal_id",
         "message",
         "kind"
       ]

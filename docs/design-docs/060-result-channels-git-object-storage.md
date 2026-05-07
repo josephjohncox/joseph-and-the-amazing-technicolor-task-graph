@@ -17,7 +17,7 @@ The coordinator stores references. It does not copy full diffs, credentials, or 
 - `enabled`: whether the task should produce a git result;
 - `remote`: usually `origin`;
 - `base_ref`: branch or commit to base the worktree on;
-- `branch_prefix`: default `coat/task`;
+- `branch_prefix`: default `jattg/task`;
 - `worktree_root`: runner-local root such as `/worktrees`;
 - `push_on_success`: whether a runner should push after validation-ready work;
 - `require_clean_diff`: whether the runner should fail if unrelated local changes are present;
@@ -55,7 +55,7 @@ When any gate is missing, the runner still records the planned git branch/worktr
 
 Workers return `AgentRunResult.object_artifacts`, each with store, key, URI, content type, size, hash, and description.
 
-Local Compose runs a MinIO S3-compatible service as `object-store` and initializes the `coat-artifacts` bucket. Kubernetes includes the same development object-store Deployment and Job. In AWS/EKS, use real S3 by setting the object store endpoint/region/bucket and resolving credentials through IAM roles for service accounts or another `SecretRef` provider.
+Local Compose runs a MinIO S3-compatible service as `object-store` and initializes the `jattg-artifacts` bucket. Kubernetes includes the same development object-store Deployment and Job. In AWS/EKS, use real S3 by setting the object store endpoint/region/bucket and resolving credentials through IAM roles for service accounts or another `SecretRef` provider.
 
 ## Checkpoint Channel
 
@@ -91,8 +91,8 @@ The goal store projects checkpoint refs as artifact rows and exposes `/goal-stor
 Compose:
 
 - S3 endpoint: `http://object-store:9000`
-- bucket: `coat-artifacts`
+- bucket: `jattg-artifacts`
 - access key: `coat`
-- secret key: `coat-local-secret`
+- secret key: `jattg-local-secret`
 
 These defaults are for local development only. Production should use cloud object storage, workload identity, or a managed secret source.

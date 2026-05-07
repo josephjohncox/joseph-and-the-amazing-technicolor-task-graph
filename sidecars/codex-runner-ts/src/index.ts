@@ -632,7 +632,7 @@ function memoryContextDiagnostics(memoryContext: MemoryContextResponse | null, e
 function buildGitResult(request: AgentRunRequest): Record<string, unknown> | null {
   const git = resultPolicy(request, "git");
   if (!isRecord(git) || git.enabled !== true) return null;
-  const branchPrefix = typeof git.branch_prefix === "string" ? git.branch_prefix.replace(/\/+$/, "") : "coat/task";
+  const branchPrefix = typeof git.branch_prefix === "string" ? git.branch_prefix.replace(/\/+$/, "") : "jattg/task";
   const worktreeRoot = typeof git.worktree_root === "string" ? git.worktree_root.replace(/\/+$/, "") : null;
   return {
     repo: null,
@@ -651,7 +651,7 @@ function buildObjectArtifacts(request: AgentRunRequest): Record<string, unknown>
   const objectStorage = resultPolicy(request, "object_storage");
   if (!isRecord(objectStorage) || objectStorage.enabled !== true || !isRecord(objectStorage.store)) return [];
   const store = objectStorage.store;
-  const bucket = typeof store.bucket === "string" ? store.bucket : "coat-artifacts";
+  const bucket = typeof store.bucket === "string" ? store.bucket : "jattg-artifacts";
   const prefixTemplate =
     typeof objectStorage.key_prefix_template === "string"
       ? objectStorage.key_prefix_template

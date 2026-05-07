@@ -6,7 +6,7 @@ VERSION="${VERSION#v}"
 TARGET="${TARGET:-}"
 DIST_DIR="${DIST_DIR:-dist}"
 ASSET_SUFFIX="${ASSET_SUFFIX:-${TARGET:-native}}"
-ARCHIVE_NAME="coat-binaries-${VERSION}-${ASSET_SUFFIX}"
+ARCHIVE_NAME="jattg-binaries-${VERSION}-${ASSET_SUFFIX}"
 
 BINARIES=(
   coat
@@ -44,7 +44,7 @@ cp README.md "${STAGING_DIR}/README.md"
 
 cat > "${STAGING_DIR}/manifest.json" <<JSON
 {
-  "name": "coat-binaries",
+  "name": "jattg-binaries",
   "version": "${VERSION}",
   "target": "${TARGET:-native}",
   "binaries": [

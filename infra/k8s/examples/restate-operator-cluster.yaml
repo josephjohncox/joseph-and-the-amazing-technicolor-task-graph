@@ -1,7 +1,7 @@
 apiVersion: restate.dev/v1
 kind: RestateCluster
 metadata:
-  name: coat-restate
+  name: jattg-restate
 spec:
   compute:
     image: restatedev/restate:1.5
@@ -30,12 +30,12 @@ apiVersion: restate.dev/v1beta1
 kind: RestateDeployment
 metadata:
   name: coordinator
-  namespace: coat
+  namespace: jattg
 spec:
   replicas: 2
   restate:
     register:
-      cluster: coat-restate
+      cluster: jattg-restate
   selector:
     matchLabels:
       app: coordinator
@@ -46,7 +46,7 @@ spec:
     spec:
       containers:
         - name: coordinator
-          image: coat/coordinator:local
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator:0.0.2
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR

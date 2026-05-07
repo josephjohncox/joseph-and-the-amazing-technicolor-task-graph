@@ -22,7 +22,7 @@
       "repo": "joseph-and-the-amazing-technicolor-task-graph",
       "remote": null,
       "base_ref": "main",
-      "branch": "coat/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+      "branch": "jattg/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
       "worktree_path": "/workspaces/018f8f2f-1fd8-7688-bb12-8bfb6b756611/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
       "commit": null,
       "pushed": false,
@@ -42,7 +42,7 @@
       "summary": "Task branch checkpoint for review before merge.",
       "artifact": {
         "kind": "checkpoint",
-        "uri": "git+checkpoint://coat/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+        "uri": "git+checkpoint://jattg/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
         "description": "task branch checkpoint",
         "sha256": null
       },
@@ -50,7 +50,7 @@
         "repo": "joseph-and-the-amazing-technicolor-task-graph",
         "remote": null,
         "base_ref": "main",
-        "branch": "coat/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+        "branch": "jattg/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
         "worktree_path": "/workspaces/018f8f2f-1fd8-7688-bb12-8bfb6b756611/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
         "commit": null,
         "pushed": false,

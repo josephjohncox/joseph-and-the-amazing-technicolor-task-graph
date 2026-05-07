@@ -21,6 +21,19 @@
         "string",
         "null"
       ]
+    },
+    "ingress_policy_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "network_policy_labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
     }
   },
   "required": [

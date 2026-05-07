@@ -6,13 +6,13 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ $name }}
-  namespace: {{ include "coat.namespace" $root }}
+  namespace: {{ include "jattg.namespace" $root }}
   labels:
-    {{- include "coat.labels" $root | nindent 4 }}
+    {{- include "jattg.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $name }}
 spec:
   selector:
-    app.kubernetes.io/name: {{ include "coat.name" $root }}
+    app.kubernetes.io/name: {{ include "jattg.name" $root }}
     app.kubernetes.io/instance: {{ $root.Release.Name }}
     app.kubernetes.io/component: {{ $name }}
   ports:

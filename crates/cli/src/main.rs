@@ -21,13 +21,14 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use coat_domain::{
     BranchRequest, BranchSelectionRequest, ChildTaskRequest, ControlLoopMode, EventSource,
-    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalSpec, GraphColorRef, HumanApproval,
-    MemoryContextRequest, MemoryJoinRequest, MemoryRepairRequest, MemorySearchRequest,
-    MemoryWriteRequest, NotificationRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion,
-    PlanQuestionStatus, PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine,
-    ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration, StandardReviewCheck,
-    SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
+    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalRecord, GoalSpec, GraphColorRef,
+    HumanApproval, MemoryContextRequest, MemoryJoinRequest, MemoryRepairRequest,
+    MemorySearchRequest, MemoryWriteRequest, NotificationRequest, PlanCompileRequest,
+    PlanDraftRequest, PlanQuestion, PlanQuestionStatus, PlanRevisionRequest, PlanningMode,
+    RestartRequest, ReviewDoctrine, ReviewDoctrinePreset, RunnerDispatchRequest,
+    RunnerRegistration, StandardReviewCheck, SteeringDirective, SteeringDirectiveKind, SubgoalSpec,
+    TaskPriority, TaskPurpose, TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest,
+    WorkerKind,
 };
 use uuid::Uuid;
 
@@ -449,6 +450,7 @@ struct RunnerDispatchArgs {
 #[derive(Debug, Subcommand)]
 enum GoalSubcommand {
     Draft(DraftGoalArgs),
+    List(GoalListArgs),
     Submit(SubmitGoalArgs),
     Status(GoalIdArgs),
     Progress(GoalIdArgs),
@@ -516,6 +518,22 @@ struct SubmitGoalArgs {
 }
 
 #[derive(Debug, Args)]
+struct GoalListArgs {
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    goal_store_url: String,
+    #[arg(long)]
+    status: Vec<String>,
+    #[arg(long)]
+    repo: Option<String>,
+    #[arg(long)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
 struct GoalLintArgs {
     #[arg(long)]
     file: PathBuf,
@@ -531,8 +549,22 @@ struct GoalIdArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+}
+
+#[derive(Debug, Args)]
+struct GoalSelectorArgs {
+    #[arg(long, env = "COAT_GOAL_ID")]
+    goal_id: Option<Uuid>,
     #[arg(long)]
-    goal_id: Uuid,
+    latest: bool,
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    goal_store_url: String,
 }
 
 #[derive(Debug, Args)]
@@ -543,8 +575,8 @@ struct GoalTasksArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     file: Option<PathBuf>,
     #[arg(long)]
@@ -573,8 +605,8 @@ struct SteerGoalArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     file: PathBuf,
 }
@@ -587,8 +619,8 @@ struct SteerStandardGoalArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     task_id: Option<Uuid>,
     #[arg(long)]
@@ -615,8 +647,8 @@ struct RestartGoalArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     file: PathBuf,
 }
@@ -629,8 +661,8 @@ struct BranchGoalArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     file: PathBuf,
 }
@@ -643,8 +675,8 @@ struct SelectBranchArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     file: PathBuf,
 }
@@ -657,8 +689,8 @@ struct CancelGoalArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long, default_value = "cancelled by operator")]
     reason: String,
 }
@@ -671,8 +703,8 @@ struct ApproveArgs {
         default_value = "http://localhost:8080"
     )]
     restate_ingress: String,
-    #[arg(long)]
-    goal_id: Uuid,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
     #[arg(long)]
     approval_id: Uuid,
     #[arg(long, default_value_t = true)]
@@ -804,7 +836,7 @@ struct ReleaseBumpArgs {
     app_version: Option<String>,
     #[arg(long, default_value = "Cargo.toml")]
     cargo_toml: PathBuf,
-    #[arg(long, default_value = "infra/helm/coat/Chart.yaml")]
+    #[arg(long, default_value = "infra/helm/jattg/Chart.yaml")]
     chart_yaml: PathBuf,
     #[arg(long)]
     allow_dirty: bool,
@@ -824,7 +856,7 @@ struct ReleaseCutArgs {
     cargo_toml: PathBuf,
     #[arg(long, default_value = "Cargo.lock")]
     cargo_lock: PathBuf,
-    #[arg(long, default_value = "infra/helm/coat/Chart.yaml")]
+    #[arg(long, default_value = "infra/helm/jattg/Chart.yaml")]
     chart_yaml: PathBuf,
     #[arg(long, default_value = "origin")]
     remote: String,
@@ -887,6 +919,18 @@ struct K8sCommand {
 #[derive(Debug, Subcommand)]
 enum K8sSubcommand {
     Render(RenderArgs),
+    EphemeralJobs(EphemeralJobsCommand),
+}
+
+#[derive(Debug, Args)]
+struct EphemeralJobsCommand {
+    #[command(subcommand)]
+    command: EphemeralJobsSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum EphemeralJobsSubcommand {
+    Render(EphemeralJobsRenderArgs),
 }
 
 #[derive(Debug, Args)]
@@ -909,8 +953,22 @@ struct RenderArgs {
 }
 
 #[derive(Debug, Args)]
+struct EphemeralJobsRenderArgs {
+    #[arg(
+        long,
+        default_value = "infra/k8s/examples/ephemeral-agent-runner-jobs.yaml"
+    )]
+    source: PathBuf,
+    #[arg(
+        long,
+        default_value = "infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml"
+    )]
+    output: PathBuf,
+}
+
+#[derive(Debug, Args)]
 struct RestateCloudEnvArgs {
-    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "coat-personal")]
+    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "jattg-personal")]
     tunnel_name: String,
     #[arg(long, env = "RESTATE_CLOUD_REGION", default_value = "us")]
     region: String,
@@ -928,7 +986,7 @@ struct RestateCloudEnvArgs {
 
 #[derive(Debug, Args)]
 struct RestateTunnelDockerArgs {
-    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "coat-personal")]
+    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "jattg-personal")]
     tunnel_name: String,
     #[arg(long, env = "RESTATE_CLOUD_REGION", default_value = "us")]
     region: String,
@@ -955,7 +1013,7 @@ struct RestateTunnelDockerArgs {
 
 #[derive(Debug, Args)]
 struct RestateRegisterCloudArgs {
-    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "coat-personal")]
+    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "jattg-personal")]
     tunnel_name: String,
     #[arg(long, default_value = "http://localhost:9080")]
     service_url: String,
@@ -1178,7 +1236,7 @@ fn release_cut(args: ReleaseCutArgs) -> anyhow::Result<()> {
         bail!("release bump produced no staged changes");
     }
     git_tag(binary_tag, &format!("COAT {app_version} binaries"))?;
-    git_tag(chart_tag, &format!("COAT Helm chart {chart_version}"))?;
+    git_tag(chart_tag, &format!("JATTG Helm chart {chart_version}"))?;
 
     if args.push {
         git_push(&args.remote, &["HEAD"])?;
@@ -1230,6 +1288,7 @@ fn release_plan_json(
     let chart_tag = release_tag("chart-v", chart_version, tag_suffix.as_deref());
     let image_version_tag = version_with_tag_suffix(version, tag_suffix.as_deref());
     let tag_suffix_value = tag_suffix.clone().unwrap_or_default();
+    let container_registry = "ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph";
 
     Ok(serde_json::json!({
         "version": version,
@@ -1241,31 +1300,32 @@ fn release_plan_json(
         "bump_files": [
             "Cargo.toml",
             "Cargo.lock",
-            "infra/helm/coat/Chart.yaml"
+            "infra/helm/jattg/Chart.yaml"
         ],
         "binary_workflow": ".github/workflows/release-binaries.yml",
         "helm_workflow": ".github/workflows/release-helm.yml",
         "binary_assets": [
-            format!("coat-binaries-{image_version_tag}-x86_64-unknown-linux-gnu.tar.gz"),
-            format!("coat-binaries-{image_version_tag}-aarch64-unknown-linux-gnu.tar.gz"),
-            format!("coat-binaries-{image_version_tag}-aarch64-apple-darwin.tar.gz")
+            format!("jattg-binaries-{image_version_tag}-x86_64-unknown-linux-gnu.tar.gz"),
+            format!("jattg-binaries-{image_version_tag}-aarch64-unknown-linux-gnu.tar.gz"),
+            format!("jattg-binaries-{image_version_tag}-aarch64-apple-darwin.tar.gz")
         ],
-        "container_registry": "ghcr.io/<owner>/<repo>",
+        "container_registry": container_registry,
         "container_images": [
-            format!("ghcr.io/<owner>/<repo>/coat-coordinator:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-event-gateway:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-goal-store:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-memory-gateway:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-notifier:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-runner-registry:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-sandbox-runner:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-tool-registry:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-validator:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-control-web:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-codex-runner:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-claude-code-runner:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-model-provider-runner:v{image_version_tag}"),
-            format!("ghcr.io/<owner>/<repo>/coat-staff-engineer-runner:v{image_version_tag}")
+            format!("{container_registry}/jattg-coordinator:v{image_version_tag}"),
+            format!("{container_registry}/jattg-event-gateway:v{image_version_tag}"),
+            format!("{container_registry}/jattg-goal-store:v{image_version_tag}"),
+            format!("{container_registry}/jattg-memory-gateway:v{image_version_tag}"),
+            format!("{container_registry}/jattg-notifier:v{image_version_tag}"),
+            format!("{container_registry}/jattg-runner-registry:v{image_version_tag}"),
+            format!("{container_registry}/jattg-sandbox-runner:v{image_version_tag}"),
+            format!("{container_registry}/jattg-tool-registry:v{image_version_tag}"),
+            format!("{container_registry}/jattg-validator:v{image_version_tag}"),
+            format!("{container_registry}/jattg-agent-toolbox:v{image_version_tag}"),
+            format!("{container_registry}/jattg-control-web:v{image_version_tag}"),
+            format!("{container_registry}/jattg-codex-runner:v{image_version_tag}"),
+            format!("{container_registry}/jattg-claude-code-runner:v{image_version_tag}"),
+            format!("{container_registry}/jattg-model-provider-runner:v{image_version_tag}"),
+            format!("{container_registry}/jattg-staff-engineer-runner:v{image_version_tag}")
         ],
         "container_image_tags": [
             format!("v{image_version_tag}"),
@@ -1273,7 +1333,7 @@ fn release_plan_json(
             "latest"
         ],
         "helm_assets": [
-            format!("coat-{}.tgz", version_with_tag_suffix(chart_version, tag_suffix.as_deref())),
+            format!("jattg-{}.tgz", version_with_tag_suffix(chart_version, tag_suffix.as_deref())),
             "index.yaml"
         ],
         "publish_steps": [
@@ -2073,44 +2133,51 @@ fn init(args: InitArgs) -> anyhow::Result<()> {
 async fn goal(args: GoalCommand) -> anyhow::Result<()> {
     match args.command {
         GoalSubcommand::Draft(args) => draft_goal(args),
+        GoalSubcommand::List(args) => list_goals(args).await,
         GoalSubcommand::Submit(args) => submit_goal(args).await,
         GoalSubcommand::Status(args) => {
-            restate_post_without_body(&args.restate_ingress, args.goal_id, "status").await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            restate_post_without_body(&args.restate_ingress, goal_id, "status").await
         }
         GoalSubcommand::Progress(args) => {
-            restate_post_without_body(&args.restate_ingress, args.goal_id, "progress").await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            restate_post_without_body(&args.restate_ingress, goal_id, "progress").await
         }
         GoalSubcommand::Tasks(args) => {
+            let goal_id = resolve_goal_id(&args.selector).await?;
             let query = task_query_from_args(&args)?;
-            restate_post_json(&args.restate_ingress, args.goal_id, "tasks", &query).await
+            restate_post_json(&args.restate_ingress, goal_id, "tasks", &query).await
         }
         GoalSubcommand::Lint(args) => lint_goal(args),
         GoalSubcommand::Steer(args) => {
-            let directive: SteeringDirective = read_json_file(&args.file)?;
-            restate_post_json(&args.restate_ingress, args.goal_id, "steer", &directive).await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            let directive: SteeringDirective =
+                read_goal_scoped_json_file(&args.file, goal_id, "SteeringDirective")?;
+            restate_post_json(&args.restate_ingress, goal_id, "steer", &directive).await
         }
         GoalSubcommand::SteerStandard(args) => steer_standard_goal(args).await,
         GoalSubcommand::ReviewChecks => review_checks(),
         GoalSubcommand::Restart(args) => {
-            let request: RestartRequest = read_json_file(&args.file)?;
-            restate_post_json(&args.restate_ingress, args.goal_id, "restart", &request).await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            let request: RestartRequest =
+                read_goal_scoped_json_file(&args.file, goal_id, "RestartRequest")?;
+            restate_post_json(&args.restate_ingress, goal_id, "restart", &request).await
         }
         GoalSubcommand::Branch(args) => {
-            let request: BranchRequest = read_json_file(&args.file)?;
-            restate_post_json(&args.restate_ingress, args.goal_id, "branch", &request).await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            let request: BranchRequest =
+                read_goal_scoped_json_file(&args.file, goal_id, "BranchRequest")?;
+            restate_post_json(&args.restate_ingress, goal_id, "branch", &request).await
         }
         GoalSubcommand::SelectBranch(args) => {
-            let request: BranchSelectionRequest = read_json_file(&args.file)?;
-            restate_post_json(
-                &args.restate_ingress,
-                args.goal_id,
-                "select_branch",
-                &request,
-            )
-            .await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            let request: BranchSelectionRequest =
+                read_goal_scoped_json_file(&args.file, goal_id, "BranchSelectionRequest")?;
+            restate_post_json(&args.restate_ingress, goal_id, "select_branch", &request).await
         }
         GoalSubcommand::Cancel(args) => {
-            restate_post_json(&args.restate_ingress, args.goal_id, "cancel", &args.reason).await
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            restate_post_json(&args.restate_ingress, goal_id, "cancel", &args.reason).await
         }
     }
 }
@@ -2252,13 +2319,14 @@ fn plan_draft_request_from_args(args: &PlanDraftArgs) -> anyhow::Result<PlanDraf
 }
 
 async fn steer_standard_goal(args: SteerStandardGoalArgs) -> anyhow::Result<()> {
+    let goal_id = resolve_goal_id(&args.selector).await?;
     let check: StandardReviewCheck = parse_json_enum(&args.check, "StandardReviewCheck")?;
     let message = args
         .message
         .unwrap_or_else(|| format!("Request {}", check.title()));
     let directive = SteeringDirective {
         id: Uuid::new_v4(),
-        goal_id: args.goal_id,
+        goal_id,
         task_id: args.task_id,
         operator: args.operator,
         message,
@@ -2271,7 +2339,7 @@ async fn steer_standard_goal(args: SteerStandardGoalArgs) -> anyhow::Result<()> 
     if args.emit_only || args.out.is_some() {
         return write_json_or_stdout(&directive, args.out.as_ref());
     }
-    restate_post_json(&args.restate_ingress, args.goal_id, "steer", &directive).await
+    restate_post_json(&args.restate_ingress, goal_id, "steer", &directive).await
 }
 
 fn review_checks() -> anyhow::Result<()> {
@@ -2312,8 +2380,46 @@ async fn submit_goal(args: SubmitGoalArgs) -> anyhow::Result<()> {
     if !status.is_success() {
         bail!("submit failed with {status}: {body}");
     }
-    println!("{body}");
+    let response = serde_json::from_str::<serde_json::Value>(&body)
+        .unwrap_or_else(|_| serde_json::Value::String(body));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "submitted": true,
+            "goal_id": goal.id,
+            "workflow_url": url,
+            "set_env": format!("export COAT_GOAL_ID={}", goal.id),
+            "response": response,
+        }))?
+    );
     Ok(())
+}
+
+async fn list_goals(args: GoalListArgs) -> anyhow::Result<()> {
+    let mut params = Vec::new();
+    for status in args.status {
+        params.push(format!("status={status}"));
+    }
+    if let Some(repo) = args.repo {
+        params.push(format!("repo={repo}"));
+    }
+    if let Some(limit) = args.limit {
+        params.push(format!("limit={limit}"));
+    }
+    let query = if params.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", params.join("&"))
+    };
+    get_url(
+        &format!(
+            "{}/goal-store/goals{}",
+            args.goal_store_url.trim_end_matches('/'),
+            query
+        ),
+        None,
+    )
+    .await
 }
 
 fn lint_goal(args: GoalLintArgs) -> anyhow::Result<()> {
@@ -2523,12 +2629,13 @@ fn write_json_or_stdout<T: serde::Serialize>(
 }
 
 async fn approve(args: ApproveArgs) -> anyhow::Result<()> {
+    let goal_id = resolve_goal_id(&args.selector).await?;
     let approval = HumanApproval {
         approval_id: args.approval_id,
         approved: args.approved,
         note: args.note,
     };
-    restate_post_json(&args.restate_ingress, args.goal_id, "approve", &approval).await
+    restate_post_json(&args.restate_ingress, goal_id, "approve", &approval).await
 }
 
 async fn restate_post_without_body(
@@ -2611,6 +2718,24 @@ async fn post_json_value_to_url<T: serde::Serialize + ?Sized>(
     serde_json::from_str(&text).with_context(|| format!("parse response from {url}"))
 }
 
+async fn get_json_value_from_url(
+    url: &str,
+    bearer_token: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let mut request = client.get(url);
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("GET {url} failed with {status}: {text}");
+    }
+    serde_json::from_str(&text).with_context(|| format!("parse response from {url}"))
+}
+
 async fn get_url(url: &str, bearer_token: Option<&str>) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let mut request = client.get(url);
@@ -2630,6 +2755,79 @@ async fn get_url(url: &str, bearer_token: Option<&str>) -> anyhow::Result<()> {
 fn read_json_file<T: serde::de::DeserializeOwned>(path: &PathBuf) -> anyhow::Result<T> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
+}
+
+fn read_goal_scoped_json_file<T: serde::de::DeserializeOwned>(
+    path: &PathBuf,
+    goal_id: Uuid,
+    type_name: &str,
+) -> anyhow::Result<T> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+    ensure_json_goal_id(&mut value, goal_id)
+        .with_context(|| format!("prepare {type_name} from {}", path.display()))?;
+    serde_json::from_value(value)
+        .with_context(|| format!("parse {type_name} from {}", path.display()))
+}
+
+fn ensure_json_goal_id(value: &mut serde_json::Value, goal_id: Uuid) -> anyhow::Result<()> {
+    let object = value
+        .as_object_mut()
+        .context("goal-scoped JSON must be an object")?;
+    match object.get("goal_id") {
+        Some(existing) if !existing.is_null() => {
+            let existing_goal_id: Uuid =
+                serde_json::from_value(existing.clone()).context("parse existing goal_id")?;
+            if existing_goal_id != goal_id {
+                bail!("JSON goal_id {existing_goal_id} does not match selected goal_id {goal_id}");
+            }
+        }
+        _ => {
+            object.insert(
+                "goal_id".to_string(),
+                serde_json::Value::String(goal_id.to_string()),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_goal_id(selector: &GoalSelectorArgs) -> anyhow::Result<Uuid> {
+    match (selector.goal_id, selector.latest) {
+        (Some(_), true) => bail!("use either --goal-id/COAT_GOAL_ID or --latest, not both"),
+        (Some(goal_id), false) => Ok(goal_id),
+        (None, true) => latest_goal_id(&selector.goal_store_url).await,
+        (None, false) => bail!(
+            "select a goal with --goal-id, set COAT_GOAL_ID, or use --latest with a reachable goal store"
+        ),
+    }
+}
+
+async fn latest_goal_id(goal_store_url: &str) -> anyhow::Result<Uuid> {
+    let url = format!("{}/goal-store/goals", goal_store_url.trim_end_matches('/'));
+    let value = get_json_value_from_url(&url, None).await?;
+    latest_goal_id_from_value(&value)
+}
+
+fn latest_goal_id_from_value(value: &serde_json::Value) -> anyhow::Result<Uuid> {
+    let goals: Vec<GoalRecord> = serde_json::from_value(
+        value
+            .get("goals")
+            .cloned()
+            .context("goal-store response is missing goals")?,
+    )
+    .context("parse goal-store goals")?;
+    goals
+        .into_iter()
+        .max_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then_with(|| left.title.cmp(&right.title))
+                .then_with(|| left.goal_id.cmp(&right.goal_id))
+        })
+        .map(|goal| goal.goal_id)
+        .context("goal store returned no goals")
 }
 
 fn workflow_url(ingress: &str, goal_id: Uuid, handler: &str) -> String {
@@ -2695,6 +2893,22 @@ fn k8s(args: K8sCommand) -> anyhow::Result<()> {
             println!("rendered {}", args.output.display());
             Ok(())
         }
+        K8sSubcommand::EphemeralJobs(args) => match args.command {
+            EphemeralJobsSubcommand::Render(args) => {
+                let manifest = fs::read_to_string(&args.source)
+                    .with_context(|| format!("read {}", args.source.display()))?;
+                if let Some(parent) = args.output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&args.output, manifest)?;
+                println!(
+                    "rendered ephemeral runner jobs {} from {}",
+                    args.output.display(),
+                    args.source.display()
+                );
+                Ok(())
+            }
+        },
     }
 }
 
@@ -2818,9 +3032,10 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        bump_release_versions, extract_follow_ups, release_plan_json, replace_toml_section_value,
-        replace_yaml_root_value,
+        bump_release_versions, ensure_json_goal_id, extract_follow_ups, latest_goal_id_from_value,
+        release_plan_json, replace_toml_section_value, replace_yaml_root_value,
     };
+    use uuid::Uuid;
 
     #[test]
     fn extracts_follow_ups_until_next_section() {
@@ -2862,12 +3077,15 @@ mod tests {
         assert_eq!(
             plan["binary_assets"],
             serde_json::json!([
-                "coat-binaries-1.2.3-x86_64-unknown-linux-gnu.tar.gz",
-                "coat-binaries-1.2.3-aarch64-unknown-linux-gnu.tar.gz",
-                "coat-binaries-1.2.3-aarch64-apple-darwin.tar.gz"
+                "jattg-binaries-1.2.3-x86_64-unknown-linux-gnu.tar.gz",
+                "jattg-binaries-1.2.3-aarch64-unknown-linux-gnu.tar.gz",
+                "jattg-binaries-1.2.3-aarch64-apple-darwin.tar.gz"
             ])
         );
-        assert_eq!(plan["container_registry"], "ghcr.io/<owner>/<repo>");
+        assert_eq!(
+            plan["container_registry"],
+            "ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph"
+        );
         assert_eq!(
             plan["container_image_tags"],
             serde_json::json!(["v1.2.3", "1.2.3", "latest"])
@@ -2884,7 +3102,8 @@ mod tests {
                 .as_array()
                 .expect("container images")
                 .iter()
-                .any(|image| image == "ghcr.io/<owner>/<repo>/coat-runner-registry:v1.2.3")
+                .any(|image| image
+                    == "ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-runner-registry:v1.2.3")
         );
         assert!(
             plan["publish_steps"]
@@ -2926,7 +3145,7 @@ version = "0.1.0"
 edition = "2024"
 "#;
         let chart_yaml = r#"apiVersion: v2
-name: coat
+name: jattg
 version: 0.1.0
 appVersion: 0.1.0
 "#;
@@ -2968,7 +3187,7 @@ edition = "2024"
         std::fs::write(
             &chart_yaml,
             r#"apiVersion: v2
-name: coat
+name: jattg
 version: 0.1.0
 appVersion: 0.1.0
 "#,
@@ -2986,5 +3205,72 @@ appVersion: 0.1.0
         assert!(chart.contains("version: 0.2.1"));
         assert!(chart.contains("appVersion: 0.2.0"));
         std::fs::remove_dir_all(&temp).expect("cleanup tempdir");
+    }
+
+    #[test]
+    fn goal_scoped_json_injects_missing_goal_id_and_rejects_mismatch() {
+        let goal_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756602").expect("goal id");
+        let mut value = serde_json::json!({
+            "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+            "message": "operator steering"
+        });
+        ensure_json_goal_id(&mut value, goal_id).expect("inject goal id");
+        assert_eq!(value["goal_id"], goal_id.to_string());
+
+        let mut null_goal = serde_json::json!({
+            "goal_id": null,
+            "message": "operator steering"
+        });
+        ensure_json_goal_id(&mut null_goal, goal_id).expect("replace null goal id");
+        assert_eq!(null_goal["goal_id"], goal_id.to_string());
+
+        let mut mismatched = serde_json::json!({
+            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756604"
+        });
+        assert!(ensure_json_goal_id(&mut mismatched, goal_id).is_err());
+    }
+
+    #[test]
+    fn latest_goal_id_prefers_newest_updated_at() {
+        let expected = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756602").expect("goal id");
+        let value = serde_json::json!({
+            "goals": [
+                {
+                    "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+                    "title": "Older",
+                    "objective": "old objective",
+                    "repo": null,
+                    "status": "running",
+                    "total_tasks": 1,
+                    "open_tasks": 1,
+                    "blocked_tasks": 0,
+                    "failed_tasks": 0,
+                    "percent_done": 0.0,
+                    "root_task_id": null,
+                    "satisfied": false,
+                    "satisfaction_score": null,
+                    "updated_at": "2026-05-06T10:00:00Z",
+                    "payload_json": {}
+                },
+                {
+                    "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+                    "title": "Newer",
+                    "objective": "new objective",
+                    "repo": null,
+                    "status": "running",
+                    "total_tasks": 1,
+                    "open_tasks": 1,
+                    "blocked_tasks": 0,
+                    "failed_tasks": 0,
+                    "percent_done": 0.0,
+                    "root_task_id": null,
+                    "satisfied": false,
+                    "satisfaction_score": null,
+                    "updated_at": "2026-05-06T11:00:00Z",
+                    "payload_json": {}
+                }
+            ]
+        });
+        assert_eq!(latest_goal_id_from_value(&value).expect("latest"), expected);
     }
 }

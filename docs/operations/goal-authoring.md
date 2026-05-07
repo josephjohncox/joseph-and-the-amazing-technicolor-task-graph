@@ -183,6 +183,11 @@ Include concrete edits when changes are requested.
 
 ## Field Guidance
 
+`id`: Optional for normal authoring. Omit it unless you intentionally need a
+deterministic/idempotent workflow key. `coat goal submit` assigns an ID when the
+field is missing and prints `goal_id`, `workflow_url`, and an
+`export COAT_GOAL_ID=...` helper for follow-up commands.
+
 `objective`: Write this as the contract a reviewer will judge. Avoid implementation-only phrasing unless the implementation itself is the artifact.
 
 `authoring`: Record the operator intent, assumptions, open questions, constraints, acceptance evidence, and out-of-scope work. This is for goal quality and reviewability, not for hidden worker instructions.
@@ -223,7 +228,7 @@ Standard review steering: Use `request_standard_review` to inject bounded checks
 
 `approval_policy`: Keep the default unless this is a trusted offline smoke test. Approval-policy `never` is acceptable only inside isolated runners with constrained filesystem and network.
 
-`default_execution`: Pick the least powerful runner that can do the work. Add local model candidates when the runner can actually serve them. Add MCP servers by reference and keep auth in `SecretRef`. For Codex or Claude device/browser login, set `auth_distribution.mode = runner_local_only` and require runner labels; for distributed human auth, use a brokered lease and approval. For untrusted executor work, enable `guardrails` so output and security review tasks fork from completed work before goal satisfaction.
+`default_execution`: Pick the least powerful runner that can do the work. Add local model candidates when the runner can actually serve them. Add MCP servers by reference and keep auth in `SecretRef`. For Codex or Claude device/browser login, set `auth_distribution.mode = runner_local_only` and require runner labels; for distributed human auth, use a brokered lease and approval. For untrusted executor work, enable `guardrails` so output and security review tasks fork from completed work before goal satisfaction. Use `sandbox.network = restricted` by default, and set `isolation.egress_policy_ref`, `isolation.ingress_policy_ref`, and `isolation.network_policy_labels` when a Kubernetes, Cilium, Calico, cloud firewall, or provider sandbox policy should constrain the runner's blast radius.
 
 `sandbox`: Use `isolation.backend` and runner labels to request the actual execution boundary. `local_workspace` is for trusted development. Use `container`, `gvisor`, `kata`, `firecracker`, `kubernetes_job`, or `provider_sandbox` for production execution when a runner can return an enforced `SandboxAttestation`. If `approval_policy = never`, require strong sandbox attestation.
 
@@ -270,28 +275,34 @@ Submit from JSON:
 
 ```sh
 coat goal submit --file examples/goal-template-structured.json
+export COAT_GOAL_ID=<goal-id-from-submit-output>
+```
+
+List projected goals or select the latest projected goal:
+
+```sh
+coat goal list
+coat goal progress --latest
 ```
 
 Check status:
 
 ```sh
-coat goal status --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat goal status
 ```
 
 Check progress:
 
 ```sh
-coat goal progress --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+coat goal progress
 ```
 
 Find subgoal tasks:
 
 ```sh
 coat goal tasks \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/task-query-subgoal.json
 coat goal tasks \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --subgoal-id implement-progress-contract \
   --color implementation_blue \
   --runnable
@@ -301,7 +312,6 @@ Steer with research:
 
 ```sh
 coat goal steer \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --file examples/steering-request-research.json
 ```
 
@@ -309,7 +319,6 @@ Steer with a standard check directly:
 
 ```sh
 coat goal steer-standard \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --check deep_research \
   --topic "memory substrate and vector RAG libraries" \
   --reason "Implementation should be guided by current standard libraries and supported services."
@@ -319,7 +328,11 @@ Approve a waiting task:
 
 ```sh
 coat approve \
-  --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611 \
   --approval-id <approval-request-id> \
   --approved true
 ```
+
+Follow-up commands resolve the goal from `--goal-id`, `COAT_GOAL_ID`, or
+`--latest`. Goal-scoped JSON files for `steer`, `restart`, `branch`, and
+`select-branch` may omit `goal_id`; the CLI injects the selected workflow key
+and rejects the command if the file contains a different `goal_id`.

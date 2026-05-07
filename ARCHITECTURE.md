@@ -81,7 +81,7 @@ Clean goals include `GoalPlan.subgoals` and `initial_tasks` with stable `subgoal
 Schemas are generated with:
 
 ```sh
-cargo run -p coat-domain --bin generate-schemas -- schemas
+make schemas
 ```
 
 Protobuf contracts are maintained with Buf:

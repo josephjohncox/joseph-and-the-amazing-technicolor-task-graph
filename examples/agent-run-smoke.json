@@ -59,7 +59,7 @@
           "enabled": true,
           "remote": "origin",
           "base_ref": "HEAD",
-          "branch_prefix": "coat/task",
+          "branch_prefix": "jattg/task",
           "worktree_root": "/worktrees",
           "push_on_success": false,
           "require_clean_diff": true,
@@ -69,7 +69,7 @@
           "enabled": true,
           "store": {
             "kind": "minio",
-            "bucket": "coat-artifacts",
+            "bucket": "jattg-artifacts",
             "prefix": null,
             "endpoint": "http://object-store:9000",
             "region": "us-east-1",

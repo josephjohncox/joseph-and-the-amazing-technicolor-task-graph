@@ -10,10 +10,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust
       - uses: bufbuild/buf-setup-action@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            sidecars/*/package-lock.json
+            ui/control-plane-web/package.json
       - run: cargo fmt --all --check
       - run: cargo check --workspace
       - run: cargo test --workspace
@@ -23,6 +30,10 @@ jobs:
       - run: sh scripts/coat-doc-gardener.sh
       - run: npm ci --prefix sidecars/codex-runner-ts
       - run: npm run --prefix sidecars/codex-runner-ts build
+      - run: npm ci --prefix sidecars/claude-code-runner-ts
+      - run: npm run --prefix sidecars/claude-code-runner-ts build
+      - run: npm ci --prefix sidecars/model-provider-runner-ts
+      - run: npm run --prefix sidecars/model-provider-runner-ts build
       - run: npm ci --prefix sidecars/staff-engineer-runner-ts
       - run: npm run --prefix sidecars/staff-engineer-runner-ts build
       - run: npm install --prefix ui/control-plane-web

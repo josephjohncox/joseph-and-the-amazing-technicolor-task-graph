@@ -16,9 +16,9 @@ services:
     image: pgvector/pgvector:pg16
     profiles: ["db"]
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-coat}
-      POSTGRES_USER: ${POSTGRES_USER:-coat}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coat-local-secret}
+      POSTGRES_DB: ${POSTGRES_DB:-jattg}
+      POSTGRES_USER: ${POSTGRES_USER:-jattg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jattg-local-secret}
     ports:
       - "5432:5432"
     volumes:
@@ -29,6 +29,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-coordinator
     environment:
@@ -86,6 +87,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-validator
     environment:
@@ -97,6 +99,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-sandbox-runner
     environment:
@@ -112,6 +115,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-tool-registry
     environment:
@@ -130,10 +134,14 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-runner-registry
     environment:
       BIND_ADDR: 0.0.0.0:9085
+      COAT_RUNNER_REGISTRY_JOURNAL_PATH: /data/runner-registry.jsonl
+    volumes:
+      - runner-registry-data:/data
     ports:
       - "9085:9085"
 
@@ -141,6 +149,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-notifier
     environment:
@@ -152,13 +161,14 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-goal-store
     environment:
       BIND_ADDR: 0.0.0.0:9088
       COAT_GOAL_STORE_BACKEND: ${COAT_GOAL_STORE_BACKEND:-jsonl}
       COAT_GOAL_STORE_JOURNAL_PATH: /data/goal-store.jsonl
-      COAT_GOAL_STORE_DATABASE_URL: ${COAT_GOAL_STORE_DATABASE_URL:-postgres://coat:coat-local-secret@postgres:5432/coat}
+      COAT_GOAL_STORE_DATABASE_URL: ${COAT_GOAL_STORE_DATABASE_URL:-postgres://jattg:jattg-local-secret@postgres:5432/jattg}
     ports:
       - "9088:9088"
     volumes:
@@ -168,6 +178,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-event-gateway
     environment:
@@ -176,7 +187,7 @@ services:
       COAT_EVENT_GATEWAY_TOKEN: ${COAT_EVENT_GATEWAY_TOKEN:-}
       COAT_REQUIRE_EVENT_SOURCE_APPROVAL: ${COAT_REQUIRE_EVENT_SOURCE_APPROVAL:-false}
       COAT_EVENT_GATEWAY_BACKEND: ${COAT_EVENT_GATEWAY_BACKEND:-jsonl}
-      COAT_EVENT_GATEWAY_DATABASE_URL: ${COAT_EVENT_GATEWAY_DATABASE_URL:-postgres://coat:coat-local-secret@postgres:5432/coat}
+      COAT_EVENT_GATEWAY_DATABASE_URL: ${COAT_EVENT_GATEWAY_DATABASE_URL:-postgres://jattg:jattg-local-secret@postgres:5432/jattg}
       COAT_EVENT_GATEWAY_JOURNAL_PATH: /data/event-gateway.jsonl
     ports:
       - "9089:9089"
@@ -189,6 +200,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/containers/rust-service.Dockerfile
+      target: service
       args:
         BIN: coat-memory-gateway
     environment:
@@ -196,10 +208,10 @@ services:
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:-}
       MEMORY_GATEWAY_JOURNAL_PATH: /data/memory-gateway.jsonl
       MEMORY_GATEWAY_GRAPHITI_MCP_URL: ${MEMORY_GATEWAY_GRAPHITI_MCP_URL:-}
-      MEMORY_GATEWAY_GRAPHITI_GROUP_ID: ${MEMORY_GATEWAY_GRAPHITI_GROUP_ID:-coat}
+      MEMORY_GATEWAY_GRAPHITI_GROUP_ID: ${MEMORY_GATEWAY_GRAPHITI_GROUP_ID:-jattg}
       MEMORY_GATEWAY_GRAPHITI_TOKEN: ${MEMORY_GATEWAY_GRAPHITI_TOKEN:-}
       MEMORY_GATEWAY_QDRANT_URL: ${MEMORY_GATEWAY_QDRANT_URL:-http://qdrant:6333}
-      MEMORY_GATEWAY_QDRANT_COLLECTION: ${MEMORY_GATEWAY_QDRANT_COLLECTION:-coat_memory}
+      MEMORY_GATEWAY_QDRANT_COLLECTION: ${MEMORY_GATEWAY_QDRANT_COLLECTION:-jattg_memory}
       MEMORY_GATEWAY_QDRANT_TOKEN: ${MEMORY_GATEWAY_QDRANT_TOKEN:-}
       MEMORY_GATEWAY_EMBEDDING_URL: ${MEMORY_GATEWAY_EMBEDDING_URL:-https://api.openai.com/v1/embeddings}
       MEMORY_GATEWAY_EMBEDDING_MODEL: ${MEMORY_GATEWAY_EMBEDDING_MODEL:-text-embedding-3-large}
@@ -227,7 +239,7 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-coat}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-coat-local-secret}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-jattg-local-secret}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -240,14 +252,14 @@ services:
       - object-store
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-coat}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-coat-local-secret}
-      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-jattg-local-secret}
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-jattg-artifacts}
     entrypoint:
       - /bin/sh
       - -lc
       - |
         set -eu
-        alias_name=coat-object-store
+        alias_name=jattg-object-store
         attempt=1
         while [ "$$attempt" -le 60 ]; do
           if mc alias set "$$alias_name" http://object-store:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; then
@@ -313,7 +325,7 @@ services:
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
       COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
       COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
-      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-jattg-artifacts}
     ports:
       - "9091:9091"
     depends_on:
@@ -341,7 +353,7 @@ services:
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
       COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
       COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
-      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-jattg-artifacts}
     ports:
       - "9094:9094"
     depends_on:
@@ -400,7 +412,7 @@ services:
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
       COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
       COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
-      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-coat-artifacts}
+      COAT_OBJECT_STORE_BUCKET: ${COAT_OBJECT_STORE_BUCKET:-jattg-artifacts}
     ports:
       - "9092:9092"
     depends_on:
@@ -421,6 +433,7 @@ volumes:
   restate-data:
   sandbox-workspaces:
   memory-gateway-data:
+  runner-registry-data:
   goal-store-data:
   event-gateway-data:
   postgres-data:

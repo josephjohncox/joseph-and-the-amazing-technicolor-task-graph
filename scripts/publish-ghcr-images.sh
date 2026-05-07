@@ -4,23 +4,16 @@ set -euo pipefail
 VERSION="${VERSION:-}"
 VERSION="${VERSION#v}"
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io}"
-IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-}"
+IMAGE_NAMESPACE="${IMAGE_NAMESPACE:-josephjohncox/joseph-and-the-amazing-technicolor-task-graph}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
 BUILDX_PROGRESS="${BUILDX_PROGRESS:-plain}"
+BUILDX_CACHE="${BUILDX_CACHE:-auto}"
 PUSH_IMAGES="${PUSH_IMAGES:-true}"
 
 if [[ -z "${VERSION}" ]]; then
   echo "VERSION is required" >&2
   exit 2
-fi
-
-if [[ -z "${IMAGE_NAMESPACE}" ]]; then
-  if [[ -z "${GITHUB_REPOSITORY:-}" ]]; then
-    echo "IMAGE_NAMESPACE or GITHUB_REPOSITORY is required" >&2
-    exit 2
-  fi
-  IMAGE_NAMESPACE="${GITHUB_REPOSITORY}"
 fi
 
 IMAGE_NAMESPACE="$(printf '%s' "${IMAGE_NAMESPACE}" | tr '[:upper:]' '[:lower:]')"
@@ -35,13 +28,23 @@ fi
 
 build_image() {
   local image_name="$1"
-  shift
+  local cache_scope="$2"
+  shift 2
   local image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/${image_name}"
+  local cache_args=()
+
+  if [[ "${BUILDX_CACHE}" == "true" || ( "${BUILDX_CACHE}" == "auto" && "${GITHUB_ACTIONS:-}" == "true" ) ]]; then
+    cache_args=(
+      --cache-from "type=gha,scope=${cache_scope}"
+      --cache-to "type=gha,mode=max,scope=${cache_scope},ignore-error=true"
+    )
+  fi
 
   docker buildx build \
     --progress="${BUILDX_PROGRESS}" \
     --platform="${PLATFORMS}" \
     "${output_args[@]}" \
+    "${cache_args[@]}" \
     --tag "${image_ref}:v${VERSION}" \
     --tag "${image_ref}:${VERSION}" \
     --tag "${image_ref}:latest" \
@@ -49,35 +52,45 @@ build_image() {
     .
 }
 
-rust_bins=(
-  coat-coordinator
-  coat-event-gateway
-  coat-goal-store
-  coat-memory-gateway
-  coat-notifier
-  coat-runner-registry
-  coat-sandbox-runner
-  coat-tool-registry
-  coat-validator
+rust_images=(
+  jattg-coordinator=coat-coordinator
+  jattg-event-gateway=coat-event-gateway
+  jattg-goal-store=coat-goal-store
+  jattg-memory-gateway=coat-memory-gateway
+  jattg-notifier=coat-notifier
+  jattg-runner-registry=coat-runner-registry
+  jattg-sandbox-runner=coat-sandbox-runner
+  jattg-tool-registry=coat-tool-registry
+  jattg-validator=coat-validator
 )
 
-for bin in "${rust_bins[@]}"; do
-  build_image "${bin}" \
+for spec in "${rust_images[@]}"; do
+  image_name="${spec%%=*}"
+  bin="${spec#*=}"
+  build_image "${image_name}" rust-services \
     -f infra/containers/rust-service.Dockerfile \
+    --target service \
     --build-arg "BIN=${bin}" \
     --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
 done
 
+build_image "jattg-agent-toolbox" agent-toolbox \
+  -f infra/containers/rust-service.Dockerfile \
+  --target agent-toolbox \
+  --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+
 sidecars=(
-  coat-control-web=ui/control-plane-web
-  coat-codex-runner=sidecars/codex-runner-ts
-  coat-staff-engineer-runner=sidecars/staff-engineer-runner-ts
+  jattg-control-web=ui/control-plane-web
+  jattg-codex-runner=sidecars/codex-runner-ts
+  jattg-claude-code-runner=sidecars/claude-code-runner-ts
+  jattg-model-provider-runner=sidecars/model-provider-runner-ts
+  jattg-staff-engineer-runner=sidecars/staff-engineer-runner-ts
 )
 
 for spec in "${sidecars[@]}"; do
   image_name="${spec%%=*}"
   sidecar_dir="${spec#*=}"
-  build_image "${image_name}" \
+  build_image "${image_name}" "${image_name}" \
     -f infra/containers/node-sidecar.Dockerfile \
     --build-arg "SIDECAR_DIR=${sidecar_dir}"
 done

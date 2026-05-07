@@ -133,7 +133,7 @@ When `COAT_MEMORY_GATEWAY_URL` is configured, the sidecars also call `/memory/co
 
 Approval gating happens before dispatch. `GoalSpec.approval_policy` evaluates the task sandbox, runner selector, MCP tools, secret references, and brokered user-auth requirements; a required approval creates durable `ApprovalRequest` state and notifies the task's `NotificationPolicy`. Runners never self-approve their own requested capabilities.
 
-The Rust tool registry exposes a minimal MCP HTTP endpoint at `/mcp`. If `MCP_TOOL_TOKEN` is set, requests must include `Authorization: Bearer ...`. Compose leaves this unset by default for local smoke work; Kubernetes wires it from `coat-agent-secrets`.
+The Rust tool registry exposes a minimal MCP HTTP endpoint at `/mcp`. If `MCP_TOOL_TOKEN` is set, requests must include `Authorization: Bearer ...`. Compose leaves this unset by default for local smoke work; Kubernetes wires it from `jattg-agent-secrets`.
 
 Currently implemented MCP methods:
 

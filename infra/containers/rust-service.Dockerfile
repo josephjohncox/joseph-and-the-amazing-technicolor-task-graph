@@ -39,7 +39,59 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && cp target/release/coat-tool-registry /usr/local/bin/coat-services/coat-tool-registry \
     && cp target/release/coat-validator /usr/local/bin/coat-services/coat-validator
 
-FROM debian:bookworm-slim
+FROM node:24-bookworm-slim AS sidecar-builder
+
+WORKDIR /app
+COPY sidecars ./sidecars
+RUN for dir in \
+      sidecars/codex-runner-ts \
+      sidecars/claude-code-runner-ts \
+      sidecars/model-provider-runner-ts \
+      sidecars/staff-engineer-runner-ts; do \
+        cd "/app/${dir}" && npm ci && npm run build && npm prune --omit=dev; \
+    done
+
+FROM node:24-bookworm-slim AS agent-toolbox
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    COAT_INJECTION_DIR=/opt/coat/injections \
+    HOME=/workspace \
+    NPM_CONFIG_CACHE=/workspace/.npm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        jq \
+        less \
+        openssh-client \
+        pkg-config \
+        procps \
+        python3 \
+        python3-pip \
+        python3-venv \
+        ripgrep \
+        tini \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/bin/coat-services/ /usr/local/bin/
+COPY --from=sidecar-builder /app/sidecars /opt/coat/sidecars
+COPY infra/containers/jattg-ephemeral-entrypoint.sh /usr/local/bin/jattg-ephemeral-entrypoint
+
+RUN chmod +x /usr/local/bin/jattg-ephemeral-entrypoint \
+    && useradd --create-home --home-dir /workspace --uid 1000 --shell /usr/sbin/nologin coat \
+    && mkdir -p /workspace /workspaces /opt/coat/injections/env /opt/coat/injections/bin /opt/coat/injections/init.d \
+    && chown -R coat:coat /workspace /workspaces /opt/coat/injections
+
+WORKDIR /workspace
+ENTRYPOINT ["tini", "--", "/usr/local/bin/jattg-ephemeral-entrypoint"]
+CMD ["bash"]
+
+FROM debian:bookworm-slim AS service
 
 ARG BIN
 

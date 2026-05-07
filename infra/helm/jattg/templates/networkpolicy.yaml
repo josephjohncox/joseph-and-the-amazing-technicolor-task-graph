@@ -1,0 +1,54 @@
+{{- $root := . -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-jattg-internal
+  namespace: {{ include "jattg.namespace" $root }}
+  labels:
+    {{- include "jattg.labels" $root | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}
+{{- range $name, $policy := .Values.networkPolicy.extraPolicies }}
+{{- if (default true $policy.enabled) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "jattg.namespace" $root }}
+  labels:
+    {{- include "jattg.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  podSelector:
+    {{- toYaml (default dict $policy.podSelector) | nindent 4 }}
+  policyTypes:
+    {{- toYaml (default (list "Ingress" "Egress") $policy.policyTypes) | nindent 4 }}
+  {{- if hasKey $policy "ingress" }}
+  ingress:
+    {{- toYaml $policy.ingress | nindent 4 }}
+  {{- end }}
+  {{- if hasKey $policy "egress" }}
+  egress:
+    {{- toYaml $policy.egress | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

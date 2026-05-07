@@ -11,7 +11,7 @@
       "backend": "kubernetes_job",
       "enforce": true,
       "runtime_class": "gvisor",
-      "image": "ghcr.io/example/coat-sandbox-task:latest",
+      "image": "ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-sandbox-task:latest",
       "seccomp_profile": "runtime/default",
       "drop_capabilities": ["ALL"],
       "read_only_rootfs": true,
@@ -19,7 +19,12 @@
       "cpu_limit_millis": 2000,
       "memory_limit_mb": 4096,
       "pids_limit": 512,
-      "egress_policy_ref": "coat-sandboxes/allow-coat-control-plane",
+      "egress_policy_ref": "jattg-sandboxes/allow-jattg-control-plane",
+      "ingress_policy_ref": "jattg-sandboxes/deny-by-default",
+      "network_policy_labels": {
+        "jattg.dev/network-profile": "control-plane-only",
+        "jattg.dev/sandbox-backend": "gvisor"
+      },
       "snapshot_strategy": "object_storage_archive"
     }
   },
@@ -27,7 +32,7 @@
     "enabled": true,
     "remote": "origin",
     "base_ref": "main",
-    "branch_prefix": "coat/task",
+    "branch_prefix": "jattg/task",
     "worktree_root": "/workspaces",
     "push_on_success": false,
     "require_clean_diff": true,
@@ -41,7 +46,7 @@
     "enabled": true,
     "store": {
       "kind": "minio",
-      "bucket": "coat-artifacts",
+      "bucket": "jattg-artifacts",
       "prefix": null,
       "endpoint": "http://object-store:9000",
       "region": "us-east-1",

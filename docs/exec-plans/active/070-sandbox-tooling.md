@@ -22,6 +22,7 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - `/cleanup` removes the workspace and registry record only when the path is inside `SANDBOX_WORKSPACE_ROOT`; repeated cleanup returns `not_found`.
 - Git and object-storage result refs are returned as contracts without mutating a source repository or uploading blobs.
 - `SandboxProfile.isolation` now captures backend, runtime class, seccomp/AppArmor profile, dropped capabilities, read-only rootfs intent, limits, egress policy ref, and snapshot strategy.
+- `SandboxProfile.isolation` also carries ingress policy refs and network-policy labels so runners can attach Kubernetes, Cilium, Calico, cloud firewall, or provider sandbox guardrails without embedding policy syntax in task state.
 - `coat-sandbox-runner` returns `SandboxAttestation`; local Compose defaults to `local_workspace` and does not pretend to enforce gVisor/Kata/Firecracker.
 - `coat-sandbox-runner` exposes `/launch-plan` and writes `sandbox-launch-plan.json` so real executor adapters can consume the same durable plan without parsing free-form task prompts.
 - `coat-sandbox-runner` exposes `/commands/plan` for approval-aware command routing; it returns `waiting_approval` until an approval ID is present and never executes the command itself.
@@ -29,6 +30,8 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - `coat-tool-registry` routes MCP `test_command` calls to `/commands/plan` when `TOOL_REGISTRY_SANDBOX_RUNNER_URL` is configured; otherwise it reports sandbox delegation without execution.
 - `ExecutionProfile.guardrails` can fork output and security guardrail reviews for completed work tasks.
 - `coat-sandbox-runner` supports approval-gated live git worktree creation when `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`, the repo is under `SANDBOX_APPROVED_GIT_REPO_ROOTS`, and the request supplies `live_git_worktree.approval_id`.
+- `jattg-agent-toolbox` provides a shared ephemeral Kubernetes Job image for bounded runner pods and temporary Restate service executors, while slim service images remain the default for always-on Deployments.
+- `infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` shows deadline-bound model-provider, Claude Code, and coordinator executor Jobs with Services, registry/Restate registration, injection mounts, resources, and NetworkPolicy.
 
 ## Tests
 
@@ -43,7 +46,7 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 ## Follow-Ups
 
 - Promote content-addressed snapshot archives from local manifests into object storage when the object-store upload adapter is live.
-- Add a Kubernetes Job runner that creates real per-task pods with `runtimeClassName`, resource limits, NetworkPolicies, and attestation evidence.
+- Connect `SandboxProfile.isolation.backend = kubernetes_job` to a production executor that consumes `sandbox-launch-plan.json`, creates per-task pods with `runtimeClassName`, and writes enforcement attestations.
 - Add provider-backed sandbox adapters where managed sandbox APIs can return attestations.
 
 ## Acceptance
@@ -51,3 +54,5 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - Sandbox runner and tool registry have health checks.
 - Compose and Kubernetes expose internal service names for both.
 - Kubernetes examples include RuntimeClass and task-pod patterns for strong sandboxing.
+- Kubernetes examples include reusable ephemeral runner Jobs and a toolbox image path for bounded burst capacity.
+- Runner and sandbox examples use default-deny NetworkPolicies with profile-specific ingress and egress allowlists.

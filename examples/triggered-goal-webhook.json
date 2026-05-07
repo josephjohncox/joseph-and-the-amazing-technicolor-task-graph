@@ -27,7 +27,6 @@
     "dedupe_window_seconds": 3600
   },
   "goal": {
-    "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
     "title": "Respond to PR review comments",
     "objective": "Inspect the pull request review event, identify actionable comments, implement safe fixes, run validation, and report evidence back to the coordinator.",
     "repo": "example/repo",

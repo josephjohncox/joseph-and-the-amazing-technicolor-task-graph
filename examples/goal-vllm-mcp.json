@@ -1,5 +1,4 @@
 {
-  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
   "title": "Local model coding smoke",
   "objective": "Route a bounded coding task to a local vLLM-compatible runner with MCP tools and notification hooks.",
   "repo": null,
@@ -82,7 +81,7 @@
         "mcp_server_name": "qdrant-memory",
         "secret_refs": []
       },
-      "collection": "coat_memory",
+      "collection": "jattg_memory",
       "write_embeddings": true,
       "search_embeddings": true,
       "hybrid_search": true,
@@ -203,7 +202,7 @@
             "kind": "secret",
             "secret": {
               "provider": "kubernetes_secret",
-              "name": "coat-agent-secrets",
+              "name": "jattg-agent-secrets",
               "key": "MCP_TOOL_TOKEN",
               "namespace": "coat",
               "audience": "tool-registry"
@@ -243,7 +242,7 @@
         "enabled": true,
         "remote": "origin",
         "base_ref": "HEAD",
-        "branch_prefix": "coat/task",
+        "branch_prefix": "jattg/task",
         "worktree_root": "/worktrees",
         "push_on_success": false,
         "require_clean_diff": true,
@@ -253,14 +252,14 @@
         "enabled": true,
         "store": {
           "kind": "minio",
-          "bucket": "coat-artifacts",
+          "bucket": "jattg-artifacts",
           "prefix": null,
           "endpoint": "http://object-store:9000",
           "region": "us-east-1",
           "force_path_style": true,
           "secret_ref": {
             "provider": "kubernetes_secret",
-            "name": "coat-agent-secrets",
+            "name": "jattg-agent-secrets",
             "key": "OBJECT_STORE_SECRET_KEY",
             "namespace": "coat",
             "audience": "object-store"

@@ -12,6 +12,7 @@ docs/README.md
 docs/product-specs/coat-v1.md
 docs/operations/goal-authoring.md
 docs/operations/runner-context-initialization.md
+docs/operations/ephemeral-kubernetes-runners.md
 docs/design-docs/030-distributed-memory-knowledgebases.md
 docs/design-docs/060-result-channels-git-object-storage.md
 docs/design-docs/070-protobuf-goal-store-protocols.md
@@ -26,6 +27,7 @@ proto/coat/v1/common.proto
 proto/coat/v1/goal_store.proto
 proto/coat/v1/eventing.proto
 infra/db/migrations/001_goal_store.sql
+infra/helm/jattg/values-ephemeral-example.yaml
 "
 
 for path in $required_paths; do
@@ -35,13 +37,15 @@ for path in $required_paths; do
   fi
 done
 
-if rg -n "[jJ][aA][tT][tT][gG]" "$root" \
+if rg -n "infra/helm/coat|coat-agent-toolbox|coat/agent-toolbox|coat-config|coat-agent-secrets|coat-sandboxes|coat-ephemeral|coat-models|coat\.dev/" "$root" \
   --glob '!target/**' \
   --glob '!sidecars/**/node_modules/**' \
   --glob '!ui/control-plane-web/node_modules/**' \
-  --glob '!ui/control-plane-web/dist/**' >/tmp/coat-doc-gardener-stale.txt; then
+  --glob '!ui/control-plane-web/dist/**' \
+  --glob '!infra/k8s/rendered.yaml' \
+  --glob '!scripts/coat-doc-gardener.sh' >/tmp/coat-doc-gardener-stale.txt; then
   cat /tmp/coat-doc-gardener-stale.txt >&2
-  printf 'stale pre-coat slug references found\n' >&2
+  printf 'stale deployment-surface coat slug references found\n' >&2
   exit 1
 fi
 
@@ -72,6 +76,8 @@ crates/sandbox-runner/src/main.rs
 crates/tool-registry/src/main.rs
 crates/validator/src/main.rs
 sidecars/codex-runner-ts/src/index.ts
+sidecars/claude-code-runner-ts/src/index.ts
+sidecars/model-provider-runner-ts/src/index.ts
 sidecars/staff-engineer-runner-ts/src/index.ts
 ui/control-plane-web/src/server.ts
 ui/control-plane-web/src/client.ts

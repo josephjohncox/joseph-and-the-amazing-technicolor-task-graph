@@ -48,6 +48,13 @@
       ],
       "default": null
     },
+    "ingress_policy_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
     "memory_limit_mb": {
       "type": [
         "integer",
@@ -56,6 +63,13 @@
       "format": "uint64",
       "default": null,
       "minimum": 0
+    },
+    "network_policy_labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
     },
     "no_new_privileges": {
       "type": "boolean",

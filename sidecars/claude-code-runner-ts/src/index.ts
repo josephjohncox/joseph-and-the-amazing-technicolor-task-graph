@@ -5,6 +5,11 @@
  * staff-engineer lifecycle bundle. Staff-engineer owns issue-to-PR ceremony;
  * this runner owns bounded task execution behind COAT's durable
  * `AgentRunRequest -> AgentRunResult` contract.
+ *
+ * Architecture reference:
+ * - docs/design-docs/010-distributed-runners-mcp.md
+ * - docs/operations/runner-context-initialization.md
+ * - docs/operations/ephemeral-kubernetes-runners.md
  */
 import http from "node:http";
 import { execFile } from "node:child_process";

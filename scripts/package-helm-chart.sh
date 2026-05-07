@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CHART_DIR="${CHART_DIR:-infra/helm/coat}"
+CHART_DIR="${CHART_DIR:-infra/helm/jattg}"
 DIST_DIR="${DIST_DIR:-dist/helm}"
 CHART_VERSION="${CHART_VERSION:-0.1.0}"
 RELEASE_URL="${RELEASE_URL:-}"
@@ -33,8 +33,8 @@ else
   helm repo index "${DIST_DIR}"
 fi
 
-for artifact in "${DIST_DIR}"/coat-"${CHART_VERSION}".tgz "${DIST_DIR}/index.yaml"; do
+for artifact in "${DIST_DIR}"/jattg-"${CHART_VERSION}".tgz "${DIST_DIR}/index.yaml"; do
   shasum -a 256 "${artifact}" > "${artifact}.sha256"
 done
 
-echo "${DIST_DIR}/coat-${CHART_VERSION}.tgz"
+echo "${DIST_DIR}/jattg-${CHART_VERSION}.tgz"

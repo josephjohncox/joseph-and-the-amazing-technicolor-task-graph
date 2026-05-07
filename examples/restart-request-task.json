@@ -1,5 +1,4 @@
 {
-  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
   "scope": "task",
   "reason": "operator_requested",
   "message": "Retry after updating runner config and timeout policy.",

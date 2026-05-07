@@ -47,6 +47,8 @@ stringData:
   OBJECT_STORE_ACCESS_KEY: coat
   OBJECT_STORE_SECRET_KEY: coat-local-secret
   EVENT_GATEWAY_TOKEN: ""
+  COAT_CONTROL_GATEWAY_TOKEN: ""
+  COAT_CONTROL_MCP_TOKEN: ""
   POSTGRES_PASSWORD: coat-local-secret
   COAT_GOAL_STORE_DATABASE_URL: postgresql://coat:coat-local-secret@postgres:5432/coat
 ---
@@ -271,6 +273,8 @@ spec:
               value: 0.0.0.0:9083
             - name: SANDBOX_WORKSPACE_ROOT
               value: /workspaces
+            - name: SANDBOX_SUPPORTED_BACKENDS
+              value: local_workspace
           ports:
             - containerPort: 9083
               name: http
@@ -322,6 +326,8 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:9084
+            - name: TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT
+              value: ""
             - name: MCP_TOOL_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -535,6 +541,17 @@ spec:
                   optional: true
             - name: COAT_EVENT_GATEWAY_JOURNAL_PATH
               value: /data/event-gateway.jsonl
+            - name: COAT_EVENT_GATEWAY_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: coat-config
+                  key: COAT_EVENT_GATEWAY_BACKEND
+            - name: COAT_EVENT_GATEWAY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: COAT_GOAL_STORE_DATABASE_URL
+                  optional: true
             - name: COAT_REQUIRE_EVENT_SOURCE_APPROVAL
               valueFrom:
                 configMapKeyRef:
@@ -677,6 +694,87 @@ spec:
     app: memory-gateway
   ports:
     - port: 9087
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-web
+  namespace: coat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: control-web
+  template:
+    metadata:
+      labels:
+        app: control-web
+    spec:
+      containers:
+        - name: control-web
+          image: coat/control-web:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "9090"
+            - name: COAT_RESTATE_INGRESS
+              value: http://restate:8080
+            - name: COAT_GOAL_STORE_URL
+              value: http://goal-store:9088
+            - name: COAT_EVENT_GATEWAY_URL
+              value: http://event-gateway:9089
+            - name: COAT_EVENT_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: EVENT_GATEWAY_TOKEN
+                  optional: true
+            - name: COAT_NOTIFIER_URL
+              value: http://notifier:9086
+            - name: COAT_RUNNER_REGISTRY_URL
+              value: http://runner-registry:9085
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_MEMORY_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: MCP_TOOL_TOKEN
+                  optional: true
+            - name: COAT_CONTROL_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: COAT_CONTROL_GATEWAY_TOKEN
+                  optional: true
+            - name: COAT_CONTROL_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: coat-agent-secrets
+                  key: COAT_CONTROL_MCP_TOKEN
+                  optional: true
+          ports:
+            - containerPort: 9090
+              name: http
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-web
+  namespace: coat
+spec:
+  selector:
+    app: control-web
+  ports:
+    - port: 9090
       targetPort: http
 ---
 apiVersion: apps/v1

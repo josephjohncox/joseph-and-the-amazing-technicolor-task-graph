@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanStatus",
+  "type": "string",
+  "enum": [
+    "draft",
+    "needs_questions",
+    "ready_for_review",
+    "approved",
+    "compiled",
+    "superseded",
+    "archived"
+  ]
+}

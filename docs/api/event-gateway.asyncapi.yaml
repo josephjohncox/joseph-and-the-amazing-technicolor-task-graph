@@ -28,7 +28,7 @@ channels:
       summary: Record an external event and optionally route it to a goal action.
       message:
         $ref: '#/components/messages/ExternalEvent'
-  /webhooks/{source_key}:
+  /events/webhook/{source_key}:
     parameters:
       source_key:
         description: Stable event source key.
@@ -39,7 +39,18 @@ channels:
       summary: Ingest a provider webhook using the auth policy registered on the event source.
       message:
         $ref: '#/components/messages/WebhookPayload'
-  /trigger:
+  /events/generic/{source_key}:
+    parameters:
+      source_key:
+        description: Stable generic event source key.
+        schema:
+          type: string
+    publish:
+      operationId: emitGenericEvent
+      summary: Emit an arbitrary JSON or CloudEvents-compatible event for a registered generic source.
+      message:
+        $ref: '#/components/messages/GenericEventPayload'
+  /triggers:
     publish:
       operationId: triggerGoal
       summary: Explicitly create, steer, or record a goal trigger from a previously ingested event.
@@ -54,6 +65,10 @@ components:
       payload:
         $ref: '#/components/schemas/ExternalEvent'
     WebhookPayload:
+      payload:
+        type: object
+        additionalProperties: true
+    GenericEventPayload:
       payload:
         type: object
         additionalProperties: true
@@ -100,9 +115,21 @@ components:
             - jira_webhook
             - linear_webhook
             - slack_event
+            - stripe_webhook
             - email
             - object_storage
             - kubernetes
+            - generic
+            - agent_event
+            - runner_event
+            - goal_lifecycle
+            - memory_event
+            - ci
+            - git
+            - issue_tracker
+            - chat
+            - monitoring_alert
+            - database_change
             - manual
             - other
         enabled:
@@ -111,6 +138,8 @@ components:
           type: string
         webhook:
           $ref: '#/components/schemas/WebhookEventSource'
+        generic:
+          $ref: '#/components/schemas/GenericEventSource'
         route:
           $ref: '#/components/schemas/EventGoalRoute'
     WebhookEventSource:
@@ -136,6 +165,33 @@ components:
             secret_ref:
               type: object
               additionalProperties: true
+    GenericEventSource:
+      type: object
+      properties:
+        auth:
+          type: object
+          additionalProperties: true
+        accepts_cloudevents:
+          type: boolean
+        max_payload_bytes:
+          type: integer
+        allowed_event_types:
+          type: array
+          items:
+            type: string
+        id_json_pointer:
+          type: string
+        type_json_pointer:
+          type: string
+        subject_json_pointer:
+          type: string
+        dedupe_json_pointer:
+          type: string
+        dedupe_header:
+          type: string
+        payload_schema:
+          type: object
+          additionalProperties: true
     EventGoalRoute:
       type: object
       required:

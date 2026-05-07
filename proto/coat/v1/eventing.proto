@@ -19,11 +19,23 @@ enum EventSourceKind {
   EVENT_SOURCE_KIND_JIRA_WEBHOOK = 10;
   EVENT_SOURCE_KIND_LINEAR_WEBHOOK = 11;
   EVENT_SOURCE_KIND_SLACK_EVENT = 12;
-  EVENT_SOURCE_KIND_EMAIL = 13;
-  EVENT_SOURCE_KIND_OBJECT_STORAGE = 14;
-  EVENT_SOURCE_KIND_KUBERNETES = 15;
-  EVENT_SOURCE_KIND_MANUAL = 16;
-  EVENT_SOURCE_KIND_OTHER = 17;
+  EVENT_SOURCE_KIND_STRIPE_WEBHOOK = 13;
+  EVENT_SOURCE_KIND_EMAIL = 14;
+  EVENT_SOURCE_KIND_OBJECT_STORAGE = 15;
+  EVENT_SOURCE_KIND_KUBERNETES = 16;
+  EVENT_SOURCE_KIND_MANUAL = 17;
+  EVENT_SOURCE_KIND_OTHER = 18;
+  EVENT_SOURCE_KIND_GENERIC = 19;
+  EVENT_SOURCE_KIND_AGENT_EVENT = 20;
+  EVENT_SOURCE_KIND_RUNNER_EVENT = 21;
+  EVENT_SOURCE_KIND_GOAL_LIFECYCLE = 22;
+  EVENT_SOURCE_KIND_MEMORY_EVENT = 23;
+  EVENT_SOURCE_KIND_CI = 24;
+  EVENT_SOURCE_KIND_GIT = 25;
+  EVENT_SOURCE_KIND_ISSUE_TRACKER = 26;
+  EVENT_SOURCE_KIND_CHAT = 27;
+  EVENT_SOURCE_KIND_MONITORING_ALERT = 28;
+  EVENT_SOURCE_KIND_DATABASE_CHANGE = 29;
 }
 
 enum WebhookAuthKind {
@@ -49,6 +61,20 @@ message WebhookEventSource {
   bool accepts_cloudevents = 3;
   uint64 max_payload_bytes = 4;
   string dedupe_header = 5;
+}
+
+message GenericEventSource {
+  WebhookAuthPolicy auth = 1;
+  bool accepts_cloudevents = 2;
+  uint64 max_payload_bytes = 3;
+  repeated string allowed_event_types = 4;
+  string id_json_pointer = 5;
+  string type_json_pointer = 6;
+  string subject_json_pointer = 7;
+  string dedupe_json_pointer = 8;
+  string dedupe_header = 9;
+  google.protobuf.Struct payload_schema = 10;
+  JsonSchemaEnvelope mcp_context = 11;
 }
 
 enum ScheduleKind {
@@ -132,9 +158,10 @@ message EventSource {
   string description = 4;
   string namespace = 5;
   WebhookEventSource webhook = 6;
-  ScheduledEventSource schedule = 7;
-  CalendarEventSource calendar = 8;
-  EventGoalRoute route = 9;
+  GenericEventSource generic = 7;
+  ScheduledEventSource schedule = 8;
+  CalendarEventSource calendar = 9;
+  EventGoalRoute route = 10;
 }
 
 message ExternalEvent {

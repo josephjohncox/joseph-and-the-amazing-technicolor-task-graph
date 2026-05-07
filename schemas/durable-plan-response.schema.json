@@ -1,0 +1,2533 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DurablePlanResponse",
+  "type": "object",
+  "properties": {
+    "found": {
+      "type": "boolean"
+    },
+    "plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DurablePlan"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "found"
+  ],
+  "$defs": {
+    "ApprovalPolicy": {
+      "type": "string",
+      "enum": [
+        "never",
+        "on_request",
+        "always"
+      ]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "AuthDistributionMode": {
+      "type": "string",
+      "enum": [
+        "runner_local_only",
+        "runner_resolves_refs",
+        "coordinator_issues_lease",
+        "workload_identity",
+        "oauth_device_broker",
+        "external_broker"
+      ]
+    },
+    "AuthDistributionPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_node_local_device_session": {
+          "type": "boolean"
+        },
+        "allow_secret_sync": {
+          "type": "boolean"
+        },
+        "allowed_materials": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AuthMaterialKind"
+          }
+        },
+        "lease_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/AuthDistributionMode"
+        },
+        "renewal": {
+          "$ref": "#/$defs/AuthRenewalPolicy"
+        },
+        "require_human_approval_for_brokered_user_auth": {
+          "type": "boolean"
+        },
+        "required_runner_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "required": [
+        "mode",
+        "renewal",
+        "allow_node_local_device_session",
+        "allow_secret_sync",
+        "require_human_approval_for_brokered_user_auth"
+      ]
+    },
+    "AuthMaterialKind": {
+      "type": "string",
+      "enum": [
+        "api_token",
+        "mcp_bearer_token",
+        "oauth_access_token",
+        "oauth_refresh_token",
+        "device_auth_session",
+        "workload_identity_token",
+        "local_cli_session",
+        "service_account",
+        "other"
+      ]
+    },
+    "AuthRenewalPolicy": {
+      "type": "string",
+      "enum": [
+        "none",
+        "manual_or_brokered",
+        "broker_can_refresh",
+        "runner_can_refresh"
+      ]
+    },
+    "Budget": {
+      "type": "object",
+      "properties": {
+        "max_child_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_patch_size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remaining_child_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "remaining_runtime_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remaining_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "remaining_tool_calls": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "max_tokens",
+        "remaining_tokens",
+        "max_runtime_seconds",
+        "remaining_runtime_seconds",
+        "max_tool_calls",
+        "remaining_tool_calls",
+        "max_child_tasks",
+        "remaining_child_tasks",
+        "max_patch_size"
+      ]
+    },
+    "ChildTaskRequest": {
+      "type": "object",
+      "properties": {
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Budget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "done_criteria": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoneCriteria"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority",
+          "default": "normal"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskPurpose"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "review_doctrine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewDoctrine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subgoal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "role",
+        "prompt",
+        "reason"
+      ]
+    },
+    "DeviceAuthProvider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude_code",
+        "open_ai",
+        "anthropic",
+        "github",
+        "google",
+        "other"
+      ]
+    },
+    "DoneCriteria": {
+      "type": "object",
+      "properties": {
+        "artifact_exists": {
+          "type": "boolean"
+        },
+        "tests_pass": {
+          "type": "boolean"
+        },
+        "validator_score_min": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "tests_pass",
+        "artifact_exists"
+      ]
+    },
+    "DurablePlan": {
+      "type": "object",
+      "properties": {
+        "compiled_goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "compiled_quality": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalQualityReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current": {
+          "$ref": "#/$defs/PlanRevision"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mode": {
+          "$ref": "#/$defs/PlanningMode"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revisions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanRevision"
+          }
+        },
+        "source_prompt": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/PlanStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "objective",
+        "status",
+        "mode",
+        "version",
+        "source_prompt",
+        "current"
+      ]
+    },
+    "ExecutionProfile": {
+      "type": "object",
+      "properties": {
+        "guardrails": {
+          "$ref": "#/$defs/ExecutorGuardrailPolicy",
+          "default": {
+            "block_on_high_findings": true,
+            "enabled": false,
+            "max_inline_output_bytes": 65536,
+            "output_reviewer_role": "reviewer",
+            "redact_secrets": true,
+            "require_artifact_manifest": false,
+            "require_output_review": false,
+            "require_sandbox_attestation": false,
+            "require_security_review": false,
+            "require_strong_sandbox_attestation": false,
+            "security_reviewer_role": "validator"
+          }
+        },
+        "mcp": {
+          "$ref": "#/$defs/McpContextRef"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelRoute"
+        },
+        "notifications": {
+          "$ref": "#/$defs/NotificationPolicy"
+        },
+        "persona": {
+          "$ref": "#/$defs/PersonaSpec"
+        },
+        "results": {
+          "$ref": "#/$defs/ResultChannelPolicy",
+          "default": {
+            "git": {
+              "base_ref": "HEAD",
+              "branch_prefix": "coat/task",
+              "enabled": false,
+              "include_patch_artifact": true,
+              "push_on_success": false,
+              "remote": "origin",
+              "require_clean_diff": true,
+              "worktree_root": "/worktrees"
+            },
+            "object_storage": {
+              "enabled": false,
+              "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+              "max_inline_bytes": 262144,
+              "require_manifest": true,
+              "store": null
+            }
+          }
+        },
+        "runner": {
+          "$ref": "#/$defs/RunnerSelector"
+        }
+      },
+      "required": [
+        "runner",
+        "model",
+        "persona",
+        "mcp",
+        "notifications"
+      ]
+    },
+    "ExecutorGuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "block_on_high_findings": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_inline_output_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_reviewer_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "redact_secrets": {
+          "type": "boolean"
+        },
+        "require_artifact_manifest": {
+          "type": "boolean"
+        },
+        "require_output_review": {
+          "type": "boolean"
+        },
+        "require_sandbox_attestation": {
+          "type": "boolean"
+        },
+        "require_security_review": {
+          "type": "boolean"
+        },
+        "require_strong_sandbox_attestation": {
+          "type": "boolean"
+        },
+        "security_reviewer_role": {
+          "$ref": "#/$defs/WorkerKind"
+        }
+      },
+      "required": [
+        "enabled",
+        "require_output_review",
+        "require_security_review",
+        "output_reviewer_role",
+        "security_reviewer_role",
+        "block_on_high_findings",
+        "require_artifact_manifest",
+        "require_sandbox_attestation",
+        "require_strong_sandbox_attestation",
+        "redact_secrets",
+        "max_inline_output_bytes"
+      ]
+    },
+    "FilesystemAccess": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "workspace_write"
+      ]
+    },
+    "GitResultPolicy": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_prefix": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "include_patch_artifact": {
+          "type": "boolean"
+        },
+        "push_on_success": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "require_clean_diff": {
+          "type": "boolean"
+        },
+        "worktree_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "branch_prefix",
+        "push_on_success",
+        "require_clean_diff",
+        "include_patch_artifact"
+      ]
+    },
+    "GoalAuthoringGuidance": {
+      "type": "object",
+      "properties": {
+        "acceptance_evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "intake_summary": {
+          "type": "string",
+          "default": ""
+        },
+        "open_questions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "out_of_scope": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "GoalPlan": {
+      "type": "object",
+      "properties": {
+        "distribution_notes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "subgoals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubgoalSpec"
+          }
+        },
+        "summary": {
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "GoalQualityReport": {
+      "type": "object",
+      "properties": {
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "missing": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        },
+        "suggested_next_actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "goal_id",
+        "ready",
+        "score"
+      ]
+    },
+    "McpAuthRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "secret"
+            },
+            "secret": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "workload_identity"
+            }
+          },
+          "required": [
+            "kind",
+            "audience"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "oauth_delegation"
+            },
+            "token_exchange_secret": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "token_exchange_secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_auth_session"
+            },
+            "node_local": {
+              "type": "boolean",
+              "default": true
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "refresh_ref": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SecretRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session_ref": {
+              "$ref": "#/$defs/SecretRef"
+            }
+          },
+          "required": [
+            "kind",
+            "session_ref",
+            "provider"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "broker": {
+              "$ref": "#/$defs/SecretRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "brokered_user_session"
+            },
+            "provider": {
+              "$ref": "#/$defs/DeviceAuthProvider"
+            },
+            "requested_scopes": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "broker",
+            "provider"
+          ]
+        }
+      ]
+    },
+    "McpContextPropagation": {
+      "type": "string",
+      "enum": [
+        "coordinator_issued",
+        "runner_resolves_refs",
+        "workload_identity",
+        "runner_local_only",
+        "oauth_device_broker",
+        "external_broker"
+      ]
+    },
+    "McpContextRef": {
+      "type": "object",
+      "properties": {
+        "auth_distribution": {
+          "$ref": "#/$defs/AuthDistributionPolicy",
+          "default": {
+            "allow_node_local_device_session": true,
+            "allow_secret_sync": false,
+            "allowed_materials": [
+              "api_token",
+              "mcp_bearer_token",
+              "oauth_access_token",
+              "oauth_refresh_token",
+              "workload_identity_token"
+            ],
+            "lease_ttl_seconds": 900,
+            "mode": "runner_resolves_refs",
+            "renewal": "manual_or_brokered",
+            "require_human_approval_for_brokered_user_auth": true,
+            "required_runner_labels": {}
+          }
+        },
+        "context_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "propagation": {
+          "$ref": "#/$defs/McpContextPropagation"
+        },
+        "secret_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        },
+        "servers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McpServerRef"
+          }
+        },
+        "token_ttl_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "propagation"
+      ]
+    },
+    "McpServerRef": {
+      "type": "object",
+      "properties": {
+        "allowed_tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "$ref": "#/$defs/McpAuthRef"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transport": {
+          "$ref": "#/$defs/McpTransport"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "uri",
+        "auth"
+      ]
+    },
+    "McpTransport": {
+      "type": "string",
+      "enum": [
+        "stdio",
+        "http",
+        "sse"
+      ]
+    },
+    "ModelCandidate": {
+      "type": "object",
+      "properties": {
+        "context_window": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "model": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "provider": {
+          "$ref": "#/$defs/ModelProviderKind"
+        },
+        "weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "priority",
+        "weight"
+      ]
+    },
+    "ModelFallbackPolicy": {
+      "type": "string",
+      "enum": [
+        "disallow_fallback",
+        "allow_fallback",
+        "allow_lower_tier_local"
+      ]
+    },
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights"
+      ]
+    },
+    "ModelProviderKind": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "open_ai",
+        "open_ai_compatible",
+        "vllm",
+        "ollama",
+        "llama_cpp",
+        "anthropic",
+        "hugging_face",
+        "local_process",
+        "other"
+      ]
+    },
+    "ModelRoute": {
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelCandidate"
+          }
+        },
+        "fallback": {
+          "$ref": "#/$defs/ModelFallbackPolicy"
+        },
+        "required_features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "strategy": {
+          "$ref": "#/$defs/ModelRoutingStrategy"
+        }
+      },
+      "required": [
+        "strategy",
+        "fallback"
+      ]
+    },
+    "ModelRoutingStrategy": {
+      "type": "string",
+      "enum": [
+        "first_available",
+        "lowest_latency",
+        "lowest_cost",
+        "highest_quality",
+        "weighted",
+        "sticky_per_goal"
+      ]
+    },
+    "NetworkAccess": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "restricted",
+        "open"
+      ]
+    },
+    "NotificationEvent": {
+      "type": "string",
+      "enum": [
+        "human_feedback_requested",
+        "approval_requested",
+        "task_blocked",
+        "task_failed",
+        "goal_completed",
+        "budget_warning",
+        "runner_lost"
+      ]
+    },
+    "NotificationPolicy": {
+      "type": "object",
+      "properties": {
+        "escalation_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotificationEvent"
+          }
+        },
+        "feedback_thread_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotificationTarget"
+          }
+        }
+      }
+    },
+    "NotificationTarget": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NotificationTargetKind"
+        },
+        "require_ack": {
+          "type": "boolean"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "address",
+        "require_ack"
+      ]
+    },
+    "NotificationTargetKind": {
+      "type": "string",
+      "enum": [
+        "thread",
+        "webhook",
+        "slack",
+        "email",
+        "git_hub",
+        "linear",
+        "jira",
+        "pager_duty",
+        "other"
+      ]
+    },
+    "ObjectStoragePolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "key_prefix_template": {
+          "type": "string"
+        },
+        "max_inline_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "require_manifest": {
+          "type": "boolean"
+        },
+        "store": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStoreRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "key_prefix_template",
+        "require_manifest",
+        "max_inline_bytes"
+      ]
+    },
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "ObjectStoreRef": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjectStoreKind"
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "bucket",
+        "force_path_style"
+      ]
+    },
+    "PersonaSpec": {
+      "type": "object",
+      "properties": {
+        "inline_instructions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "instructions_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "risk_tolerance": {
+          "$ref": "#/$defs/RiskTolerance"
+        }
+      },
+      "required": [
+        "name",
+        "risk_tolerance"
+      ]
+    },
+    "PlanDecision": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "decision",
+        "rationale"
+      ]
+    },
+    "PlanQuestion": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/PlanQuestionStatus"
+        }
+      },
+      "required": [
+        "id",
+        "question",
+        "required",
+        "status"
+      ]
+    },
+    "PlanQuestionStatus": {
+      "type": "string",
+      "enum": [
+        "open",
+        "answered",
+        "deferred"
+      ]
+    },
+    "PlanRevision": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "authoring": {
+          "$ref": "#/$defs/GoalAuthoringGuidance"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decisions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanDecision"
+          }
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "initial_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChildTaskRequest"
+          }
+        },
+        "operator_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan": {
+          "$ref": "#/$defs/GoalPlan"
+        },
+        "questions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanQuestion"
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "author",
+        "summary",
+        "authoring",
+        "plan"
+      ]
+    },
+    "PlanStatus": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "needs_questions",
+        "ready_for_review",
+        "approved",
+        "compiled",
+        "superseded",
+        "archived"
+      ]
+    },
+    "PlanningMode": {
+      "type": "string",
+      "enum": [
+        "interactive",
+        "autonomous",
+        "human_steered",
+        "research_first",
+        "implementation_ready"
+      ]
+    },
+    "ResultChannelPolicy": {
+      "type": "object",
+      "properties": {
+        "git": {
+          "$ref": "#/$defs/GitResultPolicy",
+          "default": {
+            "base_ref": "HEAD",
+            "branch_prefix": "coat/task",
+            "enabled": false,
+            "include_patch_artifact": true,
+            "push_on_success": false,
+            "remote": "origin",
+            "require_clean_diff": true,
+            "worktree_root": "/worktrees"
+          }
+        },
+        "object_storage": {
+          "$ref": "#/$defs/ObjectStoragePolicy",
+          "default": {
+            "enabled": false,
+            "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+            "max_inline_bytes": 262144,
+            "require_manifest": true,
+            "store": null
+          }
+        }
+      }
+    },
+    "ReviewDoctrine": {
+      "type": "object",
+      "properties": {
+        "coverage": {
+          "$ref": "#/$defs/ReviewDoctrineCoveragePolicy"
+        },
+        "custom_evidence_requirements": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewEvidenceRequirement"
+          }
+        },
+        "custom_objectives": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewObjective"
+          }
+        },
+        "custom_style_doctrines": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/StyleDoctrine"
+          }
+        },
+        "custom_subagents": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewSubagentProfile"
+          }
+        },
+        "custom_validation_gates": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ValidationGate"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "overrides": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewDoctrineOverride"
+          }
+        },
+        "presets": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewDoctrinePreset"
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "coverage"
+      ]
+    },
+    "ReviewDoctrineCoveragePolicy": {
+      "type": "object",
+      "properties": {
+        "allow_not_applicable": {
+          "type": "boolean"
+        },
+        "min_objective_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "require_gate_results": {
+          "type": "boolean"
+        },
+        "require_objective_results": {
+          "type": "boolean"
+        },
+        "require_required_evidence": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "require_objective_results",
+        "require_gate_results",
+        "require_required_evidence",
+        "allow_not_applicable"
+      ]
+    },
+    "ReviewDoctrineOverride": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ReviewDoctrineOverrideAction"
+        },
+        "id": {
+          "type": "string"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "note": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/ReviewDoctrineOverrideTarget"
+        }
+      },
+      "required": [
+        "target",
+        "id",
+        "action",
+        "note"
+      ]
+    },
+    "ReviewDoctrineOverrideAction": {
+      "type": "string",
+      "enum": [
+        "disable",
+        "require",
+        "make_optional",
+        "set_min_score"
+      ]
+    },
+    "ReviewDoctrineOverrideTarget": {
+      "type": "string",
+      "enum": [
+        "objective",
+        "evidence_requirement",
+        "style_doctrine",
+        "validation_gate",
+        "subagent"
+      ]
+    },
+    "ReviewDoctrinePreset": {
+      "type": "string",
+      "enum": [
+        "core_engineering",
+        "testing",
+        "formal_methods",
+        "functional_domain_driven_design",
+        "laziness_lost",
+        "security",
+        "performance"
+      ]
+    },
+    "ReviewEvidenceKind": {
+      "type": "string",
+      "enum": [
+        "compile",
+        "automated_tests",
+        "property_tests",
+        "type_check",
+        "formal_proof",
+        "static_analysis",
+        "code_inspection",
+        "architecture_review",
+        "style_review",
+        "security_scan",
+        "performance_benchmark",
+        "documentation_review",
+        "external_reference",
+        "custom"
+      ]
+    },
+    "ReviewEvidenceRequirement": {
+      "type": "object",
+      "properties": {
+        "applies_to_objective_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifact_kinds": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactKind"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ReviewEvidenceKind"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "description",
+        "required"
+      ]
+    },
+    "ReviewObjective": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ReviewObjectiveCategory"
+        },
+        "description": {
+          "type": "string"
+        },
+        "evidence_requirement_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "severity_if_failed": {
+          "$ref": "#/$defs/ReviewSeverity"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "category",
+        "title",
+        "description",
+        "required",
+        "severity_if_failed"
+      ]
+    },
+    "ReviewObjectiveCategory": {
+      "type": "string",
+      "enum": [
+        "correctness",
+        "code_review",
+        "testing",
+        "hypothesis_testing",
+        "type_soundness",
+        "formal_verification",
+        "code_quality",
+        "code_style",
+        "architecture",
+        "domain_modeling",
+        "functional_design",
+        "denotational_semantics",
+        "abstraction_quality",
+        "simplicity",
+        "security",
+        "performance",
+        "reliability",
+        "observability",
+        "documentation",
+        "custom"
+      ]
+    },
+    "ReviewReference": {
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "uri",
+        "note"
+      ]
+    },
+    "ReviewSeverity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "ReviewSubagentProfile": {
+      "type": "object",
+      "properties": {
+        "evidence_requirement_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "inherited_by_default": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "objective_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "prompt_hints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_model_features": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "validation_gate_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "name",
+        "inherited_by_default"
+      ]
+    },
+    "RiskTolerance": {
+      "type": "string",
+      "enum": [
+        "conservative",
+        "balanced",
+        "aggressive"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "test",
+        "review",
+        "mcp_tools",
+        "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "network_open",
+        "formal_verification"
+      ]
+    },
+    "RunnerLocality": {
+      "type": "string",
+      "enum": [
+        "any_node",
+        "same_node",
+        "local_only",
+        "remote_only"
+      ]
+    },
+    "RunnerSelector": {
+      "type": "object",
+      "properties": {
+        "locality": {
+          "$ref": "#/$defs/RunnerLocality"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "runner_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "locality"
+      ]
+    },
+    "SandboxBackend": {
+      "type": "string",
+      "enum": [
+        "local_workspace",
+        "container",
+        "gvisor",
+        "firecracker",
+        "kata",
+        "kubernetes_job",
+        "namespace_jail",
+        "provider_sandbox"
+      ]
+    },
+    "SandboxIsolationProfile": {
+      "type": "object",
+      "properties": {
+        "apparmor_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "backend": {
+          "$ref": "#/$defs/SandboxBackend",
+          "default": "local_workspace"
+        },
+        "cpu_limit_millis": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "drop_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "enforce": {
+          "type": "boolean",
+          "default": false
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "memory_limit_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "no_new_privileges": {
+          "type": "boolean",
+          "default": true
+        },
+        "pids_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "read_only_rootfs": {
+          "type": "boolean",
+          "default": false
+        },
+        "runtime_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "seccomp_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "snapshot_strategy": {
+          "$ref": "#/$defs/SandboxSnapshotStrategy",
+          "default": "filesystem_manifest"
+        }
+      }
+    },
+    "SandboxProfile": {
+      "type": "object",
+      "properties": {
+        "approval_policy": {
+          "$ref": "#/$defs/ApprovalPolicy"
+        },
+        "filesystem": {
+          "$ref": "#/$defs/FilesystemAccess"
+        },
+        "isolated_runner": {
+          "type": "boolean"
+        },
+        "isolation": {
+          "$ref": "#/$defs/SandboxIsolationProfile",
+          "default": {
+            "apparmor_profile": null,
+            "backend": "local_workspace",
+            "cpu_limit_millis": null,
+            "drop_capabilities": [],
+            "egress_policy_ref": null,
+            "enforce": false,
+            "image": null,
+            "memory_limit_mb": null,
+            "no_new_privileges": true,
+            "pids_limit": null,
+            "read_only_rootfs": false,
+            "runtime_class": null,
+            "seccomp_profile": null,
+            "snapshot_strategy": "filesystem_manifest"
+          }
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkAccess"
+        }
+      },
+      "required": [
+        "filesystem",
+        "network",
+        "approval_policy",
+        "isolated_runner"
+      ]
+    },
+    "SandboxSnapshotStrategy": {
+      "type": "string",
+      "enum": [
+        "metadata_only",
+        "filesystem_manifest",
+        "archive",
+        "object_storage_archive"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "StyleDoctrine": {
+      "type": "object",
+      "properties": {
+        "anti_patterns": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "positive_indicators": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "references": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReviewReference"
+          }
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "required"
+      ]
+    },
+    "SubgoalSpec": {
+      "type": "object",
+      "properties": {
+        "acceptance_evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "owner_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority",
+          "default": "normal"
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "objective",
+        "owner_role"
+      ]
+    },
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    },
+    "TaskPurpose": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "work"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "review"
+            },
+            "round": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "subject_id",
+            "round"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unification"
+            },
+            "round": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "subject_ids",
+            "round"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "actor_retry"
+            },
+            "round": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "subject_id",
+            "round"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_index": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "candidate_branch"
+            },
+            "original_task_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "original_task_id",
+            "candidate_index"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "branch_vote"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "candidate_task_ids"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "candidate_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "group_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "branch_unification"
+            },
+            "voter_task_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "candidate_task_ids",
+            "voter_task_ids"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "research"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "question"
+          ]
+        }
+      ]
+    },
+    "ValidationGate": {
+      "type": "object",
+      "properties": {
+        "applies_to_roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WorkerKind"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "evidence_requirement_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "failure_blocks": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ValidationGateKind"
+        },
+        "min_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "description",
+        "required",
+        "failure_blocks"
+      ]
+    },
+    "ValidationGateKind": {
+      "type": "string",
+      "enum": [
+        "compile",
+        "test_suite",
+        "property_testing",
+        "type_soundness",
+        "formal_verification",
+        "static_analysis",
+        "code_review",
+        "architecture_review",
+        "style_review",
+        "security_review",
+        "performance_benchmark",
+        "documentation_review",
+        "custom"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "staff_engineer_claude",
+        "research",
+        "reviewer",
+        "tester",
+        "formal_methods",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

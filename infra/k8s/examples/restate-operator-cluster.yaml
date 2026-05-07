@@ -1,0 +1,73 @@
+apiVersion: restate.dev/v1
+kind: RestateCluster
+metadata:
+  name: coat-restate
+spec:
+  compute:
+    image: restatedev/restate:1.5
+    replicas: 3
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  storage:
+    storageRequestBytes: 21474836480
+  config: |
+    roles = [
+      "worker",
+      "admin",
+      "log-server",
+      "http-ingress",
+    ]
+    auto-provision = true
+    default-num-partitions = 128
+    default-replication = 2
+    rocksdb-total-memory-size = "1536 MiB"
+---
+apiVersion: restate.dev/v1beta1
+kind: RestateDeployment
+metadata:
+  name: coordinator
+  namespace: coat
+spec:
+  replicas: 2
+  restate:
+    register:
+      cluster: coat-restate
+  selector:
+    matchLabels:
+      app: coordinator
+  template:
+    metadata:
+      labels:
+        app: coordinator
+    spec:
+      containers:
+        - name: coordinator
+          image: coat/coordinator:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9080
+            - name: COAT_RUNNER_REGISTRY
+              value: http://runner-registry:9085
+            - name: COAT_NOTIFIER_URL
+              value: http://notifier:9086
+            - name: COAT_GOAL_STORE_URL
+              value: http://goal-store:9088
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_ALLOW_LOCAL_STUB_FALLBACK
+              value: "false"
+          ports:
+            - containerPort: 9080
+              name: restate
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi

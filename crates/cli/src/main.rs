@@ -4,12 +4,13 @@ use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use coat_domain::{
     BranchRequest, BranchSelectionRequest, ChildTaskRequest, ControlLoopMode, EventSource,
-    ExternalEvent, GoalSpec, HumanApproval, MemoryContextRequest, MemoryJoinRequest,
-    MemoryRepairRequest, MemorySearchRequest, MemoryWriteRequest, NotificationRequest,
-    RestartRequest, ReviewDoctrine, ReviewDoctrinePreset, RunnerDispatchRequest,
-    RunnerRegistration, StandardReviewCheck, SteeringDirective, SteeringDirectiveKind, SubgoalSpec,
-    TaskPriority, TaskPurpose, TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest,
-    WorkerKind,
+    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalSpec, HumanApproval, MemoryContextRequest,
+    MemoryJoinRequest, MemoryRepairRequest, MemorySearchRequest, MemoryWriteRequest,
+    NotificationRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion, PlanQuestionStatus,
+    PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine, ReviewDoctrinePreset,
+    RunnerDispatchRequest, RunnerRegistration, StandardReviewCheck, SteeringDirective,
+    SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose, TaskPurposeKind, TaskQuery,
+    TaskStatus, TriggeredGoalRequest, WorkerKind,
 };
 use uuid::Uuid;
 
@@ -24,6 +25,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Init(InitArgs),
+    Plan(PlanCommand),
     Goal(GoalCommand),
     Event(EventCommand),
     Runner(RunnerCommand),
@@ -34,12 +36,124 @@ enum Commands {
     Sandbox(SandboxCommand),
     Compose(ComposeCommand),
     K8s(K8sCommand),
+    Restate(RestateCommand),
 }
 
 #[derive(Debug, Args)]
 struct InitArgs {
     #[arg(long, default_value = ".")]
     path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PlanCommand {
+    #[command(subcommand)]
+    command: PlanSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanSubcommand {
+    Draft(PlanDraftArgs),
+    List(PlanListArgs),
+    Show(PlanShowArgs),
+    Revise(PlanReviseArgs),
+    Compile(PlanCompileArgs),
+}
+
+#[derive(Debug, Args)]
+struct PlanStoreArgs {
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    goal_store_url: String,
+}
+
+#[derive(Debug, Args)]
+struct PlanDraftArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    file: Option<PathBuf>,
+    #[arg(long)]
+    title: Option<String>,
+    #[arg(long)]
+    objective: Option<String>,
+    #[arg(long)]
+    prompt: Option<String>,
+    #[arg(long)]
+    repo: Option<String>,
+    #[arg(long, default_value = "interactive")]
+    mode: String,
+    #[arg(long)]
+    author: Option<String>,
+    #[arg(long)]
+    summary: Option<String>,
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long)]
+    emit_only: bool,
+    #[arg(long)]
+    acceptance_evidence: Vec<String>,
+    #[arg(long)]
+    constraint: Vec<String>,
+    #[arg(long)]
+    out_of_scope: Vec<String>,
+    #[arg(long)]
+    assumption: Vec<String>,
+    #[arg(long)]
+    open_question: Vec<String>,
+    #[arg(long)]
+    subgoal: Vec<String>,
+    #[arg(long)]
+    initial_task: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct PlanListArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    status: Vec<String>,
+    #[arg(long)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct PlanShowArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    plan_id: Uuid,
+}
+
+#[derive(Debug, Args)]
+struct PlanReviseArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    plan_id: Uuid,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PlanCompileArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    plan_id: Uuid,
+    #[arg(long)]
+    file: Option<PathBuf>,
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long)]
+    strict_review: bool,
+    #[arg(long)]
+    human_steered: bool,
+    #[arg(long)]
+    enable_branching: bool,
 }
 
 #[derive(Debug, Args)]
@@ -68,6 +182,7 @@ struct SandboxCommand {
 
 #[derive(Debug, Subcommand)]
 enum SandboxSubcommand {
+    Plan(SandboxCreateArgs),
     Create(SandboxCreateArgs),
     Snapshot(SandboxWorkspaceArgs),
     Cleanup(SandboxWorkspaceArgs),
@@ -101,7 +216,8 @@ struct SandboxWorkspaceArgs {
 enum EventSubcommand {
     Sources(EventGatewayUrlArgs),
     Register(EventFileArgs),
-    Ingest(EventFileArgs),
+    Ingest(EventIngestArgs),
+    Emit(EventEmitArgs),
     Trigger(EventFileArgs),
     List(EventGatewayUrlArgs),
     Triggers(EventGatewayUrlArgs),
@@ -133,6 +249,40 @@ struct EventFileArgs {
     file: PathBuf,
     #[arg(long, env = "COAT_EVENT_APPROVAL_ID")]
     approval_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct EventIngestArgs {
+    #[arg(
+        long,
+        env = "COAT_EVENT_GATEWAY_URL",
+        default_value = "http://localhost:9089"
+    )]
+    event_gateway_url: String,
+    #[arg(long, env = "COAT_EVENT_GATEWAY_TOKEN")]
+    token: Option<String>,
+    #[arg(long)]
+    file: PathBuf,
+    #[arg(long)]
+    route: bool,
+}
+
+#[derive(Debug, Args)]
+struct EventEmitArgs {
+    #[arg(
+        long,
+        env = "COAT_EVENT_GATEWAY_URL",
+        default_value = "http://localhost:9089"
+    )]
+    event_gateway_url: String,
+    #[arg(long, env = "COAT_EVENT_GATEWAY_TOKEN")]
+    token: Option<String>,
+    #[arg(long)]
+    source_id: String,
+    #[arg(long)]
+    file: PathBuf,
+    #[arg(long)]
+    no_route: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -535,10 +685,16 @@ struct StoreCommand {
 #[derive(Debug, Subcommand)]
 enum StoreSubcommand {
     Policy(StoreUrlArgs),
+    Goals(StoreUrlArgs),
+    Plans(StoreUrlArgs),
+    AllTasks(StoreUrlArgs),
+    Approvals(StoreApprovalsArgs),
     Goal(StoreGoalArgs),
     Tasks(StoreGoalArgs),
     Events(StoreGoalArgs),
     Artifacts(StoreGoalArgs),
+    RecordArtifacts(StoreRecordArtifactsArgs),
+    GoalApprovals(StoreGoalArgs),
 }
 
 #[derive(Debug, Args)]
@@ -564,6 +720,34 @@ struct StoreGoalArgs {
 }
 
 #[derive(Debug, Args)]
+struct StoreApprovalsArgs {
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    goal_store_url: String,
+    #[arg(long)]
+    goal_id: Option<Uuid>,
+    #[arg(long)]
+    status: Vec<String>,
+    #[arg(long)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct StoreRecordArtifactsArgs {
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    goal_store_url: String,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
 struct ComposeCommand {
     #[command(subcommand)]
     command: ComposeSubcommand,
@@ -571,8 +755,26 @@ struct ComposeCommand {
 
 #[derive(Debug, Subcommand)]
 enum ComposeSubcommand {
-    Up,
-    Down,
+    Up(ComposeUpArgs),
+    Down(ComposeDownArgs),
+}
+
+#[derive(Debug, Args)]
+struct ComposeUpArgs {
+    #[arg(long)]
+    restate_cloud: bool,
+    #[arg(long, default_value = "infra/compose/restate-cloud.env")]
+    env_file: PathBuf,
+    #[arg(long)]
+    profile: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct ComposeDownArgs {
+    #[arg(long)]
+    restate_cloud: bool,
+    #[arg(long, default_value = "infra/compose/restate-cloud.env")]
+    env_file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -587,15 +789,84 @@ enum K8sSubcommand {
 }
 
 #[derive(Debug, Args)]
+struct RestateCommand {
+    #[command(subcommand)]
+    command: RestateSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RestateSubcommand {
+    CloudEnv(RestateCloudEnvArgs),
+    TunnelDocker(RestateTunnelDockerArgs),
+    RegisterCloud(RestateRegisterCloudArgs),
+}
+
+#[derive(Debug, Args)]
 struct RenderArgs {
     #[arg(long, default_value = "infra/k8s/rendered.yaml")]
     output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct RestateCloudEnvArgs {
+    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "coat-personal")]
+    tunnel_name: String,
+    #[arg(long, env = "RESTATE_CLOUD_REGION", default_value = "us")]
+    region: String,
+    #[arg(long, env = "RESTATE_ENVIRONMENT_ID")]
+    environment_id: Option<String>,
+    #[arg(long, env = "RESTATE_SIGNING_PUBLIC_KEY")]
+    signing_public_key: Option<String>,
+    #[arg(long, default_value = "http://localhost:18080")]
+    ingress_url: String,
+    #[arg(long, default_value = "http://localhost:19070")]
+    admin_url: String,
+    #[arg(long, default_value = "http://localhost:9080")]
+    coordinator_url: String,
+}
+
+#[derive(Debug, Args)]
+struct RestateTunnelDockerArgs {
+    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "coat-personal")]
+    tunnel_name: String,
+    #[arg(long, env = "RESTATE_CLOUD_REGION", default_value = "us")]
+    region: String,
+    #[arg(long, env = "RESTATE_ENVIRONMENT_ID", default_value = "env_...")]
+    environment_id: String,
+    #[arg(
+        long,
+        env = "RESTATE_SIGNING_PUBLIC_KEY",
+        default_value = "publickeyv1_..."
+    )]
+    signing_public_key: String,
+    #[arg(
+        long,
+        default_value = "ghcr.io/restatedev/restate-cloud-tunnel-client:latest"
+    )]
+    image: String,
+    #[arg(long, default_value_t = 18080)]
+    ingress_port: u16,
+    #[arg(long, default_value_t = 19070)]
+    admin_port: u16,
+    #[arg(long, default_value_t = 19090)]
+    health_port: u16,
+}
+
+#[derive(Debug, Args)]
+struct RestateRegisterCloudArgs {
+    #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "coat-personal")]
+    tunnel_name: String,
+    #[arg(long, default_value = "http://localhost:9080")]
+    service_url: String,
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Commands::Init(args) => init(args),
+        Commands::Plan(args) => plan(args).await,
         Commands::Goal(args) => goal(args).await,
         Commands::Event(args) => event(args).await,
         Commands::Runner(args) => runner(args).await,
@@ -606,6 +877,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Sandbox(args) => sandbox(args).await,
         Commands::Compose(args) => compose(args),
         Commands::K8s(args) => k8s(args),
+        Commands::Restate(args) => restate(args),
     }
 }
 
@@ -616,6 +888,62 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
                 &format!(
                     "{}/goal-store/policy",
                     args.goal_store_url.trim_end_matches('/')
+                ),
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::Goals(args) => {
+            get_url(
+                &format!(
+                    "{}/goal-store/goals",
+                    args.goal_store_url.trim_end_matches('/')
+                ),
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::Plans(args) => {
+            get_url(
+                &format!(
+                    "{}/goal-store/plans",
+                    args.goal_store_url.trim_end_matches('/')
+                ),
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::AllTasks(args) => {
+            get_url(
+                &format!(
+                    "{}/goal-store/tasks",
+                    args.goal_store_url.trim_end_matches('/')
+                ),
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::Approvals(args) => {
+            let mut params = Vec::new();
+            if let Some(goal_id) = args.goal_id {
+                params.push(format!("goal_id={goal_id}"));
+            }
+            for status in args.status {
+                params.push(format!("status={status}"));
+            }
+            if let Some(limit) = args.limit {
+                params.push(format!("limit={limit}"));
+            }
+            let query = if params.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", params.join("&"))
+            };
+            get_url(
+                &format!(
+                    "{}/goal-store/approvals{}",
+                    args.goal_store_url.trim_end_matches('/'),
+                    query
                 ),
                 None,
             )
@@ -665,11 +993,170 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
+        StoreSubcommand::RecordArtifacts(args) => {
+            let request: serde_json::Value = read_json_file(&args.file)?;
+            post_json_to_url(
+                &format!(
+                    "{}/goal-store/artifacts",
+                    args.goal_store_url.trim_end_matches('/')
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::GoalApprovals(args) => {
+            get_url(
+                &format!(
+                    "{}/goal-store/goals/{}/approvals",
+                    args.goal_store_url.trim_end_matches('/'),
+                    args.goal_id
+                ),
+                None,
+            )
+            .await
+        }
+    }
+}
+
+async fn plan(args: PlanCommand) -> anyhow::Result<()> {
+    match args.command {
+        PlanSubcommand::Draft(args) => {
+            let request = plan_draft_request_from_args(&args)?;
+            if args.emit_only || args.out.is_some() {
+                return write_json_or_stdout(&request, args.out.as_ref());
+            }
+            post_json_to_url(
+                &format!(
+                    "{}/goal-store/plans",
+                    args.store.goal_store_url.trim_end_matches('/')
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
+        PlanSubcommand::List(args) => {
+            let mut params = Vec::new();
+            for status in args.status {
+                params.push(format!("status={status}"));
+            }
+            if let Some(limit) = args.limit {
+                params.push(format!("limit={limit}"));
+            }
+            let query = if params.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", params.join("&"))
+            };
+            get_url(
+                &format!(
+                    "{}/goal-store/plans{}",
+                    args.store.goal_store_url.trim_end_matches('/'),
+                    query
+                ),
+                None,
+            )
+            .await
+        }
+        PlanSubcommand::Show(args) => {
+            get_url(
+                &format!(
+                    "{}/goal-store/plans/{}",
+                    args.store.goal_store_url.trim_end_matches('/'),
+                    args.plan_id
+                ),
+                None,
+            )
+            .await
+        }
+        PlanSubcommand::Revise(args) => {
+            let request: PlanRevisionRequest = read_json_file(&args.file)?;
+            post_json_to_url(
+                &format!(
+                    "{}/goal-store/plans/{}/revisions",
+                    args.store.goal_store_url.trim_end_matches('/'),
+                    args.plan_id
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
+        PlanSubcommand::Compile(args) => {
+            let mut request = if let Some(file) = &args.file {
+                read_json_file::<PlanCompileRequest>(file)?
+            } else {
+                PlanCompileRequest {
+                    plan_id: Some(args.plan_id),
+                    goal_id: None,
+                    title_override: None,
+                    objective_override: None,
+                    strict_review: args.strict_review,
+                    human_steered: args.human_steered,
+                    enable_branching: args.enable_branching,
+                }
+            };
+            request.plan_id = Some(args.plan_id);
+            if args.strict_review {
+                request.strict_review = true;
+            }
+            if args.human_steered {
+                request.human_steered = true;
+            }
+            if args.enable_branching {
+                request.enable_branching = true;
+            }
+            if let Some(out) = &args.out {
+                let value = post_json_value_to_url(
+                    &format!(
+                        "{}/goal-store/plans/{}/compile",
+                        args.store.goal_store_url.trim_end_matches('/'),
+                        args.plan_id
+                    ),
+                    &request,
+                    None,
+                    None,
+                )
+                .await?;
+                if let Some(goal) = value.get("goal") {
+                    return write_json_or_stdout(goal, Some(out));
+                }
+                return write_json_or_stdout(&value, Some(out));
+            }
+            post_json_to_url(
+                &format!(
+                    "{}/goal-store/plans/{}/compile",
+                    args.store.goal_store_url.trim_end_matches('/'),
+                    args.plan_id
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
     }
 }
 
 async fn sandbox(args: SandboxCommand) -> anyhow::Result<()> {
     match args.command {
+        SandboxSubcommand::Plan(args) => {
+            let request: serde_json::Value = read_json_file(&args.file)?;
+            post_json_to_url(
+                &format!(
+                    "{}/launch-plan",
+                    args.sandbox_runner_url.trim_end_matches('/')
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
         SandboxSubcommand::Create(args) => {
             let request: serde_json::Value = read_json_file(&args.file)?;
             post_json_to_url(
@@ -733,8 +1220,33 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
         }
         EventSubcommand::Ingest(args) => {
             let request: ExternalEvent = read_json_file(&args.file)?;
+            let route = if args.route { "?route=true" } else { "" };
             post_json_to_url(
-                &format!("{}/events", args.event_gateway_url.trim_end_matches('/')),
+                &format!(
+                    "{}/events{}",
+                    args.event_gateway_url.trim_end_matches('/'),
+                    route
+                ),
+                &request,
+                args.token.as_deref(),
+                None,
+            )
+            .await
+        }
+        EventSubcommand::Emit(args) => {
+            let request: serde_json::Value = read_json_file(&args.file)?;
+            let route = if args.no_route {
+                "?route=false"
+            } else {
+                "?route=true"
+            };
+            post_json_to_url(
+                &format!(
+                    "{}/events/generic/{}{}",
+                    args.event_gateway_url.trim_end_matches('/'),
+                    args.source_id,
+                    route
+                ),
                 &request,
                 args.token.as_deref(),
                 None,
@@ -1033,6 +1545,80 @@ fn draft_goal(args: DraftGoalArgs) -> anyhow::Result<()> {
     }
 
     write_json_or_stdout(&goal, args.out.as_ref())
+}
+
+fn plan_draft_request_from_args(args: &PlanDraftArgs) -> anyhow::Result<PlanDraftRequest> {
+    if let Some(file) = &args.file {
+        return read_json_file(file);
+    }
+    let title = args
+        .title
+        .clone()
+        .context("--title is required when --file is not provided")?;
+    let objective = args
+        .objective
+        .clone()
+        .context("--objective is required when --file is not provided")?;
+    let mode = parse_json_enum::<PlanningMode>(&args.mode, "PlanningMode")?;
+    let mut authoring = GoalAuthoringGuidance {
+        intake_summary: args.prompt.clone().unwrap_or_else(|| objective.clone()),
+        acceptance_evidence: args.acceptance_evidence.clone(),
+        constraints: args.constraint.clone(),
+        out_of_scope: args.out_of_scope.clone(),
+        assumptions: args.assumption.clone(),
+        open_questions: args.open_question.clone(),
+    };
+    if authoring.intake_summary.trim().is_empty() {
+        authoring.intake_summary =
+            "Drafted through coat plan draft; revise before compiling to a GoalSpec.".to_string();
+    }
+    let plan = GoalPlan {
+        summary: args.summary.clone().unwrap_or_else(|| {
+            "Durable planning draft; use plan revise until questions and subgoals are ready."
+                .to_string()
+        }),
+        subgoals: args
+            .subgoal
+            .iter()
+            .map(|raw| parse_subgoal_spec(raw))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        distribution_notes: vec![
+            "Plan revisions are durable; compile to GoalSpec only after questions and evidence are clear."
+                .to_string(),
+        ],
+    };
+    let questions = args
+        .open_question
+        .iter()
+        .enumerate()
+        .map(|(index, question)| PlanQuestion {
+            id: format!("q{}", index + 1),
+            question: question.clone(),
+            required: true,
+            status: PlanQuestionStatus::Open,
+            answer: None,
+        })
+        .collect();
+    Ok(PlanDraftRequest {
+        plan_id: None,
+        title,
+        objective: objective.clone(),
+        repo: args.repo.clone(),
+        prompt: args.prompt.clone().unwrap_or(objective),
+        mode,
+        status: None,
+        author: args.author.clone(),
+        summary: args.summary.clone(),
+        authoring,
+        plan,
+        initial_tasks: args
+            .initial_task
+            .iter()
+            .map(|raw| parse_initial_task_spec(raw))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        questions,
+        decisions: Vec::new(),
+    })
 }
 
 async fn steer_standard_goal(args: SteerStandardGoalArgs) -> anyhow::Result<()> {
@@ -1352,6 +1938,29 @@ async fn post_json_to_url<T: serde::Serialize + ?Sized>(
     Ok(())
 }
 
+async fn post_json_value_to_url<T: serde::Serialize + ?Sized>(
+    url: &str,
+    body: &T,
+    bearer_token: Option<&str>,
+    approval_id: Option<&str>,
+) -> anyhow::Result<serde_json::Value> {
+    let client = reqwest::Client::new();
+    let mut request = client.post(url).json(body);
+    if let Some(token) = bearer_token {
+        request = request.bearer_auth(token);
+    }
+    if let Some(approval_id) = approval_id {
+        request = request.header("x-coat-approval-id", approval_id);
+    }
+    let response = request.send().await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("POST {url} failed with {status}: {text}");
+    }
+    serde_json::from_str(&text).with_context(|| format!("parse response from {url}"))
+}
+
 async fn get_url(url: &str, bearer_token: Option<&str>) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let mut request = client.get(url);
@@ -1384,15 +1993,36 @@ fn workflow_url(ingress: &str, goal_id: Uuid, handler: &str) -> String {
 
 fn compose(args: ComposeCommand) -> anyhow::Result<()> {
     let mut command = Command::new("docker");
-    command
-        .arg("compose")
-        .arg("-f")
-        .arg("infra/compose/docker-compose.yml");
     match args.command {
-        ComposeSubcommand::Up => {
+        ComposeSubcommand::Up(args) => {
+            command.arg("compose");
+            if args.restate_cloud {
+                command.arg("--env-file").arg(args.env_file);
+            }
+            command.arg("-f").arg("infra/compose/docker-compose.yml");
+            if args.restate_cloud {
+                command
+                    .arg("-f")
+                    .arg("infra/compose/docker-compose.restate-cloud.yml")
+                    .arg("--profile")
+                    .arg("restate-cloud");
+            }
+            for profile in args.profile {
+                command.arg("--profile").arg(profile);
+            }
             command.arg("up").arg("--build");
         }
-        ComposeSubcommand::Down => {
+        ComposeSubcommand::Down(args) => {
+            command.arg("compose");
+            if args.restate_cloud {
+                command.arg("--env-file").arg(args.env_file);
+            }
+            command.arg("-f").arg("infra/compose/docker-compose.yml");
+            if args.restate_cloud {
+                command
+                    .arg("-f")
+                    .arg("infra/compose/docker-compose.restate-cloud.yml");
+            }
             command.arg("down");
         }
     }
@@ -1415,5 +2045,122 @@ fn k8s(args: K8sCommand) -> anyhow::Result<()> {
             println!("rendered {}", args.output.display());
             Ok(())
         }
+    }
+}
+
+fn restate(args: RestateCommand) -> anyhow::Result<()> {
+    match args.command {
+        RestateSubcommand::CloudEnv(args) => restate_cloud_env(args),
+        RestateSubcommand::TunnelDocker(args) => restate_tunnel_docker(args),
+        RestateSubcommand::RegisterCloud(args) => restate_register_cloud(args),
+    }
+}
+
+fn restate_cloud_env(args: RestateCloudEnvArgs) -> anyhow::Result<()> {
+    println!("# Restate Cloud operator environment for COAT");
+    println!(
+        "export RESTATE_TUNNEL_NAME={}",
+        shell_quote(&args.tunnel_name)
+    );
+    println!("export RESTATE_CLOUD_REGION={}", shell_quote(&args.region));
+    if let Some(environment_id) = args.environment_id.as_deref() {
+        println!(
+            "export RESTATE_ENVIRONMENT_ID={}",
+            shell_quote(environment_id)
+        );
+    }
+    if let Some(signing_public_key) = args.signing_public_key.as_deref() {
+        println!(
+            "export RESTATE_SIGNING_PUBLIC_KEY={}",
+            shell_quote(signing_public_key)
+        );
+        println!(
+            "export RESTATE_IDENTITY_KEYS={}",
+            shell_quote(signing_public_key)
+        );
+    }
+    println!(
+        "export COAT_RESTATE_INGRESS={}",
+        shell_quote(&args.ingress_url)
+    );
+    println!("export COAT_RESTATE_ADMIN={}", shell_quote(&args.admin_url));
+    println!(
+        "export COAT_COORDINATOR_RESTATE_ENDPOINT={}",
+        shell_quote(&args.coordinator_url)
+    );
+    println!();
+    println!("# Common next steps:");
+    println!(
+        "#   restate cloud env tunnel --tunnel-name {}",
+        shell_quote(&args.tunnel_name)
+    );
+    println!(
+        "#   coat restate register-cloud --tunnel-name {} --service-url {}",
+        shell_quote(&args.tunnel_name),
+        shell_quote(&args.coordinator_url)
+    );
+    Ok(())
+}
+
+fn restate_tunnel_docker(args: RestateTunnelDockerArgs) -> anyhow::Result<()> {
+    println!("docker run \\");
+    println!("  -e RESTATE_ENVIRONMENT_ID \\");
+    println!("  -e RESTATE_BEARER_TOKEN \\");
+    println!("  -e RESTATE_TUNNEL_NAME \\");
+    println!("  -e RESTATE_SIGNING_PUBLIC_KEY \\");
+    println!("  -e RESTATE_CLOUD_REGION \\");
+    println!("  -p {}:8080 \\", args.ingress_port);
+    println!("  -p {}:9090 \\", args.health_port);
+    println!("  -p {}:9070 \\", args.admin_port);
+    println!("  -it {}", shell_quote(&args.image));
+    println!();
+    println!("# Suggested environment:");
+    println!(
+        "export RESTATE_ENVIRONMENT_ID={}",
+        shell_quote(&args.environment_id)
+    );
+    println!("export RESTATE_BEARER_TOKEN=replace-me");
+    println!(
+        "export RESTATE_TUNNEL_NAME={}",
+        shell_quote(&args.tunnel_name)
+    );
+    println!(
+        "export RESTATE_SIGNING_PUBLIC_KEY={}",
+        shell_quote(&args.signing_public_key)
+    );
+    println!("export RESTATE_CLOUD_REGION={}", shell_quote(&args.region));
+    Ok(())
+}
+
+fn restate_register_cloud(args: RestateRegisterCloudArgs) -> anyhow::Result<()> {
+    let command_args = [
+        "deployments",
+        "register",
+        "--tunnel-name",
+        args.tunnel_name.as_str(),
+        args.service_url.as_str(),
+    ];
+    if args.dry_run {
+        println!("restate {}", command_args.join(" "));
+        return Ok(());
+    }
+    let status = Command::new("restate")
+        .args(command_args)
+        .status()
+        .context("run restate deployments register")?;
+    if !status.success() {
+        bail!("restate deployments register exited with {status}");
+    }
+    Ok(())
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '@'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxBackend",
+  "type": "string",
+  "enum": [
+    "local_workspace",
+    "container",
+    "gvisor",
+    "firecracker",
+    "kata",
+    "kubernetes_job",
+    "namespace_jail",
+    "provider_sandbox"
+  ]
+}

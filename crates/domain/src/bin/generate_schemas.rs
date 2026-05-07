@@ -5,12 +5,14 @@ use coat_domain::{
     AgentRunRequest, AgentRunResult, ApprovalEvaluation, ApprovalGatePolicy, ApprovalRecord,
     ApprovalRequest, AuthDistributionPolicy, BranchGroup, BranchRequest, BranchSelectionRequest,
     BranchVoteOutput, BranchVoteRecord, BranchingPolicy, CalendarEventSource, CalendarProvider,
-    ChildTaskRequest, ControlLoopPolicy, DeviceAuthProvider, EmbeddingPolicy,
-    EmbeddingProviderKind, EventGoalRoute, EventRouteMode, EventSource, EventSourceKind,
-    ExecutionProfile, ExternalEvent, GitResultPolicy, GitResultRef, GoalArtifactRecord,
-    GoalAuthoringGuidance, GoalEventBackend, GoalEventKind, GoalEventRecord, GoalPlan,
-    GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord, GoalSpec, GoalState,
-    GoalStateAuthority, GoalStoreArtifactListResponse, GoalStoreEventAppendRequest,
+    ChildTaskRequest, ControlLoopPolicy, DeviceAuthProvider, DurablePlan, DurablePlanListResponse,
+    DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind,
+    EventGoalRoute, EventRouteMode, EventSource, EventSourceKind, ExecutionProfile,
+    ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy, GitResultRef,
+    GoalArtifactRecord, GoalAuthoringGuidance, GoalEventBackend, GoalEventKind, GoalEventRecord,
+    GoalPlan, GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord, GoalSpec,
+    GoalState, GoalStateAuthority, GoalStoreApprovalListResponse, GoalStoreArtifactListResponse,
+    GoalStoreArtifactRecordRequest, GoalStoreArtifactRecordResponse, GoalStoreEventAppendRequest,
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
     GoalStorePolicy, GoalStoreProjectionMode, GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest,
     GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse, GoalTriggerTemplate, HumanApproval,
@@ -20,13 +22,17 @@ use coat_domain::{
     MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse, MemoryStoreRef,
     MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute, NotificationPolicy,
     NotificationRequest, ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind,
-    ObjectStoreRef, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord,
-    RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewDoctrine,
-    ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride, ReviewDoctrinePreset,
-    ReviewEvidenceRequirement, ReviewFinding, ReviewObjective, ReviewObjectiveResult, ReviewOutput,
-    ReviewPolicy, ReviewRound, ReviewSubagentProfile, RunnerDispatchCandidate,
-    RunnerDispatchDecision, RunnerDispatchRejection, RunnerDispatchRequest, RunnerRegistration,
-    RunnerStatus, SandboxProfile, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
+    ObjectStoreRef, PlanCompileRequest, PlanCompileResult, PlanDecision, PlanDraftRequest,
+    PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata,
+    ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest,
+    ResultChannelPolicy, RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy,
+    ReviewDoctrineOverride, ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding,
+    ReviewObjective, ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound,
+    ReviewSubagentProfile, RunnerDispatchCandidate, RunnerDispatchDecision,
+    RunnerDispatchRejection, RunnerDispatchRequest, RunnerRegistration, RunnerStatus,
+    SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
+    SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan, SandboxSecurityPlan,
+    SandboxSnapshotStrategy, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
     SourceArtifact, StandardReviewCheck, SteeringDirective, StyleDoctrine, SubgoalProgress,
     SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind,
     TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest,
@@ -63,6 +69,67 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "planning-mode.schema.json",
+        schema_for!(PlanningMode),
+    )?;
+    write_schema(&out_dir, "plan-status.schema.json", schema_for!(PlanStatus))?;
+    write_schema(
+        &out_dir,
+        "plan-question.schema.json",
+        schema_for!(PlanQuestion),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-decision.schema.json",
+        schema_for!(PlanDecision),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-revision.schema.json",
+        schema_for!(PlanRevision),
+    )?;
+    write_schema(
+        &out_dir,
+        "durable-plan.schema.json",
+        schema_for!(DurablePlan),
+    )?;
+    write_schema(
+        &out_dir,
+        "durable-plan-summary.schema.json",
+        schema_for!(DurablePlanSummary),
+    )?;
+    write_schema(
+        &out_dir,
+        "durable-plan-list-response.schema.json",
+        schema_for!(DurablePlanListResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "durable-plan-response.schema.json",
+        schema_for!(DurablePlanResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-draft-request.schema.json",
+        schema_for!(PlanDraftRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-revision-request.schema.json",
+        schema_for!(PlanRevisionRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-compile-request.schema.json",
+        schema_for!(PlanCompileRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-compile-result.schema.json",
+        schema_for!(PlanCompileResult),
+    )?;
+    write_schema(
+        &out_dir,
         "goal-progress.schema.json",
         schema_for!(GoalProgress),
     )?;
@@ -90,6 +157,11 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "webhook-event-source.schema.json",
         schema_for!(WebhookEventSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "generic-event-source.schema.json",
+        schema_for!(GenericEventSource),
     )?;
     write_schema(
         &out_dir,
@@ -247,6 +319,21 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "goal-store-artifact-list-response.schema.json",
         schema_for!(GoalStoreArtifactListResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-artifact-record-request.schema.json",
+        schema_for!(GoalStoreArtifactRecordRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-artifact-record-response.schema.json",
+        schema_for!(GoalStoreArtifactRecordResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-store-approval-list-response.schema.json",
+        schema_for!(GoalStoreApprovalListResponse),
     )?;
     write_schema(
         &out_dir,
@@ -603,8 +690,53 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "sandbox-isolation-profile.schema.json",
+        schema_for!(SandboxIsolationProfile),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-backend.schema.json",
+        schema_for!(SandboxBackend),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-snapshot-strategy.schema.json",
+        schema_for!(SandboxSnapshotStrategy),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-attestation.schema.json",
+        schema_for!(SandboxAttestation),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-launch-plan.schema.json",
+        schema_for!(SandboxLaunchPlan),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-resource-plan.schema.json",
+        schema_for!(SandboxResourcePlan),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-security-plan.schema.json",
+        schema_for!(SandboxSecurityPlan),
+    )?;
+    write_schema(
+        &out_dir,
+        "sandbox-network-plan.schema.json",
+        schema_for!(SandboxNetworkPlan),
+    )?;
+    write_schema(
+        &out_dir,
         "execution-profile.schema.json",
         schema_for!(ExecutionProfile),
+    )?;
+    write_schema(
+        &out_dir,
+        "executor-guardrail-policy.schema.json",
+        schema_for!(ExecutorGuardrailPolicy),
     )?;
     write_schema(
         &out_dir,

@@ -10,7 +10,7 @@ Create the repo harness that lets agents and engineers navigate the project with
 - Keep `ARCHITECTURE.md` as the durable system map.
 - Keep source references in `docs/references/source-links.md`.
 - Keep implementation work split into numbered execution plans.
-- Add doc-gardening checks once CI is introduced.
+- Add doc-gardening checks in CI to catch stale slugs and missing source-of-truth docs.
 
 ## Acceptance
 

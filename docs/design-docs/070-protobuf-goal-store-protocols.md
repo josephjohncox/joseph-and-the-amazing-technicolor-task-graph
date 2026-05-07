@@ -28,7 +28,10 @@ The local scaffold uses `coat-goal-store` with an append-only JSONL journal. Tha
 - `GoalEventRecord`
 - `ApprovalRecord`
 - `GoalStoreSnapshot`
-- snapshot upsert, event append, goal/task/event query, and artifact record RPCs.
+- `DurablePlanRecord`
+- snapshot upsert, durable plan upsert/list/get/compile, event append, goal/task/event query, and artifact record RPCs.
+
+HTTP local development mirrors the artifact record RPC with `POST /goal-store/artifacts`, allowing workers or smoke tests to append artifact, git-result, and object-artifact refs without rewriting a full snapshot.
 
 `proto/coat/v1/runner.proto` defines:
 
@@ -62,6 +65,7 @@ Database writes should use upserts keyed by goal ID, task ID, event sequence, an
 
 Recommended Postgres tables:
 
+- `plans(plan_id primary key, status, mode, title, objective, repo, version, compiled_goal_id, payload jsonb)`
 - `goals(goal_id primary key, status, title, objective, repo, percent_done, satisfied, updated_at, payload jsonb)`
 - `tasks(task_id primary key, goal_id, parent_task_id, subgoal_id, role, status, purpose_kind, depth, priority_rank, runnable, result_uri, payload jsonb)`
 - `goal_events(goal_id, sequence, event_id, kind, task_id, message, actor, idempotency_key unique, payload jsonb)`
@@ -76,6 +80,7 @@ Workers do not query the goal store for authority. They ask the coordinator for 
 
 Operators and dashboards query the goal store for:
 
+- durable planning drafts and compiled plan outputs;
 - progress summaries;
 - subgoal/task distribution;
 - approval queues;

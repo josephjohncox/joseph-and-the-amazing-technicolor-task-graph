@@ -82,8 +82,12 @@ Operators can inject doctrine-backed checks into active goals through `SteeringD
 - `web_search`
 - `deep_research`
 - `simplicity`
+- `security`
+- `output_safety`
 
 Review-like checks create reviewer, tester, or formal-methods tasks. Research-like checks create sourced research tasks that must return source capture and an information-use plan. The coordinator still owns the task tree; steering only requests bounded work.
+
+`security` and `output_safety` are the standard executor guardrail checks. They are useful when a worker ran code, touched secrets, used open network, changed dependencies, returned large logs, or produced output that another agent might be tempted to follow as instructions.
 
 Operators can submit these checks without hand-authoring JSON:
 

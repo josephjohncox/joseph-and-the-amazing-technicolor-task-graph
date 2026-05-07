@@ -1,0 +1,60 @@
+{
+  "title": "Durable planning mode",
+  "objective": "Design a typed planning-mode workflow that compiles into executable GoalSpec state before agents start work.",
+  "repo": null,
+  "prompt": "Capture a chat-style planning session as durable questions, decisions, subgoals, and initial task seeds.",
+  "mode": "interactive",
+  "status": "draft",
+  "author": "operator",
+  "summary": "Initial planning-mode draft.",
+  "authoring": {
+    "intake_summary": "We need planning mode like chat systems, but durable and typed.",
+    "acceptance_evidence": [
+      "plan can be revised",
+      "plan can compile into GoalSpec",
+      "compiled goal can be linted"
+    ],
+    "constraints": [
+      "SPA is optional and must use backend APIs",
+      "plans are not worker-owned global state"
+    ],
+    "out_of_scope": [
+      "submitting compiled goals automatically"
+    ],
+    "assumptions": [
+      "goal-store is acceptable for pre-goal durable planning artifacts"
+    ],
+    "open_questions": [
+      "Which subgoals should be seeded immediately?"
+    ]
+  },
+  "plan": {
+    "summary": "Create contracts, storage, UI, MCP, and docs for durable planning.",
+    "subgoals": [
+      {
+        "id": "plan-contracts",
+        "title": "Plan contracts",
+        "objective": "Define typed durable planning contracts and schemas.",
+        "owner_role": "planner",
+        "priority": "high",
+        "dependencies": [],
+        "tags": ["planning", "schemas"],
+        "acceptance_evidence": ["schemas generated"]
+      }
+    ],
+    "distribution_notes": [
+      "Compile the plan before execution; do not ask workers to infer subgoals from prose."
+    ]
+  },
+  "initial_tasks": [],
+  "questions": [
+    {
+      "id": "q1",
+      "question": "Which subgoals should be seeded immediately?",
+      "required": true,
+      "status": "open",
+      "answer": null
+    }
+  ],
+  "decisions": []
+}

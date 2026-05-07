@@ -814,6 +814,7 @@ fn blocked_result(
         runner_id,
         model_used,
         mcp_context_used,
+        sandbox_attestation: None,
         artifacts: Vec::new(),
         git_result: None,
         object_artifacts: Vec::new(),
@@ -849,6 +850,7 @@ fn timeout_result(
         runner_id,
         model_used,
         mcp_context_used,
+        sandbox_attestation: None,
         artifacts: Vec::new(),
         git_result: None,
         object_artifacts: Vec::new(),
@@ -876,6 +878,23 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn restate_identity_keys() -> Vec<String> {
+    let mut keys = Vec::new();
+    for name in ["RESTATE_IDENTITY_KEYS", "RESTATE_SIGNING_PUBLIC_KEY"] {
+        if let Ok(raw) = std::env::var(name) {
+            keys.extend(
+                raw.split([',', ' ', '\n', '\t'])
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+                    .map(ToOwned::to_owned),
+            );
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -886,13 +905,16 @@ async fn main() {
         .init();
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9080".to_string());
-    HttpServer::new(
-        Endpoint::builder()
-            .bind(GoalWorkflowImpl::default().serve())
-            .bind(AgentRunnerImpl::default().serve())
-            .bind(ValidationServiceImpl.serve())
-            .build(),
-    )
-    .listen_and_serve(bind.parse().expect("valid BIND_ADDR"))
-    .await;
+    let mut endpoint = Endpoint::builder()
+        .bind(GoalWorkflowImpl::default().serve())
+        .bind(AgentRunnerImpl::default().serve())
+        .bind(ValidationServiceImpl.serve());
+    for identity_key in restate_identity_keys() {
+        endpoint = endpoint
+            .identity_key(&identity_key)
+            .expect("valid Restate identity key");
+    }
+    HttpServer::new(endpoint.build())
+        .listen_and_serve(bind.parse().expect("valid BIND_ADDR"))
+        .await;
 }

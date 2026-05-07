@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxSecurityPlan",
+  "type": "object",
+  "properties": {
+    "apparmor_profile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "drop_capabilities": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "no_new_privileges": {
+      "type": "boolean"
+    },
+    "read_only_rootfs": {
+      "type": "boolean"
+    },
+    "run_as_non_root": {
+      "type": "boolean"
+    },
+    "seccomp_profile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "read_only_rootfs",
+    "no_new_privileges",
+    "run_as_non_root"
+  ]
+}

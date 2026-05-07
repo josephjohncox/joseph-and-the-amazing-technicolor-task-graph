@@ -6,9 +6,10 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 
 ## Implementation
 
-- Compose starts Restate, Rust services, TypeScript sidecars, and OpenTelemetry.
+- Compose starts Restate, Rust services, TypeScript runner sidecars, the TypeScript control gateway, and OpenTelemetry.
 - Kubernetes manifests define Deployments, Services, ConfigMaps, Secrets, resource limits, and NetworkPolicies.
 - CLI supports `init`, goal authoring/status/progress/tasks/steering/cancel, event source registration, runner registry, memory gateway, goal store, sandbox workspace lifecycle, `approve`, `compose up/down`, and `k8s render`.
+- The optional control gateway exposes SPA and MCP views for goals, agent progress, prompts, human queues, events, runners, and memory without owning durable state.
 - Add smoke examples under `examples/`.
 
 ## Tests

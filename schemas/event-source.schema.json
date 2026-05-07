@@ -19,6 +19,16 @@
     "enabled": {
       "type": "boolean"
     },
+    "generic": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GenericEventSource"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "id": {
       "type": "string"
     },
@@ -376,9 +386,21 @@
         "jira_webhook",
         "linear_webhook",
         "slack_event",
+        "stripe_webhook",
         "email",
         "object_storage",
         "kubernetes",
+        "generic",
+        "agent_event",
+        "runner_event",
+        "goal_lifecycle",
+        "memory_event",
+        "ci",
+        "git",
+        "issue_tracker",
+        "chat",
+        "monitoring_alert",
+        "database_change",
         "manual",
         "other"
       ]
@@ -386,6 +408,22 @@
     "ExecutionProfile": {
       "type": "object",
       "properties": {
+        "guardrails": {
+          "$ref": "#/$defs/ExecutorGuardrailPolicy",
+          "default": {
+            "block_on_high_findings": true,
+            "enabled": false,
+            "max_inline_output_bytes": 65536,
+            "output_reviewer_role": "reviewer",
+            "redact_secrets": true,
+            "require_artifact_manifest": false,
+            "require_output_review": false,
+            "require_sandbox_attestation": false,
+            "require_security_review": false,
+            "require_strong_sandbox_attestation": false,
+            "security_reviewer_role": "validator"
+          }
+        },
         "mcp": {
           "$ref": "#/$defs/McpContextRef"
         },
@@ -430,6 +468,128 @@
         "persona",
         "mcp",
         "notifications"
+      ]
+    },
+    "ExecutorGuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "block_on_high_findings": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_inline_output_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_reviewer_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "redact_secrets": {
+          "type": "boolean"
+        },
+        "require_artifact_manifest": {
+          "type": "boolean"
+        },
+        "require_output_review": {
+          "type": "boolean"
+        },
+        "require_sandbox_attestation": {
+          "type": "boolean"
+        },
+        "require_security_review": {
+          "type": "boolean"
+        },
+        "require_strong_sandbox_attestation": {
+          "type": "boolean"
+        },
+        "security_reviewer_role": {
+          "$ref": "#/$defs/WorkerKind"
+        }
+      },
+      "required": [
+        "enabled",
+        "require_output_review",
+        "require_security_review",
+        "output_reviewer_role",
+        "security_reviewer_role",
+        "block_on_high_findings",
+        "require_artifact_manifest",
+        "require_sandbox_attestation",
+        "require_strong_sandbox_attestation",
+        "redact_secrets",
+        "max_inline_output_bytes"
+      ]
+    },
+    "GenericEventSource": {
+      "type": "object",
+      "properties": {
+        "accepts_cloudevents": {
+          "type": "boolean"
+        },
+        "allowed_event_types": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "$ref": "#/$defs/WebhookAuthPolicy"
+        },
+        "dedupe_header": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dedupe_json_pointer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id_json_pointer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_payload_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mcp_context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpContextRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "payload_schema": true,
+        "subject_json_pointer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type_json_pointer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "auth",
+        "accepts_cloudevents",
+        "max_payload_bytes"
       ]
     },
     "GitResultPolicy": {
@@ -1146,6 +1306,13 @@
         "review",
         "mcp_tools",
         "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
         "git_worktree",
         "git",
         "object_storage",
@@ -1333,7 +1500,9 @@
         "reference_search",
         "web_search",
         "deep_research",
-        "simplicity"
+        "simplicity",
+        "security",
+        "output_safety"
       ]
     },
     "SteeringDirective": {

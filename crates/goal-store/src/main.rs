@@ -9,11 +9,14 @@ use axum::{
     routing::{get, post},
 };
 use coat_domain::{
-    GoalArtifactRecord, GoalEventRecord, GoalId, GoalRecord, GoalStoreArtifactListResponse,
-    GoalStoreEventAppendRequest, GoalStoreEventAppendResponse, GoalStoreEventListResponse,
-    GoalStoreGoalResponse, GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest,
-    GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse, TaskId, TaskRecord, TaskStatus,
-    WorkerKind,
+    ApprovalRecord, ApprovalStatus, DurablePlan, DurablePlanListResponse, DurablePlanResponse,
+    GoalArtifactRecord, GoalEventRecord, GoalId, GoalRecord, GoalStatus,
+    GoalStoreApprovalListResponse, GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest,
+    GoalStoreArtifactRecordResponse, GoalStoreEventAppendRequest, GoalStoreEventAppendResponse,
+    GoalStoreEventListResponse, GoalStoreGoalResponse, GoalStoreSnapshot,
+    GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse,
+    PlanCompileRequest, PlanCompileResult, PlanDraftRequest, PlanId, PlanRevisionRequest,
+    PlanStatus, TaskId, TaskRecord, TaskStatus, WorkerKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -87,7 +90,9 @@ struct GoalStore {
     tasks: BTreeMap<TaskId, TaskRecord>,
     events: BTreeMap<GoalId, Vec<GoalEventRecord>>,
     artifacts: BTreeMap<GoalId, Vec<GoalArtifactRecord>>,
+    approvals: BTreeMap<GoalId, Vec<ApprovalRecord>>,
     snapshots: BTreeMap<GoalId, GoalStoreSnapshot>,
+    plans: BTreeMap<PlanId, DurablePlan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,10 +100,27 @@ struct GoalStore {
 enum JournalEntry {
     Snapshot(GoalStoreSnapshotUpsertRequest),
     Event(GoalStoreEventAppendRequest),
+    Artifact(GoalStoreArtifactRecordRequest),
+    Plan(DurablePlan),
+}
+
+#[derive(Debug, Deserialize)]
+struct GoalFilter {
+    status: Option<Vec<GoalStatus>>,
+    repo: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanFilter {
+    status: Option<Vec<PlanStatus>>,
+    repo: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TaskFilter {
+    goal_id: Option<GoalId>,
     status: Option<Vec<TaskStatus>>,
     role: Option<Vec<WorkerKind>>,
     subgoal_id: Option<String>,
@@ -110,6 +132,13 @@ struct TaskFilter {
 struct EventFilter {
     task_id: Option<TaskId>,
     after_sequence: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApprovalFilter {
+    goal_id: Option<GoalId>,
+    status: Option<Vec<ApprovalStatus>>,
     limit: Option<usize>,
 }
 
@@ -171,10 +200,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/goal-store/policy", get(policy))
         .route("/goal-store/snapshots", post(upsert_snapshot))
         .route("/goal-store/events", post(append_event))
+        .route("/goal-store/artifacts", post(record_artifacts))
+        .route("/goal-store/plans", get(list_plans).post(create_plan))
+        .route("/goal-store/plans/{plan_id}", get(get_plan))
+        .route("/goal-store/plans/{plan_id}/revisions", post(revise_plan))
+        .route("/goal-store/plans/{plan_id}/compile", post(compile_plan))
+        .route("/goal-store/goals", get(list_goals))
+        .route("/goal-store/tasks", get(list_all_tasks))
+        .route("/goal-store/approvals", get(list_all_approvals))
         .route("/goal-store/goals/{goal_id}", get(get_goal))
         .route("/goal-store/goals/{goal_id}/tasks", get(list_tasks))
         .route("/goal-store/goals/{goal_id}/events", get(list_events))
         .route("/goal-store/goals/{goal_id}/artifacts", get(list_artifacts))
+        .route("/goal-store/goals/{goal_id}/approvals", get(list_approvals))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
 
@@ -247,6 +285,27 @@ async fn append_event(
     }))
 }
 
+async fn record_artifacts(
+    State(state): State<AppState>,
+    Json(request): Json<GoalStoreArtifactRecordRequest>,
+) -> Result<Json<GoalStoreArtifactRecordResponse>, ApiError> {
+    let records = request.clone().into_records();
+    if let Some(pool) = &state.postgres {
+        record_artifacts_postgres(pool, &records)
+            .await
+            .map_err(ApiError::internal)?;
+    } else if let Err(error) = append_journal(&state, JournalEntry::Artifact(request)).await {
+        tracing::warn!(%error, "append artifact journal failed");
+    }
+
+    let mut store = state.store.write().await;
+    store.apply_artifacts(records.clone());
+    Ok(Json(GoalStoreArtifactRecordResponse {
+        accepted: true,
+        artifact_count: records.len() as u32,
+    }))
+}
+
 async fn get_goal(
     State(state): State<AppState>,
     Path(goal_id): Path<Uuid>,
@@ -264,11 +323,154 @@ async fn get_goal(
     }))
 }
 
+async fn create_plan(
+    State(state): State<AppState>,
+    Json(request): Json<PlanDraftRequest>,
+) -> Result<Json<DurablePlanResponse>, ApiError> {
+    let plan = DurablePlan::draft(request);
+    upsert_plan_record(&state, &plan)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(DurablePlanResponse {
+        found: true,
+        plan: Some(plan),
+    }))
+}
+
+async fn list_plans(
+    State(state): State<AppState>,
+    Query(filter): Query<PlanFilter>,
+) -> Result<Json<DurablePlanListResponse>, ApiError> {
+    let plans = if let Some(pool) = &state.postgres {
+        list_plans_postgres(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.plans.values().cloned().collect()
+    };
+    Ok(Json(DurablePlanListResponse {
+        plans: filter_plans(plans, &filter)
+            .into_iter()
+            .map(|plan| plan.summary())
+            .collect(),
+    }))
+}
+
+async fn get_plan(
+    State(state): State<AppState>,
+    Path(plan_id): Path<Uuid>,
+) -> Result<Json<DurablePlanResponse>, ApiError> {
+    let plan = if let Some(pool) = &state.postgres {
+        get_plan_postgres(pool, plan_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.plans.get(&plan_id).cloned()
+    };
+    Ok(Json(DurablePlanResponse {
+        found: plan.is_some(),
+        plan,
+    }))
+}
+
+async fn revise_plan(
+    State(state): State<AppState>,
+    Path(plan_id): Path<Uuid>,
+    Json(request): Json<PlanRevisionRequest>,
+) -> Result<Json<DurablePlanResponse>, ApiError> {
+    let mut plan = load_plan(&state, plan_id).await?.ok_or_else(|| ApiError {
+        status: StatusCode::NOT_FOUND,
+        error: anyhow::anyhow!("plan {plan_id} not found"),
+    })?;
+    plan.apply_revision(request);
+    upsert_plan_record(&state, &plan)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(DurablePlanResponse {
+        found: true,
+        plan: Some(plan),
+    }))
+}
+
+async fn compile_plan(
+    State(state): State<AppState>,
+    Path(plan_id): Path<Uuid>,
+    Json(mut request): Json<PlanCompileRequest>,
+) -> Result<Json<PlanCompileResult>, ApiError> {
+    let mut plan = load_plan(&state, plan_id).await?.ok_or_else(|| ApiError {
+        status: StatusCode::NOT_FOUND,
+        error: anyhow::anyhow!("plan {plan_id} not found"),
+    })?;
+    request.plan_id = Some(plan_id);
+    let result = plan.compile_goal(request);
+    upsert_plan_record(&state, &plan)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(result))
+}
+
+async fn list_goals(
+    State(state): State<AppState>,
+    Query(filter): Query<GoalFilter>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let goals = if let Some(pool) = &state.postgres {
+        list_goals_postgres(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.goals.values().cloned().collect()
+    };
+    Ok(Json(serde_json::json!({
+        "goals": filter_goals(goals, &filter),
+    })))
+}
+
+async fn list_all_tasks(
+    State(state): State<AppState>,
+    Query(filter): Query<TaskFilter>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tasks = if let Some(pool) = &state.postgres {
+        list_tasks_postgres_all(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.tasks.values().cloned().collect()
+    };
+    Ok(Json(serde_json::json!({
+        "tasks": filter_tasks(tasks, &filter),
+    })))
+}
+
+async fn list_all_approvals(
+    State(state): State<AppState>,
+    Query(filter): Query<ApprovalFilter>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let approvals = if let Some(pool) = &state.postgres {
+        list_approvals_postgres_all(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state
+            .store
+            .read()
+            .await
+            .approvals
+            .values()
+            .flatten()
+            .cloned()
+            .collect()
+    };
+    Ok(Json(serde_json::json!({
+        "approvals": filter_approvals(approvals, &filter),
+    })))
+}
+
 async fn list_tasks(
     State(state): State<AppState>,
     Path(goal_id): Path<Uuid>,
-    Query(filter): Query<TaskFilter>,
+    Query(mut filter): Query<TaskFilter>,
 ) -> Result<Json<GoalStoreTaskListResponse>, ApiError> {
+    filter.goal_id = Some(goal_id);
     let tasks = if let Some(pool) = &state.postgres {
         list_tasks_postgres(pool, goal_id)
             .await
@@ -287,6 +489,32 @@ async fn list_tasks(
     Ok(Json(GoalStoreTaskListResponse {
         goal_id,
         tasks: filter_tasks(tasks, &filter),
+    }))
+}
+
+async fn list_approvals(
+    State(state): State<AppState>,
+    Path(goal_id): Path<Uuid>,
+    Query(mut filter): Query<ApprovalFilter>,
+) -> Result<Json<GoalStoreApprovalListResponse>, ApiError> {
+    filter.goal_id = Some(goal_id);
+    let approvals = if let Some(pool) = &state.postgres {
+        list_approvals_postgres(pool, goal_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state
+            .store
+            .read()
+            .await
+            .approvals
+            .get(&goal_id)
+            .cloned()
+            .unwrap_or_default()
+    };
+    Ok(Json(GoalStoreApprovalListResponse {
+        goal_id,
+        approvals: filter_approvals(approvals, &filter),
     }))
 }
 
@@ -336,12 +564,60 @@ async fn list_artifacts(
     Ok(Json(GoalStoreArtifactListResponse { goal_id, artifacts }))
 }
 
-fn filter_tasks(mut tasks: Vec<TaskRecord>, filter: &TaskFilter) -> Vec<TaskRecord> {
-    tasks.retain(|task| {
+fn filter_goals(mut goals: Vec<GoalRecord>, filter: &GoalFilter) -> Vec<GoalRecord> {
+    goals.retain(|goal| {
         filter
             .status
             .as_ref()
-            .is_none_or(|statuses| statuses.contains(&task.status))
+            .is_none_or(|statuses| statuses.contains(&goal.status))
+            && filter
+                .repo
+                .as_ref()
+                .is_none_or(|repo| goal.repo.as_ref() == Some(repo))
+    });
+    goals.sort_by(|left, right| {
+        format!("{:?}", left.status)
+            .cmp(&format!("{:?}", right.status))
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.goal_id.cmp(&right.goal_id))
+    });
+    if let Some(limit) = filter.limit {
+        goals.truncate(limit);
+    }
+    goals
+}
+
+fn filter_plans(mut plans: Vec<DurablePlan>, filter: &PlanFilter) -> Vec<DurablePlan> {
+    plans.retain(|plan| {
+        filter
+            .status
+            .as_ref()
+            .is_none_or(|statuses| statuses.contains(&plan.status))
+            && filter
+                .repo
+                .as_ref()
+                .is_none_or(|repo| plan.repo.as_ref() == Some(repo))
+    });
+    plans.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    if let Some(limit) = filter.limit {
+        plans.truncate(limit);
+    }
+    plans
+}
+
+fn filter_tasks(mut tasks: Vec<TaskRecord>, filter: &TaskFilter) -> Vec<TaskRecord> {
+    tasks.retain(|task| {
+        filter.goal_id.is_none_or(|goal_id| task.goal_id == goal_id)
+            && filter
+                .status
+                .as_ref()
+                .is_none_or(|statuses| statuses.contains(&task.status))
             && filter
                 .role
                 .as_ref()
@@ -365,6 +641,31 @@ fn filter_tasks(mut tasks: Vec<TaskRecord>, filter: &TaskFilter) -> Vec<TaskReco
         tasks.truncate(limit);
     }
     tasks
+}
+
+fn filter_approvals(
+    mut approvals: Vec<ApprovalRecord>,
+    filter: &ApprovalFilter,
+) -> Vec<ApprovalRecord> {
+    approvals.retain(|approval| {
+        filter
+            .goal_id
+            .is_none_or(|goal_id| approval.goal_id == goal_id)
+            && filter
+                .status
+                .as_ref()
+                .is_none_or(|statuses| statuses.contains(&approval.status))
+    });
+    approvals.sort_by(|left, right| {
+        left.goal_id
+            .cmp(&right.goal_id)
+            .then_with(|| left.task_id.cmp(&right.task_id))
+            .then_with(|| left.approval_id.cmp(&right.approval_id))
+    });
+    if let Some(limit) = filter.limit {
+        approvals.truncate(limit);
+    }
+    approvals
 }
 
 fn filter_events(mut events: Vec<GoalEventRecord>, filter: &EventFilter) -> Vec<GoalEventRecord> {
@@ -613,6 +914,106 @@ async fn append_event_postgres(pool: &PgPool, event: &GoalEventRecord) -> anyhow
     Ok(())
 }
 
+async fn record_artifacts_postgres(
+    pool: &PgPool,
+    records: &[GoalArtifactRecord],
+) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await.context("begin artifact transaction")?;
+    for artifact in records {
+        insert_artifact_postgres(&mut tx, artifact).await?;
+    }
+    tx.commit().await.context("commit artifact transaction")?;
+    Ok(())
+}
+
+async fn insert_artifact_postgres(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    artifact: &GoalArtifactRecord,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO coat.artifacts (
+            id, goal_id, task_id, artifact_type, uri, description, git_remote, git_ref,
+            git_commit_sha, object_bucket, object_key, sha256, created_at_text, payload_json,
+            record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (id) DO UPDATE SET
+            artifact_type = EXCLUDED.artifact_type,
+            uri = EXCLUDED.uri,
+            description = EXCLUDED.description,
+            git_remote = EXCLUDED.git_remote,
+            git_ref = EXCLUDED.git_ref,
+            git_commit_sha = EXCLUDED.git_commit_sha,
+            object_bucket = EXCLUDED.object_bucket,
+            object_key = EXCLUDED.object_key,
+            sha256 = EXCLUDED.sha256,
+            created_at_text = EXCLUDED.created_at_text,
+            payload_json = EXCLUDED.payload_json,
+            record_json = EXCLUDED.record_json
+        "#,
+    )
+    .bind(artifact_record_id(artifact))
+    .bind(artifact.goal_id)
+    .bind(artifact.task_id)
+    .bind(json_string(&artifact.artifact.kind)?)
+    .bind(&artifact.artifact.uri)
+    .bind(&artifact.artifact.description)
+    .bind(
+        artifact
+            .git_result
+            .as_ref()
+            .and_then(|git| git.remote.clone()),
+    )
+    .bind(artifact.git_result.as_ref().map(|git| git.branch.clone()))
+    .bind(
+        artifact
+            .git_result
+            .as_ref()
+            .and_then(|git| git.commit.clone()),
+    )
+    .bind(
+        artifact
+            .object_artifact
+            .as_ref()
+            .map(|object| object.store.bucket.clone()),
+    )
+    .bind(
+        artifact
+            .object_artifact
+            .as_ref()
+            .map(|object| object.key.clone()),
+    )
+    .bind(&artifact.artifact.sha256)
+    .bind(&artifact.created_at)
+    .bind(artifact.payload_json.clone())
+    .bind(serde_json::to_value(artifact)?)
+    .execute(&mut **tx)
+    .await
+    .with_context(|| format!("insert artifact {}", artifact.artifact.uri))?;
+    Ok(())
+}
+
+async fn load_plan(state: &AppState, plan_id: PlanId) -> Result<Option<DurablePlan>, ApiError> {
+    if let Some(pool) = &state.postgres {
+        get_plan_postgres(pool, plan_id)
+            .await
+            .map_err(ApiError::internal)
+    } else {
+        Ok(state.store.read().await.plans.get(&plan_id).cloned())
+    }
+}
+
+async fn upsert_plan_record(state: &AppState, plan: &DurablePlan) -> anyhow::Result<()> {
+    if let Some(pool) = &state.postgres {
+        upsert_plan_postgres(pool, plan).await?;
+    } else if let Err(error) = append_journal(state, JournalEntry::Plan(plan.clone())).await {
+        tracing::warn!(%error, "append plan journal failed");
+    }
+    state.store.write().await.apply_plan(plan.clone());
+    Ok(())
+}
+
 async fn insert_event_postgres(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event: &GoalEventRecord,
@@ -663,6 +1064,75 @@ async fn get_goal_postgres(pool: &PgPool, goal_id: GoalId) -> anyhow::Result<Opt
         .transpose()
 }
 
+async fn upsert_plan_postgres(pool: &PgPool, plan: &DurablePlan) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO coat.plans (
+            id, title, objective, repo, status, mode, version, compiled_goal_id,
+            updated_at_text, record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            objective = EXCLUDED.objective,
+            repo = EXCLUDED.repo,
+            status = EXCLUDED.status,
+            mode = EXCLUDED.mode,
+            version = EXCLUDED.version,
+            compiled_goal_id = EXCLUDED.compiled_goal_id,
+            updated_at_text = EXCLUDED.updated_at_text,
+            record_json = EXCLUDED.record_json,
+            projected_at = now()
+        "#,
+    )
+    .bind(plan.id)
+    .bind(&plan.title)
+    .bind(&plan.objective)
+    .bind(&plan.repo)
+    .bind(json_string(&plan.status)?)
+    .bind(json_string(&plan.mode)?)
+    .bind(as_i32(plan.version, "plan.version")?)
+    .bind(plan.compiled_goal_id)
+    .bind(&plan.updated_at)
+    .bind(serde_json::to_value(plan)?)
+    .execute(pool)
+    .await
+    .with_context(|| format!("upsert plan {}", plan.id))?;
+    Ok(())
+}
+
+async fn get_plan_postgres(pool: &PgPool, plan_id: PlanId) -> anyhow::Result<Option<DurablePlan>> {
+    let row = sqlx::query("SELECT record_json FROM coat.plans WHERE id = $1")
+        .bind(plan_id)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("query plan {plan_id}"))?;
+    row.map(|row| decode_record(row.try_get("record_json")?, "plan"))
+        .transpose()
+}
+
+async fn list_plans_postgres(pool: &PgPool) -> anyhow::Result<Vec<DurablePlan>> {
+    let rows =
+        sqlx::query("SELECT record_json FROM coat.plans ORDER BY projected_at DESC, title ASC")
+            .fetch_all(pool)
+            .await
+            .context("query plans")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "plan"))
+        .collect()
+}
+
+async fn list_goals_postgres(pool: &PgPool) -> anyhow::Result<Vec<GoalRecord>> {
+    let rows =
+        sqlx::query("SELECT record_json FROM coat.goals ORDER BY projected_at DESC, title ASC")
+            .fetch_all(pool)
+            .await
+            .context("query goals")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "goal"))
+        .collect()
+}
+
 async fn list_tasks_postgres(pool: &PgPool, goal_id: GoalId) -> anyhow::Result<Vec<TaskRecord>> {
     let rows = sqlx::query(
         "SELECT record_json FROM coat.tasks WHERE goal_id = $1 ORDER BY priority_rank DESC, depth ASC, id ASC",
@@ -673,6 +1143,45 @@ async fn list_tasks_postgres(pool: &PgPool, goal_id: GoalId) -> anyhow::Result<V
     .with_context(|| format!("query tasks for goal {goal_id}"))?;
     rows.into_iter()
         .map(|row| decode_record(row.try_get("record_json")?, "task"))
+        .collect()
+}
+
+async fn list_tasks_postgres_all(pool: &PgPool) -> anyhow::Result<Vec<TaskRecord>> {
+    let rows = sqlx::query(
+        "SELECT record_json FROM coat.tasks ORDER BY goal_id ASC, priority_rank DESC, depth ASC, id ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .context("query all tasks")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "task"))
+        .collect()
+}
+
+async fn list_approvals_postgres(
+    pool: &PgPool,
+    goal_id: GoalId,
+) -> anyhow::Result<Vec<ApprovalRecord>> {
+    let rows = sqlx::query(
+        "SELECT record_json FROM coat.approvals WHERE goal_id = $1 ORDER BY created_at DESC, id ASC",
+    )
+    .bind(goal_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("query approvals for goal {goal_id}"))?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "approval"))
+        .collect()
+}
+
+async fn list_approvals_postgres_all(pool: &PgPool) -> anyhow::Result<Vec<ApprovalRecord>> {
+    let rows =
+        sqlx::query("SELECT record_json FROM coat.approvals ORDER BY created_at DESC, id ASC")
+            .fetch_all(pool)
+            .await
+            .context("query approvals")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "approval"))
         .collect()
 }
 
@@ -746,12 +1255,26 @@ impl GoalStore {
             self.tasks.insert(task.task_id, task.clone());
         }
         self.artifacts.insert(goal_id, snapshot.artifacts.clone());
+        self.approvals.insert(goal_id, snapshot.approvals.clone());
         self.events.insert(goal_id, snapshot.events.clone());
         self.snapshots.insert(goal_id, snapshot);
     }
 
     fn apply_event(&mut self, event: GoalEventRecord) {
         self.events.entry(event.goal_id).or_default().push(event);
+    }
+
+    fn apply_artifacts(&mut self, records: Vec<GoalArtifactRecord>) {
+        for record in records {
+            self.artifacts
+                .entry(record.goal_id)
+                .or_default()
+                .push(record);
+        }
+    }
+
+    fn apply_plan(&mut self, plan: DurablePlan) {
+        self.plans.insert(plan.id, plan);
     }
 }
 
@@ -774,6 +1297,8 @@ fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<GoalStore> {
         match entry {
             JournalEntry::Snapshot(request) => store.apply_snapshot(request.snapshot),
             JournalEntry::Event(request) => store.apply_event(request.event),
+            JournalEntry::Artifact(request) => store.apply_artifacts(request.into_records()),
+            JournalEntry::Plan(plan) => store.apply_plan(plan),
         }
     }
     Ok(store)
@@ -802,7 +1327,10 @@ async fn append_journal(state: &AppState, entry: JournalEntry) -> anyhow::Result
 
 #[cfg(test)]
 mod tests {
-    use coat_domain::{GoalSpec, GoalState, GoalStoreSnapshotUpsertRequest};
+    use coat_domain::{
+        ArtifactKind, ArtifactRef, GoalSpec, GoalState, GoalStoreArtifactRecordRequest,
+        GoalStoreSnapshotUpsertRequest, PlanDraftRequest, ProtocolMetadata,
+    };
 
     use super::GoalStore;
 
@@ -822,5 +1350,62 @@ mod tests {
         assert!(store.goals.contains_key(&goal_id));
         assert!(store.tasks.contains_key(&task_id));
         assert!(!store.events[&goal_id].is_empty());
+    }
+
+    #[test]
+    fn plan_projection_indexes_durable_plan() {
+        let request = PlanDraftRequest {
+            plan_id: None,
+            title: "Plan first".to_string(),
+            objective: "Create a durable plan before compiling a goal.".to_string(),
+            repo: None,
+            prompt: "Work in planning mode.".to_string(),
+            mode: Default::default(),
+            status: None,
+            author: None,
+            summary: None,
+            authoring: Default::default(),
+            plan: Default::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        };
+        let plan = coat_domain::DurablePlan::draft(request);
+        let plan_id = plan.id;
+        let mut store = GoalStore::default();
+
+        store.apply_plan(plan);
+
+        assert!(store.plans.contains_key(&plan_id));
+    }
+
+    #[test]
+    fn artifact_record_request_indexes_artifacts() {
+        let goal_id = uuid::Uuid::new_v4();
+        let task_id = uuid::Uuid::new_v4();
+        let request = GoalStoreArtifactRecordRequest {
+            metadata: ProtocolMetadata::new(format!("goal:{goal_id}:artifact:test")),
+            goal_id,
+            task_id: Some(task_id),
+            artifacts: vec![ArtifactRef {
+                kind: ArtifactKind::Report,
+                uri: "workspace://artifact/report.json".to_string(),
+                description: "test report".to_string(),
+                sha256: Some("abc123".to_string()),
+            }],
+            git_results: Vec::new(),
+            object_artifacts: Vec::new(),
+        };
+        let records = request.into_records();
+        let mut store = GoalStore::default();
+
+        store.apply_artifacts(records);
+
+        assert_eq!(store.artifacts[&goal_id].len(), 1);
+        assert_eq!(store.artifacts[&goal_id][0].task_id, Some(task_id));
+        assert_eq!(
+            store.artifacts[&goal_id][0].artifact.uri,
+            "workspace://artifact/report.json"
+        );
     }
 }

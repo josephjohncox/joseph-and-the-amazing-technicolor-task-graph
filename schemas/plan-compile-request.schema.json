@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanCompileRequest",
+  "type": "object",
+  "properties": {
+    "enable_branching": {
+      "type": "boolean",
+      "default": false
+    },
+    "goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "human_steered": {
+      "type": "boolean",
+      "default": false
+    },
+    "objective_override": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "plan_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "strict_review": {
+      "type": "boolean",
+      "default": false
+    },
+    "title_override": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

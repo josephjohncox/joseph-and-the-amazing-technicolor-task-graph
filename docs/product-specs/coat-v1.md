@@ -40,9 +40,12 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - Notification policies can keep separate human-feedback threads moving.
 - Operators can inspect local notification thread ledgers during development.
 - Operators can use a documented goal-authoring loop to turn vague requests into structured `GoalSpec` JSON.
+- Operators can use durable planning mode to draft, revise, answer questions, record decisions, and compile a plan into `GoalSpec` before execution.
 - `GoalSpec` supports `authoring` guidance, `plan.subgoals`, and routed `initial_tasks` so clean goals become coordinator-visible work instead of prompt-only instructions.
 - Operators can lint goals before submit, inspect `GoalProgress`, and query `TaskList` by subgoal, status, role, purpose, tag, or runnable frontier.
 - Operators can inspect a goal-store projection of goals, tasks, events, approvals, and artifact refs without treating the projection as coordinator authority.
+- Operators can use an optional web gateway and SPA to inspect goal progress, all projected agent/task state, current task prompts, runner capacity, human queues, events, schedules, and memory while all edits flow through backend APIs.
+- Agent and chat clients can use an MCP dashboard surface for overview, goal snapshots, agent activity, steering, human threads, event sources, and memory search.
 - Webhooks, calendars, cron schedules, and event buses can create or steer goals through a gateway, dedupe policy, and optional human review.
 - Webhook auth policies can use shared-secret headers, bearer tokens, or HMAC-SHA256 without putting secret values into event payloads or goal state.
 - Event gateway channels are documented through AsyncAPI and cluster scheduled triggers have a Kubernetes CronJob example.

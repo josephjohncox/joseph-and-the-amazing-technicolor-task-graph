@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: coat-restate-cloud
+  namespace: restate-operator
+type: Opaque
+stringData:
+  token: replace_me
+---
+apiVersion: restate.dev/v1beta1
+kind: RestateCloudEnvironment
+metadata:
+  name: coat-cloud
+  namespace: restate-operator
+spec:
+  environmentId: env_replace_me
+  signingPublicKey: publickeyv1_replace_me
+  region: us
+  authentication:
+    secret:
+      name: coat-restate-cloud
+      key: token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: coat-restate-service-identity
+  namespace: coat
+type: Opaque
+stringData:
+  RESTATE_SIGNING_PUBLIC_KEY: publickeyv1_replace_me
+---
+apiVersion: restate.dev/v1beta1
+kind: RestateDeployment
+metadata:
+  name: coordinator
+  namespace: coat
+spec:
+  replicas: 2
+  restate:
+    register:
+      cloud: coat-cloud
+  selector:
+    matchLabels:
+      app: coordinator
+  template:
+    metadata:
+      labels:
+        app: coordinator
+    spec:
+      containers:
+        - name: coordinator
+          image: coat/coordinator:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BIND_ADDR
+              value: 0.0.0.0:9080
+            - name: RESTATE_IDENTITY_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: coat-restate-service-identity
+                  key: RESTATE_SIGNING_PUBLIC_KEY
+            - name: COAT_RUNNER_REGISTRY
+              value: http://runner-registry:9085
+            - name: COAT_NOTIFIER_URL
+              value: http://notifier:9086
+            - name: COAT_GOAL_STORE_URL
+              value: http://goal-store:9088
+            - name: COAT_MEMORY_GATEWAY_URL
+              value: http://memory-gateway:9087
+            - name: COAT_ALLOW_LOCAL_STUB_FALLBACK
+              value: "false"
+          ports:
+            - containerPort: 9080
+              name: restate
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi

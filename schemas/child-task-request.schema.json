@@ -320,6 +320,22 @@
     "ExecutionProfile": {
       "type": "object",
       "properties": {
+        "guardrails": {
+          "$ref": "#/$defs/ExecutorGuardrailPolicy",
+          "default": {
+            "block_on_high_findings": true,
+            "enabled": false,
+            "max_inline_output_bytes": 65536,
+            "output_reviewer_role": "reviewer",
+            "redact_secrets": true,
+            "require_artifact_manifest": false,
+            "require_output_review": false,
+            "require_sandbox_attestation": false,
+            "require_security_review": false,
+            "require_strong_sandbox_attestation": false,
+            "security_reviewer_role": "validator"
+          }
+        },
         "mcp": {
           "$ref": "#/$defs/McpContextRef"
         },
@@ -364,6 +380,59 @@
         "persona",
         "mcp",
         "notifications"
+      ]
+    },
+    "ExecutorGuardrailPolicy": {
+      "type": "object",
+      "properties": {
+        "block_on_high_findings": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_inline_output_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_reviewer_role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "redact_secrets": {
+          "type": "boolean"
+        },
+        "require_artifact_manifest": {
+          "type": "boolean"
+        },
+        "require_output_review": {
+          "type": "boolean"
+        },
+        "require_sandbox_attestation": {
+          "type": "boolean"
+        },
+        "require_security_review": {
+          "type": "boolean"
+        },
+        "require_strong_sandbox_attestation": {
+          "type": "boolean"
+        },
+        "security_reviewer_role": {
+          "$ref": "#/$defs/WorkerKind"
+        }
+      },
+      "required": [
+        "enabled",
+        "require_output_review",
+        "require_security_review",
+        "output_reviewer_role",
+        "security_reviewer_role",
+        "block_on_high_findings",
+        "require_artifact_manifest",
+        "require_sandbox_attestation",
+        "require_strong_sandbox_attestation",
+        "redact_secrets",
+        "max_inline_output_bytes"
       ]
     },
     "FilesystemAccess": {
@@ -1432,6 +1501,13 @@
         "review",
         "mcp_tools",
         "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
         "git_worktree",
         "git",
         "object_storage",
@@ -1496,6 +1572,113 @@
         "locality"
       ]
     },
+    "SandboxBackend": {
+      "type": "string",
+      "enum": [
+        "local_workspace",
+        "container",
+        "gvisor",
+        "firecracker",
+        "kata",
+        "kubernetes_job",
+        "namespace_jail",
+        "provider_sandbox"
+      ]
+    },
+    "SandboxIsolationProfile": {
+      "type": "object",
+      "properties": {
+        "apparmor_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "backend": {
+          "$ref": "#/$defs/SandboxBackend",
+          "default": "local_workspace"
+        },
+        "cpu_limit_millis": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "drop_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "enforce": {
+          "type": "boolean",
+          "default": false
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "memory_limit_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "no_new_privileges": {
+          "type": "boolean",
+          "default": true
+        },
+        "pids_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "read_only_rootfs": {
+          "type": "boolean",
+          "default": false
+        },
+        "runtime_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "seccomp_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "snapshot_strategy": {
+          "$ref": "#/$defs/SandboxSnapshotStrategy",
+          "default": "filesystem_manifest"
+        }
+      }
+    },
     "SandboxProfile": {
       "type": "object",
       "properties": {
@@ -1508,6 +1691,25 @@
         "isolated_runner": {
           "type": "boolean"
         },
+        "isolation": {
+          "$ref": "#/$defs/SandboxIsolationProfile",
+          "default": {
+            "apparmor_profile": null,
+            "backend": "local_workspace",
+            "cpu_limit_millis": null,
+            "drop_capabilities": [],
+            "egress_policy_ref": null,
+            "enforce": false,
+            "image": null,
+            "memory_limit_mb": null,
+            "no_new_privileges": true,
+            "pids_limit": null,
+            "read_only_rootfs": false,
+            "runtime_class": null,
+            "seccomp_profile": null,
+            "snapshot_strategy": "filesystem_manifest"
+          }
+        },
         "network": {
           "$ref": "#/$defs/NetworkAccess"
         }
@@ -1517,6 +1719,15 @@
         "network",
         "approval_policy",
         "isolated_runner"
+      ]
+    },
+    "SandboxSnapshotStrategy": {
+      "type": "string",
+      "enum": [
+        "metadata_only",
+        "filesystem_manifest",
+        "archive",
+        "object_storage_archive"
       ]
     },
     "SecretProvider": {

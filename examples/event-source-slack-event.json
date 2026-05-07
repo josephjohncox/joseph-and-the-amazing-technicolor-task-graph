@@ -1,0 +1,35 @@
+{
+  "id": "slack-agent-events",
+  "kind": "slack_event",
+  "enabled": false,
+  "description": "Slack Events API source for approval and steering messages.",
+  "namespace": "coat",
+  "webhook": {
+    "path": "/webhooks/slack-agent-events",
+    "auth": {
+      "kind": "hmac_sha256",
+      "secret_ref": {
+        "provider": "env",
+        "name": "COAT_SLACK_SIGNING_SECRET",
+        "key": "COAT_SLACK_SIGNING_SECRET",
+        "namespace": null,
+        "audience": "event-gateway"
+      },
+      "header_name": null
+    },
+    "accepts_cloudevents": false,
+    "max_payload_bytes": 1048576,
+    "dedupe_header": "x-slack-retry-num"
+  },
+  "generic": null,
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "human_review",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": true,
+    "dedupe_window_seconds": 3600
+  }
+}

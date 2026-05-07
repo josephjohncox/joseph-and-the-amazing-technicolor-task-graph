@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanningMode",
+  "type": "string",
+  "enum": [
+    "interactive",
+    "autonomous",
+    "human_steered",
+    "research_first",
+    "implementation_ready"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "metadata": {
+    "protocol_version": "coat.v1",
+    "idempotency_key": "goal-store-artifact-example",
+    "trace_id": null,
+    "causation_id": null,
+    "correlation_id": null,
+    "created_at": null
+  },
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756611",
+  "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+  "artifacts": [
+    {
+      "kind": "artifact_manifest",
+      "uri": "workspace://example-task/artifacts/artifact-manifest.json",
+      "description": "task artifact manifest emitted by sandboxed worker",
+      "sha256": null
+    }
+  ],
+  "git_results": [
+    {
+      "repo": "joseph-and-the-amazing-technicolor-task-graph",
+      "remote": null,
+      "base_ref": "main",
+      "branch": "coat/task/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+      "worktree_path": "/workspaces/018f8f2f-1fd8-7688-bb12-8bfb6b756611/018f8f2f-1fd8-7688-bb12-8bfb6b756612",
+      "commit": null,
+      "pushed": false,
+      "pull_request_url": null,
+      "diff_uri": null
+    }
+  ],
+  "object_artifacts": []
+}

@@ -1,4 +1,8 @@
-use std::{path::PathBuf, process::Command, sync::Arc};
+use std::{
+    path::{Component, Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
@@ -12,6 +16,7 @@ use tower_http::trace::TraceLayer;
 #[derive(Debug, Clone)]
 struct AppState {
     workspace_root: PathBuf,
+    sandbox_workspace_root: Option<PathBuf>,
     auth_token: Option<String>,
 }
 
@@ -53,8 +58,13 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?)
         .canonicalize()?;
+    let sandbox_workspace_root = std::env::var("TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let state = Arc::new(AppState {
         workspace_root,
+        sandbox_workspace_root,
         auth_token: std::env::var("MCP_TOOL_TOKEN")
             .ok()
             .filter(|token| !token.is_empty() && token != "replace-me"),
@@ -196,11 +206,14 @@ fn mcp_tools() -> Vec<serde_json::Value> {
         }),
         serde_json::json!({
             "name": "artifact_manifest",
-            "description": "Return the known artifact manifest placeholder for a task.",
+            "description": "Return artifact and sandbox manifest refs for a task workspace.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string"}
+                    "goal_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "workspace_id": {"type": "string"},
+                    "manifest_path": {"type": "string"}
                 }
             }
         }),
@@ -211,7 +224,7 @@ async fn call_tool(state: &AppState, params: ToolCallParams) -> anyhow::Result<s
     match params.name.as_str() {
         "repo_status" => repo_status(state, &params.arguments),
         "test_command" => Ok(test_command(&params.arguments)),
-        "artifact_manifest" => Ok(artifact_manifest(&params.arguments)),
+        "artifact_manifest" => artifact_manifest(state, &params.arguments).await,
         other => anyhow::bail!("unknown tool: {other}"),
     }
 }
@@ -283,20 +296,244 @@ fn test_command(arguments: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-fn artifact_manifest(arguments: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
+async fn artifact_manifest(
+    state: &AppState,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let Some(sandbox_root) = state.sandbox_workspace_root.as_ref() else {
+        return Ok(serde_json::json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "artifact lookup requires TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT"
+                }
+            ],
+            "structuredContent": {
+                "configured": false,
+                "artifacts": [],
+                "diagnostics": ["TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT is not configured"]
+            },
+            "isError": false
+        }));
+    };
+
+    let lookup = resolve_artifact_lookup(sandbox_root, arguments)?;
+    let mut diagnostics = Vec::new();
+    let mut artifacts = Vec::new();
+    let mut workspace_manifest = None;
+    let mut sandbox_launch_plan = None;
+    let mut snapshot_manifest = None;
+    let mut artifact_manifest = None;
+
+    if let Some(path) = lookup.workspace_manifest.as_ref() {
+        workspace_manifest = read_json_file(path, "workspace manifest", &mut diagnostics).await;
+    }
+    if let Some(path) = lookup.sandbox_launch_plan.as_ref() {
+        sandbox_launch_plan = read_json_file(path, "sandbox launch plan", &mut diagnostics).await;
+    }
+    if let Some(path) = lookup.snapshot_manifest.as_ref() {
+        snapshot_manifest = read_json_file(path, "snapshot manifest", &mut diagnostics).await;
+    }
+    if let Some(path) = lookup.artifact_manifest.as_ref() {
+        artifact_manifest = read_json_file(path, "artifact manifest", &mut diagnostics).await;
+        if let Some(manifest) = artifact_manifest.as_ref() {
+            artifacts = extract_artifacts(manifest);
+        }
+    }
+
+    let found = workspace_manifest.is_some()
+        || sandbox_launch_plan.is_some()
+        || snapshot_manifest.is_some()
+        || artifact_manifest.is_some();
+    let text = if found {
+        "artifact workspace manifests found"
+    } else {
+        "no artifact manifests found for lookup"
+    };
+
+    Ok(serde_json::json!({
         "content": [
             {
                 "type": "text",
-                "text": "artifact manifest placeholder"
+                "text": text
             }
         ],
         "structuredContent": {
-            "task_id": arguments.get("task_id").and_then(|value| value.as_str()),
-            "artifacts": []
+            "configured": true,
+            "found": found,
+            "goal_id": lookup.goal_id,
+            "task_id": lookup.task_id,
+            "workspace_id": lookup.workspace_id,
+            "paths": {
+                "workspace": lookup.workspace_path,
+                "workspace_manifest": lookup.workspace_manifest,
+                "sandbox_launch_plan": lookup.sandbox_launch_plan,
+                "snapshot_manifest": lookup.snapshot_manifest,
+                "artifact_manifest": lookup.artifact_manifest
+            },
+            "workspace_manifest": workspace_manifest,
+            "sandbox_launch_plan": sandbox_launch_plan,
+            "snapshot_manifest": snapshot_manifest,
+            "artifact_manifest": artifact_manifest,
+            "artifacts": artifacts,
+            "diagnostics": diagnostics
         },
         "isError": false
+    }))
+}
+
+#[derive(Debug)]
+struct ArtifactLookup {
+    goal_id: Option<String>,
+    task_id: Option<String>,
+    workspace_id: Option<String>,
+    workspace_path: Option<PathBuf>,
+    workspace_manifest: Option<PathBuf>,
+    sandbox_launch_plan: Option<PathBuf>,
+    snapshot_manifest: Option<PathBuf>,
+    artifact_manifest: Option<PathBuf>,
+}
+
+fn resolve_artifact_lookup(
+    sandbox_root: &Path,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<ArtifactLookup> {
+    let goal_id = arguments
+        .get("goal_id")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let task_id = arguments
+        .get("task_id")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let workspace_id = arguments
+        .get("workspace_id")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let manifest_path = arguments
+        .get("manifest_path")
+        .and_then(|value| value.as_str())
+        .map(PathBuf::from);
+
+    let workspace_path = match (&goal_id, &task_id, &workspace_id) {
+        (Some(goal), Some(task), _) => Some(confined_join(sandbox_root, &[goal, task])?),
+        (_, _, Some(workspace)) => workspace_path_from_registry(sandbox_root, workspace)?,
+        _ => None,
+    };
+
+    let artifact_manifest = match manifest_path {
+        Some(path) => Some(confined_path(sandbox_root, &path)?),
+        None => workspace_path
+            .as_ref()
+            .map(|path| path.join("artifacts/artifact-manifest.json")),
+    };
+
+    Ok(ArtifactLookup {
+        goal_id,
+        task_id,
+        workspace_id,
+        workspace_manifest: workspace_path
+            .as_ref()
+            .map(|path| path.join("workspace-manifest.json")),
+        sandbox_launch_plan: workspace_path
+            .as_ref()
+            .map(|path| path.join("sandbox-launch-plan.json")),
+        snapshot_manifest: workspace_path
+            .as_ref()
+            .map(|path| path.join("snapshots/latest.json")),
+        workspace_path,
+        artifact_manifest,
     })
+}
+
+fn workspace_path_from_registry(
+    sandbox_root: &Path,
+    workspace_id: &str,
+) -> anyhow::Result<Option<PathBuf>> {
+    let record_path = confined_join(
+        sandbox_root,
+        &[".coat-workspaces", &format!("{workspace_id}.json")],
+    )?;
+    if !record_path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&record_path)?;
+    let record: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let Some(path) = record.get("path").and_then(|value| value.as_str()) else {
+        return Ok(None);
+    };
+    Ok(Some(confined_path(sandbox_root, Path::new(path))?))
+}
+
+fn confined_join(root: &Path, parts: &[&str]) -> anyhow::Result<PathBuf> {
+    let mut path = PathBuf::from(root);
+    for part in parts {
+        if part.is_empty() || part.contains('/') || part.contains('\\') || part == &".." {
+            anyhow::bail!("unsafe path component: {part}");
+        }
+        path.push(part);
+    }
+    Ok(path)
+}
+
+fn confined_path(root: &Path, requested: &Path) -> anyhow::Result<PathBuf> {
+    if requested
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        anyhow::bail!("path may not contain parent directory components");
+    }
+    let path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    if !path.starts_with(root) {
+        anyhow::bail!(
+            "path {} is outside sandbox workspace root {}",
+            path.display(),
+            root.display()
+        );
+    }
+    Ok(path)
+}
+
+async fn read_json_file(
+    path: &Path,
+    label: &str,
+    diagnostics: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                diagnostics.push(format!(
+                    "{label} at {} is invalid JSON: {error}",
+                    path.display()
+                ));
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            diagnostics.push(format!("{label} not found at {}", path.display()));
+            None
+        }
+        Err(error) => {
+            diagnostics.push(format!(
+                "{label} could not be read at {}: {error}",
+                path.display()
+            ));
+            None
+        }
+    }
+}
+
+fn extract_artifacts(manifest: &serde_json::Value) -> Vec<serde_json::Value> {
+    manifest
+        .get("artifacts")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn tool_error(message: String) -> serde_json::Value {
@@ -335,12 +572,13 @@ fn mcp_error(id: Option<serde_json::Value>, code: i64, message: String) -> serde
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
-    use super::{AppState, authorize, resolve_repo_path, test_command};
+    use super::{AppState, artifact_manifest, authorize, resolve_repo_path, test_command};
 
     #[test]
     fn bearer_auth_is_required_when_token_is_configured() {
         let state = AppState {
             workspace_root: std::env::current_dir().expect("cwd"),
+            sandbox_workspace_root: None,
             auth_token: Some("secret".to_string()),
         };
         let headers = HeaderMap::new();
@@ -358,6 +596,7 @@ mod tests {
                 .expect("cwd")
                 .canonicalize()
                 .expect("canonical cwd"),
+            sandbox_workspace_root: None,
             auth_token: None,
         };
         let inside = resolve_repo_path(&state, &serde_json::json!({})).expect("inside path");
@@ -375,6 +614,58 @@ mod tests {
         assert_eq!(
             result["structuredContent"]["next_service"],
             "sandbox-runner"
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_manifest_reads_task_workspace_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let goal_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756611";
+        let task_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756612";
+        let task_root = temp.path().join(goal_id).join(task_id);
+        std::fs::create_dir_all(task_root.join("artifacts")).expect("artifact dir");
+        std::fs::create_dir_all(task_root.join("snapshots")).expect("snapshot dir");
+        std::fs::write(
+            task_root.join("workspace-manifest.json"),
+            r#"{"workspace_id":"workspace-1"}"#,
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            task_root.join("sandbox-launch-plan.json"),
+            r#"{"backend":"local_workspace"}"#,
+        )
+        .expect("launch plan");
+        std::fs::write(
+            task_root.join("snapshots/latest.json"),
+            r#"{"artifact_uri":"workspace://workspace-1/snapshot/latest"}"#,
+        )
+        .expect("snapshot");
+        std::fs::write(
+            task_root.join("artifacts/artifact-manifest.json"),
+            r#"{"artifacts":[{"uri":"workspace://workspace-1/report.json"}]}"#,
+        )
+        .expect("artifact manifest");
+
+        let state = AppState {
+            workspace_root: std::env::current_dir().expect("cwd"),
+            sandbox_workspace_root: Some(temp.path().to_path_buf()),
+            auth_token: None,
+        };
+        let result = artifact_manifest(
+            &state,
+            &serde_json::json!({
+                "goal_id": goal_id,
+                "task_id": task_id
+            }),
+        )
+        .await
+        .expect("artifact lookup");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["found"], true);
+        assert_eq!(
+            result["structuredContent"]["artifacts"][0]["uri"],
+            "workspace://workspace-1/report.json"
         );
     }
 }

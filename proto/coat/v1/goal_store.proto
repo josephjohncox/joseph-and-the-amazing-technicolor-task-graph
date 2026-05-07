@@ -23,6 +23,22 @@ message GoalRecord {
   JsonSchemaEnvelope payload = 15;
 }
 
+message DurablePlanRecord {
+  string plan_id = 1;
+  string title = 2;
+  string objective = 3;
+  string repo = 4;
+  PlanStatus status = 5;
+  PlanningMode mode = 6;
+  uint32 version = 7;
+  uint32 subgoal_count = 8;
+  uint32 initial_task_count = 9;
+  uint32 open_question_count = 10;
+  string compiled_goal_id = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  JsonSchemaEnvelope payload = 13;
+}
+
 message TaskRecord {
   string goal_id = 1;
   string task_id = 2;
@@ -104,6 +120,17 @@ message UpsertGoalSnapshotResponse {
   uint32 task_count = 3;
 }
 
+message UpsertDurablePlanRequest {
+  ProtocolMetadata metadata = 1;
+  string projection_reason = 2;
+  DurablePlanRecord plan = 3;
+}
+
+message UpsertDurablePlanResponse {
+  bool accepted = 1;
+  DurablePlanRecord plan = 2;
+}
+
 message AppendGoalEventRequest {
   ProtocolMetadata metadata = 1;
   GoalEventRecord event = 2;
@@ -122,6 +149,46 @@ message GetGoalRequest {
 message GetGoalResponse {
   bool found = 1;
   GoalRecord goal = 2;
+}
+
+message GetDurablePlanRequest {
+  string plan_id = 1;
+  bool include_payload = 2;
+}
+
+message GetDurablePlanResponse {
+  bool found = 1;
+  DurablePlanRecord plan = 2;
+}
+
+message ListDurablePlansRequest {
+  repeated PlanStatus statuses = 1;
+  string repo = 2;
+  uint32 limit = 3;
+  bool include_payload = 4;
+}
+
+message ListDurablePlansResponse {
+  repeated DurablePlanRecord plans = 1;
+}
+
+message CompileDurablePlanRequest {
+  ProtocolMetadata metadata = 1;
+  string plan_id = 2;
+  string goal_id = 3;
+  bool strict_review = 4;
+  bool human_steered = 5;
+  bool enable_branching = 6;
+  string title_override = 7;
+  string objective_override = 8;
+}
+
+message CompileDurablePlanResponse {
+  bool accepted = 1;
+  string plan_id = 2;
+  string goal_id = 3;
+  JsonSchemaEnvelope goal_spec = 4;
+  JsonSchemaEnvelope quality_report = 5;
 }
 
 message ListGoalTasksRequest {
@@ -146,6 +213,16 @@ message ListGoalEventsRequest {
 
 message ListGoalEventsResponse {
   repeated GoalEventRecord events = 1;
+}
+
+message ListGoalApprovalsRequest {
+  string goal_id = 1;
+  repeated string statuses = 2;
+  uint32 limit = 3;
+}
+
+message ListGoalApprovalsResponse {
+  repeated ApprovalRecord approvals = 1;
 }
 
 message RecordArtifactRequest {
@@ -174,10 +251,15 @@ message GoalStoreServiceHealthResponse {
 
 service GoalStoreService {
   rpc UpsertGoalSnapshot(UpsertGoalSnapshotRequest) returns (UpsertGoalSnapshotResponse);
+  rpc UpsertDurablePlan(UpsertDurablePlanRequest) returns (UpsertDurablePlanResponse);
   rpc AppendGoalEvent(AppendGoalEventRequest) returns (AppendGoalEventResponse);
   rpc GetGoal(GetGoalRequest) returns (GetGoalResponse);
+  rpc GetDurablePlan(GetDurablePlanRequest) returns (GetDurablePlanResponse);
+  rpc ListDurablePlans(ListDurablePlansRequest) returns (ListDurablePlansResponse);
+  rpc CompileDurablePlan(CompileDurablePlanRequest) returns (CompileDurablePlanResponse);
   rpc ListGoalTasks(ListGoalTasksRequest) returns (ListGoalTasksResponse);
   rpc ListGoalEvents(ListGoalEventsRequest) returns (ListGoalEventsResponse);
+  rpc ListGoalApprovals(ListGoalApprovalsRequest) returns (ListGoalApprovalsResponse);
   rpc RecordArtifact(RecordArtifactRequest) returns (RecordArtifactResponse);
   rpc Health(GoalStoreServiceHealthRequest) returns (GoalStoreServiceHealthResponse);
 }

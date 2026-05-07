@@ -1,0 +1,38 @@
+{
+  "id": "ci-events",
+  "kind": "ci",
+  "enabled": true,
+  "description": "Generic CI event source for workflow status changes from any CI provider or event bus.",
+  "namespace": "coat",
+  "webhook": null,
+  "generic": {
+    "auth": {
+      "kind": "none",
+      "secret_ref": null,
+      "header_name": null
+    },
+    "accepts_cloudevents": true,
+    "max_payload_bytes": 1048576,
+    "allowed_event_types": [
+      "ci.workflow.failed",
+      "ci.workflow.completed"
+    ],
+    "id_json_pointer": "/id",
+    "type_json_pointer": "/type",
+    "subject_json_pointer": "/subject",
+    "dedupe_json_pointer": "/delivery_id",
+    "dedupe_header": "ce-id",
+    "payload_schema": null,
+    "mcp_context": null
+  },
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "human_review",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": true,
+    "dedupe_window_seconds": 3600
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxSnapshotStrategy",
+  "type": "string",
+  "enum": [
+    "metadata_only",
+    "filesystem_manifest",
+    "archive",
+    "object_storage_archive"
+  ]
+}

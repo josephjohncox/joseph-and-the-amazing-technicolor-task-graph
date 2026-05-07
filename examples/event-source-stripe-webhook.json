@@ -1,0 +1,35 @@
+{
+  "id": "stripe-billing-events",
+  "kind": "stripe_webhook",
+  "enabled": false,
+  "description": "Stripe-style signed webhook source for billing or quota events.",
+  "namespace": "coat",
+  "webhook": {
+    "path": "/webhooks/stripe-billing-events",
+    "auth": {
+      "kind": "hmac_sha256",
+      "secret_ref": {
+        "provider": "env",
+        "name": "COAT_STRIPE_WEBHOOK_SECRET",
+        "key": "COAT_STRIPE_WEBHOOK_SECRET",
+        "namespace": null,
+        "audience": "event-gateway"
+      },
+      "header_name": null
+    },
+    "accepts_cloudevents": false,
+    "max_payload_bytes": 1048576,
+    "dedupe_header": "stripe-signature"
+  },
+  "generic": null,
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "record_only",
+    "goal_template": null,
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": false,
+    "dedupe_window_seconds": 3600
+  }
+}

@@ -7,12 +7,13 @@ External events should not call worker agents directly. They enter through `coat
 Use standard event and schedule shapes:
 
 - CloudEvents-compatible metadata for webhook and bus events.
+- Generic JSON event sources with JSON Pointer extraction for event id, type, subject, and dedupe keys.
 - AsyncAPI for documenting event-driven APIs; the current contract lives at `docs/api/event-gateway.asyncapi.yaml`.
 - Kubernetes CronJobs for cluster-native scheduled trigger jobs.
 - Restate timers and workflows for durable waits, retries, approval pauses, and follow-up scheduling inside a running goal.
 - Provider-specific push APIs for calendars where available, plus bounded polling for calendar windows and missed notifications.
 
-`coat-event-gateway` is the local ingress service. It records event sources, raw events, and triggered-goal decisions in an append-only JSONL journal for development. Production should store event inbox records in Postgres and optionally forward high-volume topics through Kafka, Redpanda, NATS, SQS/SNS, Pub/Sub, EventBridge, or another existing event bus. The Postgres inbox/outbox schema is scaffolded in `infra/db/migrations/002_event_gateway.sql`.
+`coat-event-gateway` is the ingress service. It records event sources, raw events, and triggered-goal decisions in an append-only JSONL journal for local development, or in the Postgres event inbox/outbox when `COAT_EVENT_GATEWAY_BACKEND=postgres`. High-volume channels can still be bridged through Kafka, Redpanda, NATS, SQS/SNS, Pub/Sub, EventBridge, or another existing event bus. The Postgres schema lives in `infra/db/migrations/002_event_gateway.sql`.
 
 ## Topology
 
@@ -35,6 +36,7 @@ Core domain types:
 
 - `EventSource`
 - `WebhookEventSource`
+- `GenericEventSource`
 - `ScheduledEventSource`
 - `CalendarEventSource`
 - `ExternalEvent`
@@ -54,13 +56,29 @@ Webhook handlers should:
 - verify gateway auth before recording or triggering work;
 - verify source auth through `WebhookAuthPolicy`;
 - support shared-secret headers, bearer tokens, and HMAC-SHA256 signatures with secret values resolved from `SecretRef`;
+- use provider HMAC presets for GitHub (`x-hub-signature-256`), Slack Events (`x-slack-signature` over `v0:{timestamp}:{body}`), and Stripe-style webhooks (`Stripe-Signature` over `{timestamp}.{body}`);
 - terminate production-only mTLS or OIDC JWT flows at trusted ingress or secret middleware until a provider adapter is installed;
 - normalize headers and payload into `ExternalEvent`;
 - preserve provider delivery IDs as `dedupe_key`;
 - never put raw shared secrets into event payloads, diagnostics, goal JSON, artifacts, or memory;
 - create goals only through the event gateway and Restate ingress.
 
-Provider-specific webhook adapters should map delivery metadata into CloudEvents-style fields: `id`, `source_id`, `event_type`, `subject`, `occurred_at`, and payload.
+Provider-specific webhook adapters should map delivery metadata into CloudEvents-style fields: `id`, `source_id`, `event_type`, `subject`, `occurred_at`, and payload. The local gateway already has provider signature presets; full provider adapters should build on those presets instead of reimplementing auth.
+
+## Generic Event Sources
+
+Generic event sources let agents and outside systems respond to events that do not deserve a bespoke adapter yet: CI results, git branch updates, issue tracker changes, chat commands, monitoring alerts, database change notifications, memory updates, runner heartbeats, or agent topology proposals.
+
+Use this pattern:
+
+1. Register an `EventSource` with `kind=generic`, `ci`, `git`, `issue_tracker`, `chat`, `monitoring_alert`, `database_change`, `agent_event`, `runner_event`, `goal_lifecycle`, or `memory_event`.
+2. Configure `generic.allowed_event_types` and JSON Pointer fields such as `/id`, `/type`, `/subject`, and `/delivery_id`.
+3. Emit raw JSON or CloudEvents-compatible JSON to `POST /events/generic/{source_id}`.
+4. The gateway normalizes the payload into `ExternalEvent`, applies dedupe, and routes according to `EventGoalRoute`.
+
+`POST /events` still accepts a fully normalized `ExternalEvent`; add `?route=true` when an operator or upstream bus wants the gateway to route the event from its registered source policy. `POST /events/generic/{source_id}` routes by default unless `?route=false` is set.
+
+Use generic sources as the first integration boundary. Add provider-specific adapters only when auth, normalization, rate limiting, or schema validation is stable enough to justify a typed adapter.
 
 ## Calendar And Scheduled Work
 

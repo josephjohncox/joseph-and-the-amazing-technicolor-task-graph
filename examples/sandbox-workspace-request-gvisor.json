@@ -1,0 +1,44 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756699",
+  "repo": "example/repo",
+  "sandbox": {
+    "filesystem": "workspace_write",
+    "network": "restricted",
+    "approval_policy": "never",
+    "isolated_runner": true,
+    "isolation": {
+      "backend": "kubernetes_job",
+      "enforce": true,
+      "runtime_class": "gvisor",
+      "image": "ghcr.io/example/coat-sandbox-task:latest",
+      "seccomp_profile": "runtime/default",
+      "drop_capabilities": ["ALL"],
+      "read_only_rootfs": true,
+      "no_new_privileges": true,
+      "cpu_limit_millis": 2000,
+      "memory_limit_mb": 4096,
+      "pids_limit": 512,
+      "egress_policy_ref": "coat-sandboxes/allow-coat-control-plane",
+      "snapshot_strategy": "object_storage_archive"
+    }
+  },
+  "git": {
+    "enabled": true,
+    "remote": "origin",
+    "base_ref": "main",
+    "branch_prefix": "coat/task",
+    "push": false,
+    "open_pr": false
+  },
+  "object_storage": {
+    "enabled": true,
+    "store": {
+      "kind": "minio",
+      "bucket": "coat-artifacts",
+      "endpoint": "http://object-store:9000",
+      "namespace": "local"
+    },
+    "key_prefix_template": "goals/{goal_id}/tasks/{task_id}"
+  }
+}

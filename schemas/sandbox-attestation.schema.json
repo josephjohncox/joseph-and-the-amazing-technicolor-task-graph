@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxAttestation",
+  "type": "object",
+  "properties": {
+    "backend": {
+      "$ref": "#/$defs/SandboxBackend"
+    },
+    "enforceable": {
+      "type": "boolean"
+    },
+    "evidence": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      }
+    },
+    "isolation_summary": {
+      "type": "string"
+    },
+    "runtime_class": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "strong_isolation": {
+      "type": "boolean"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "backend",
+    "enforceable",
+    "strong_isolation",
+    "isolation_summary"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "SandboxBackend": {
+      "type": "string",
+      "enum": [
+        "local_workspace",
+        "container",
+        "gvisor",
+        "firecracker",
+        "kata",
+        "kubernetes_job",
+        "namespace_jail",
+        "provider_sandbox"
+      ]
+    }
+  }
+}

@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
@@ -22,6 +23,7 @@ use hmac::{Hmac, Mac};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use tokio::{fs::OpenOptions, io::AsyncWriteExt, sync::RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -33,7 +35,35 @@ struct AppState {
     restate_ingress: Option<String>,
     gateway_token: Option<String>,
     require_event_source_approval: bool,
+    backend: EventGatewayBackend,
+    postgres: Option<PgPool>,
     client: reqwest::Client,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventGatewayBackend {
+    Memory,
+    Jsonl,
+    Postgres,
+}
+
+impl EventGatewayBackend {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "memory" => Ok(Self::Memory),
+            "jsonl" => Ok(Self::Jsonl),
+            "postgres" | "postgresql" => Ok(Self::Postgres),
+            other => anyhow::bail!("unsupported COAT_EVENT_GATEWAY_BACKEND {other:?}"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Jsonl => "jsonl",
+            Self::Postgres => "postgres",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -56,6 +86,11 @@ enum JournalEntry {
 struct ListEventsQuery {
     source_id: Option<String>,
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestEventQuery {
+    route: Option<bool>,
 }
 
 #[tokio::main]
@@ -81,12 +116,42 @@ async fn main() -> anyhow::Result<()> {
         .filter(|value| !value.trim().is_empty());
     let require_event_source_approval = env_bool("COAT_REQUIRE_EVENT_SOURCE_APPROVAL", false)
         || env_bool("EVENT_GATEWAY_REQUIRE_SOURCE_APPROVAL", false);
+    let backend_name = std::env::var("COAT_EVENT_GATEWAY_BACKEND").unwrap_or_else(|_| {
+        if journal_path.is_some() {
+            "jsonl".to_string()
+        } else {
+            "memory".to_string()
+        }
+    });
+    let backend = EventGatewayBackend::parse(&backend_name)?;
+    let postgres = if backend == EventGatewayBackend::Postgres {
+        let database_url = std::env::var("COAT_EVENT_GATEWAY_DATABASE_URL")
+            .or_else(|_| std::env::var("COAT_GOAL_STORE_DATABASE_URL"))
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .context("COAT_EVENT_GATEWAY_DATABASE_URL is required when backend=postgres")?;
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .connect(&database_url)
+            .await
+            .context("connect to Postgres event-gateway database")?;
+        verify_postgres_schema(&pool).await?;
+        Some(pool)
+    } else {
+        None
+    };
+    let gateway_state = if let Some(pool) = &postgres {
+        load_postgres_state(pool).await?
+    } else {
+        replay_journal(journal_path.as_ref())?
+    };
     let state = AppState {
-        state: Arc::new(RwLock::new(replay_journal(journal_path.as_ref())?)),
+        state: Arc::new(RwLock::new(gateway_state)),
         journal_path,
         restate_ingress,
         gateway_token,
         require_event_source_approval,
+        backend,
+        postgres,
         client: reqwest::Client::new(),
     };
 
@@ -95,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/event-sources", get(list_sources).post(register_source))
         .route("/events", get(list_events).post(ingest_event))
         .route("/events/webhook/{source_id}", post(webhook_event))
+        .route("/events/generic/{source_id}", post(generic_event))
         .route("/triggers", get(list_triggers).post(trigger_goal))
         .with_state(state)
         .layer(TraceLayer::new_for_http());
@@ -105,11 +171,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn healthz() -> Json<serde_json::Value> {
+async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "authority": "event_gateway",
         "event_format": "cloudevents_compatible",
+        "backend": state.backend.as_str(),
+        "postgres_connected": state.postgres.is_some(),
     }))
 }
 
@@ -120,7 +188,11 @@ async fn register_source(
 ) -> Result<Json<EventSource>, GatewayError> {
     require_gateway_auth(&state, &headers)?;
     enforce_event_source_activation_policy(&state, &headers, &source)?;
-    append_journal(&state, JournalEntry::Source(source.clone())).await?;
+    if let Some(pool) = &state.postgres {
+        upsert_source_postgres(pool, &source).await?;
+    } else {
+        append_journal(&state, JournalEntry::Source(source.clone())).await?;
+    }
     state
         .state
         .write()
@@ -131,16 +203,30 @@ async fn register_source(
 }
 
 async fn list_sources(State(state): State<AppState>) -> Json<Vec<EventSource>> {
+    if let Some(pool) = &state.postgres {
+        match list_sources_postgres(pool).await {
+            Ok(sources) => return Json(sources),
+            Err(error) => {
+                tracing::warn!(%error, "postgres source list failed; falling back to memory")
+            }
+        }
+    }
     Json(state.state.read().await.sources.values().cloned().collect())
 }
 
 async fn ingest_event(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<IngestEventQuery>,
     Json(event): Json<ExternalEvent>,
 ) -> Result<Json<serde_json::Value>, GatewayError> {
     require_gateway_auth(&state, &headers)?;
     let deduped = record_event(&state, event.clone()).await?;
+    if query.route.unwrap_or(false) {
+        if let Some(response) = route_event_from_source(&state, &event, deduped).await? {
+            return Ok(Json(serde_json::to_value(response)?));
+        }
+    }
     Ok(Json(serde_json::json!({
         "accepted": true,
         "event_id": event.id,
@@ -204,25 +290,33 @@ async fn webhook_event(
     };
     let deduped = record_event(&state, event.clone()).await?;
 
-    if let Some(source) = source {
-        if matches!(
-            source.route.mode,
-            EventRouteMode::CreateGoal
-                | EventRouteMode::CreateResearchGoal
-                | EventRouteMode::SteerGoal
-                | EventRouteMode::HumanReview
-        ) {
-            let request = TriggeredGoalRequest {
-                event: event.clone(),
-                route: source.route.clone(),
-                goal: None,
-                idempotency_key: event.dedupe_key.clone(),
-            };
-            let response = trigger_goal_inner(&state, request, deduped).await?;
+    if let Some(response) = route_event_from_source(&state, &event, deduped).await? {
+        return Ok(Json(serde_json::to_value(response)?));
+    }
+
+    Ok(Json(serde_json::json!({
+        "accepted": true,
+        "event_id": event.id,
+        "deduped": deduped,
+    })))
+}
+
+async fn generic_event(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+    Query(query): Query<IngestEventQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, GatewayError> {
+    let source = state.state.read().await.sources.get(&source_id).cloned();
+    require_generic_auth(&state, source.as_ref(), &headers, &body)?;
+    let event = normalize_generic_event(source.as_ref(), source_id, &headers, &body)?;
+    let deduped = record_event(&state, event.clone()).await?;
+    if query.route.unwrap_or(true) {
+        if let Some(response) = route_event_from_source(&state, &event, deduped).await? {
             return Ok(Json(serde_json::to_value(response)?));
         }
     }
-
     Ok(Json(serde_json::json!({
         "accepted": true,
         "event_id": event.id,
@@ -234,20 +328,43 @@ async fn list_events(
     State(state): State<AppState>,
     Query(query): Query<ListEventsQuery>,
 ) -> Json<Vec<ExternalEvent>> {
-    let mut events: Vec<_> = state
-        .state
-        .read()
-        .await
-        .events
-        .values()
-        .filter(|event| {
-            query
-                .source_id
-                .as_ref()
-                .is_none_or(|source_id| &event.source_id == source_id)
-        })
-        .cloned()
-        .collect();
+    let mut events: Vec<_> = if let Some(pool) = &state.postgres {
+        match list_events_postgres(pool, query.source_id.as_deref()).await {
+            Ok(events) => events,
+            Err(error) => {
+                tracing::warn!(%error, "postgres event list failed; falling back to memory");
+                state
+                    .state
+                    .read()
+                    .await
+                    .events
+                    .values()
+                    .filter(|event| {
+                        query
+                            .source_id
+                            .as_ref()
+                            .is_none_or(|source_id| &event.source_id == source_id)
+                    })
+                    .cloned()
+                    .collect()
+            }
+        }
+    } else {
+        state
+            .state
+            .read()
+            .await
+            .events
+            .values()
+            .filter(|event| {
+                query
+                    .source_id
+                    .as_ref()
+                    .is_none_or(|source_id| &event.source_id == source_id)
+            })
+            .cloned()
+            .collect()
+    };
     events.sort_by(|left, right| left.id.cmp(&right.id));
     if let Some(limit) = query.limit {
         events.truncate(limit);
@@ -266,10 +383,27 @@ async fn trigger_goal(
 }
 
 async fn list_triggers(State(state): State<AppState>) -> Json<Vec<TriggeredGoalResponse>> {
+    if let Some(pool) = &state.postgres {
+        match list_triggers_postgres(pool).await {
+            Ok(triggers) => return Json(triggers),
+            Err(error) => {
+                tracing::warn!(%error, "postgres trigger list failed; falling back to memory")
+            }
+        }
+    }
     Json(state.state.read().await.triggered_goals.clone())
 }
 
 async fn record_event(state: &AppState, event: ExternalEvent) -> Result<bool, GatewayError> {
+    if let Some(pool) = &state.postgres {
+        let deduped = insert_event_postgres(pool, &event).await?;
+        if !deduped {
+            let mut store = state.state.write().await;
+            store.dedupe_keys.insert(event.dedupe_key.clone());
+            store.events.insert(event.id.clone(), event);
+        }
+        return Ok(deduped);
+    }
     let mut store = state.state.write().await;
     let deduped = !store.dedupe_keys.insert(event.dedupe_key.clone());
     if !deduped {
@@ -277,6 +411,33 @@ async fn record_event(state: &AppState, event: ExternalEvent) -> Result<bool, Ga
         store.events.insert(event.id.clone(), event);
     }
     Ok(deduped)
+}
+
+async fn route_event_from_source(
+    state: &AppState,
+    event: &ExternalEvent,
+    deduped: bool,
+) -> Result<Option<TriggeredGoalResponse>, GatewayError> {
+    let source = state
+        .state
+        .read()
+        .await
+        .sources
+        .get(&event.source_id)
+        .cloned();
+    let Some(source) = source.filter(|source| source.enabled) else {
+        return Ok(None);
+    };
+    if source.route.mode == EventRouteMode::RecordOnly && !source.route.require_approval {
+        return Ok(None);
+    }
+    let request = TriggeredGoalRequest {
+        event: event.clone(),
+        route: source.route.clone(),
+        goal: None,
+        idempotency_key: event.dedupe_key.clone(),
+    };
+    trigger_goal_inner(state, request, deduped).await.map(Some)
 }
 
 async fn trigger_goal_inner(
@@ -456,6 +617,112 @@ fn render_template(template: &str, event: &ExternalEvent) -> String {
         )
 }
 
+fn normalize_generic_event(
+    source: Option<&EventSource>,
+    source_id: String,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<ExternalEvent, GatewayError> {
+    let generic = source.and_then(|source| source.generic.as_ref());
+    if let Some(generic) = generic {
+        if generic.max_payload_bytes > 0 && body.len() as u64 > generic.max_payload_bytes {
+            return Err(GatewayError::BadRequest(format!(
+                "generic event payload exceeds max_payload_bytes {}",
+                generic.max_payload_bytes
+            )));
+        }
+    }
+    let payload: serde_json::Value = serde_json::from_slice(body)
+        .unwrap_or_else(|_| serde_json::json!({ "raw_utf8": String::from_utf8_lossy(body) }));
+    let event_type = header(headers, "ce-type")
+        .or_else(|| {
+            generic
+                .and_then(|generic| generic.type_json_pointer.as_deref())
+                .and_then(|pointer| json_pointer_string(&payload, pointer))
+        })
+        .or_else(|| {
+            payload
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "generic.received".to_string());
+    if let Some(generic) = generic {
+        if !generic.allowed_event_types.is_empty()
+            && !generic
+                .allowed_event_types
+                .iter()
+                .any(|allowed| allowed == &event_type)
+        {
+            return Err(GatewayError::BadRequest(format!(
+                "event type {event_type} is not allowed for source {source_id}"
+            )));
+        }
+    }
+    let event_id = header(headers, "ce-id")
+        .or_else(|| {
+            generic
+                .and_then(|generic| generic.id_json_pointer.as_deref())
+                .and_then(|pointer| json_pointer_string(&payload, pointer))
+        })
+        .or_else(|| {
+            payload
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let subject = header(headers, "ce-subject").or_else(|| {
+        generic
+            .and_then(|generic| generic.subject_json_pointer.as_deref())
+            .and_then(|pointer| json_pointer_string(&payload, pointer))
+            .or_else(|| {
+                payload
+                    .get("subject")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+    });
+    let dedupe_key = generic
+        .and_then(|generic| generic.dedupe_header.as_deref())
+        .and_then(|name| header(headers, name))
+        .or_else(|| {
+            generic
+                .and_then(|generic| generic.dedupe_json_pointer.as_deref())
+                .and_then(|pointer| json_pointer_string(&payload, pointer))
+        })
+        .unwrap_or_else(|| format!("{source_id}:{event_id}:{event_type}"));
+    let occurred_at = header(headers, "ce-time").or_else(|| {
+        payload
+            .get("time")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    Ok(ExternalEvent {
+        id: event_id,
+        source_id,
+        source_kind: source
+            .map(|source| source.kind.clone())
+            .unwrap_or(EventSourceKind::Generic),
+        event_type,
+        subject,
+        dedupe_key,
+        occurred_at,
+        received_at: None,
+        headers: header_map(headers),
+        payload,
+    })
+}
+
+fn json_pointer_string(payload: &serde_json::Value, pointer: &str) -> Option<String> {
+    payload.pointer(pointer).and_then(|value| match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    })
+}
+
 async fn submit_goal(
     client: &reqwest::Client,
     restate_ingress: &str,
@@ -515,7 +782,11 @@ async fn append_trigger(
     state: &AppState,
     response: TriggeredGoalResponse,
 ) -> Result<(), GatewayError> {
-    append_journal(state, JournalEntry::Trigger(response.clone())).await?;
+    if let Some(pool) = &state.postgres {
+        insert_trigger_postgres(pool, &response).await?;
+    } else {
+        append_journal(state, JournalEntry::Trigger(response.clone())).await?;
+    }
     state.state.write().await.triggered_goals.push(response);
     Ok(())
 }
@@ -557,6 +828,7 @@ fn enforce_event_source_activation_policy(
 
 fn event_source_is_risky(source: &EventSource) -> bool {
     source.webhook.is_some()
+        || source.generic.is_some()
         || source.schedule.is_some()
         || source.calendar.is_some()
         || source.route.require_approval
@@ -579,17 +851,57 @@ fn require_webhook_auth(
     let Some(webhook) = &source.webhook else {
         return require_gateway_auth(state, headers);
     };
+    let defaults = provider_webhook_defaults(&source.kind);
 
-    match webhook.auth.kind {
+    require_event_auth(
+        state,
+        &webhook.auth,
+        headers,
+        body,
+        defaults.secret_header,
+        defaults.signature_header,
+        defaults.signature_style,
+    )
+}
+
+fn require_generic_auth(
+    state: &AppState,
+    source: Option<&EventSource>,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<(), GatewayError> {
+    let Some(source) = source else {
+        return require_gateway_auth(state, headers);
+    };
+    let Some(generic) = &source.generic else {
+        return require_gateway_auth(state, headers);
+    };
+    require_event_auth(
+        state,
+        &generic.auth,
+        headers,
+        body,
+        "x-coat-event-secret",
+        "x-coat-signature-256",
+        WebhookSignatureStyle::GenericSha256,
+    )
+}
+
+fn require_event_auth(
+    state: &AppState,
+    auth: &coat_domain::WebhookAuthPolicy,
+    headers: &HeaderMap,
+    body: &[u8],
+    default_secret_header: &str,
+    default_signature_header: &str,
+    signature_style: WebhookSignatureStyle,
+) -> Result<(), GatewayError> {
+    match auth.kind {
         WebhookAuthKind::None => require_gateway_auth(state, headers),
         WebhookAuthKind::SharedSecretHeader => {
-            let header_name = webhook
-                .auth
-                .header_name
-                .as_deref()
-                .unwrap_or("x-coat-webhook-secret");
+            let header_name = auth.header_name.as_deref().unwrap_or(default_secret_header);
             let provided = header(headers, header_name).ok_or(GatewayError::Unauthorized)?;
-            let expected = resolve_secret(webhook.auth.secret_ref.as_ref())?;
+            let expected = resolve_secret(auth.secret_ref.as_ref())?;
             if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
                 Ok(())
             } else {
@@ -597,7 +909,7 @@ fn require_webhook_auth(
             }
         }
         WebhookAuthKind::BearerToken => {
-            let expected = resolve_secret(webhook.auth.secret_ref.as_ref())?;
+            let expected = resolve_secret(auth.secret_ref.as_ref())?;
             let authorized = headers
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok())
@@ -609,21 +921,64 @@ fn require_webhook_auth(
             }
         }
         WebhookAuthKind::HmacSha256 => {
-            let header_name = webhook
-                .auth
+            let header_name = auth
                 .header_name
                 .as_deref()
-                .unwrap_or("x-coat-signature-256");
+                .unwrap_or(default_signature_header);
             let provided = header(headers, header_name).ok_or(GatewayError::Unauthorized)?;
-            let secret = resolve_secret(webhook.auth.secret_ref.as_ref())?;
-            verify_hmac_sha256(&secret, body, &provided)
+            let secret = resolve_secret(auth.secret_ref.as_ref())?;
+            verify_provider_hmac_sha256(&secret, headers, body, &provided, signature_style)
         }
         WebhookAuthKind::Basic | WebhookAuthKind::Mtls | WebhookAuthKind::OidcJwt => {
             Err(GatewayError::BadRequest(format!(
                 "webhook auth kind {:?} is declared but not implemented in the local gateway",
-                webhook.auth.kind
+                auth.kind
             )))
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebhookSignatureStyle {
+    GenericSha256,
+    SlackV0,
+    StripeV1,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WebhookAuthDefaults {
+    secret_header: &'static str,
+    signature_header: &'static str,
+    signature_style: WebhookSignatureStyle,
+}
+
+fn provider_webhook_defaults(kind: &EventSourceKind) -> WebhookAuthDefaults {
+    match kind {
+        EventSourceKind::GitHubWebhook => WebhookAuthDefaults {
+            secret_header: "x-coat-webhook-secret",
+            signature_header: "x-hub-signature-256",
+            signature_style: WebhookSignatureStyle::GenericSha256,
+        },
+        EventSourceKind::GitLabWebhook => WebhookAuthDefaults {
+            secret_header: "x-gitlab-token",
+            signature_header: "x-gitlab-token",
+            signature_style: WebhookSignatureStyle::GenericSha256,
+        },
+        EventSourceKind::SlackEvent => WebhookAuthDefaults {
+            secret_header: "x-coat-webhook-secret",
+            signature_header: "x-slack-signature",
+            signature_style: WebhookSignatureStyle::SlackV0,
+        },
+        EventSourceKind::StripeWebhook => WebhookAuthDefaults {
+            secret_header: "x-coat-webhook-secret",
+            signature_header: "stripe-signature",
+            signature_style: WebhookSignatureStyle::StripeV1,
+        },
+        _ => WebhookAuthDefaults {
+            secret_header: "x-coat-webhook-secret",
+            signature_header: "x-coat-signature-256",
+            signature_style: WebhookSignatureStyle::GenericSha256,
+        },
     }
 }
 
@@ -663,6 +1018,84 @@ fn verify_hmac_sha256(secret: &str, body: &[u8], provided: &str) -> Result<(), G
         .unwrap_or(provided);
     let provided = decode_hex(provided).ok_or(GatewayError::Unauthorized)?;
     if constant_time_eq(expected.as_ref(), &provided) {
+        Ok(())
+    } else {
+        Err(GatewayError::Unauthorized)
+    }
+}
+
+fn verify_provider_hmac_sha256(
+    secret: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    provided: &str,
+    style: WebhookSignatureStyle,
+) -> Result<(), GatewayError> {
+    match style {
+        WebhookSignatureStyle::GenericSha256 => verify_hmac_sha256(secret, body, provided),
+        WebhookSignatureStyle::SlackV0 => {
+            verify_slack_v0_signature(secret, headers, body, provided)
+        }
+        WebhookSignatureStyle::StripeV1 => verify_stripe_v1_signature(secret, body, provided),
+    }
+}
+
+fn verify_slack_v0_signature(
+    secret: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    provided: &str,
+) -> Result<(), GatewayError> {
+    let timestamp =
+        header(headers, "x-slack-request-timestamp").ok_or(GatewayError::Unauthorized)?;
+    ensure_recent_unix_timestamp(&timestamp, 300)?;
+    let mut base = Vec::new();
+    base.extend_from_slice(b"v0:");
+    base.extend_from_slice(timestamp.as_bytes());
+    base.extend_from_slice(b":");
+    base.extend_from_slice(body);
+    verify_hmac_sha256(secret, &base, provided)
+}
+
+fn verify_stripe_v1_signature(
+    secret: &str,
+    body: &[u8],
+    provided: &str,
+) -> Result<(), GatewayError> {
+    let parts = parse_comma_kv_header(provided);
+    let timestamp = parts.get("t").ok_or(GatewayError::Unauthorized)?;
+    ensure_recent_unix_timestamp(timestamp, 300)?;
+    let signature = parts.get("v1").ok_or(GatewayError::Unauthorized)?;
+    let mut base = Vec::new();
+    base.extend_from_slice(timestamp.as_bytes());
+    base.extend_from_slice(b".");
+    base.extend_from_slice(body);
+    verify_hmac_sha256(secret, &base, signature)
+}
+
+fn parse_comma_kv_header(value: &str) -> BTreeMap<String, String> {
+    value
+        .split(',')
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn ensure_recent_unix_timestamp(
+    timestamp: &str,
+    tolerance_seconds: u64,
+) -> Result<(), GatewayError> {
+    let timestamp = timestamp
+        .parse::<u64>()
+        .map_err(|_| GatewayError::Unauthorized)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| GatewayError::Unauthorized)?
+        .as_secs();
+    let delta = now.abs_diff(timestamp);
+    if delta <= tolerance_seconds {
         Ok(())
     } else {
         Err(GatewayError::Unauthorized)
@@ -748,6 +1181,227 @@ fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<EventGatewayState> {
     Ok(state)
 }
 
+async fn verify_postgres_schema(pool: &PgPool) -> anyhow::Result<()> {
+    sqlx::query("SELECT 1 FROM coat.event_sources LIMIT 1")
+        .execute(pool)
+        .await
+        .context(
+            "verify coat.event_sources exists; run infra/db/migrations/002_event_gateway.sql",
+        )?;
+    Ok(())
+}
+
+async fn load_postgres_state(pool: &PgPool) -> anyhow::Result<EventGatewayState> {
+    let sources = list_sources_postgres(pool).await?;
+    let events = list_events_postgres(pool, None).await?;
+    let triggers = list_triggers_postgres(pool).await?;
+    let mut state = EventGatewayState::default();
+    for source in sources {
+        state.sources.insert(source.id.clone(), source);
+    }
+    for event in events {
+        state.dedupe_keys.insert(event.dedupe_key.clone());
+        state.events.insert(event.id.clone(), event);
+    }
+    state.triggered_goals = triggers;
+    Ok(state)
+}
+
+async fn upsert_source_postgres(pool: &PgPool, source: &EventSource) -> anyhow::Result<()> {
+    let auth_policy = source
+        .webhook
+        .as_ref()
+        .map(|webhook| serde_json::to_value(&webhook.auth))
+        .or_else(|| {
+            source
+                .generic
+                .as_ref()
+                .map(|generic| serde_json::to_value(&generic.auth))
+        })
+        .transpose()?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let status = if source.enabled { "active" } else { "disabled" };
+    sqlx::query(
+        r#"
+        INSERT INTO coat.event_sources (
+            id, source_key, kind, display_name, status, auth_policy, route_policy,
+            schedule, cursor_state, record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, $9)
+        ON CONFLICT (id) DO UPDATE SET
+            source_key = EXCLUDED.source_key,
+            kind = EXCLUDED.kind,
+            display_name = EXCLUDED.display_name,
+            status = EXCLUDED.status,
+            auth_policy = EXCLUDED.auth_policy,
+            route_policy = EXCLUDED.route_policy,
+            schedule = EXCLUDED.schedule,
+            record_json = EXCLUDED.record_json,
+            updated_at = now(),
+            disabled_at = CASE WHEN EXCLUDED.status = 'disabled' THEN now() ELSE NULL END
+        "#,
+    )
+    .bind(&source.id)
+    .bind(&source.id)
+    .bind(json_string(&source.kind)?)
+    .bind(&source.description)
+    .bind(status)
+    .bind(auth_policy)
+    .bind(serde_json::to_value(&source.route)?)
+    .bind(serde_json::to_value(&source.schedule)?)
+    .bind(serde_json::to_value(source)?)
+    .execute(pool)
+    .await
+    .with_context(|| format!("upsert event source {}", source.id))?;
+    Ok(())
+}
+
+async fn list_sources_postgres(pool: &PgPool) -> anyhow::Result<Vec<EventSource>> {
+    let rows = sqlx::query("SELECT record_json FROM coat.event_sources ORDER BY source_key")
+        .fetch_all(pool)
+        .await
+        .context("query event sources")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "event source"))
+        .collect()
+}
+
+async fn insert_event_postgres(pool: &PgPool, event: &ExternalEvent) -> anyhow::Result<bool> {
+    let cloud_event_id = event.headers.get("ce-id").cloned();
+    let cloud_event_source = event.headers.get("ce-source").cloned();
+    let result = sqlx::query(
+        r#"
+        INSERT INTO coat.external_events (
+            id, source_id, source_key, event_type, subject, dedupe_key, cloud_event_id,
+            cloud_event_source, occurred_at, payload, headers, record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(&event.id)
+    .bind(&event.source_id)
+    .bind(&event.source_id)
+    .bind(&event.event_type)
+    .bind(&event.subject)
+    .bind(&event.dedupe_key)
+    .bind(cloud_event_id)
+    .bind(cloud_event_source)
+    .bind(&event.occurred_at)
+    .bind(event.payload.clone())
+    .bind(serde_json::to_value(&event.headers)?)
+    .bind(serde_json::to_value(event)?)
+    .execute(pool)
+    .await
+    .with_context(|| format!("insert external event {}", event.id))?;
+    Ok(result.rows_affected() == 0)
+}
+
+async fn list_events_postgres(
+    pool: &PgPool,
+    source_id: Option<&str>,
+) -> anyhow::Result<Vec<ExternalEvent>> {
+    let rows = if let Some(source_id) = source_id {
+        sqlx::query(
+            "SELECT record_json FROM coat.external_events WHERE source_id = $1 ORDER BY observed_at DESC",
+        )
+        .bind(source_id)
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("query external events for source {source_id}"))?
+    } else {
+        sqlx::query("SELECT record_json FROM coat.external_events ORDER BY observed_at DESC")
+            .fetch_all(pool)
+            .await
+            .context("query external events")?
+    };
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "external event"))
+        .collect()
+}
+
+async fn insert_trigger_postgres(
+    pool: &PgPool,
+    response: &TriggeredGoalResponse,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO coat.triggered_goals (
+            id, external_event_id, route_mode, status, goal_id, target_goal_id,
+            template, result, record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, $7, $8)
+        ON CONFLICT (id) DO UPDATE SET
+            status = EXCLUDED.status,
+            goal_id = EXCLUDED.goal_id,
+            target_goal_id = EXCLUDED.target_goal_id,
+            result = EXCLUDED.result,
+            record_json = EXCLUDED.record_json,
+            updated_at = now(),
+            completed_at = CASE
+                WHEN EXCLUDED.status IN ('submitted', 'recorded', 'deduped', 'failed') THEN now()
+                ELSE coat.triggered_goals.completed_at
+            END
+        "#,
+    )
+    .bind(trigger_record_id(response))
+    .bind(&response.event_id)
+    .bind(route_mode_for_trigger(response))
+    .bind(json_string(&response.status)?)
+    .bind(response.goal_id)
+    .bind(response.goal_id)
+    .bind(serde_json::to_value(response)?)
+    .bind(serde_json::to_value(response)?)
+    .execute(pool)
+    .await
+    .with_context(|| format!("insert triggered goal for event {}", response.event_id))?;
+    Ok(())
+}
+
+async fn list_triggers_postgres(pool: &PgPool) -> anyhow::Result<Vec<TriggeredGoalResponse>> {
+    let rows = sqlx::query("SELECT record_json FROM coat.triggered_goals ORDER BY created_at DESC")
+        .fetch_all(pool)
+        .await
+        .context("query triggered goals")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "triggered goal"))
+        .collect()
+}
+
+fn trigger_record_id(response: &TriggeredGoalResponse) -> Uuid {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!(
+            "coat://event/{}/trigger/{:?}/{:?}",
+            response.event_id, response.status, response.goal_id
+        )
+        .as_bytes(),
+    )
+}
+
+fn route_mode_for_trigger(response: &TriggeredGoalResponse) -> &'static str {
+    match response.status {
+        TriggeredGoalStatus::AwaitingHumanReview => "human_review",
+        TriggeredGoalStatus::Recorded | TriggeredGoalStatus::Deduped => "record_only",
+        TriggeredGoalStatus::Submitted => "create_goal",
+        TriggeredGoalStatus::Failed => "record_only",
+    }
+}
+
+fn decode_record<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    kind: &str,
+) -> anyhow::Result<T> {
+    serde_json::from_value(value).with_context(|| format!("decode {kind} record_json"))
+}
+
+fn json_string(value: &impl Serialize) -> anyhow::Result<String> {
+    match serde_json::to_value(value)? {
+        serde_json::Value::String(value) => Ok(value),
+        other => anyhow::bail!("expected enum to serialize as string, got {other}"),
+    }
+}
+
 async fn append_journal(state: &AppState, entry: JournalEntry) -> Result<(), GatewayError> {
     let Some(path) = &state.journal_path else {
         return Ok(());
@@ -816,11 +1470,17 @@ impl IntoResponse for GatewayError {
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
-    use coat_domain::{EventGoalRoute, EventSourceKind, ExternalEvent, GoalTriggerTemplate};
+    use coat_domain::{
+        EventGoalRoute, EventSourceKind, ExternalEvent, GenericEventSource, GoalTriggerTemplate,
+        WebhookAuthKind, WebhookAuthPolicy,
+    };
+    use hmac::Mac;
 
     use super::{
-        AppState, enforce_event_source_activation_policy, event_source_is_risky,
-        goal_from_template, render_template, verify_hmac_sha256,
+        AppState, WebhookSignatureStyle, enforce_event_source_activation_policy,
+        event_source_is_risky, goal_from_template, normalize_generic_event,
+        provider_webhook_defaults, render_template, verify_hmac_sha256,
+        verify_provider_hmac_sha256,
     };
 
     fn event() -> ExternalEvent {
@@ -867,6 +1527,128 @@ mod tests {
     }
 
     #[test]
+    fn provider_defaults_match_common_webhook_headers() {
+        let github = provider_webhook_defaults(&EventSourceKind::GitHubWebhook);
+        assert_eq!(github.signature_header, "x-hub-signature-256");
+        assert_eq!(github.signature_style, WebhookSignatureStyle::GenericSha256);
+
+        let slack = provider_webhook_defaults(&EventSourceKind::SlackEvent);
+        assert_eq!(slack.signature_header, "x-slack-signature");
+        assert_eq!(slack.signature_style, WebhookSignatureStyle::SlackV0);
+
+        let stripe = provider_webhook_defaults(&EventSourceKind::StripeWebhook);
+        assert_eq!(stripe.signature_header, "stripe-signature");
+        assert_eq!(stripe.signature_style, WebhookSignatureStyle::StripeV1);
+    }
+
+    #[test]
+    fn verifies_slack_v0_signature_base_string() {
+        let timestamp = unix_now_string();
+        let body = br#"{"type":"event_callback"}"#;
+        let mut base = Vec::new();
+        base.extend_from_slice(b"v0:");
+        base.extend_from_slice(timestamp.as_bytes());
+        base.extend_from_slice(b":");
+        base.extend_from_slice(body);
+        let signature = format!("v0={}", hmac_sha256_hex("secret", &base));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-slack-request-timestamp",
+            HeaderValue::from_str(&timestamp).expect("timestamp header"),
+        );
+
+        assert!(
+            verify_provider_hmac_sha256(
+                "secret",
+                &headers,
+                body,
+                &signature,
+                WebhookSignatureStyle::SlackV0,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn verifies_stripe_v1_signature_base_string() {
+        let timestamp = unix_now_string();
+        let body = br#"{"id":"evt_123"}"#;
+        let mut base = Vec::new();
+        base.extend_from_slice(timestamp.as_bytes());
+        base.extend_from_slice(b".");
+        base.extend_from_slice(body);
+        let signature = format!("t={timestamp},v1={}", hmac_sha256_hex("secret", &base));
+
+        assert!(
+            verify_provider_hmac_sha256(
+                "secret",
+                &HeaderMap::new(),
+                body,
+                &signature,
+                WebhookSignatureStyle::StripeV1,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn normalizes_generic_event_with_json_pointers() {
+        let source = coat_domain::EventSource {
+            id: "ci-events".to_string(),
+            kind: EventSourceKind::Ci,
+            enabled: true,
+            description: "CI events".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 1024,
+                allowed_event_types: vec!["ci.workflow.failed".to_string()],
+                id_json_pointer: Some("/id".to_string()),
+                type_json_pointer: Some("/type".to_string()),
+                subject_json_pointer: Some("/subject".to_string()),
+                dedupe_json_pointer: Some("/delivery_id".to_string()),
+                dedupe_header: None,
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::HumanReview,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: true,
+                dedupe_window_seconds: 3600,
+            },
+        };
+        let event = normalize_generic_event(
+            Some(&source),
+            "ci-events".to_string(),
+            &HeaderMap::new(),
+            br#"{
+                "id": "run-1",
+                "type": "ci.workflow.failed",
+                "subject": "tests failed",
+                "delivery_id": "delivery-1"
+            }"#,
+        )
+        .expect("generic event normalizes");
+        assert_eq!(event.id, "run-1");
+        assert_eq!(event.event_type, "ci.workflow.failed");
+        assert_eq!(event.subject.as_deref(), Some("tests failed"));
+        assert_eq!(event.dedupe_key, "delivery-1");
+        assert_eq!(event.source_kind, EventSourceKind::Ci);
+    }
+
+    #[test]
     fn approval_policy_blocks_risky_source_activation_without_reference() {
         let source = coat_domain::EventSource {
             id: "calendar-daily-brief".to_string(),
@@ -875,6 +1657,7 @@ mod tests {
             description: "calendar poller".to_string(),
             namespace: None,
             webhook: None,
+            generic: None,
             schedule: None,
             calendar: None,
             route: EventGoalRoute {
@@ -894,6 +1677,8 @@ mod tests {
             restate_ingress: None,
             gateway_token: None,
             require_event_source_approval: true,
+            backend: super::EventGatewayBackend::Memory,
+            postgres: None,
             client: reqwest::Client::new(),
         };
         let headers = HeaderMap::new();
@@ -912,5 +1697,24 @@ mod tests {
             enforce_event_source_activation_policy(&state, &HeaderMap::new(), &disabled_source)
                 .is_ok()
         );
+    }
+
+    fn unix_now_string() -> String {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("unix time")
+            .as_secs()
+            .to_string()
+    }
+
+    fn hmac_sha256_hex(secret: &str, body: &[u8]) -> String {
+        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac key");
+        mac.update(body);
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 }

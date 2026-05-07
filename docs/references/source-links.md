@@ -10,6 +10,10 @@
 - OpenAI text-embedding-3-large model docs: https://platform.openai.com/docs/models/text-embedding-3-large
 - Restate workflows: https://docs.restate.dev/tour/workflows
 - Restate Rust SDK: https://docs.rs/restate-sdk/latest/restate_sdk/
+- Restate Cloud getting started: https://docs.restate.dev/cloud/getting-started
+- Restate Cloud connecting services: https://docs.restate.dev/cloud/connecting-services
+- Restate service Kubernetes deployment: https://docs.restate.dev/services/deploy/kubernetes
+- Restate server Kubernetes operator: https://docs.restate.dev/server/deploy/kubernetes
 - Buf CLI configuration: https://buf.build/docs/configuration/v2/buf-yaml/
 - Buf code generation: https://buf.build/docs/generate/
 - Buf generated Rust SDKs for Cargo: https://buf.build/docs/bsr/generated-sdks/cargo/
@@ -17,6 +21,14 @@
 - CloudEvents spec repository: https://github.com/cloudevents/spec
 - AsyncAPI docs: https://www.asyncapi.com/docs
 - Kubernetes CronJob docs: https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
+- Kubernetes RuntimeClass docs: https://kubernetes.io/docs/concepts/containers/runtime-class/
+- gVisor Kubernetes quick start: https://gvisor.dev/docs/user_guide/quick_start/kubernetes/
+- Kata Containers docs: https://katacontainers.io/docs/
+- NVIDIA GPU Operator: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html
+- NVIDIA GPU Operator with Kata Containers: https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/deploy-kata-containers.html
+- NVIDIA DGX Spark hardware overview: https://docs.nvidia.com/dgx/dgx-spark/hardware.html
+- vLLM Kubernetes deployment: https://docs.vllm.ai/en/stable/deployment/k8s/
+- Ollama FAQ: https://docs.ollama.com/faq
 - Google Calendar push notifications: https://developers.google.com/workspace/calendar/api/guides/push
 - Google Calendar events watch API: https://developers.google.com/calendar/api/v3/reference/events/watch
 - Claude Code authentication: https://code.claude.com/docs/en/iam

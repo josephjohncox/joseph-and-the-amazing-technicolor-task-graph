@@ -12,6 +12,25 @@
     "isolated_runner": {
       "type": "boolean"
     },
+    "isolation": {
+      "$ref": "#/$defs/SandboxIsolationProfile",
+      "default": {
+        "apparmor_profile": null,
+        "backend": "local_workspace",
+        "cpu_limit_millis": null,
+        "drop_capabilities": [],
+        "egress_policy_ref": null,
+        "enforce": false,
+        "image": null,
+        "memory_limit_mb": null,
+        "no_new_privileges": true,
+        "pids_limit": null,
+        "read_only_rootfs": false,
+        "runtime_class": null,
+        "seccomp_profile": null,
+        "snapshot_strategy": "filesystem_manifest"
+      }
+    },
     "network": {
       "$ref": "#/$defs/NetworkAccess"
     }
@@ -44,6 +63,122 @@
         "disabled",
         "restricted",
         "open"
+      ]
+    },
+    "SandboxBackend": {
+      "type": "string",
+      "enum": [
+        "local_workspace",
+        "container",
+        "gvisor",
+        "firecracker",
+        "kata",
+        "kubernetes_job",
+        "namespace_jail",
+        "provider_sandbox"
+      ]
+    },
+    "SandboxIsolationProfile": {
+      "type": "object",
+      "properties": {
+        "apparmor_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "backend": {
+          "$ref": "#/$defs/SandboxBackend",
+          "default": "local_workspace"
+        },
+        "cpu_limit_millis": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "drop_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "enforce": {
+          "type": "boolean",
+          "default": false
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "memory_limit_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "no_new_privileges": {
+          "type": "boolean",
+          "default": true
+        },
+        "pids_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "read_only_rootfs": {
+          "type": "boolean",
+          "default": false
+        },
+        "runtime_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "seccomp_profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "snapshot_strategy": {
+          "$ref": "#/$defs/SandboxSnapshotStrategy",
+          "default": "filesystem_manifest"
+        }
+      }
+    },
+    "SandboxSnapshotStrategy": {
+      "type": "string",
+      "enum": [
+        "metadata_only",
+        "filesystem_manifest",
+        "archive",
+        "object_storage_archive"
       ]
     }
   }

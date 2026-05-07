@@ -17,6 +17,10 @@
     "never_policy_requires_isolation": {
       "type": "boolean"
     },
+    "never_policy_requires_strong_sandbox": {
+      "type": "boolean",
+      "default": true
+    },
     "require_for_brokered_user_auth": {
       "type": "boolean",
       "default": true

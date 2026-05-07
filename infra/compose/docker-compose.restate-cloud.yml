@@ -1,0 +1,29 @@
+services:
+  restate-cloud-tunnel:
+    profiles: ["restate-cloud"]
+    image: ghcr.io/restatedev/restate-cloud-tunnel-client:${RESTATE_CLOUD_TUNNEL_TAG:-latest}
+    environment:
+      RESTATE_ENVIRONMENT_ID: ${RESTATE_ENVIRONMENT_ID:?set RESTATE_ENVIRONMENT_ID}
+      RESTATE_BEARER_TOKEN: ${RESTATE_BEARER_TOKEN:?set RESTATE_BEARER_TOKEN}
+      RESTATE_TUNNEL_NAME: ${RESTATE_TUNNEL_NAME:-coat-personal}
+      RESTATE_SIGNING_PUBLIC_KEY: ${RESTATE_SIGNING_PUBLIC_KEY:?set RESTATE_SIGNING_PUBLIC_KEY}
+      RESTATE_CLOUD_REGION: ${RESTATE_CLOUD_REGION:-us}
+      RESTATE_REMOTE_PROXY: ${RESTATE_REMOTE_PROXY:-true}
+    ports:
+      - "${RESTATE_TUNNEL_INGRESS_PORT:-18080}:8080"
+      - "${RESTATE_TUNNEL_ADMIN_PORT:-19070}:9070"
+      - "${RESTATE_TUNNEL_HEALTH_PORT:-19090}:9090"
+
+  coordinator:
+    environment:
+      RESTATE_IDENTITY_KEYS: ${RESTATE_IDENTITY_KEYS:-}
+      RESTATE_SIGNING_PUBLIC_KEY: ${RESTATE_SIGNING_PUBLIC_KEY:-}
+
+  event-gateway:
+    environment:
+      COAT_RESTATE_INGRESS: ${COAT_RESTATE_INGRESS:-http://restate-cloud-tunnel:8080}
+    depends_on:
+      - restate-cloud-tunnel
+
+  restate-register:
+    profiles: ["local-restate"]

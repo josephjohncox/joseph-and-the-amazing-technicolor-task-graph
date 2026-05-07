@@ -17,6 +17,12 @@ flowchart TD
     R --> RR["Runner Registry"]
     R --> N["Notifier / Human Feedback"]
     R --> GS["Goal Store Projection"]
+    UI["Control Gateway / SPA / MCP Dashboard"] --> GS
+    UI --> N
+    UI --> EG
+    UI --> RR
+    UI --> MEM["Memory Gateway"]
+    UI --> R
     EV["Webhooks / Calendars / Cron / Event Bus"] --> EG["Event Gateway"]
     EG --> R
     AR --> COD["Codex Runner TS"]
@@ -86,6 +92,35 @@ buf lint
 
 `proto/coat/v1/common.proto` owns shared protocol types, `goal_store.proto` owns queryable durable projections, and `runner.proto` owns runner and registry envelopes. Full Rust domain payloads are carried as JSON-schema envelopes so the protocol keeps typed indexes without forcing two divergent domain models.
 
+## Control Gateway And Dashboards
+
+`ui/control-plane-web` is an optional TypeScript gateway and SPA for operators and agent/chat clients. It composes backend APIs for visibility and steering:
+
+- Restate workflow handlers for goal submit, status, progress, tasks, steering, approval, cancellation, restart, branch, and branch selection;
+- `coat-goal-store` for goal, task, event, artifact, and projected prompt views;
+- `coat-notifier` for human-feedback, approval, and async-response queues;
+- `coat-event-gateway` for event sources, webhooks, calendar checks, cron-like triggers, and recent events;
+- `coat-runner-registry` for runner capacity and routing visibility;
+- `coat-memory-gateway` for semantic memory search, context packs, writes, joins, and repairs.
+
+The gateway exposes `GET /` for the SPA, `/api/*` for dashboards, and `POST /mcp` for MCP-compatible tools such as `coat_overview`, `coat_goal_snapshot`, `coat_agent_activity`, `coat_human_threads`, `coat_steer_goal`, `coat_memory_search`, and `coat_event_sources`.
+
+It is not a scheduler and must never write Restate state, goal-store projections, runner state, or memory stores directly. Browser edits become workflow signals, event-gateway calls, notification calls, or memory-gateway calls. Removing the gateway must not affect durable execution.
+
+## Durable Planning Mode
+
+Planning mode is a typed pre-goal workflow for chat-style planning. Operators can draft a `DurablePlan`, revise it across multiple human/agent turns, record open questions and decisions, and compile it into a `GoalSpec` when the plan is ready.
+
+Planning mode lives in `coat-goal-store` because it is a durable operator artifact before Restate owns a submitted goal. The backend exposes:
+
+- `POST /goal-store/plans`;
+- `GET /goal-store/plans`;
+- `GET /goal-store/plans/{plan_id}`;
+- `POST /goal-store/plans/{plan_id}/revisions`;
+- `POST /goal-store/plans/{plan_id}/compile`.
+
+Compiling a plan returns a `GoalSpec` and quality report; it does not submit the goal. Submission remains explicit through `GoalWorkflow/run`.
+
 ## Goal Store And Durable Querying
 
 The correct production database for goal-store interaction is Postgres unless an existing operational database already provides equivalent transactions, indexing, backups, access control, and observability. Use it as a read model, not the coordinator state machine:
@@ -99,6 +134,8 @@ The correct production database for goal-store interaction is Postgres unless an
 - S3-compatible storage: large artifacts.
 
 Compose ships a local `coat-goal-store` service on `:9088` with JSONL replay for smoke tests. Production should replace the backend with Postgres while preserving the protobuf and JSON-schema contract surface. The operational DDL lives under `infra/db/migrations/`; Compose can start `pgvector/pgvector:pg16` through the optional `db` profile.
+
+Dashboard reads can list all durable plans through `/goal-store/plans`, all projected goals through `/goal-store/goals`, and all projected task/agent rows through `/goal-store/tasks`. Current prompt visibility comes from `TaskRecord.payload_json.prompt`, which is the projected `TaskNode`; it is useful for inspection, but Restate workflow state remains authoritative after goal submission.
 
 ## Events, Webhooks, And Schedules
 
@@ -144,7 +181,7 @@ The coordinator stores these refs and treats them as artifact evidence. It does 
 
 ## Approval Policies
 
-Approval is evaluated before a runnable task is dispatched. `SandboxProfile.approval_policy` expresses the task-local posture (`never`, `on_request`, or `always`), while `GoalSpec.approval_policy` defines the control-plane risk rules. The default gate requests approval for open network, non-isolated runners, secret-bearing MCP contexts, dangerous MCP tools, privileged runner capabilities, and any `never` policy outside an isolated runner.
+Approval is evaluated before a runnable task is dispatched. `SandboxProfile.approval_policy` expresses the task-local posture (`never`, `on_request`, or `always`), while `GoalSpec.approval_policy` defines the control-plane risk rules. The default gate requests approval for open network, non-isolated runners, secret-bearing MCP contexts, dangerous MCP tools, privileged runner capabilities, any `never` policy outside an isolated runner, and any `never` policy that lacks strong sandbox attestation.
 
 When approval is required, the coordinator creates an `ApprovalRequest`, marks the task `waiting_approval`, stores notification delivery reports, and emits an `approval_requested` notification. `coat approve --goal-id ... --approval-id ...` updates durable state; accepted approvals resume the frontier loop, rejected approvals block the task.
 
@@ -161,6 +198,8 @@ Tasks do not assume a local runner. `TaskNode.execution` declares:
 Runners register with `coat-runner-registry` using `RunnerRegistration`. The bundled sidecars self-register and heartbeat when `RUNNER_REGISTRY_URL` is set; external workers can register through the CLI or direct HTTP. Sidecars expose `/capabilities` for roles, capacity, models, MCP propagation, and review-contract inspection.
 
 Dispatch ranks eligible candidates and returns rejected runners with mismatch reasons. Matching evaluates runner role, capabilities, labels, locality, MCP availability, and model route strategy. This supports separate nodes, GPU pools, local vLLM endpoints, cheap/fast local models, weighted routing, sticky-per-goal routing, and higher-quality fallback routes.
+
+Sandbox-capable runners advertise backend capabilities such as `gvisor_sandbox`, `kata_sandbox`, `firecracker_sandbox`, or `kubernetes_job_sandbox` and return `SandboxAttestation` evidence. Local workspace runners are trusted-development conveniences, not strong isolation. Production untrusted execution should route to hardened container, RuntimeClass, microVM, or provider-backed runner pools.
 
 ## MCP Context And Auth
 
@@ -180,6 +219,8 @@ The Rust tool registry exposes a minimal HTTP MCP endpoint. It supports optional
 Actor work is not enough to complete a goal by default. Once work-like tasks are validated, the coordinator forks critic review tasks from the durable task tree. When the configured reviews pass, it joins them through a unification task. `GoalState.satisfaction` records whether actor work, review gates, unification, and score thresholds are satisfied.
 
 Critic and unifier runners return `ReviewOutput`: decision, reward, findings, retry recommendation, and optional unification summary. Validation records that output in `ValidationReport`; satisfaction uses both reward and explicit decision, so `changes_requested`, `blocked`, or `inconclusive` cannot satisfy a goal.
+
+Strict executor tasks can also enable `ExecutionProfile.guardrails`. When enabled, actor completion forks bounded output-safety and security-review tasks. Their findings and validation gates participate in the same satisfaction logic, so unsafe executor output cannot complete the goal merely because the actor returned artifacts.
 
 This is the bounded actor/critic loop:
 

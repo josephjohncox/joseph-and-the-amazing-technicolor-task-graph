@@ -31,6 +31,7 @@
       "enum": [
         "sandbox_policy_always",
         "never_policy_outside_isolation",
+        "never_policy_without_strong_sandbox",
         "network_open",
         "non_isolated_runner",
         "workspace_write_outside_isolation",

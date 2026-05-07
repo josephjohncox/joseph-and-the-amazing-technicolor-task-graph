@@ -62,6 +62,44 @@ Run goal authoring as a short actor/critic loop before submitting anything durab
 
    Use `coat goal steer` for changes after submission. Do not edit durable state by hand. Steering can add constraints, update the objective, inject bounded tasks, request research, pause, resume, or cancel.
 
+## Durable Planning Mode
+
+Use `coat plan` when the request needs the normal chat-style planning phase before it should become an executable goal. A durable plan is versioned and can hold open questions, answers, decisions, subgoals, and proposed initial tasks.
+
+Planning mode is appropriate when:
+
+- the operator request is ambiguous;
+- multiple subgoals or agents need coordination;
+- research or memory preflight should happen before execution;
+- the human wants to steer the shape of the work before runners receive tasks;
+- the plan should be visible in the SPA or through MCP before it becomes a `GoalSpec`.
+
+Create a plan:
+
+```sh
+cargo run -p coat-cli -- plan draft --file examples/plan-draft-durable-mode.json
+```
+
+Revise it after questions are answered:
+
+```sh
+cargo run -p coat-cli -- plan revise \
+  --plan-id <plan-id> \
+  --file examples/plan-revision-answer-questions.json
+```
+
+Compile it into a `GoalSpec` without submitting:
+
+```sh
+cargo run -p coat-cli -- plan compile \
+  --plan-id <plan-id> \
+  --strict-review \
+  --human-steered \
+  --out examples/drafts/compiled-goal.json
+```
+
+Then lint and submit the compiled goal explicitly. Do not treat a planning-mode transcript as worker instructions after compilation; transfer the durable parts into `GoalSpec.authoring`, `GoalSpec.plan`, and `GoalSpec.initial_tasks`.
+
 ## Copyable LLM Prompts
 
 Goal intake prompt:
@@ -176,7 +214,9 @@ Standard review steering: Use `request_standard_review` to inject bounded checks
 
 `approval_policy`: Keep the default unless this is a trusted offline smoke test. Approval-policy `never` is acceptable only inside isolated runners with constrained filesystem and network.
 
-`default_execution`: Pick the least powerful runner that can do the work. Add local model candidates when the runner can actually serve them. Add MCP servers by reference and keep auth in `SecretRef`. For Codex or Claude device/browser login, set `auth_distribution.mode = runner_local_only` and require runner labels; for distributed human auth, use a brokered lease and approval.
+`default_execution`: Pick the least powerful runner that can do the work. Add local model candidates when the runner can actually serve them. Add MCP servers by reference and keep auth in `SecretRef`. For Codex or Claude device/browser login, set `auth_distribution.mode = runner_local_only` and require runner labels; for distributed human auth, use a brokered lease and approval. For untrusted executor work, enable `guardrails` so output and security review tasks fork from completed work before goal satisfaction.
+
+`sandbox`: Use `isolation.backend` and runner labels to request the actual execution boundary. `local_workspace` is for trusted development. Use `container`, `gvisor`, `kata`, `firecracker`, `kubernetes_job`, or `provider_sandbox` for production execution when a runner can return an enforced `SandboxAttestation`. If `approval_policy = never`, require strong sandbox attestation.
 
 ## Submission Commands
 

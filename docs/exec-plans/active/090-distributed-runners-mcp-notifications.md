@@ -12,7 +12,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Add task-local persona contracts.
 - Add MCP server refs, secret refs, and context propagation policy.
 - Add notification policy and delivery-report contracts.
-- Add `coat-runner-registry` and `coat-notifier` service stubs.
+- Add `coat-runner-registry` and `coat-notifier` service surfaces.
 - Rank dispatch candidates by model-route strategy and return rejected runners with mismatch reasons.
 - Add sidecar `/capabilities` endpoints for model, MCP, capacity, and review-contract inspection.
 - Wire services into Compose, Kubernetes, CLI, examples, and schemas.
@@ -30,3 +30,4 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - `cargo test --workspace` passes.
 - `cargo run -p coat-domain --bin generate-schemas -- schemas` writes new schemas.
 - Operators can register a vLLM runner using `examples/runner-vllm.json`.
+- Notifier records human-feedback threads and can deliver generic webhook targets with `SecretRef` bearer auth.

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS coat.event_sources (
     route_policy jsonb NOT NULL DEFAULT '{}'::jsonb,
     schedule jsonb,
     cursor_state jsonb NOT NULL DEFAULT '{}'::jsonb,
+    record_json jsonb NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     disabled_at timestamptz,
@@ -32,9 +33,10 @@ CREATE TABLE IF NOT EXISTS coat.external_events (
     cloud_event_id text,
     cloud_event_source text,
     observed_at timestamptz NOT NULL DEFAULT now(),
-    occurred_at timestamptz,
+    occurred_at text,
     payload jsonb NOT NULL,
-    headers jsonb NOT NULL DEFAULT '{}'::jsonb
+    headers jsonb NOT NULL DEFAULT '{}'::jsonb,
+    record_json jsonb NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_external_events_source_dedupe
@@ -57,6 +59,7 @@ CREATE TABLE IF NOT EXISTS coat.triggered_goals (
     target_goal_id uuid,
     template jsonb NOT NULL DEFAULT '{}'::jsonb,
     result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    record_json jsonb NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     completed_at timestamptz,

@@ -49,6 +49,51 @@ CREATE INDEX IF NOT EXISTS idx_goals_satisfied
 CREATE INDEX IF NOT EXISTS idx_goals_record_gin
     ON coat.goals USING gin(record_json);
 
+CREATE TABLE IF NOT EXISTS coat.plans (
+    id uuid PRIMARY KEY,
+    title text NOT NULL,
+    objective text NOT NULL,
+    repo text,
+    status text NOT NULL,
+    mode text NOT NULL,
+    version integer NOT NULL DEFAULT 1,
+    compiled_goal_id uuid,
+    updated_at_text text,
+    record_json jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    projected_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (status IN (
+        'draft',
+        'needs_questions',
+        'ready_for_review',
+        'approved',
+        'compiled',
+        'superseded',
+        'archived'
+    )),
+    CHECK (mode IN (
+        'interactive',
+        'autonomous',
+        'human_steered',
+        'research_first',
+        'implementation_ready'
+    ))
+);
+
+CREATE INDEX IF NOT EXISTS idx_plans_status_projected
+    ON coat.plans(status, projected_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_plans_repo_status
+    ON coat.plans(repo, status, projected_at DESC)
+    WHERE repo IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_plans_compiled_goal
+    ON coat.plans(compiled_goal_id)
+    WHERE compiled_goal_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_plans_record_gin
+    ON coat.plans USING gin(record_json);
+
 CREATE TABLE IF NOT EXISTS coat.tasks (
     id uuid PRIMARY KEY,
     goal_id uuid NOT NULL REFERENCES coat.goals(id) ON DELETE CASCADE,

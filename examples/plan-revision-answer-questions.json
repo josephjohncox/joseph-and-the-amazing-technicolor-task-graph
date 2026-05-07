@@ -1,0 +1,24 @@
+{
+  "author": "operator",
+  "summary": "Answer open planning question and mark plan ready for review.",
+  "operator_message": "Seed only contract and storage work first; UI follows after backend shape is stable.",
+  "status": "ready_for_review",
+  "questions": [
+    {
+      "id": "q1",
+      "question": "Which subgoals should be seeded immediately?",
+      "required": true,
+      "status": "answered",
+      "answer": "Seed plan contracts and storage first."
+    }
+  ],
+  "decisions": [
+    {
+      "id": "d1",
+      "title": "Compile before execution",
+      "decision": "Plans compile into GoalSpec and are not submitted automatically.",
+      "rationale": "This preserves human control and keeps Restate authoritative only after goal submission.",
+      "created_at": null
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756812",
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756800",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Run a standard executor security review before accepting this work.",
+  "kind": {
+    "kind": "request_standard_review",
+    "check": "security",
+    "topic": "the sandboxed executor result and artifact manifest",
+    "reason": "The task used live tools and should be checked for sandbox, secret, dependency, and command-safety risks."
+  }
+}

@@ -11,6 +11,7 @@ The core idea is simple: Restate owns durable time and replay, Rust owns policy 
 ## Quick Start
 
 ```sh
+make ci
 cargo test --workspace
 buf lint
 cargo run -p coat-domain --bin generate-schemas -- schemas
@@ -22,6 +23,27 @@ Run the local stack:
 ```sh
 docker compose -f infra/compose/docker-compose.yml up --build
 ```
+
+The optional web control surface is included in Compose at `http://localhost:9090`. It shows goal progress, agent/task state, current projected prompts, runner status, human feedback threads, event sources, schedules/triggers, and memory search/context. It also exposes a small MCP surface at `POST /mcp` for agent or chat clients.
+
+Run the local services against Restate Cloud for personal durable use:
+
+```sh
+cp infra/compose/restate-cloud.env.example infra/compose/restate-cloud.env
+# edit infra/compose/restate-cloud.env with env id, API key, region, and signing public key
+docker compose \
+  --env-file infra/compose/restate-cloud.env \
+  -f infra/compose/docker-compose.yml \
+  -f infra/compose/docker-compose.restate-cloud.yml \
+  --profile restate-cloud \
+  up --build
+cargo run -p coat-cli -- compose up --restate-cloud
+cargo run -p coat-cli -- restate register-cloud \
+  --tunnel-name coat-personal \
+  --service-url http://coordinator:9080
+```
+
+See `docs/operations/restate-cloud.md` for personal Restate Cloud, public endpoint, and Kubernetes operator paths.
 
 Start the optional Postgres/pgvector operational store profile when you want SQL-backed dashboard and audit development:
 
@@ -40,6 +62,16 @@ cargo run -p coat-cli -- goal submit \
 For non-trivial work, author a full `GoalSpec` instead of relying on title/objective defaults:
 
 ```sh
+cargo run -p coat-cli -- plan draft \
+  --title "Strict review goal plan" \
+  --objective "Plan a bounded implementation with review doctrine before creating a GoalSpec." \
+  --prompt "Capture questions, decisions, subgoals, and first tasks before agents execute."
+cargo run -p coat-cli -- plan list
+cargo run -p coat-cli -- plan compile \
+  --plan-id <plan-id> \
+  --strict-review \
+  --human-steered \
+  --out examples/drafts/strict-review-goal.json
 cargo run -p coat-cli -- goal draft \
   --title "Strict review goal" \
   --objective "Implement a bounded change with typed review doctrine, sourced research, passing tests, regenerated schemas, and reviewer acceptance." \
@@ -55,6 +87,7 @@ cargo run -p coat-cli -- goal tasks \
 ```
 
 See `docs/operations/goal-authoring.md` for the intake, memory preflight, research preflight, compiler, and critic loop used to turn vague operator requests into structured goals.
+Use `docs/design-docs/120-durable-planning-mode.md` when the request needs a chat-style planning session before it becomes a durable goal.
 
 Strict goals can opt in to a review-doctrine standard library for code quality, testing, formal-methods, DDD/functional-DDD, style, and simplicity checks:
 
@@ -89,12 +122,14 @@ cargo run -p coat-cli -- goal restart \
 - `coat-coordinator`: Restate workflow, distributed runner handoff, local stub fallback, validation handler.
 - `coat-event-gateway`: webhook, calendar, scheduled-event, and triggered-goal ingress.
 - `coat-goal-store`: queryable goal/task/event projection with local JSONL replay.
+- `coat-plan-store`: durable planning-mode records served by `coat-goal-store`.
 - `coat-runner-registry`: distributed runner registration, heartbeat, and task dispatch decisions.
-- `coat-notifier`: notification and human-feedback delivery stub.
+- `coat-notifier`: notification, local human-feedback threads, and webhook delivery adapter.
 - `coat-memory-gateway`: local memory write/search/join/events gateway with MCP-shaped tools.
+- `coat-control-web`: optional TypeScript control gateway, SPA, and MCP dashboard surface.
 - `coat-validator`: standalone validation service.
-- `coat-sandbox-runner`: workspace lifecycle and snapshot placeholder.
-- `coat-tool-registry`: HTTP and MCP-shaped tool registry placeholder.
+- `coat-sandbox-runner`: workspace lifecycle, launch-plan, attestation, and content-addressed snapshot service.
+- `coat-tool-registry`: HTTP and MCP-shaped tool registry with confined repo status, sandbox delegation, and artifact lookup.
 - `coat`: operator CLI, built from the `coat-cli` package.
 - `codex-runner-ts`: Codex App Server or MCP worker boundary.
 - `staff-engineer-runner-ts`: `@ctxr/agent-staff-engineer` worker boundary.
@@ -123,27 +158,46 @@ Inspect the projection surface:
 
 ```sh
 cargo run -p coat-cli -- store policy
+cargo run -p coat-cli -- store goals
+cargo run -p coat-cli -- store plans
+cargo run -p coat-cli -- store approvals --limit 50
 cargo run -p coat-cli -- store goal --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 cargo run -p coat-cli -- store tasks --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
 cargo run -p coat-cli -- store events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+cargo run -p coat-cli -- store goal-approvals --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756611
+cargo run -p coat-cli -- store record-artifacts --file examples/goal-store-record-artifacts.json
 ```
+
+The web gateway reads the same projection surface. It uses global goal and task lists for dashboard views, and per-goal snapshots combine `GoalWorkflow/status`, `GoalWorkflow/progress`, tasks, events, artifacts, and `TaskRecord.payload_json.prompt` for agent prompt visibility.
+
+Durable planning mode is stored in the same service:
+
+```sh
+cargo run -p coat-cli -- plan draft --file examples/plan-draft-durable-mode.json
+cargo run -p coat-cli -- plan revise --plan-id <plan-id> --file examples/plan-revision-answer-questions.json
+cargo run -p coat-cli -- plan compile --plan-id <plan-id> --strict-review --human-steered
+```
+
+Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit the goal.
 
 ## Events And Schedules
 
-External events enter through `coat-event-gateway` on `:9089`. Webhooks, CloudEvents-style payloads, calendar checks, queue messages, and cron jobs are normalized into `ExternalEvent`, deduped, and routed through `TriggeredGoalRequest`. They create or steer goals through Restate instead of invoking workers directly.
+External events enter through `coat-event-gateway` on `:9089`. Generic JSON events, webhooks, CloudEvents-style payloads, calendar checks, queue messages, and cron jobs are normalized into `ExternalEvent`, deduped, and routed through `TriggeredGoalRequest`. They create or steer goals through Restate instead of invoking workers directly.
 
 ```sh
 cargo run -p coat-cli -- event register --file examples/event-source-calendar-schedule.json
 cargo run -p coat-cli -- event register --file examples/event-source-webhook-hmac.json
+cargo run -p coat-cli -- event register --file examples/event-source-generic-ci.json
 cargo run -p coat-cli -- event register \
   --file examples/event-source-webhook-hmac.json \
   --approval-id approval-123
 cargo run -p coat-cli -- event ingest --file examples/external-event-calendar.json
+cargo run -p coat-cli -- event emit --source-id ci-events --file examples/generic-event-ci-failed.json
 cargo run -p coat-cli -- event trigger --file examples/triggered-goal-webhook.json
 cargo run -p coat-cli -- event triggers
 ```
 
-Webhook sources can require shared-secret headers, bearer tokens, or HMAC-SHA256 signatures with secrets resolved from `SecretRef`; production-only providers such as mTLS or OIDC JWT should be terminated by ingress or secret middleware until a provider adapter is installed. Use Kubernetes CronJobs for cluster scheduled triggers, provider push APIs or bounded pollers for calendars, and Restate timers for durable waits inside a running goal. Agent-proposed monitors or schedules should be reviewed and installed as event sources, not self-started by workers.
+Generic sources are the default adapter for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before a provider-specific adapter exists. Webhook sources can require shared-secret headers, bearer tokens, or HMAC-SHA256 signatures with secrets resolved from `SecretRef`; production-only providers such as mTLS or OIDC JWT should be terminated by ingress or secret middleware until a provider adapter is installed. Use Kubernetes CronJobs for cluster scheduled triggers, provider push APIs or bounded pollers for calendars, and Restate timers for durable waits inside a running goal. Agent-proposed monitors or schedules should be reviewed and installed as event sources, not self-started by workers.
 
 The public event contract is documented in `docs/api/event-gateway.asyncapi.yaml`. Kubernetes examples for a suspended scheduled trigger and optional pgvector-backed Postgres live under `infra/k8s/examples/`.
 
@@ -166,6 +220,8 @@ Dispatch returns ranked candidates and rejected runners with reasons. Model rout
 
 Branch competition uses the same routing layer: candidate tasks can use different personas, runner labels, or model routes, then branch-vote tasks and an optional unifier choose one implementation. The coordinator owns the branch group and selection record; workers only return structured evidence and votes.
 
+Model and executor clusters are described in `docs/operations/model-runner-clusters.md`, including GB10/DGX Spark nodes, Mac mini runners, vLLM, Ollama, embedding services, and mixed sandbox fleets. Runners should register real capabilities and labels instead of relying on prompt convention.
+
 Sidecars expose `/capabilities` for operator inspection and `/verify` for non-mutating dependency checks. The response includes roles, model candidates, MCP propagation support, active capacity, review-contract support, and live-mode readiness without exposing secret values.
 
 When `COAT_MEMORY_GATEWAY_URL` is set, sidecars call `memory_context` before `/run-task` work and include a `memory_context` artifact plus redacted diagnostics in `AgentRunResult`. Context lookup failures do not fail the task; they are reported as diagnostics so a coordinator, reviewer, or operator can decide whether to continue, research, or repair memory adapters.
@@ -180,6 +236,14 @@ The notifier records local in-memory feedback threads. Operators can inspect the
 cargo run -p coat-cli -- notify --threads
 cargo run -p coat-cli -- notify --thread-key local-model-coding-smoke
 ```
+
+## Control Gateway And SPA
+
+`ui/control-plane-web` is an optional TypeScript gateway and browser UI. It composes existing backend APIs; it does not dispatch workers or mutate durable state directly.
+
+Use it for durable plan drafting/revision/compilation, goal submission, status, progress, steering, approval, cancellation, restart, branch selection, global and per-goal agent/task progress, projected prompts from `TaskNode.payload_json`, runner status, event sources, triggers, recent events, projected approval queues, notification threads, and memory operations.
+
+Set `COAT_CONTROL_GATEWAY_TOKEN` for `/api/*` bearer auth and `COAT_CONTROL_MCP_TOKEN` for `/mcp`. See `docs/design-docs/110-control-gateway-spa.md`.
 
 ## Result Channels
 
@@ -232,8 +296,12 @@ cargo run -p coat-cli -- memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b7
 Create a sandbox workspace through the CLI:
 
 ```sh
+cargo run -p coat-cli -- sandbox plan --file examples/sandbox-workspace-request-gvisor.json
 cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request.json
+cargo run -p coat-cli -- sandbox create --file examples/sandbox-workspace-request-gvisor.json
 ```
+
+`SandboxProfile.isolation` can request local workspace, container, gVisor, Kata, Firecracker, Kubernetes Job, namespace-jail, or provider-backed execution. `sandbox plan` renders the launch contract that a real executor can consume; `sandbox create` stores it as `sandbox-launch-plan.json` beside the workspace manifest. Local Compose only attests metadata-only workspaces. Production runners should return enforced `SandboxAttestation` evidence and can require executor output/security guardrail reviews through `ExecutionProfile.guardrails`; see `docs/design-docs/100-strong-sandboxing-guardrails.md`.
 
 Set `MEMORY_GATEWAY_JOURNAL_PATH` to make the local gateway replay an append-only JSONL journal on startup. Compose enables this with the `memory-gateway-data` volume.
 
@@ -247,6 +315,10 @@ Compose also runs Qdrant and configures the gateway to use it as the vector memo
 - Memory/research design: `docs/design-docs/020-memory-research-steering.md`
 - Distributed memory and knowledgebases: `docs/design-docs/030-distributed-memory-knowledgebases.md`
 - Auth distribution: `docs/design-docs/040-auth-distribution.md`
+- Strong sandboxing and guardrails: `docs/design-docs/100-strong-sandboxing-guardrails.md`
+- Control gateway and SPA: `docs/design-docs/110-control-gateway-spa.md`
+- Durable planning mode: `docs/design-docs/120-durable-planning-mode.md`
+- Model and runner clusters: `docs/operations/model-runner-clusters.md`
 - Execution plans: `docs/exec-plans/active/`
 - Operations: `docs/operations/`
 - Agent guide: `AGENTS.md`

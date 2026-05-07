@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxNetworkPlan",
+  "type": "object",
+  "properties": {
+    "access": {
+      "$ref": "#/$defs/NetworkAccess"
+    },
+    "allowed_internal_services": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "deny_by_default": {
+      "type": "boolean"
+    },
+    "egress_policy_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "access",
+    "deny_by_default"
+  ],
+  "$defs": {
+    "NetworkAccess": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "restricted",
+        "open"
+      ]
+    }
+  }
+}

@@ -19,6 +19,8 @@
     "reference_search",
     "web_search",
     "deep_research",
-    "simplicity"
+    "simplicity",
+    "security",
+    "output_safety"
   ]
 }

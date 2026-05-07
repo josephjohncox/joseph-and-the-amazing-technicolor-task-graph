@@ -1,0 +1,12 @@
+{
+  "id": "ci-run-12345",
+  "type": "ci.workflow.failed",
+  "subject": "example/repo pull request 42 failed required checks",
+  "delivery_id": "ci:example-repo:run-12345",
+  "time": "2026-05-06T22:15:00Z",
+  "repository": "example/repo",
+  "pull_request": 42,
+  "workflow": "cargo-test",
+  "run_url": "https://ci.example.com/example/repo/runs/12345",
+  "summary": "cargo test --workspace failed in coat-event-gateway tests"
+}

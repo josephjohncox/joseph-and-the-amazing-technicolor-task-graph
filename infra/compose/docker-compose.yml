@@ -41,6 +41,8 @@ services:
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
       COAT_MEMORY_MCP_URL: ${COAT_MEMORY_MCP_URL:-http://graphiti-mcp:8000/mcp/}
       COAT_ALLOW_LOCAL_STUB_FALLBACK: "true"
+      RESTATE_IDENTITY_KEYS: ${RESTATE_IDENTITY_KEYS:-}
+      RESTATE_SIGNING_PUBLIC_KEY: ${RESTATE_SIGNING_PUBLIC_KEY:-}
     ports:
       - "9080:9080"
     depends_on:
@@ -87,6 +89,7 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:9083
       SANDBOX_WORKSPACE_ROOT: /workspaces
+      SANDBOX_SUPPORTED_BACKENDS: local_workspace
     ports:
       - "9083:9083"
     volumes:
@@ -102,11 +105,13 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:9084
       TOOL_REGISTRY_WORKSPACE_ROOT: /workspace
+      TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT: /workspaces
       MCP_TOOL_TOKEN: ${MCP_TOOL_TOKEN:-}
     ports:
       - "9084:9084"
     volumes:
       - ../..:/workspace:ro
+      - sandbox-workspaces:/workspaces:ro
 
   runner-registry:
     build:
@@ -161,6 +166,8 @@ services:
       COAT_RESTATE_INGRESS: http://restate:8080
       COAT_EVENT_GATEWAY_TOKEN: ${COAT_EVENT_GATEWAY_TOKEN:-}
       COAT_REQUIRE_EVENT_SOURCE_APPROVAL: ${COAT_REQUIRE_EVENT_SOURCE_APPROVAL:-false}
+      COAT_EVENT_GATEWAY_BACKEND: ${COAT_EVENT_GATEWAY_BACKEND:-jsonl}
+      COAT_EVENT_GATEWAY_DATABASE_URL: ${COAT_EVENT_GATEWAY_DATABASE_URL:-postgres://coat:coat-local-secret@postgres:5432/coat}
       COAT_EVENT_GATEWAY_JOURNAL_PATH: /data/event-gateway.jsonl
     ports:
       - "9089:9089"
@@ -234,6 +241,34 @@ services:
         mc alias set local http://object-store:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
         mc mb -p "local/$$COAT_OBJECT_STORE_BUCKET"
         mc anonymous set none "local/$$COAT_OBJECT_STORE_BUCKET"
+
+  control-web:
+    build:
+      context: ../..
+      dockerfile: infra/containers/node-sidecar.Dockerfile
+      args:
+        SIDECAR_DIR: ui/control-plane-web
+    environment:
+      PORT: 9090
+      COAT_RESTATE_INGRESS: http://restate:8080
+      COAT_GOAL_STORE_URL: http://goal-store:9088
+      COAT_EVENT_GATEWAY_URL: http://event-gateway:9089
+      COAT_EVENT_GATEWAY_TOKEN: ${COAT_EVENT_GATEWAY_TOKEN:-}
+      COAT_NOTIFIER_URL: http://notifier:9086
+      COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
+      COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:-}
+      COAT_CONTROL_GATEWAY_TOKEN: ${COAT_CONTROL_GATEWAY_TOKEN:-}
+      COAT_CONTROL_MCP_TOKEN: ${COAT_CONTROL_MCP_TOKEN:-}
+    ports:
+      - "9090:9090"
+    depends_on:
+      - restate
+      - goal-store
+      - event-gateway
+      - notifier
+      - runner-registry
+      - memory-gateway
 
   codex-runner:
     build:

@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SandboxLaunchPlan",
+  "type": "object",
+  "properties": {
+    "artifact_manifest_path": {
+      "type": "string"
+    },
+    "backend": {
+      "$ref": "#/$defs/SandboxBackend"
+    },
+    "command": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    },
+    "git_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GitResultRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "image": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "network": {
+      "$ref": "#/$defs/SandboxNetworkPlan"
+    },
+    "object_prefix": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ObjectStorageArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "required_capabilities": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RunnerCapability"
+      }
+    },
+    "resources": {
+      "$ref": "#/$defs/SandboxResourcePlan"
+    },
+    "runtime_class": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "security": {
+      "$ref": "#/$defs/SandboxSecurityPlan"
+    },
+    "task_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "workspace_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "workspace_path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "task_id",
+    "workspace_id",
+    "backend",
+    "workspace_path",
+    "artifact_manifest_path",
+    "resources",
+    "security",
+    "network"
+  ],
+  "$defs": {
+    "GitResultRef": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pushed": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "pushed"
+      ]
+    },
+    "NetworkAccess": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "restricted",
+        "open"
+      ]
+    },
+    "ObjectStorageArtifactRef": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "store": {
+          "$ref": "#/$defs/ObjectStoreRef"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "key",
+        "uri",
+        "description"
+      ]
+    },
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "ObjectStoreRef": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjectStoreKind"
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "bucket",
+        "force_path_style"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "test",
+        "review",
+        "mcp_tools",
+        "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "network_open",
+        "formal_verification"
+      ]
+    },
+    "SandboxBackend": {
+      "type": "string",
+      "enum": [
+        "local_workspace",
+        "container",
+        "gvisor",
+        "firecracker",
+        "kata",
+        "kubernetes_job",
+        "namespace_jail",
+        "provider_sandbox"
+      ]
+    },
+    "SandboxNetworkPlan": {
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/NetworkAccess"
+        },
+        "allowed_internal_services": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_by_default": {
+          "type": "boolean"
+        },
+        "egress_policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "access",
+        "deny_by_default"
+      ]
+    },
+    "SandboxResourcePlan": {
+      "type": "object",
+      "properties": {
+        "cpu_limit_millis": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ephemeral_storage_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "memory_limit_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pids_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "SandboxSecurityPlan": {
+      "type": "object",
+      "properties": {
+        "apparmor_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "drop_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "no_new_privileges": {
+          "type": "boolean"
+        },
+        "read_only_rootfs": {
+          "type": "boolean"
+        },
+        "run_as_non_root": {
+          "type": "boolean"
+        },
+        "seccomp_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "read_only_rootfs",
+        "no_new_privileges",
+        "run_as_non_root"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    }
+  }
+}

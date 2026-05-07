@@ -1,0 +1,25 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "task_id": null,
+  "event": "human_feedback_requested",
+  "message": "A durable goal is waiting for operator steering.",
+  "policy": {
+    "events": ["human_feedback_requested", "approval_requested", "task_blocked"],
+    "targets": [
+      {
+        "kind": "webhook",
+        "address": "https://example.invalid/coat/notifications",
+        "secret_ref": {
+          "provider": "env",
+          "name": "COAT_NOTIFICATION_WEBHOOK_TOKEN",
+          "key": "COAT_NOTIFICATION_WEBHOOK_TOKEN",
+          "namespace": null,
+          "audience": "notifier"
+        },
+        "require_ack": false
+      }
+    ],
+    "feedback_thread_key": "operator-steering",
+    "escalation_seconds": 1800
+  }
+}

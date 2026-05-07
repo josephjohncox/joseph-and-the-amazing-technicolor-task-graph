@@ -25,6 +25,11 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Result channels guide: `docs/design-docs/060-result-channels-git-object-storage.md`
 - Protobuf and goal-store guide: `docs/design-docs/070-protobuf-goal-store-protocols.md`
 - Events, webhooks, and schedules guide: `docs/design-docs/080-events-webhooks-schedules.md`
+- Strong sandbox and guardrails guide: `docs/design-docs/100-strong-sandboxing-guardrails.md`
+- Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
+- Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
+- Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
+- Restate Cloud runbook: `docs/operations/restate-cloud.md`
 - Active implementation plans: `docs/exec-plans/active/`
 - Completed plans: `docs/exec-plans/completed/`
 - Operational runbooks: `docs/operations/`
@@ -44,11 +49,14 @@ Update docs when behavior or public contracts change.
 - Every worker response must use the structured result contract.
 - Every task must have a budget, sandbox profile, role, and done criteria.
 - Every dangerous operation needs an explicit approval path.
+- Strong sandboxing is opt-in by profile, but runners must never claim gVisor, Kata, Firecracker, or provider sandbox enforcement unless they can return an attestation.
+- Executor output is untrusted data until validated and, when enabled, reviewed by output and security guardrail tasks.
 - Every live agent integration must have a stub mode for local smoke tests.
 
 ## Architecture Rules
 
 - Restate workflow: durable outer loop and task-tree state.
+- Restate Cloud is supported for personal durable use and corporate managed deployment; configure service identity verification before exposing coordinator endpoints.
 - Protobuf contracts: cross-service and database-facing API surfaces.
 - Rust services: coordinator, validator, sandbox runner, tool registry, CLI.
 - TypeScript sidecars: Codex runner and staff-engineer runner.
@@ -56,6 +64,7 @@ Update docs when behavior or public contracts change.
 - Codex MCP is the fallback callable-tool integration.
 - `@ctxr/agent-staff-engineer` is a specialized worker, not the platform core.
 - Compose and Kubernetes must run the same logical service boundaries.
+- The TypeScript control gateway and SPA are optional operator surfaces; they must use backend APIs and must not own durable workflow state.
 
 ## Subagent Routing
 
@@ -87,6 +96,7 @@ Update docs when behavior or public contracts change.
 
 - `sidecars/codex-runner-ts`: Codex App Server or MCP adapter.
 - `sidecars/staff-engineer-runner-ts`: `@ctxr/agent-staff-engineer` adapter.
+- `ui/control-plane-web`: optional TypeScript control gateway, SPA, and MCP dashboard surface.
 
 Sidecars must return domain-compatible JSON and must support stub mode.
 Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL` is set.
@@ -97,6 +107,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Every `TaskNode` also has a `purpose`: work, review, unification, or actor retry.
 - Goals have `control_policy`, `research_policy`, `memory_policy`, and `approval_policy`; preserve them when editing contracts.
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
+- Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.
 - Non-trivial goals should include `authoring`, `plan.subgoals`, and stable `subgoal_id`s on known `initial_tasks`.
 - Use `GoalProgress`, `TaskQuery`, and `TaskList` for progress and task distribution; do not ask workers to discover subgoals from prose.
 - Initial tasks are coordinator-owned work seeds. Workers may request children, but subgoal creation and routing stay in durable state.
@@ -105,6 +116,8 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Model routing can target Codex, OpenAI, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, or local processes.
 - Dispatch decisions should preserve ranked candidates and rejected-runner reasons for operator debugging.
 - Sidecars should expose `/capabilities` without leaking MCP or provider secrets.
+- Sandbox-capable runners should advertise backend capabilities and labels such as `sandbox.backend`, `sandbox.runtime_class`, and `network.egress`.
+- Local workspace sandboxing is for trusted development only; production untrusted execution should use container hardening, gVisor, Kata, Firecracker, Kubernetes Jobs, or provider-backed sandboxes.
 - Personas are task-local. Do not infer persona only from worker role.
 - MCP context is distributed as server refs and secret refs, never raw tokens.
 - Runners resolve MCP auth through env, Kubernetes Secret, Vault, cloud secret stores, 1Password, Bitwarden, Doppler, SOPS, workload identity, external brokers, or OAuth delegation.
@@ -112,6 +125,8 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Brokered user auth requires a human approval gate and short-lived leases; never place raw user tokens in task state, diagnostics, artifacts, or memory.
 - Notifications are task-local and should be emitted for approval, feedback, blocked, failed, and completed events.
 - Local notification threads are for operator visibility; Restate workflow state remains the source of truth.
+- Web UI edits are steering, approval, goal, event, or memory commands against backend APIs; never mutate projections as if they were source-of-truth state.
+- Agent progress views should read projected `TaskRecord` rows and `payload_json.prompt` so operators can inspect current prompts, task contracts, state, and evidence.
 - Goal satisfaction is gated by actor output, critic reviews, optional review unification, and a satisfaction score.
 - Learning signals are reward-like validation/review scores for future actor/critic tuning; they are not permission to run unbounded retries.
 - Research tasks must return sourced `ResearchOutput` plus an `InformationUsePlan`.
@@ -124,10 +139,14 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Large generated assets should return `object_artifacts` refs to S3-compatible storage; do not put large blobs in workflow state.
 - Use one branch and one object prefix per task unless a unifier explicitly joins branches or promotes artifacts.
 - Sandbox workspaces are rooted at `SANDBOX_WORKSPACE_ROOT`; snapshot and cleanup must be idempotent and must not remove paths outside that root.
+- Sandbox launch plans are durable contracts; real executors consume `sandbox-launch-plan.json` and return attestation/evidence instead of inferring runtime setup from prompts.
+- Strict executor tasks should require `ExecutionProfile.guardrails`, artifact manifests, sandbox attestations, and bounded output/security review tasks before goal satisfaction.
+- Model-serving pools and executor pools should be separate when possible; GB10/DGX Spark, Mac mini, GPU, and CPU nodes should register their real model and sandbox capabilities instead of relying on prompt convention.
 - Postgres is the standard production goal read model. Restate remains authoritative; the goal store is a projection.
 - Use the migration files for dashboard/audit database setup; do not infer database schema from ad hoc JSONL logs.
 - Keep protobuf ID/status/artifact fields typed and put full Rust payloads behind JSON-schema envelopes.
-- External events enter through `coat-event-gateway`; webhooks, cron, calendar checks, and event buses must not invoke workers directly.
+- External events enter through `coat-event-gateway`; generic events, webhooks, cron, calendar checks, and event buses must not invoke workers directly.
+- Use generic JSON or CloudEvents-compatible event sources for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before adding provider-specific adapters.
 - Webhook auth must use `WebhookAuthPolicy` and `SecretRef`; shared-secret, bearer, and HMAC-SHA256 are local gateway paths, while mTLS/OIDC should terminate in trusted ingress or secret middleware until implemented.
 - Agent-proposed monitors or schedules require coordinator or human-approved activation.
 - Recurring work should become events, triggered goals, or steering directives, not hidden sleeping loops inside agents.
@@ -144,7 +163,10 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 ## Deployment
 
 - Local stack: `docker compose -f infra/compose/docker-compose.yml up --build`
+- Personal Restate Cloud stack: `docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud up --build`
 - CLI local stack: `cargo run -p coat-cli -- compose up`
+- CLI Restate Cloud stack: `cargo run -p coat-cli -- compose up --restate-cloud`
+- Restate Cloud registration: `cargo run -p coat-cli -- restate register-cloud --tunnel-name coat-personal --service-url http://coordinator:9080`
 - Kubernetes render: `cargo run -p coat-cli -- k8s render --output infra/k8s/rendered.yaml`
 - Restate ingress defaults to `http://localhost:8080`.
 - Coordinator service listens on `:9080`.
@@ -152,6 +174,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Notifier listens on `:9086`.
 - Goal store listens on `:9088`.
 - Event gateway listens on `:9089`.
+- Control web listens on `:9090`.
 
 ## Safety
 

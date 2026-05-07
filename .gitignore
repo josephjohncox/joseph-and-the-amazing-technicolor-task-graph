@@ -4,6 +4,8 @@
 /.env
 /.env.*
 !/examples/.env.example
+/infra/compose/*.env
+!/infra/compose/*.env.example
 /node_modules/
 /**/node_modules/
 /dist/

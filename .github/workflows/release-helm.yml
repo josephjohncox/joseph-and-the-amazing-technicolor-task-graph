@@ -35,9 +35,6 @@ jobs:
           version="${raw#chart-v}"
           version="${version#v}"
           app_version="${{ inputs.app_version }}"
-          if [ -z "$app_version" ]; then
-            app_version="$version"
-          fi
           app_version="${app_version#v}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"

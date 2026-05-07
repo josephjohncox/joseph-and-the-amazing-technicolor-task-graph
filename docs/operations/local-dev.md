@@ -34,6 +34,8 @@ docker compose \
   config
 ```
 
+The Rust service image builds all `coat` Rust binaries once in a shared builder stage and copies the selected binary into each service image. It defaults to `CARGO_BUILD_JOBS=8` so builds still use parallel Rust compilation without multiplying compiler jobs across every Compose service.
+
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
@@ -219,6 +221,7 @@ The web gateway uses the goal-store list endpoints for dashboard views:
 
 ```sh
 curl -sS http://localhost:9090/api/plans
+curl -sS http://localhost:9090/api/plans/<plan-id>/continuity
 curl -sS http://localhost:9090/api/follow-ups
 curl -sS http://localhost:9090/api/goals
 curl -sS http://localhost:9090/api/agents

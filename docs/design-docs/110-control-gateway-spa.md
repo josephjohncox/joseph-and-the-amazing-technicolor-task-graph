@@ -28,6 +28,7 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `GET /api/plans`: durable planning-mode list.
 - `POST /api/plans`: create a durable plan.
 - `GET /api/plans/{plan_id}`: inspect a durable plan.
+- `GET /api/plans/{plan_id}/continuity`: summarize durable plan questions, decisions, subgoals, initial tasks, revisions, and next actions.
 - `POST /api/plans/{plan_id}/revisions`: append a plan revision.
 - `POST /api/plans/{plan_id}/compile`: compile a plan into `GoalSpec`.
 - `GET /api/goals/{goal_id}`: composed Restate plus goal-store snapshot.
@@ -104,6 +105,7 @@ The gateway exposes MCP tools so agent/chat clients can inspect and steer the sy
 - `coat_agent_activity`;
 - `coat_plan_list`;
 - `coat_plan_get`;
+- `coat_plan_continuity`;
 - `coat_plan_compile`;
 - `coat_follow_ups`;
 - `coat_human_threads`;

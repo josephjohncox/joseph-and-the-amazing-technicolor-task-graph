@@ -142,7 +142,7 @@ coat goal restart \
 
 Release packaging and version bumps are documented in `docs/operations/releases.md`. Use `coat release plan --version ...` to preview binary and chart tags, `coat release bump --version ...` to update version files only, and `coat release cut --version ...` to bump, commit, and tag the release.
 
-GitHub publishes binaries and Helm charts through separate workflows:
+GitHub publishes binaries, GHCR service images, and Helm charts through release workflows:
 
 - `.github/workflows/release-binaries.yml` on tags like `v0.2.0`;
 - `.github/workflows/release-helm.yml` on tags like `chart-v0.2.0`.

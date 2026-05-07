@@ -556,6 +556,8 @@ struct GoalTasksArgs {
     #[arg(long)]
     purpose: Vec<String>,
     #[arg(long)]
+    color: Vec<String>,
+    #[arg(long)]
     tag: Vec<String>,
     #[arg(long)]
     runnable: bool,
@@ -1195,8 +1197,27 @@ fn release_plan_json(
         "binary_assets": [
             format!("coat-binaries-{version}-x86_64-unknown-linux-gnu.tar.gz"),
             format!("coat-binaries-{version}-aarch64-unknown-linux-gnu.tar.gz"),
-            format!("coat-binaries-{version}-aarch64-apple-darwin.tar.gz"),
-            format!("coat-binaries-{version}-x86_64-apple-darwin.tar.gz")
+            format!("coat-binaries-{version}-aarch64-apple-darwin.tar.gz")
+        ],
+        "container_registry": "ghcr.io/<owner>/<repo>",
+        "container_images": [
+            format!("ghcr.io/<owner>/<repo>/coat-coordinator:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-event-gateway:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-goal-store:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-memory-gateway:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-notifier:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-runner-registry:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-sandbox-runner:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-tool-registry:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-validator:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-control-web:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-codex-runner:v{version}"),
+            format!("ghcr.io/<owner>/<repo>/coat-staff-engineer-runner:v{version}")
+        ],
+        "container_image_tags": [
+            format!("v{version}"),
+            version,
+            "latest"
         ],
         "helm_assets": [
             format!("coat-{chart_version}.tgz"),
@@ -2240,6 +2261,7 @@ fn task_query_from_args(args: &GoalTasksArgs) -> anyhow::Result<TaskQuery> {
             "TaskPurposeKind",
         )?);
     }
+    query.color_keys.extend(args.color.clone());
     query.tags.extend(args.tag.clone());
     if args.runnable {
         query.runnable_only = true;
@@ -2265,6 +2287,7 @@ fn parse_subgoal_spec(raw: &str) -> anyhow::Result<SubgoalSpec> {
         title: required_kv(&kv, "title")?,
         objective: required_kv(&kv, "objective")?,
         owner_role: role,
+        color: None,
         priority,
         dependencies: split_list(kv.get("dependencies")),
         tags: split_list(kv.get("tags")),
@@ -2311,6 +2334,7 @@ fn parse_initial_task_spec(raw: &str) -> anyhow::Result<ChildTaskRequest> {
         purpose,
         title: kv.get("title").cloned(),
         subgoal_id: kv.get("subgoal_id").or_else(|| kv.get("subgoal")).cloned(),
+        color: None,
         prompt,
         reason: kv
             .get("reason")
@@ -2728,6 +2752,26 @@ mod tests {
         assert_eq!(plan["chart_version"], "1.2.4");
         assert_eq!(plan["binary_tag"], "v1.2.3");
         assert_eq!(plan["chart_tag"], "chart-v1.2.4");
+        assert_eq!(
+            plan["binary_assets"],
+            serde_json::json!([
+                "coat-binaries-1.2.3-x86_64-unknown-linux-gnu.tar.gz",
+                "coat-binaries-1.2.3-aarch64-unknown-linux-gnu.tar.gz",
+                "coat-binaries-1.2.3-aarch64-apple-darwin.tar.gz"
+            ])
+        );
+        assert_eq!(plan["container_registry"], "ghcr.io/<owner>/<repo>");
+        assert_eq!(
+            plan["container_image_tags"],
+            serde_json::json!(["v1.2.3", "1.2.3", "latest"])
+        );
+        assert!(
+            plan["container_images"]
+                .as_array()
+                .expect("container images")
+                .iter()
+                .any(|image| image == "ghcr.io/<owner>/<repo>/coat-runner-registry:v1.2.3")
+        );
         assert!(
             plan["publish_steps"]
                 .as_array()

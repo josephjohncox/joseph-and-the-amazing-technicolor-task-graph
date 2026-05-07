@@ -4,8 +4,15 @@ set -euo pipefail
 CHART_DIR="${CHART_DIR:-infra/helm/coat}"
 DIST_DIR="${DIST_DIR:-dist/helm}"
 CHART_VERSION="${CHART_VERSION:-0.1.0}"
-APP_VERSION="${APP_VERSION:-${CHART_VERSION}}"
 RELEASE_URL="${RELEASE_URL:-}"
+
+if [[ -z "${APP_VERSION:-}" ]]; then
+  APP_VERSION="$(
+    awk -F': *' '$1 == "appVersion" { gsub(/^"|"$/, "", $2); print $2; exit }' \
+      "${CHART_DIR}/Chart.yaml"
+  )"
+fi
+APP_VERSION="${APP_VERSION:-${CHART_VERSION}}"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "helm is required to package the chart" >&2

@@ -130,8 +130,14 @@ async function loadPlan(): Promise<void> {
   if (!planId) {
     throw new Error("plan ID is required");
   }
+  await loadPlanById(planId);
+}
+
+async function loadPlanById(planId: string): Promise<void> {
   const data = await api(`/api/plans/${encodeURIComponent(planId)}`);
   setJson("planJson", data);
+  const continuity = await api(`/api/plans/${encodeURIComponent(planId)}/continuity`);
+  renderPlanContinuity(continuity);
 }
 
 async function draftPlan(): Promise<void> {
@@ -147,6 +153,9 @@ async function draftPlan(): Promise<void> {
   }
   setJson("planJson", result);
   await refreshPlans();
+  if (planId) {
+    await loadPlanById(planId);
+  }
 }
 
 async function revisePlan(): Promise<void> {
@@ -160,6 +169,7 @@ async function revisePlan(): Promise<void> {
     body: JSON.stringify(parseTextarea("planRevisionJson")),
   });
   setJson("planJson", result);
+  await renderCurrentPlanContinuity();
 }
 
 async function compilePlan(): Promise<void> {
@@ -178,6 +188,7 @@ async function compilePlan(): Promise<void> {
     }),
   });
   setJson("planJson", result);
+  await renderCurrentPlanContinuity();
 }
 
 async function refreshFollowUps(): Promise<void> {
@@ -388,6 +399,94 @@ function renderPlanList(data: JsonValue): void {
   renderPlanTable("plansView", rows);
 }
 
+async function renderCurrentPlanContinuity(): Promise<void> {
+  const planId = byId<HTMLInputElement>("planId").value.trim();
+  if (!planId) {
+    return;
+  }
+  renderPlanContinuity(await api(`/api/plans/${encodeURIComponent(planId)}/continuity`));
+}
+
+function renderPlanContinuity(data: JsonValue): void {
+  const root = byId<HTMLElement>("planContinuityView");
+  const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+  if (record.found === false) {
+    root.innerHTML = `<p class="muted">Plan continuity is unavailable.</p>`;
+    return;
+  }
+  const continuity = at(data, ["continuity"]) as Record<string, unknown> | null;
+  if (!continuity || typeof continuity !== "object") {
+    root.innerHTML = `<p class="muted">Load a plan to inspect continuity state.</p>`;
+    return;
+  }
+  const nextActions = arrayAt(continuity, ["next_actions"]);
+  const openQuestions = arrayAt(continuity, ["open_questions"]);
+  const authoringOpenQuestions = arrayAt(continuity, ["authoring_open_questions"]);
+  const decisions = arrayAt(continuity, ["decisions"]);
+  const subgoals = arrayAt(continuity, ["subgoals"]);
+  const initialTasks = arrayAt(continuity, ["initial_tasks"]);
+  const revisions = arrayAt(continuity, ["revisions"]);
+  const html: string[] = [];
+  html.push(`<p class="muted">${escapeHtml(String(record.title ?? record.plan_id ?? "plan"))} · ${escapeHtml(String(record.status ?? ""))} · v${escapeHtml(String(record.version ?? ""))}</p>`);
+  html.push("<h3>Next Actions</h3>");
+  html.push(listBlock(nextActions));
+  html.push("<h3>Open Questions</h3>");
+  html.push(openQuestions.length || authoringOpenQuestions.length
+    ? table(["Question", "Required", "Answer"], [
+      ...openQuestions.map((item) => {
+        const row = item as Record<string, unknown>;
+        return [String(row.question ?? ""), String(Boolean(row.required)), String(row.answer ?? "")];
+      }),
+      ...authoringOpenQuestions.map((item) => [String(item), "authoring", ""]),
+    ])
+    : `<p class="muted">No open planning questions.</p>`);
+  html.push("<h3>Subgoals</h3>");
+  html.push(subgoals.length
+    ? table(["Color", "Subgoal", "Owner", "Priority", "Objective"], subgoals.map((item) => {
+      const row = item as Record<string, unknown>;
+      return [
+        colorLabel(row.color),
+        String(row.id ?? row.title ?? ""),
+        String(row.owner_role ?? ""),
+        String(row.priority ?? ""),
+        truncate(String(row.objective ?? ""), 160),
+      ];
+    }))
+    : `<p class="muted">No stable subgoals defined.</p>`);
+  html.push("<h3>Initial Tasks</h3>");
+  html.push(initialTasks.length
+    ? table(["Task", "Role", "Subgoal", "Reason"], initialTasks.map((item) => {
+      const row = item as Record<string, unknown>;
+      return [
+        String(row.title ?? ""),
+        String(row.role ?? ""),
+        String(row.subgoal_id ?? ""),
+        truncate(String(row.reason ?? row.prompt ?? ""), 160),
+      ];
+    }))
+    : `<p class="muted">No coordinator-owned initial tasks seeded.</p>`);
+  html.push("<h3>Decisions</h3>");
+  html.push(decisions.length
+    ? table(["Decision", "Rationale"], decisions.map((item) => {
+      const row = item as Record<string, unknown>;
+      return [String(row.title ?? row.id ?? ""), truncate(String(row.rationale ?? row.decision ?? ""), 180)];
+    }))
+    : `<p class="muted">No planning decisions recorded.</p>`);
+  html.push("<h3>Revisions</h3>");
+  html.push(revisions.length
+    ? table(["Version", "Author", "Summary", "Open Qs"], revisions.map((item) => {
+      const row = item as Record<string, unknown>;
+      return [
+        String(row.version ?? ""),
+        String(row.author ?? ""),
+        truncate(String(row.summary ?? ""), 150),
+        String(row.open_question_count ?? ""),
+      ];
+    }))
+    : `<p class="muted">No revision history projected.</p>`);
+  root.innerHTML = html.join("");
+}
+
 function renderPlanTable(targetId: string, rows: JsonValue[]): void {
   const root = byId<HTMLElement>(targetId);
   if (!rows.length) {
@@ -413,7 +512,7 @@ function renderPlanTable(targetId: string, rows: JsonValue[]): void {
     tr.addEventListener("click", async () => {
       if (planId) {
         byId<HTMLInputElement>("planId").value = planId;
-        setJson("planJson", await api(`/api/plans/${encodeURIComponent(planId)}`));
+        await loadPlanById(planId);
       } else {
         setJson("planJson", row);
       }
@@ -423,6 +522,13 @@ function renderPlanTable(targetId: string, rows: JsonValue[]): void {
   tableEl.appendChild(body);
   root.innerHTML = "";
   root.appendChild(tableEl);
+}
+
+function listBlock(items: JsonValue[]): string {
+  if (!items.length) {
+    return `<p class="muted">No next actions projected.</p>`;
+  }
+  return `<ul>${items.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("")}</ul>`;
 }
 
 function renderGoals(data: JsonValue): void {
@@ -512,7 +618,7 @@ function renderAgentTable(targetId: string, rows: JsonValue[], compact = false):
   }
   const tableEl = document.createElement("table");
   const header = document.createElement("thead");
-  header.innerHTML = `<tr>${["Task", "Role", "Purpose", "Status", "Prompt"].map((value) => `<th>${escapeHtml(value)}</th>`).join("")}</tr>`;
+  header.innerHTML = `<tr>${["Color", "Task", "Role", "Purpose", "Status", "Prompt"].map((value) => `<th>${escapeHtml(value)}</th>`).join("")}</tr>`;
   tableEl.appendChild(header);
   const body = document.createElement("tbody");
   for (const item of rows) {
@@ -521,13 +627,13 @@ function renderAgentTable(targetId: string, rows: JsonValue[], compact = false):
     const taskId = String(row.task_id ?? payload.id ?? "");
     const prompt = String(row.current_prompt ?? row.prompt ?? payload.prompt ?? "");
     const tr = document.createElement("tr");
-    tr.innerHTML = [
+    tr.innerHTML = `<td>${colorChip(row.color ?? payload.color)}</td>${[
       taskId,
       String(row.role ?? payload.role ?? ""),
       String(row.purpose ?? row.purpose_kind ?? payload.purpose ?? ""),
       String(row.status ?? payload.status ?? ""),
       compact ? truncate(prompt, 110) : prompt,
-    ].map((value) => `<td>${escapeHtml(value)}</td>`).join("");
+    ].map((value) => `<td>${escapeHtml(value)}</td>`).join("")}`;
     tr.addEventListener("click", () => setJson("agentDetailJson", row));
     body.appendChild(tr);
   }
@@ -564,6 +670,30 @@ function table(headers: string[], rows: string[][]): string {
     .join("")}</tbody></table>`;
 }
 
+function colorLabel(value: JsonValue): string {
+  const color = colorRecord(value);
+  return color ? `${String(color.label ?? color.key ?? "")} ${String(color.hex ?? "")}`.trim() : "";
+}
+
+function colorChip(value: JsonValue): string {
+  const color = colorRecord(value);
+  if (!color) {
+    return "";
+  }
+  const label = String(color.label ?? color.key ?? "");
+  const meaning = String(color.meaning ?? "");
+  const hex = safeHex(String(color.hex ?? ""));
+  return `<span class="color-chip" title="${escapeAttr(meaning)}"><span class="color-dot" style="background:${escapeAttr(hex)}"></span>${escapeHtml(label)}</span>`;
+}
+
+function colorRecord(value: JsonValue): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function safeHex(value: string): string {
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : "#9aa6ad";
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -572,6 +702,10 @@ function escapeHtml(value: string): string {
     '"': "&quot;",
     "'": "&#039;",
   }[char] ?? char));
+}
+
+function escapeAttr(value: string): string {
+  return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
 function at(value: JsonValue, path: string[]): JsonValue {

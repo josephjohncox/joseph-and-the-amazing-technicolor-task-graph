@@ -270,6 +270,7 @@ workloads:
       COAT_NOTIFIER_URL: http://notifier:9086
       COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
+      COAT_EXEC_PLAN_DIR: /app/docs/exec-plans/active
     secretEnv:
       COAT_EVENT_GATEWAY_TOKEN: EVENT_GATEWAY_TOKEN
       COAT_MEMORY_GATEWAY_TOKEN: MCP_TOOL_TOKEN

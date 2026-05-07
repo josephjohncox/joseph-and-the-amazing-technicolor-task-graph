@@ -43,7 +43,9 @@ const runnerRegistryUrl = trimSlash(
 const memoryGatewayUrl = trimSlash(process.env.COAT_MEMORY_GATEWAY_URL ?? "http://localhost:9087");
 const memoryGatewayToken = process.env.COAT_MEMORY_GATEWAY_TOKEN ?? process.env.MEMORY_GATEWAY_TOKEN ?? "";
 const controlMcpToken = process.env.COAT_CONTROL_MCP_TOKEN ?? gatewayToken;
-const executionPlanDir = process.env.COAT_EXEC_PLAN_DIR ?? "docs/exec-plans/active";
+const executionPlanDirs = process.env.COAT_EXEC_PLAN_DIR
+  ? [process.env.COAT_EXEC_PLAN_DIR]
+  : ["docs/exec-plans/active", "../../docs/exec-plans/active", "/app/docs/exec-plans/active"];
 
 const workflowHandlers = new Set([
   "status",
@@ -198,7 +200,7 @@ async function overview(): Promise<JsonMap> {
   const [plans, approvals, followUps] = await Promise.all([
     proxyJson(goalStoreUrl, "/goal-store/plans?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/approvals?limit=50", { method: "GET" }),
-    executionPlanFollowUps(executionPlanDir, false),
+    executionPlanFollowUps(executionPlanDirs, false),
   ]);
 
   return {
@@ -220,7 +222,30 @@ async function overview(): Promise<JsonMap> {
   };
 }
 
-async function executionPlanFollowUps(planDir: string, includeEmpty: boolean): Promise<JsonMap> {
+async function executionPlanFollowUps(planDirs: string[], includeEmpty: boolean): Promise<JsonMap> {
+  const errors: JsonMap[] = [];
+  for (const planDir of planDirs) {
+    const result = await readExecutionPlanFollowUps(planDir, includeEmpty);
+    if (!("error" in result)) {
+      return { ...result, checked_plan_dirs: planDirs };
+    }
+    errors.push({
+      plan_dir: result.plan_dir,
+      error: result.error,
+    });
+  }
+  return {
+    plan_dir: planDirs[0] ?? "",
+    checked_plan_dirs: planDirs,
+    plan_count: 0,
+    follow_up_count: 0,
+    plans: [],
+    error: errors.map((item) => `${item.plan_dir}: ${item.error}`).join("; "),
+    errors,
+  };
+}
+
+async function readExecutionPlanFollowUps(planDir: string, includeEmpty: boolean): Promise<JsonMap> {
   const normalizedDir = planDir.replace(/\/+$/, "") || ".";
   try {
     const entries = await readdir(normalizedDir, { withFileTypes: true });
@@ -318,6 +343,170 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
   };
 }
 
+async function planContinuity(planId: string): Promise<JsonMap> {
+  const planResponse = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" });
+  return buildPlanContinuity(planId, planResponse);
+}
+
+function buildPlanContinuity(planId: string, planResponse: ProxyResult): JsonMap {
+  const data = asRecord(planResponse.data);
+  const plan = asRecord(data.plan);
+  if (!plan || Object.keys(plan).length === 0) {
+    return {
+      generated_at: new Date().toISOString(),
+      plan_id: planId,
+      found: false,
+      source: planResponse,
+    };
+  }
+  const current = asRecord(plan.current);
+  const authoring = asRecord(current.authoring);
+  const goalPlan = asRecord(current.plan);
+  const questions = arrayField(current, "questions").map(asRecord);
+  const decisions = arrayField(current, "decisions").map(asRecord);
+  const subgoals = arrayField(goalPlan, "subgoals").map(asRecord);
+  const initialTasks = arrayField(current, "initial_tasks").map(asRecord);
+  const revisions = arrayField(plan, "revisions").map(asRecord);
+  const openQuestions = questions.filter((question) => String(question.status ?? "") === "open");
+  const requiredOpenQuestions = openQuestions.filter((question) => question.required === true);
+  const answeredQuestions = questions.filter((question) => String(question.status ?? "") === "answered");
+  const deferredQuestions = questions.filter((question) => String(question.status ?? "") === "deferred");
+  const closedQuestionText = new Set(
+    questions
+      .filter((question) => ["answered", "deferred"].includes(String(question.status ?? "")))
+      .map((question) => String(question.question ?? "")),
+  );
+  const authoringOpenQuestions = arrayField(authoring, "open_questions")
+    .filter((question) => !closedQuestionText.has(String(question)));
+  const distributionNotes = arrayField(goalPlan, "distribution_notes");
+  const compiledQuality = asRecord(plan.compiled_quality);
+  const qualityNextActions = arrayField(compiledQuality, "suggested_next_actions");
+  const status = String(plan.status ?? "");
+
+  return {
+    generated_at: new Date().toISOString(),
+    plan_id: String(plan.id ?? planId),
+    title: plan.title ?? "",
+    objective: plan.objective ?? "",
+    repo: plan.repo ?? null,
+    status,
+    mode: plan.mode ?? "",
+    version: plan.version ?? current.version ?? null,
+    updated_at: plan.updated_at ?? null,
+    compiled_goal_id: plan.compiled_goal_id ?? null,
+    continuity: {
+      intake_summary: authoring.intake_summary ?? "",
+      plan_summary: goalPlan.summary ?? "",
+      acceptance_evidence: arrayField(authoring, "acceptance_evidence"),
+      constraints: arrayField(authoring, "constraints"),
+      assumptions: arrayField(authoring, "assumptions"),
+      out_of_scope: arrayField(authoring, "out_of_scope"),
+      authoring_open_questions: authoringOpenQuestions,
+      open_questions: openQuestions,
+      required_open_questions: requiredOpenQuestions,
+      answered_questions: answeredQuestions,
+      deferred_questions: deferredQuestions,
+      decisions,
+      subgoals,
+      distribution_notes: distributionNotes,
+      initial_tasks: initialTasks,
+      revisions: revisions.map((revision) => summarizePlanRevision(revision)),
+      next_actions: planNextActions({
+        status,
+        requiredOpenQuestionCount: requiredOpenQuestions.length,
+        openQuestionCount: openQuestions.length,
+        authoringOpenQuestionCount: authoringOpenQuestions.length,
+        decisionCount: decisions.length,
+        subgoalCount: subgoals.length,
+        initialTaskCount: initialTasks.length,
+        acceptanceEvidenceCount: arrayField(authoring, "acceptance_evidence").length,
+        compiledGoalId: plan.compiled_goal_id,
+        qualityNextActions,
+      }),
+      compiled_quality: plan.compiled_quality ?? null,
+    },
+    counts: {
+      open_questions: openQuestions.length,
+      required_open_questions: requiredOpenQuestions.length,
+      answered_questions: answeredQuestions.length,
+      deferred_questions: deferredQuestions.length,
+      authoring_open_questions: authoringOpenQuestions.length,
+      decisions: decisions.length,
+      subgoals: subgoals.length,
+      initial_tasks: initialTasks.length,
+      revisions: revisions.length,
+    },
+    source_status: {
+      ok: planResponse.ok,
+      status: planResponse.status,
+      url: planResponse.url,
+    },
+  };
+}
+
+function summarizePlanRevision(revision: JsonMap): JsonMap {
+  const plan = asRecord(revision.plan);
+  const questions = arrayField(revision, "questions").map(asRecord);
+  return {
+    id: revision.id ?? null,
+    version: revision.version ?? null,
+    author: revision.author ?? "",
+    summary: revision.summary ?? "",
+    operator_message: revision.operator_message ?? null,
+    created_at: revision.created_at ?? null,
+    subgoal_count: arrayField(plan, "subgoals").length,
+    initial_task_count: arrayField(revision, "initial_tasks").length,
+    open_question_count: questions.filter((question) => String(question.status ?? "") === "open").length,
+    decision_count: arrayField(revision, "decisions").length,
+  };
+}
+
+function planNextActions(input: {
+  status: string;
+  requiredOpenQuestionCount: number;
+  openQuestionCount: number;
+  authoringOpenQuestionCount: number;
+  decisionCount: number;
+  subgoalCount: number;
+  initialTaskCount: number;
+  acceptanceEvidenceCount: number;
+  compiledGoalId: unknown;
+  qualityNextActions: unknown[];
+}): string[] {
+  const actions: string[] = [];
+  if (input.requiredOpenQuestionCount > 0) {
+    actions.push("answer required open planning questions before compiling");
+  } else if (input.openQuestionCount > 0 || input.authoringOpenQuestionCount > 0) {
+    actions.push("answer, defer, or explicitly accept remaining planning questions");
+  }
+  if (input.acceptanceEvidenceCount === 0) {
+    actions.push("add acceptance evidence before execution");
+  }
+  if (input.subgoalCount === 0) {
+    actions.push("define stable subgoals with IDs before distributing work");
+  }
+  if (input.initialTaskCount === 0 && input.subgoalCount > 0) {
+    actions.push("seed the first coordinator-owned initial tasks from stable subgoals");
+  }
+  if (input.decisionCount === 0) {
+    actions.push("record important planning decisions and rationale");
+  }
+  if (input.status === "compiled" && input.compiledGoalId) {
+    actions.push("lint or submit the compiled GoalSpec when the operator is ready");
+  } else if (["ready_for_review", "approved"].includes(input.status) && input.requiredOpenQuestionCount === 0) {
+    actions.push("compile the durable plan into a GoalSpec without submitting it");
+  }
+  for (const action of input.qualityNextActions) {
+    if (typeof action === "string" && action && !actions.includes(action)) {
+      actions.push(action);
+    }
+  }
+  if (actions.length === 0) {
+    actions.push("review the plan or compile it into a GoalSpec");
+  }
+  return actions;
+}
+
 function buildAgentActivity(
   tasksResponse: unknown,
   progressResponse: unknown,
@@ -341,6 +530,7 @@ function buildAgentActivity(
       parent_task_id: task.parent_task_id ?? payload.parent_id ?? null,
       subgoal_id: task.subgoal_id ?? payload.subgoal_id ?? null,
       title: task.title ?? payload.title ?? "",
+      color: task.color ?? payload.color ?? null,
       role: task.role ?? payload.role ?? "",
       purpose: task.purpose_kind ?? task.purpose ?? payload.purpose ?? null,
       status: task.status ?? payload.status ?? "",
@@ -376,6 +566,15 @@ function extractArray(value: unknown, path: string[]): unknown[] {
   return Array.isArray(current) ? current : [];
 }
 
+function asRecord(value: unknown): JsonMap {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonMap : {};
+}
+
+function arrayField(record: JsonMap, key: string): unknown[] {
+  const value = record[key];
+  return Array.isArray(value) ? value : [];
+}
+
 async function workflowPost(goalId: string, handler: string, body: unknown): Promise<ProxyResult> {
   const path = `/GoalWorkflow/${encodeURIComponent(goalId)}/${handler}`;
   return proxyJson(
@@ -407,7 +606,8 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
         notifier: notifierUrl,
         runner_registry: runnerRegistryUrl,
         memory_gateway: memoryGatewayUrl,
-        execution_plan_dir: executionPlanDir,
+        execution_plan_dir: executionPlanDirs[0],
+        execution_plan_dirs: executionPlanDirs,
       },
     });
     return;
@@ -420,7 +620,7 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (req.method === "GET" && url.pathname === "/api/follow-ups") {
     const includeEmpty = url.searchParams.get("include_empty") === "true";
-    sendJson(res, 200, await executionPlanFollowUps(executionPlanDir, includeEmpty));
+    sendJson(res, 200, await executionPlanFollowUps(executionPlanDirs, includeEmpty));
     return;
   }
 
@@ -446,6 +646,10 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (segments[0] === "api" && segments[1] === "plans" && segments[2]) {
     const planId = decodeURIComponent(segments[2]);
+    if (req.method === "GET" && segments[3] === "continuity") {
+      sendJson(res, 200, await planContinuity(planId));
+      return;
+    }
     if (req.method === "GET" && segments.length === 3) {
       sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" }));
       return;
@@ -734,6 +938,16 @@ function mcpTools(): unknown[] {
       },
     },
     {
+      name: "coat_plan_continuity",
+      description: "Read a continuity summary for one durable plan: questions, decisions, subgoals, initial tasks, revisions, and next actions.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["plan_id"],
+        properties: { plan_id: { type: "string" } },
+      },
+    },
+    {
       name: "coat_follow_ups",
       description: "List active execution-plan follow-up items that should continue across sessions.",
       inputSchema: {
@@ -828,8 +1042,15 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       body: JSON.stringify({ ...args, plan_id: planId }),
     });
   }
+  if (name === "coat_plan_continuity") {
+    const planId = String(args.plan_id ?? "");
+    if (!planId) {
+      throw new Error("plan_id is required");
+    }
+    return planContinuity(planId);
+  }
   if (name === "coat_follow_ups") {
-    return executionPlanFollowUps(executionPlanDir, args.include_empty === true);
+    return executionPlanFollowUps(executionPlanDirs, args.include_empty === true);
   }
   if (name === "coat_steer_goal") {
     const goalId = String(args.goal_id ?? "");
@@ -1052,6 +1273,20 @@ function appHtml(): string {
       word-break: break-word;
     }
     th { color: var(--muted); font-weight: 680; }
+    .color-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+    .color-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.24);
+      flex: 0 0 auto;
+    }
     pre {
       overflow: auto;
       max-height: 460px;
@@ -1175,6 +1410,9 @@ function appHtml(): string {
           <div class="panel">
             <h2>Plan State</h2>
             <div id="plansView"></div>
+            <h3>Plan Continuity</h3>
+            <div id="planContinuityView"><p class="muted">Load a plan to inspect continuity state.</p></div>
+            <h3>Plan JSON</h3>
             <pre id="planJson"></pre>
           </div>
         </div>

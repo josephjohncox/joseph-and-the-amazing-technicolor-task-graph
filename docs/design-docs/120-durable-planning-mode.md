@@ -103,10 +103,20 @@ coat plan compile \
 
 The control gateway has a `Plans` tab. It can create plans, list plans, load a plan, post revisions, and compile a plan to a `GoalSpec`.
 
+The same tab renders a continuity view for the loaded plan:
+
+- next actions;
+- open and authoring questions;
+- stable subgoals;
+- coordinator-owned initial task seeds;
+- planning decisions;
+- revision history.
+
 The MCP dashboard surface exposes:
 
 - `coat_plan_list`;
 - `coat_plan_get`;
+- `coat_plan_continuity`;
 - `coat_plan_compile`.
 
 Plan editing through the SPA or MCP still calls backend APIs. The browser does not own durable plan state.

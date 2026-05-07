@@ -738,6 +738,8 @@ spec:
               value: http://runner-registry:9085
             - name: COAT_MEMORY_GATEWAY_URL
               value: http://memory-gateway:9087
+            - name: COAT_EXEC_PLAN_DIR
+              value: /app/docs/exec-plans/active
             - name: COAT_MEMORY_GATEWAY_TOKEN
               valueFrom:
                 secretKeyRef:

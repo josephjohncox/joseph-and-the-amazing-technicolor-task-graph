@@ -65,6 +65,8 @@ pub struct GoalSpec {
     #[serde(default)]
     pub branching_policy: BranchingPolicy,
     #[serde(default)]
+    pub color_policy: GraphColorPolicy,
+    #[serde(default)]
     pub default_execution: ExecutionProfile,
     #[serde(default)]
     pub initial_tasks: Vec<ChildTaskRequest>,
@@ -89,6 +91,7 @@ impl GoalSpec {
             restart_policy: RestartPolicy::default(),
             timeout_policy: TimeoutPolicy::default(),
             branching_policy: BranchingPolicy::default(),
+            color_policy: GraphColorPolicy::default(),
             default_execution: ExecutionProfile::default(),
             initial_tasks: Vec::new(),
         }
@@ -302,6 +305,8 @@ pub struct SubgoalSpec {
     pub objective: String,
     pub owner_role: WorkerKind,
     #[serde(default)]
+    pub color: Option<GraphColorRef>,
+    #[serde(default)]
     pub priority: TaskPriority,
     #[serde(default)]
     pub dependencies: Vec<String>,
@@ -309,6 +314,206 @@ pub struct SubgoalSpec {
     pub tags: Vec<String>,
     #[serde(default)]
     pub acceptance_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Stable visual metadata for the Technicolor Task Graph.
+///
+/// Colors are semantic graph state, not dashboard decoration. They let
+/// operators, reviewers, dashboards, and MCP clients preserve a consistent
+/// legend across task projections, branches, reviews, and subgoals.
+pub struct GraphColorRef {
+    pub key: String,
+    pub label: String,
+    pub hex: String,
+    pub meaning: String,
+}
+
+impl GraphColorRef {
+    pub fn new(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        hex: impl Into<String>,
+        meaning: impl Into<String>,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            hex: hex.into(),
+            meaning: meaning.into(),
+        }
+    }
+
+    pub fn root() -> Self {
+        Self::new(
+            "root",
+            "Root",
+            "#2f6f73",
+            "goal root, planner context, and global coordination",
+        )
+    }
+
+    pub fn for_purpose_kind(kind: &TaskPurposeKind) -> Self {
+        match kind {
+            TaskPurposeKind::Work => Self::new(
+                "work",
+                "Work",
+                "#2563eb",
+                "primary actor implementation or operational work",
+            ),
+            TaskPurposeKind::Review => Self::new(
+                "review",
+                "Review",
+                "#9333ea",
+                "critic review, code quality, safety, and evidence inspection",
+            ),
+            TaskPurposeKind::Unification => Self::new(
+                "unification",
+                "Unification",
+                "#0f766e",
+                "fork/join synthesis and merge decisions",
+            ),
+            TaskPurposeKind::ActorRetry => Self::new(
+                "actor_retry",
+                "Actor Retry",
+                "#ea580c",
+                "bounded actor retry after critic feedback",
+            ),
+            TaskPurposeKind::CandidateBranch => Self::new(
+                "candidate_branch",
+                "Candidate",
+                "#db2777",
+                "competing branch candidate in a forked implementation",
+            ),
+            TaskPurposeKind::BranchVote => Self::new(
+                "branch_vote",
+                "Vote",
+                "#7c3aed",
+                "branch competition review or vote",
+            ),
+            TaskPurposeKind::BranchUnification => Self::new(
+                "branch_unification",
+                "Branch Unification",
+                "#0891b2",
+                "branch result selection and promotion",
+            ),
+            TaskPurposeKind::Research => Self::new(
+                "research",
+                "Research",
+                "#16a34a",
+                "sourced research, web search, memory lookup, and information-use planning",
+            ),
+        }
+    }
+
+    pub fn for_status(status: &TaskStatus) -> Self {
+        match status {
+            TaskStatus::Pending => {
+                Self::new("status_pending", "Pending", "#64748b", "pending task")
+            }
+            TaskStatus::Runnable => {
+                Self::new("status_runnable", "Runnable", "#2563eb", "ready to run")
+            }
+            TaskStatus::Running => {
+                Self::new("status_running", "Running", "#ca8a04", "currently running")
+            }
+            TaskStatus::NeedsValidation => Self::new(
+                "status_needs_validation",
+                "Needs Validation",
+                "#9333ea",
+                "waiting for validation",
+            ),
+            TaskStatus::WaitingApproval => Self::new(
+                "status_waiting_approval",
+                "Waiting Approval",
+                "#d97706",
+                "paused for human approval",
+            ),
+            TaskStatus::Done => Self::new("status_done", "Done", "#16a34a", "accepted work"),
+            TaskStatus::Blocked => {
+                Self::new("status_blocked", "Blocked", "#b45309", "blocked task")
+            }
+            TaskStatus::Failed => Self::new("status_failed", "Failed", "#dc2626", "failed task"),
+            TaskStatus::Cancelled => {
+                Self::new("status_cancelled", "Cancelled", "#6b7280", "cancelled task")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphColorAssignmentMode {
+    Purpose,
+    Status,
+    Custom,
+}
+
+impl Default for GraphColorAssignmentMode {
+    fn default() -> Self {
+        Self::Purpose
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Goal-level color policy and legend for the task graph.
+pub struct GraphColorPolicy {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub assignment_mode: GraphColorAssignmentMode,
+    #[serde(default)]
+    pub palette: Vec<GraphColorRef>,
+}
+
+impl Default for GraphColorPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            assignment_mode: GraphColorAssignmentMode::Purpose,
+            palette: technicolor_palette(),
+        }
+    }
+}
+
+impl GraphColorPolicy {
+    pub fn color_for_root(&self) -> Option<GraphColorRef> {
+        self.enabled.then(GraphColorRef::root)
+    }
+
+    pub fn color_for_task(
+        &self,
+        purpose: &TaskPurpose,
+        status: &TaskStatus,
+    ) -> Option<GraphColorRef> {
+        if !self.enabled {
+            return None;
+        }
+        Some(match self.assignment_mode {
+            GraphColorAssignmentMode::Purpose | GraphColorAssignmentMode::Custom => {
+                GraphColorRef::for_purpose_kind(&TaskPurposeKind::from(purpose))
+            }
+            GraphColorAssignmentMode::Status => GraphColorRef::for_status(status),
+        })
+    }
+}
+
+fn technicolor_palette() -> Vec<GraphColorRef> {
+    let kinds = [
+        TaskPurposeKind::Work,
+        TaskPurposeKind::Research,
+        TaskPurposeKind::Review,
+        TaskPurposeKind::Unification,
+        TaskPurposeKind::ActorRetry,
+        TaskPurposeKind::CandidateBranch,
+        TaskPurposeKind::BranchVote,
+        TaskPurposeKind::BranchUnification,
+    ];
+    let mut palette = vec![GraphColorRef::root()];
+    palette.extend(kinds.iter().map(GraphColorRef::for_purpose_kind));
+    palette
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -725,6 +930,7 @@ pub struct GoalState {
 impl GoalState {
     pub fn new(goal: GoalSpec) -> Self {
         let root_id = Uuid::new_v4();
+        let root_color = goal.color_policy.color_for_root();
         let root = TaskNode {
             id: root_id,
             parent_id: None,
@@ -748,6 +954,7 @@ impl GoalState {
             review_doctrine: goal.review_policy.doctrine.clone(),
             priority: TaskPriority::High,
             tags: vec!["root".to_string()],
+            color: root_color,
             result: None,
             attempts: 0,
         };
@@ -787,7 +994,7 @@ impl GoalState {
                     .push(child_id);
                 state.tasks.insert(
                     child_id,
-                    TaskNode::from_child_request(child_id, root_id, &root_snapshot, request),
+                    state.materialize_child_task(child_id, root_id, &root_snapshot, request),
                 );
                 state
                     .events
@@ -933,6 +1140,7 @@ impl GoalState {
             depth: task.depth,
             priority: task.priority.clone(),
             tags: task.tags.clone(),
+            color: task.color.clone(),
             attempts: task.attempts,
             dependency_count: task.dependencies.len() as u32,
             child_count: task.children.len() as u32,
@@ -965,6 +1173,7 @@ impl GoalState {
                 spec.id.clone(),
                 Some(spec.title.clone()),
                 Some(spec.owner_role.clone()),
+                spec.color.clone(),
                 spec.dependencies.clone(),
             ));
         }
@@ -978,7 +1187,7 @@ impl GoalState {
         dynamic_ids.sort();
         dynamic_ids.dedup();
         for id in dynamic_ids {
-            subgoals.push(self.subgoal_progress_for(id, None, None, Vec::new()));
+            subgoals.push(self.subgoal_progress_for(id, None, None, None, Vec::new()));
         }
         subgoals
     }
@@ -988,6 +1197,7 @@ impl GoalState {
         subgoal_id: String,
         title: Option<String>,
         owner_role: Option<WorkerKind>,
+        color: Option<GraphColorRef>,
         dependencies: Vec<String>,
     ) -> SubgoalProgress {
         let matching: Vec<&TaskNode> = self
@@ -1038,10 +1248,12 @@ impl GoalState {
             })
             .map(|task| task.id)
             .collect();
+        let color = color.or_else(|| matching.iter().find_map(|task| task.color.clone()));
         SubgoalProgress {
             subgoal_id,
             title,
             owner_role,
+            color,
             status,
             total_tasks,
             open_tasks,
@@ -1352,7 +1564,7 @@ impl GoalState {
                     .push(child_id);
                 self.tasks.insert(
                     child_id,
-                    TaskNode::from_child_request(child_id, result.task_id, &parent_snapshot, child),
+                    self.materialize_child_task(child_id, result.task_id, &parent_snapshot, child),
                 );
             }
         }
@@ -1579,6 +1791,7 @@ impl GoalState {
                     }),
                     title: Some(format!("Unify review round {round}")),
                     subgoal_id: Some(format!("review-round-{round}")),
+                    color: None,
                     prompt: format!(
                         "Unify critic reviews for goal '{}'. Decide whether the actor output satisfies the objective and identify any retry work.{}",
                         self.goal.title,
@@ -1675,6 +1888,7 @@ impl GoalState {
                     purpose: Some(TaskPurpose::Work),
                     title: Some("Steered work task".to_string()),
                     subgoal_id: None,
+                    color: None,
                     prompt: prompt.clone(),
                     reason: reason.clone(),
                     dependencies: Vec::new(),
@@ -1704,6 +1918,7 @@ impl GoalState {
                     }),
                     title: Some("Steered research task".to_string()),
                     subgoal_id: Some("research".to_string()),
+                    color: None,
                     prompt: format!(
                         "Answer this research question with sources, confidence, and an information-use plan: {question}"
                     ),
@@ -1768,6 +1983,7 @@ impl GoalState {
                     },
                     title: Some(format!("Standard review: {}", check.title())),
                     subgoal_id: Some("standard-review-steering".to_string()),
+                    color: None,
                     prompt,
                     reason: reason.clone(),
                     dependencies: target_task_id.into_iter().collect(),
@@ -2056,6 +2272,7 @@ impl GoalState {
                 }),
                 title: Some(format!("{} branch candidate {}", target.title, index + 1)),
                 subgoal_id: target.subgoal_id.clone(),
+                color: None,
                 prompt,
                 reason: request.reason.clone(),
                 dependencies: target.dependencies.clone(),
@@ -2246,6 +2463,7 @@ impl GoalState {
             }),
             title: Some(format!("Actor retry round {}", retry_count + 1)),
             subgoal_id: Some(format!("actor-retry-{}", retry_count + 1)),
+            color: None,
             prompt: format!(
                 "Revise goal '{}' using critic and unifier feedback. Produce an improved actor artifact and explicit evidence for the next review round.",
                 self.goal.title
@@ -2295,6 +2513,7 @@ impl GoalState {
                     }),
                     title: Some(format!("Critic review round {round}")),
                     subgoal_id: Some(format!("review-round-{round}")),
+                    color: None,
                     prompt: format!(
                         "Critique goal '{}'. Review actor artifacts against the objective, done criteria, budget, safety constraints, and missing evidence. Return structured findings and a satisfaction score.{}",
                         self.goal.title,
@@ -2351,9 +2570,39 @@ impl GoalState {
             .push(child_id);
         self.tasks.insert(
             child_id,
-            TaskNode::from_child_request(child_id, parent_id, parent_snapshot, request),
+            self.materialize_child_task(child_id, parent_id, parent_snapshot, request),
         );
         Ok(child_id)
+    }
+
+    fn materialize_child_task(
+        &self,
+        child_id: TaskId,
+        parent_id: TaskId,
+        parent_snapshot: &TaskNode,
+        request: ChildTaskRequest,
+    ) -> TaskNode {
+        let subgoal_color = request
+            .subgoal_id
+            .as_ref()
+            .and_then(|subgoal_id| self.subgoal_color(subgoal_id));
+        TaskNode::from_child_request(
+            child_id,
+            parent_id,
+            parent_snapshot,
+            request,
+            subgoal_color,
+            &self.goal.color_policy,
+        )
+    }
+
+    fn subgoal_color(&self, subgoal_id: &str) -> Option<GraphColorRef> {
+        self.goal
+            .plan
+            .subgoals
+            .iter()
+            .find(|subgoal| subgoal.id == subgoal_id)
+            .and_then(|subgoal| subgoal.color.clone())
     }
 
     fn restart_task_ids_for_request(
@@ -2465,6 +2714,7 @@ impl GoalState {
                         .subgoal_id
                         .clone()
                         .or_else(|| Some(format!("branch-group-{}", group.id))),
+                    color: None,
                     prompt: format!(
                         "Compare branch candidates for group {} and vote for one implementation. Consider correctness, evidence, maintainability, risk, tests, and goal fit. Return a structured branch_vote with selected_task_id.{}",
                         group.id,
@@ -2529,6 +2779,7 @@ impl GoalState {
                 .subgoal_id
                 .clone()
                 .or_else(|| Some(format!("branch-group-{}", group.id))),
+            color: None,
             prompt: format!(
                 "Unify branch group {}. Read candidate artifacts and vote tasks, choose the implementation that best satisfies the goal, and return a structured branch_vote with selected_task_id plus rationale.{}",
                 group.id,
@@ -2801,6 +3052,7 @@ fn guardrail_child_request(
         }),
         title: Some(title.into()),
         subgoal_id: task.subgoal_id.clone(),
+        color: None,
         prompt,
         reason: "executor guardrail policy requested bounded post-run review".to_string(),
         dependencies: vec![task.id],
@@ -2866,6 +3118,8 @@ pub struct TaskNode {
     pub priority: TaskPriority,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub color: Option<GraphColorRef>,
     pub result: Option<ArtifactRef>,
     pub attempts: u32,
 }
@@ -2876,12 +3130,24 @@ impl TaskNode {
         parent_id: TaskId,
         parent: &TaskNode,
         req: ChildTaskRequest,
+        subgoal_color: Option<GraphColorRef>,
+        color_policy: &GraphColorPolicy,
     ) -> Self {
         let role = req.role;
         let purpose = req.purpose.unwrap_or(TaskPurpose::Work);
         let execution = req
             .execution
             .unwrap_or_else(|| parent.execution.clone().with_role(role.clone()));
+        let color = req
+            .color
+            .or(subgoal_color)
+            .or_else(|| color_policy.color_for_task(&purpose, &TaskStatus::Runnable))
+            .or_else(|| {
+                parent
+                    .color
+                    .as_ref()
+                    .map(|_| GraphColorRef::for_purpose_kind(&TaskPurposeKind::from(&purpose)))
+            });
 
         Self {
             id,
@@ -2907,6 +3173,7 @@ impl TaskNode {
                 .unwrap_or_else(|| parent.review_doctrine.clone()),
             priority: req.priority,
             tags: req.tags,
+            color,
             result: None,
             attempts: 0,
         }
@@ -3126,6 +3393,8 @@ pub struct TaskProgress {
     pub parent_id: Option<TaskId>,
     pub title: String,
     pub subgoal_id: Option<String>,
+    #[serde(default)]
+    pub color: Option<GraphColorRef>,
     pub status: TaskStatus,
     pub role: WorkerKind,
     pub purpose_kind: TaskPurposeKind,
@@ -3148,6 +3417,8 @@ pub struct SubgoalProgress {
     pub subgoal_id: String,
     pub title: Option<String>,
     pub owner_role: Option<WorkerKind>,
+    #[serde(default)]
+    pub color: Option<GraphColorRef>,
     pub status: SubgoalStatus,
     pub total_tasks: u32,
     pub open_tasks: u32,
@@ -3181,6 +3452,8 @@ pub struct TaskQuery {
     #[serde(default)]
     pub purpose_kinds: Vec<TaskPurposeKind>,
     #[serde(default)]
+    pub color_keys: Vec<String>,
+    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub runnable_only: bool,
@@ -3202,6 +3475,14 @@ impl TaskQuery {
         }
         let purpose_kind = TaskPurposeKind::from(&task.purpose);
         if !self.purpose_kinds.is_empty() && !self.purpose_kinds.contains(&purpose_kind) {
+            return false;
+        }
+        if !self.color_keys.is_empty()
+            && !task
+                .color
+                .as_ref()
+                .is_some_and(|color| self.color_keys.iter().any(|key| key == &color.key))
+        {
             return false;
         }
         if !self.tags.is_empty()
@@ -8355,6 +8636,8 @@ pub struct ChildTaskRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub subgoal_id: Option<String>,
+    #[serde(default)]
+    pub color: Option<GraphColorRef>,
     pub prompt: String,
     pub reason: String,
     #[serde(default)]
@@ -9233,6 +9516,8 @@ pub struct TaskRecord {
     pub parent_task_id: Option<TaskId>,
     pub subgoal_id: Option<String>,
     pub title: String,
+    #[serde(default)]
+    pub color: Option<GraphColorRef>,
     pub role: WorkerKind,
     pub status: TaskStatus,
     pub purpose_kind: TaskPurposeKind,
@@ -9597,6 +9882,7 @@ impl TaskRecord {
             parent_task_id: task.parent_id,
             subgoal_id: task.subgoal_id.clone(),
             title: progress.title,
+            color: progress.color,
             role: task.role.clone(),
             status: task.status.clone(),
             purpose_kind: TaskPurposeKind::from(&task.purpose),
@@ -9792,6 +10078,7 @@ mod tests {
             title: "Implementation".to_string(),
             objective: "Implement the contract".to_string(),
             owner_role: WorkerKind::Codex,
+            color: None,
             priority: TaskPriority::Critical,
             dependencies: Vec::new(),
             tags: vec!["progress".to_string()],
@@ -9802,6 +10089,7 @@ mod tests {
             purpose: Some(TaskPurpose::Work),
             title: Some("Implement progress".to_string()),
             subgoal_id: Some("implementation".to_string()),
+            color: None,
             prompt: "implement progress contract".to_string(),
             reason: "known first implementation task".to_string(),
             dependencies: Vec::new(),
@@ -9833,6 +10121,90 @@ mod tests {
     }
 
     #[test]
+    fn technicolor_graph_assigns_and_queries_task_colors() {
+        let mut goal = GoalSpec::new(
+            "technicolor",
+            "represent semantic graph colors for planning, research, review, and work tasks",
+        );
+        let implementation_color = GraphColorRef::new(
+            "implementation_gold",
+            "Implementation Gold",
+            "#f59e0b",
+            "implementation subgoal owned by Codex",
+        );
+        goal.plan.subgoals.push(SubgoalSpec {
+            id: "implementation".to_string(),
+            title: "Implementation".to_string(),
+            objective: "Implement the contract".to_string(),
+            owner_role: WorkerKind::Codex,
+            color: Some(implementation_color.clone()),
+            priority: TaskPriority::High,
+            dependencies: Vec::new(),
+            tags: vec!["graph".to_string()],
+            acceptance_evidence: vec!["color is projected".to_string()],
+        });
+        goal.initial_tasks.push(ChildTaskRequest {
+            role: WorkerKind::Codex,
+            purpose: Some(TaskPurpose::Work),
+            title: Some("Implement colored task graph".to_string()),
+            subgoal_id: Some("implementation".to_string()),
+            color: None,
+            prompt: "implement color metadata".to_string(),
+            reason: "the task graph should carry a real color legend".to_string(),
+            dependencies: Vec::new(),
+            budget: None,
+            sandbox: None,
+            done_criteria: None,
+            review_doctrine: None,
+            execution: None,
+            priority: TaskPriority::High,
+            tags: vec!["graph".to_string()],
+        });
+
+        let state = GoalState::new(goal);
+        let root = state
+            .tasks
+            .values()
+            .find(|task| task.parent_id.is_none())
+            .expect("root task");
+        assert_eq!(
+            root.color.as_ref().map(|color| color.key.as_str()),
+            Some("root")
+        );
+        let child = state
+            .tasks
+            .values()
+            .find(|task| task.subgoal_id.as_deref() == Some("implementation"))
+            .expect("implementation task");
+        assert_eq!(child.color, Some(implementation_color.clone()));
+
+        let progress = state.progress();
+        assert_eq!(
+            progress.subgoals[0].color,
+            Some(implementation_color.clone())
+        );
+        let implementation_progress = progress
+            .next_tasks
+            .iter()
+            .find(|task| task.subgoal_id.as_deref() == Some("implementation"))
+            .expect("implementation progress");
+        assert_eq!(
+            implementation_progress
+                .color
+                .as_ref()
+                .map(|color| color.key.as_str()),
+            Some("implementation_gold")
+        );
+
+        let color_query = state.find_tasks(&TaskQuery {
+            color_keys: vec!["implementation_gold".to_string()],
+            ..TaskQuery::default()
+        });
+        assert_eq!(color_query.tasks.len(), 1);
+        assert_eq!(color_query.tasks[0].title, "Implement colored task graph");
+    }
+
+    #[test]
     fn durable_plan_revisions_compile_to_goal_spec() {
         let mut plan = DurablePlan::draft(PlanDraftRequest {
             plan_id: None,
@@ -9858,6 +10230,7 @@ mod tests {
                     title: "Plan contracts".to_string(),
                     objective: "Define typed durable plan contracts.".to_string(),
                     owner_role: WorkerKind::Planner,
+                    color: None,
                     priority: TaskPriority::High,
                     dependencies: Vec::new(),
                     tags: vec!["planning".to_string()],
@@ -9946,6 +10319,7 @@ mod tests {
             purpose: None,
             title: None,
             subgoal_id: None,
+            color: None,
             prompt: "test".to_string(),
             reason: "coverage".to_string(),
             dependencies: Vec::new(),
@@ -10190,6 +10564,7 @@ mod tests {
                 purpose: None,
                 title: Some("Test child".to_string()),
                 subgoal_id: Some("tests".to_string()),
+                color: None,
                 prompt: "test it".to_string(),
                 reason: "need evidence".to_string(),
                 dependencies: Vec::new(),

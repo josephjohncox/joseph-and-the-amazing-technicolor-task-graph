@@ -88,10 +88,24 @@ The workflow builds release binaries for:
 
 - `x86_64-unknown-linux-gnu`;
 - `aarch64-unknown-linux-gnu`;
-- `aarch64-apple-darwin`;
-- `x86_64-apple-darwin`.
+- `aarch64-apple-darwin`.
 
-It uploads tarballs plus SHA-256 files to the GitHub Release.
+It uploads tarballs plus SHA-256 files to the GitHub Release. After the binary build matrix passes, the same workflow publishes multi-arch service images to GHCR under `ghcr.io/<owner>/<repo>/...` with `vX.Y.Z`, `X.Y.Z`, and `latest` tags.
+
+Published COAT images:
+
+- `coat-coordinator`;
+- `coat-event-gateway`;
+- `coat-goal-store`;
+- `coat-memory-gateway`;
+- `coat-notifier`;
+- `coat-runner-registry`;
+- `coat-sandbox-runner`;
+- `coat-tool-registry`;
+- `coat-validator`;
+- `coat-control-web`;
+- `coat-codex-runner`;
+- `coat-staff-engineer-runner`.
 
 Local binary packaging after a release build:
 
@@ -103,6 +117,7 @@ VERSION=0.2.0 scripts/package-binaries.sh
 ## Helm Chart Release
 
 Helm chart releases are handled by `.github/workflows/release-helm.yml`.
+When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/coat/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`.
 
 Trigger it manually only when the release was already cut locally:
 

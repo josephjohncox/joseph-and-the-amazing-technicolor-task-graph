@@ -11,7 +11,7 @@
  * - docs/design-docs/120-durable-planning-mode.md
  */
 import http from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 type JsonMap = Record<string, unknown>;
 
@@ -43,6 +43,7 @@ const runnerRegistryUrl = trimSlash(
 const memoryGatewayUrl = trimSlash(process.env.COAT_MEMORY_GATEWAY_URL ?? "http://localhost:9087");
 const memoryGatewayToken = process.env.COAT_MEMORY_GATEWAY_TOKEN ?? process.env.MEMORY_GATEWAY_TOKEN ?? "";
 const controlMcpToken = process.env.COAT_CONTROL_MCP_TOKEN ?? gatewayToken;
+const executionPlanDir = process.env.COAT_EXEC_PLAN_DIR ?? "docs/exec-plans/active";
 
 const workflowHandlers = new Set([
   "status",
@@ -194,8 +195,11 @@ async function overview(): Promise<JsonMap> {
     proxyJson(goalStoreUrl, "/goal-store/goals?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/tasks?limit=100", { method: "GET" }),
   ]);
-  const plans = await proxyJson(goalStoreUrl, "/goal-store/plans?limit=25", { method: "GET" });
-  const approvals = await proxyJson(goalStoreUrl, "/goal-store/approvals?limit=50", { method: "GET" });
+  const [plans, approvals, followUps] = await Promise.all([
+    proxyJson(goalStoreUrl, "/goal-store/plans?limit=25", { method: "GET" }),
+    proxyJson(goalStoreUrl, "/goal-store/approvals?limit=50", { method: "GET" }),
+    executionPlanFollowUps(executionPlanDir, false),
+  ]);
 
   return {
     generated_at: new Date().toISOString(),
@@ -212,7 +216,79 @@ async function overview(): Promise<JsonMap> {
     agents,
     plans,
     approvals,
+    follow_ups: followUps,
   };
+}
+
+async function executionPlanFollowUps(planDir: string, includeEmpty: boolean): Promise<JsonMap> {
+  const normalizedDir = planDir.replace(/\/+$/, "") || ".";
+  try {
+    const entries = await readdir(normalizedDir, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+      .map((entry) => `${normalizedDir}/${entry.name}`)
+      .sort();
+    const plans: JsonMap[] = [];
+    let followUpCount = 0;
+    for (const file of files) {
+      const text = await readFile(file, "utf8");
+      const followUps = extractFollowUps(text);
+      followUpCount += followUps.length;
+      if (includeEmpty || followUps.length > 0) {
+        plans.push({
+          path: file,
+          title: extractMarkdownTitle(text) ?? file,
+          follow_ups: followUps,
+        });
+      }
+    }
+    return {
+      plan_dir: normalizedDir,
+      plan_count: plans.length,
+      follow_up_count: followUpCount,
+      plans,
+    };
+  } catch (error) {
+    return {
+      plan_dir: normalizedDir,
+      plan_count: 0,
+      follow_up_count: 0,
+      plans: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function extractMarkdownTitle(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith("# ")) {
+      const title = line.slice(2).trim();
+      return title || null;
+    }
+  }
+  return null;
+}
+
+function extractFollowUps(text: string): string[] {
+  const items: string[] = [];
+  let inSection = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith("## ")) {
+      inSection = line.trim() === "## Follow-Ups";
+      continue;
+    }
+    if (!inSection) {
+      continue;
+    }
+    const trimmed = line.trim();
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      const item = trimmed.slice(2).trim();
+      if (item) {
+        items.push(item);
+      }
+    }
+  }
+  return items;
 }
 
 async function goalSnapshot(goalId: string): Promise<JsonMap> {
@@ -331,6 +407,7 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
         notifier: notifierUrl,
         runner_registry: runnerRegistryUrl,
         memory_gateway: memoryGatewayUrl,
+        execution_plan_dir: executionPlanDir,
       },
     });
     return;
@@ -338,6 +415,12 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (req.method === "GET" && url.pathname === "/api/overview") {
     sendJson(res, 200, await overview());
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/follow-ups") {
+    const includeEmpty = url.searchParams.get("include_empty") === "true";
+    sendJson(res, 200, await executionPlanFollowUps(executionPlanDir, includeEmpty));
     return;
   }
 
@@ -651,6 +734,15 @@ function mcpTools(): unknown[] {
       },
     },
     {
+      name: "coat_follow_ups",
+      description: "List active execution-plan follow-up items that should continue across sessions.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { include_empty: { type: "boolean" } },
+      },
+    },
+    {
       name: "coat_steer_goal",
       description: "Submit a SteeringDirective to GoalWorkflow/steer.",
       inputSchema: {
@@ -735,6 +827,9 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       headers: jsonHeaders(),
       body: JSON.stringify({ ...args, plan_id: planId }),
     });
+  }
+  if (name === "coat_follow_ups") {
+    return executionPlanFollowUps(executionPlanDir, args.include_empty === true);
   }
   if (name === "coat_steer_goal") {
     const goalId = String(args.goal_id ?? "");
@@ -1004,6 +1099,7 @@ function appHtml(): string {
     <nav>
       <button data-tab="overview" class="primary">Overview</button>
       <button data-tab="plans">Plans</button>
+      <button data-tab="followups">Follow-Ups</button>
       <button data-tab="agents">Agents</button>
       <button data-tab="goal">Goals</button>
       <button data-tab="human">Human Queue</button>
@@ -1023,6 +1119,7 @@ function appHtml(): string {
           <div class="panel"><h2>Human Threads</h2><div id="threadsSummary"></div></div>
           <div class="panel wide"><h2>Approval Queue</h2><div id="approvalsOverview"></div></div>
           <div class="panel wide"><h2>Durable Plans</h2><div id="plansOverview"></div></div>
+          <div class="panel wide"><h2>Execution Plan Follow-Ups</h2><div id="followUpsOverview"></div></div>
           <div class="panel wide"><h2>Goal List</h2><div id="goalsView"></div></div>
           <div class="panel wide"><h2>Agent Activity</h2><div id="agentsOverview"></div></div>
           <div class="panel wide"><h2>Overview JSON</h2><pre id="overviewJson"></pre></div>
@@ -1080,6 +1177,15 @@ function appHtml(): string {
             <div id="plansView"></div>
             <pre id="planJson"></pre>
           </div>
+        </div>
+      </section>
+      <section id="followups">
+        <div class="toolbar">
+          <button id="refreshFollowUps" class="primary">Refresh Follow-Ups</button>
+        </div>
+        <div class="grid">
+          <div class="panel wide"><h2>Active Plan Follow-Ups</h2><div id="followUpsView"></div></div>
+          <div class="panel wide"><h2>Follow-Up JSON</h2><pre id="followUpsJson"></pre></div>
         </div>
       </section>
       <section id="agents">

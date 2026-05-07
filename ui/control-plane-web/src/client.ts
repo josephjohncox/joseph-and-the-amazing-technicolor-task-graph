@@ -33,6 +33,7 @@ bind("loadPlan", loadPlan);
 bind("draftPlan", draftPlan);
 bind("revisePlan", revisePlan);
 bind("compilePlan", compilePlan);
+bind("refreshFollowUps", refreshFollowUps);
 bind("refreshAgents", refreshAgents);
 bind("loadGoal", loadGoal);
 bind("submitGoal", submitGoal);
@@ -101,6 +102,7 @@ function showError(error: unknown): void {
   const payload = { error: error instanceof Error ? error.message : String(error) };
   setJson("overviewJson", payload);
   setJson("goalJson", payload);
+  setJson("followUpsJson", payload);
 }
 
 async function refreshOverview(): Promise<void> {
@@ -112,6 +114,7 @@ async function refreshOverview(): Promise<void> {
   renderThreadsSummary(data);
   renderApprovalsOverview(data);
   renderPlansOverview(data);
+  renderFollowUpsOverview(data);
   renderGoals(data);
   renderAgentsOverview(data);
 }
@@ -175,6 +178,12 @@ async function compilePlan(): Promise<void> {
     }),
   });
   setJson("planJson", result);
+}
+
+async function refreshFollowUps(): Promise<void> {
+  const data = await api("/api/follow-ups");
+  setJson("followUpsJson", data);
+  renderFollowUps("followUpsView", data);
 }
 
 async function refreshAgents(): Promise<void> {
@@ -346,6 +355,32 @@ function renderApprovals(targetId: string, rows: JsonValue[]): void {
 function renderPlansOverview(data: JsonValue): void {
   const rows = extractRows(at(data, ["plans", "data"]) ?? at(data, ["plans"]));
   renderPlanTable("plansOverview", rows.slice(0, 20));
+}
+
+function renderFollowUpsOverview(data: JsonValue): void {
+  renderFollowUps("followUpsOverview", at(data, ["follow_ups"]) ?? data, 8);
+}
+
+function renderFollowUps(targetId: string, data: JsonValue, maxItems?: number): void {
+  const root = byId<HTMLElement>(targetId);
+  const plans = arrayAt(data, ["plans"]);
+  const rows: string[][] = [];
+  for (const item of plans) {
+    const plan = item as Record<string, unknown>;
+    const title = String(plan.title ?? plan.path ?? "");
+    const followUps = Array.isArray(plan.follow_ups) ? plan.follow_ups : [];
+    for (const followUp of followUps) {
+      rows.push([title, String(followUp)]);
+    }
+  }
+  const total = Number(at(data, ["follow_up_count"]) ?? rows.length);
+  const visibleRows = typeof maxItems === "number" ? rows.slice(0, maxItems) : rows;
+  if (!rows.length) {
+    root.innerHTML = `<p class="muted">No active execution-plan follow-ups.</p>`;
+    return;
+  }
+  const suffix = visibleRows.length < rows.length ? ` Showing ${visibleRows.length}.` : "";
+  root.innerHTML = `<p class="muted">${String(total)} open follow-up item${total === 1 ? "" : "s"}.${escapeHtml(suffix)}</p>${table(["Plan", "Follow-Up"], visibleRows)}`;
 }
 
 function renderPlanList(data: JsonValue): void {

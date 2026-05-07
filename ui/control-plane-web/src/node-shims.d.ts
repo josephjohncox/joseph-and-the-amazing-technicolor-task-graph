@@ -8,7 +8,12 @@ declare module "node:http" {
 }
 
 declare module "node:fs/promises" {
+  export type Dirent = {
+    name: string;
+    isFile(): boolean;
+  };
   export function readFile(path: any, encoding: string): Promise<string>;
+  export function readdir(path: any, options: { withFileTypes: true }): Promise<Dirent[]>;
 }
 
 declare const process: {

@@ -65,3 +65,5 @@ buf lint
 Update docs when behavior, service boundaries, public contracts, deployment knobs, or safety posture change.
 
 Active execution plans must include a `## Follow-Ups` section. Treat that section as the durable continuation surface for later sessions: append unresolved work there, remove items only when the acceptance evidence is recorded, and move completed plans to `docs/exec-plans/completed/` only after follow-ups are either closed or intentionally transferred.
+
+Use `coat follow-ups` to list all active plan continuation items, and `coat follow-ups --json` when another tool or dashboard should consume the queue.

@@ -23,6 +23,7 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `GET /`: browser operator UI.
 - `GET /api/overview`: composed health, runner, notification, event, goal, and agent summary.
 - `GET /api/approvals`: projected durable approval queue.
+- `GET /api/follow-ups`: active execution-plan `## Follow-Ups` queue from `docs/exec-plans/active/`.
 - `GET /api/goals`: goal-store projection list.
 - `GET /api/plans`: durable planning-mode list.
 - `POST /api/plans`: create a durable plan.
@@ -66,6 +67,19 @@ The UI should show:
 
 This is intentionally projection-based. If exact live state is needed, the gateway also calls `GoalWorkflow/status` and `GoalWorkflow/progress`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
 
+## Follow-Up Queue
+
+Execution plans keep durable continuation items under `## Follow-Ups`.
+
+The gateway exposes those items through:
+
+- the overview dashboard;
+- a dedicated Follow-Ups tab;
+- `GET /api/follow-ups`;
+- MCP tool `coat_follow_ups`.
+
+This is a documentation projection, not workflow state. Operators and agent clients should use it to choose the next implementation slice, then turn work into durable plans, goals, steering directives, or code changes through the normal backend APIs.
+
 ## Human Queue
 
 The human queue is a consolidated view over notification threads and workflow approval/feedback state.
@@ -91,6 +105,7 @@ The gateway exposes MCP tools so agent/chat clients can inspect and steer the sy
 - `coat_plan_list`;
 - `coat_plan_get`;
 - `coat_plan_compile`;
+- `coat_follow_ups`;
 - `coat_human_threads`;
 - `coat_approval_queue`;
 - `coat_steer_goal`;

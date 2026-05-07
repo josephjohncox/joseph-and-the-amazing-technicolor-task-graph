@@ -54,6 +54,7 @@ Then include `live_git_worktree.enabled=true` and `live_git_worktree.approval_id
 
 ```sh
 coat init
+coat follow-ups
 coat plan draft --file examples/plan-draft-durable-mode.json
 coat plan list
 coat plan revise \
@@ -218,6 +219,7 @@ The web gateway uses the goal-store list endpoints for dashboard views:
 
 ```sh
 curl -sS http://localhost:9090/api/plans
+curl -sS http://localhost:9090/api/follow-ups
 curl -sS http://localhost:9090/api/goals
 curl -sS http://localhost:9090/api/agents
 curl -sS http://localhost:9090/api/approvals

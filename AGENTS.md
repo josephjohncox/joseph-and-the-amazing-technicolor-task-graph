@@ -206,6 +206,7 @@ Sidecars should self-register with the runner registry when `RUNNER_REGISTRY_URL
 - Put detailed implementation steps in execution plans.
 - Prefer decision-complete plans over vague roadmaps.
 - Every active execution plan must include `## Follow-Ups`; preserve unresolved follow-up work across turns until it is completed, explicitly superseded, or moved to another plan.
+- Use `coat follow-ups` to inspect continuation items before choosing the next plan to advance.
 - Record assumptions and validation commands.
 - Use diagrams when they clarify service boundaries.
 

@@ -18,6 +18,7 @@ cargo test --workspace
 buf lint
 make schemas
 coat init
+coat follow-ups
 ```
 
 Run the local stack:
@@ -26,7 +27,7 @@ Run the local stack:
 docker compose -f infra/compose/docker-compose.yml up --build
 ```
 
-The optional web control surface is included in Compose at `http://localhost:9090`. It shows goal progress, agent/task state, current projected prompts, runner status, human feedback threads, event sources, schedules/triggers, and memory search/context. It also exposes a small MCP surface at `POST /mcp` for agent or chat clients.
+The optional web control surface is included in Compose at `http://localhost:9090`. It shows goal progress, agent/task state, current projected prompts, runner status, execution-plan follow-ups, human feedback threads, event sources, schedules/triggers, and memory search/context. It also exposes a small MCP surface at `POST /mcp` for agent or chat clients.
 
 Run the local services against Restate Cloud for personal durable use:
 
@@ -139,12 +140,16 @@ coat goal restart \
 
 ## Releases
 
-Release packaging and version bumps are documented in `docs/operations/releases.md`. Use `coat release plan --version ...` to preview binary and chart tags, and `coat release bump --version ...` to update `Cargo.toml` plus the Helm chart metadata.
+Release packaging and version bumps are documented in `docs/operations/releases.md`. Use `coat release plan --version ...` to preview binary and chart tags, `coat release bump --version ...` to update version files only, and `coat release cut --version ...` to bump, commit, and tag the release.
 
 GitHub publishes binaries and Helm charts through separate workflows:
 
 - `.github/workflows/release-binaries.yml` on tags like `v0.2.0`;
 - `.github/workflows/release-helm.yml` on tags like `chart-v0.2.0`.
+
+## Follow-Ups
+
+Active execution plans keep durable continuation items under `## Follow-Ups`. Use `coat follow-ups` for a human-readable queue, or `coat follow-ups --json` for dashboard/automation input.
 
 ## Protocols And Goal Store
 

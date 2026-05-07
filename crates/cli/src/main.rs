@@ -10,7 +10,12 @@
 //! - `docs/operations/local-dev.md` for local smoke workflows.
 //! - `docs/operations/goal-authoring.md` for structured goal authoring.
 
-use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
@@ -47,6 +52,7 @@ enum Commands {
     Store(StoreCommand),
     Sandbox(SandboxCommand),
     Release(ReleaseCommand),
+    FollowUps(FollowUpsArgs),
     Compose(ComposeCommand),
     K8s(K8sCommand),
     Restate(RestateCommand),
@@ -771,6 +777,7 @@ struct ReleaseCommand {
 enum ReleaseSubcommand {
     Plan(ReleasePlanArgs),
     Bump(ReleaseBumpArgs),
+    Cut(ReleaseCutArgs),
 }
 
 #[derive(Debug, Args)]
@@ -797,6 +804,40 @@ struct ReleaseBumpArgs {
     chart_yaml: PathBuf,
     #[arg(long)]
     allow_dirty: bool,
+}
+
+#[derive(Debug, Args)]
+struct ReleaseCutArgs {
+    #[arg(long)]
+    version: String,
+    #[arg(long)]
+    chart_version: Option<String>,
+    #[arg(long)]
+    app_version: Option<String>,
+    #[arg(long, default_value = "Cargo.toml")]
+    cargo_toml: PathBuf,
+    #[arg(long, default_value = "infra/helm/coat/Chart.yaml")]
+    chart_yaml: PathBuf,
+    #[arg(long, default_value = "origin")]
+    remote: String,
+    #[arg(long)]
+    allow_dirty: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    no_verify: bool,
+    #[arg(long)]
+    push: bool,
+}
+
+#[derive(Debug, Args)]
+struct FollowUpsArgs {
+    #[arg(long, default_value = "docs/exec-plans/active")]
+    dir: PathBuf,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    include_empty: bool,
 }
 
 #[derive(Debug, Args)]
@@ -928,10 +969,106 @@ async fn main() -> anyhow::Result<()> {
         Commands::Store(args) => store(args).await,
         Commands::Sandbox(args) => sandbox(args).await,
         Commands::Release(args) => release(args),
+        Commands::FollowUps(args) => follow_ups(args),
         Commands::Compose(args) => compose(args),
         Commands::K8s(args) => k8s(args),
         Commands::Restate(args) => restate(args),
     }
+}
+
+fn follow_ups(args: FollowUpsArgs) -> anyhow::Result<()> {
+    let report = follow_up_report(&args.dir, args.include_empty)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    let plans = report["plans"]
+        .as_array()
+        .context("follow-up report plans should be an array")?;
+    if plans.is_empty() {
+        println!("No active plan follow-ups found.");
+        return Ok(());
+    }
+
+    for plan in plans {
+        let path = plan["path"].as_str().unwrap_or("<unknown>");
+        let title = plan["title"].as_str().unwrap_or("<untitled>");
+        println!("{path} - {title}");
+        for follow_up in plan["follow_ups"].as_array().into_iter().flatten() {
+            if let Some(text) = follow_up.as_str() {
+                println!("  - {text}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn follow_up_report(plan_dir: &Path, include_empty: bool) -> anyhow::Result<serde_json::Value> {
+    let mut plan_paths = Vec::new();
+    for entry in
+        fs::read_dir(plan_dir).with_context(|| format!("reading {}", plan_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            plan_paths.push(path);
+        }
+    }
+    plan_paths.sort();
+
+    let mut plans = Vec::new();
+    let mut follow_up_count = 0usize;
+    for path in plan_paths {
+        let contents =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let title = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("# ").map(ToOwned::to_owned))
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            });
+        let follow_ups = extract_follow_ups(&contents);
+        follow_up_count += follow_ups.len();
+        if include_empty || !follow_ups.is_empty() {
+            plans.push(serde_json::json!({
+                "path": path.display().to_string(),
+                "title": title,
+                "follow_ups": follow_ups
+            }));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "plan_dir": plan_dir.display().to_string(),
+        "plan_count": plans.len(),
+        "follow_up_count": follow_up_count,
+        "plans": plans
+    }))
+}
+
+fn extract_follow_ups(contents: &str) -> Vec<String> {
+    let mut in_follow_ups = false;
+    let mut follow_ups = Vec::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed == "## Follow-Ups" {
+            in_follow_ups = true;
+            continue;
+        }
+        if in_follow_ups && trimmed.starts_with("## ") {
+            break;
+        }
+        if in_follow_ups {
+            if let Some(item) = trimmed.strip_prefix("- ") {
+                follow_ups.push(item.to_string());
+            }
+        }
+    }
+    follow_ups
 }
 
 fn release(args: ReleaseCommand) -> anyhow::Result<()> {
@@ -963,7 +1100,65 @@ fn release(args: ReleaseCommand) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&plan)?);
             Ok(())
         }
+        ReleaseSubcommand::Cut(args) => release_cut(args),
     }
+}
+
+fn release_cut(args: ReleaseCutArgs) -> anyhow::Result<()> {
+    let plan = release_plan_json(
+        &args.version,
+        args.chart_version.as_deref(),
+        args.app_version.as_deref(),
+    )?;
+    let app_version = required_plan_str(&plan, "app_version")?;
+    let chart_version = required_plan_str(&plan, "chart_version")?;
+    let binary_tag = required_plan_str(&plan, "binary_tag")?;
+    let chart_tag = required_plan_str(&plan, "chart_tag")?;
+    let release_commit = format!("chore(release): {binary_tag}");
+
+    if args.dry_run {
+        let mut dry_run_plan = plan.clone();
+        if let Some(object) = dry_run_plan.as_object_mut() {
+            object.insert("release_commit".to_string(), release_commit.into());
+            object.insert("remote".to_string(), args.remote.into());
+            object.insert("push".to_string(), args.push.into());
+            object.insert("dry_run".to_string(), true.into());
+        }
+        println!("{}", serde_json::to_string_pretty(&dry_run_plan)?);
+        return Ok(());
+    }
+
+    if !args.allow_dirty {
+        ensure_clean_git_worktree()?;
+    }
+    ensure_git_tag_absent(binary_tag)?;
+    ensure_git_tag_absent(chart_tag)?;
+
+    bump_release_versions(
+        &args.cargo_toml,
+        &args.chart_yaml,
+        app_version,
+        chart_version,
+    )?;
+    git_add_paths(&[args.cargo_toml.as_path(), args.chart_yaml.as_path()])?;
+    ensure_staged_release_changes(&[args.cargo_toml.as_path(), args.chart_yaml.as_path()])?;
+    git_commit(&release_commit, args.no_verify)?;
+    git_tag(binary_tag, &format!("COAT {app_version} binaries"))?;
+    git_tag(chart_tag, &format!("COAT Helm chart {chart_version}"))?;
+
+    if args.push {
+        git_push(&args.remote, &["HEAD"])?;
+        git_push(&args.remote, &[binary_tag, chart_tag])?;
+    }
+
+    let mut cut_result = plan.clone();
+    if let Some(object) = cut_result.as_object_mut() {
+        object.insert("release_commit".to_string(), release_commit.into());
+        object.insert("remote".to_string(), args.remote.into());
+        object.insert("pushed".to_string(), args.push.into());
+    }
+    println!("{}", serde_json::to_string_pretty(&cut_result)?);
+    Ok(())
 }
 
 fn release_plan_json(
@@ -977,6 +1172,13 @@ fn release_plan_json(
     validate_semver(version).context("invalid release version")?;
     validate_semver(app_version).context("invalid app version")?;
     validate_semver(chart_version).context("invalid chart version")?;
+    let mut cut_command = format!("coat release cut --version {version}");
+    if app_version != version {
+        cut_command.push_str(&format!(" --app-version {app_version}"));
+    }
+    if chart_version != version {
+        cut_command.push_str(&format!(" --chart-version {chart_version}"));
+    }
 
     Ok(serde_json::json!({
         "version": version,
@@ -1001,11 +1203,18 @@ fn release_plan_json(
             "index.yaml"
         ],
         "publish_steps": [
+            cut_command,
             format!("git tag v{version}"),
             format!("git tag chart-v{chart_version}"),
             format!("git push origin v{version} chart-v{chart_version}")
         ]
     }))
+}
+
+fn required_plan_str<'a>(plan: &'a serde_json::Value, key: &str) -> anyhow::Result<&'a str> {
+    plan.get(key)
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("release plan missing string field {key}"))
 }
 
 fn validate_semver(version: &str) -> anyhow::Result<()> {
@@ -1030,6 +1239,79 @@ fn ensure_clean_git_worktree() -> anyhow::Result<()> {
     }
     if !output.stdout.is_empty() {
         bail!("worktree is dirty; pass --allow-dirty to bump release files anyway");
+    }
+    Ok(())
+}
+
+fn ensure_git_tag_absent(tag: &str) -> anyhow::Result<()> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--quiet", "--verify"])
+        .arg(format!("refs/tags/{tag}"))
+        .output()
+        .with_context(|| format!("checking whether tag {tag} already exists"))?;
+    if output.status.success() {
+        bail!("release tag already exists: {tag}");
+    }
+    Ok(())
+}
+
+fn git_add_paths(paths: &[&Path]) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command.arg("add").arg("--");
+    for path in paths {
+        command.arg(path);
+    }
+    run_command(command, "stage release version files")
+}
+
+fn ensure_staged_release_changes(paths: &[&Path]) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command.arg("diff").arg("--cached").arg("--quiet").arg("--");
+    for path in paths {
+        command.arg(path);
+    }
+    let status = command
+        .status()
+        .context("checking staged release version changes")?;
+    if status.success() {
+        bail!("release bump produced no staged changes");
+    }
+    Ok(())
+}
+
+fn git_commit(message: &str, no_verify: bool) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command.arg("commit");
+    if no_verify {
+        command.arg("--no-verify");
+    }
+    command.arg("-m").arg(message);
+    run_command(command, "commit release version bump")
+}
+
+fn git_tag(tag: &str, message: &str) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command.arg("tag").arg("-a").arg(tag).arg("-m").arg(message);
+    run_command(command, &format!("create release tag {tag}"))
+}
+
+fn git_push(remote: &str, refs: &[&str]) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command.arg("push").arg(remote);
+    for git_ref in refs {
+        command.arg(git_ref);
+    }
+    run_command(command, &format!("push release refs to {remote}"))
+}
+
+fn run_command(mut command: Command, description: &str) -> anyhow::Result<()> {
+    let output = command.output().with_context(|| description.to_string())?;
+    if !output.status.success() {
+        bail!(
+            "{description} failed: {}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
     Ok(())
 }
@@ -2399,5 +2681,131 @@ fn shell_quote(value: &str) -> String {
         value.to_string()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        bump_release_versions, extract_follow_ups, release_plan_json, replace_toml_section_value,
+        replace_yaml_root_value,
+    };
+
+    #[test]
+    fn extracts_follow_ups_until_next_section() {
+        let markdown = r#"# Example Plan
+
+## Implementation
+
+- Already done.
+
+## Follow-Ups
+
+- Add live adapter tests.
+- Document production rollout.
+
+## Acceptance
+
+- Tests pass.
+"#;
+
+        assert_eq!(
+            extract_follow_ups(markdown),
+            vec![
+                "Add live adapter tests.".to_string(),
+                "Document production rollout.".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_plan_includes_cut_command_and_tags() {
+        let plan =
+            release_plan_json("v1.2.3", Some("v1.2.4"), Some("v1.2.3")).expect("release plan");
+
+        assert_eq!(plan["version"], "1.2.3");
+        assert_eq!(plan["app_version"], "1.2.3");
+        assert_eq!(plan["chart_version"], "1.2.4");
+        assert_eq!(plan["binary_tag"], "v1.2.3");
+        assert_eq!(plan["chart_tag"], "chart-v1.2.4");
+        assert!(
+            plan["publish_steps"]
+                .as_array()
+                .expect("publish steps")
+                .iter()
+                .any(|step| step == "coat release cut --version 1.2.3 --chart-version 1.2.4")
+        );
+    }
+
+    #[test]
+    fn release_version_replacements_update_expected_roots() {
+        let cargo_toml = r#"[workspace]
+members = []
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+"#;
+        let chart_yaml = r#"apiVersion: v2
+name: coat
+version: 0.1.0
+appVersion: 0.1.0
+"#;
+
+        let cargo_toml =
+            replace_toml_section_value(cargo_toml, "workspace.package", "version", "\"0.2.0\"")
+                .expect("replace cargo version");
+        let chart_yaml =
+            replace_yaml_root_value(chart_yaml, "version", "0.2.1").expect("replace chart version");
+        let chart_yaml = replace_yaml_root_value(&chart_yaml, "appVersion", "0.2.0")
+            .expect("replace chart app version");
+
+        assert!(cargo_toml.contains("version = \"0.2.0\""));
+        assert!(chart_yaml.contains("version: 0.2.1"));
+        assert!(chart_yaml.contains("appVersion: 0.2.0"));
+    }
+
+    #[test]
+    fn bump_release_versions_updates_cargo_and_chart_files() {
+        let temp = std::env::temp_dir().join(format!(
+            "coat-cli-release-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).expect("tempdir");
+        let cargo_toml = temp.join("Cargo.toml");
+        let chart_yaml = temp.join("Chart.yaml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[workspace.package]
+version = "0.1.0"
+edition = "2024"
+"#,
+        )
+        .expect("cargo toml");
+        std::fs::write(
+            &chart_yaml,
+            r#"apiVersion: v2
+name: coat
+version: 0.1.0
+appVersion: 0.1.0
+"#,
+        )
+        .expect("chart yaml");
+
+        bump_release_versions(&cargo_toml, &chart_yaml, "0.2.0", "0.2.1").expect("bump release");
+
+        assert!(
+            std::fs::read_to_string(&cargo_toml)
+                .expect("read cargo")
+                .contains("version = \"0.2.0\"")
+        );
+        let chart = std::fs::read_to_string(&chart_yaml).expect("read chart");
+        assert!(chart.contains("version: 0.2.1"));
+        assert!(chart.contains("appVersion: 0.2.0"));
+        std::fs::remove_dir_all(&temp).expect("cleanup tempdir");
     }
 }

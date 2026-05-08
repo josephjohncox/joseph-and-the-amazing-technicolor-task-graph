@@ -1,0 +1,19 @@
+{
+  "id": "branch-example-repo-feature-lsp-abc1234",
+  "type": "branch.updated",
+  "subject": "example/repo feature/lsp",
+  "dedupe_key": "example/repo:feature/lsp:abc1234",
+  "time": "2026-05-07T12:05:00Z",
+  "provider": "local-git-watch",
+  "repo": "example/repo",
+  "branch": "feature/lsp",
+  "base_branch": "main",
+  "commit_sha": "abc1234",
+  "actor": "joseph",
+  "changed_files": [
+    "crates/event-gateway/src/main.rs",
+    "docs/design-docs/080-events-webhooks-schedules.md"
+  ],
+  "worktree_path": "/workspace/example-repo",
+  "dirty": true
+}

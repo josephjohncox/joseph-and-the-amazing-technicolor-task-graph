@@ -58,7 +58,9 @@ Compiling does not submit the goal. Submission remains an explicit operator or c
 - `GET /goal-store/plans`;
 - `GET /goal-store/plans/{plan_id}`;
 - `POST /goal-store/plans/{plan_id}/revisions`;
-- `POST /goal-store/plans/{plan_id}/compile`.
+- `POST /goal-store/plans/{plan_id}/compile`;
+- `POST /goal-store/plans/{plan_id}/candidate-votes`;
+- `POST /goal-store/plans/{plan_id}/candidate-selection`.
 
 Restate remains authoritative once a plan becomes a submitted goal. Before that point, the plan store is the durable planning workspace.
 
@@ -112,7 +114,17 @@ coat plan compile \
   --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
   --file examples/plan-compile-branch-new-goal.json \
   --out examples/drafts/local-model-runner-branch-goal.json
+coat plan vote-candidate \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/plan-candidate-vote.json
+coat plan select-candidate \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/plan-candidate-selection.json
 ```
+
+Votes and selections live on the source plan. A candidate must be a durable
+branch with `source_plan_id` equal to the source plan, and the default selection
+path requires that the candidate already compiled to a distinct `GoalSpec`.
 
 ## SPA And MCP
 

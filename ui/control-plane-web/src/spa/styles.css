@@ -206,20 +206,18 @@ label {
 
 .brand {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: 11px;
   align-items: center;
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
+  display: block;
+  width: 50px;
+  height: 50px;
   border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent), var(--gold) 54%, var(--rose));
-  color: var(--on-accent);
-  font-weight: 800;
+  object-fit: cover;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
 }
 
 .brand strong,

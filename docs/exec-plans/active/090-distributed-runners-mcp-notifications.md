@@ -34,7 +34,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Multi-user OIDC tasks require `oidc_user_delegation` runner capability, required tenant labels, and brokered-user approval.
 - Dispatch explains locality and MCP mismatches and ranks multiple compatible model providers.
 - HTTP-level registry tests cover registration, heartbeat, stale/full filtering, status inspection, and dispatch through the service routes.
-- Local auth setup offers an interactive wizard, prints secret-safe checks, writes `infra/compose/local-providers.env`, and keeps stub modes as the default.
+- Local auth setup offers an interactive wizard, prints secret-safe checks, writes `infra/compose/local-providers.env`, keeps non-interactive output stubbed by default, and flips selected interactive runner lanes to live mode.
 - Chat-client setup offers an interactive wizard, writes MCP config from command arguments or prompt choices, installs skill Markdown from `skills/coat-control-plane/SKILL.md`, and uses structured MUST-level instructions for steering.
 - SQS notification targets serialize a stable queue envelope and use standard AWS SDK credential, region, and endpoint resolution.
 - SQS event sources use the same SDK credential chain, normalize message bodies through `GenericEventSource`, and delete messages only after successful ingest when configured.

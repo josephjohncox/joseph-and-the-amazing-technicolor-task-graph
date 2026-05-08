@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatKubernetesConfig",
+  "type": "object",
+  "properties": {
+    "context": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "distribution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoatKubernetesDistribution"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "helm_chart": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "helm_release": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "helm_values": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "image_registry": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kubeconfig": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kubectl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "manifest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "namespace": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "object_store": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rendered_manifest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "secret_provider": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "service_account": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workload_identity": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "CoatKubernetesDistribution": {
+      "type": "string",
+      "enum": [
+        "eks",
+        "generic",
+        "kind",
+        "k3s",
+        "gke",
+        "aks"
+      ]
+    }
+  }
+}

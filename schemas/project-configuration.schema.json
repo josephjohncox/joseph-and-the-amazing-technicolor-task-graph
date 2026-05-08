@@ -1,0 +1,516 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatProjectConfig",
+  "description": "Project-local COAT configuration stored at `.coat/project.json`.\n\nThis file is meant to be committed when a checkout wants shared non-secret\ndefaults. Machine-local credentials, user tokens, and workstation-specific\noverrides belong in `~/.coat/config.json`, environment variables, or secret\nproviders.",
+  "type": "object",
+  "properties": {
+    "cli": {
+      "type": "string",
+      "default": "coat"
+    },
+    "config": {
+      "$ref": "#/$defs/CoatConfig",
+      "default": {}
+    },
+    "package_slug": {
+      "type": "string",
+      "default": "jattg"
+    },
+    "project": {
+      "type": "string"
+    },
+    "purpose": {
+      "type": "string",
+      "default": ""
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 1,
+      "minimum": 0
+    }
+  },
+  "required": [
+    "project"
+  ],
+  "$defs": {
+    "CoatCliConfig": {
+      "type": "object",
+      "properties": {
+        "interactive_setup": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "output_format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "require_project_for_durable_commands": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "warn_uninitialized": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatCloudConfig": {
+      "type": "object",
+      "properties": {
+        "object_store": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoatCloudProvider"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restate_cloud": {
+          "$ref": "#/$defs/CoatRestateCloudConfig"
+        },
+        "secret_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatCloudProvider": {
+      "type": "string",
+      "enum": [
+        "local",
+        "restate_cloud",
+        "aws",
+        "other"
+      ]
+    },
+    "CoatConfig": {
+      "description": "Standard non-secret configuration shared by project and user config files.",
+      "type": "object",
+      "properties": {
+        "active_profile": {
+          "description": "Profile name applied after project and user config are merged.\n\nOperators can override this with `COAT_PROFILE` for one shell/session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cli": {
+          "$ref": "#/$defs/CoatCliConfig"
+        },
+        "cloud": {
+          "$ref": "#/$defs/CoatCloudConfig"
+        },
+        "defaults": {
+          "$ref": "#/$defs/CoatOperatorDefaults"
+        },
+        "kubernetes": {
+          "$ref": "#/$defs/CoatKubernetesConfig"
+        },
+        "local_deploy": {
+          "$ref": "#/$defs/CoatLocalDeployConfig"
+        },
+        "paths": {
+          "$ref": "#/$defs/CoatConfigPaths"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CoatProfileConfig"
+          }
+        },
+        "service_endpoints": {
+          "$ref": "#/$defs/CoatServiceEndpoints"
+        }
+      }
+    },
+    "CoatConfigPaths": {
+      "type": "object",
+      "properties": {
+        "cache_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_provider_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restate_cloud_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatKubernetesConfig": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "distribution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoatKubernetesDistribution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "helm_chart": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "helm_release": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "helm_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "image_registry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kubeconfig": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kubectl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manifest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_store": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rendered_manifest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workload_identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatKubernetesDistribution": {
+      "type": "string",
+      "enum": [
+        "eks",
+        "generic",
+        "kind",
+        "k3s",
+        "gke",
+        "aks"
+      ]
+    },
+    "CoatLocalDeployConfig": {
+      "type": "object",
+      "properties": {
+        "allow_stub_runners": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allow_uninitialized": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "env_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "restate_cloud_env_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatOperatorDefaults": {
+      "type": "object",
+      "properties": {
+        "goal_store_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest_goal_selector": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restate_ingress": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatProfileConfig": {
+      "type": "object",
+      "properties": {
+        "cli": {
+          "$ref": "#/$defs/CoatCliConfig"
+        },
+        "cloud": {
+          "$ref": "#/$defs/CoatCloudConfig"
+        },
+        "defaults": {
+          "$ref": "#/$defs/CoatOperatorDefaults"
+        },
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/CoatProfileKind"
+        },
+        "kubernetes": {
+          "$ref": "#/$defs/CoatKubernetesConfig"
+        },
+        "local_deploy": {
+          "$ref": "#/$defs/CoatLocalDeployConfig"
+        },
+        "name": {
+          "type": "string"
+        },
+        "paths": {
+          "$ref": "#/$defs/CoatConfigPaths"
+        },
+        "service_endpoints": {
+          "$ref": "#/$defs/CoatServiceEndpoints"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ]
+    },
+    "CoatProfileKind": {
+      "type": "string",
+      "enum": [
+        "cli",
+        "local_compose",
+        "restate_cloud",
+        "eks",
+        "kubernetes"
+      ]
+    },
+    "CoatRestateCloudConfig": {
+      "type": "object",
+      "properties": {
+        "coordinator_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_admin_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_ingress_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tunnel_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatServiceEndpoints": {
+      "type": "object",
+      "properties": {
+        "control_mcp_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coordinator_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_gateway_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_store_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memory_gateway_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "notifier_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restate_admin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restate_ingress": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_registry_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_runner_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

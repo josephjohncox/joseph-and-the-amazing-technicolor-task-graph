@@ -1,0 +1,13 @@
+{
+  "candidate_plan_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756710",
+  "ranked_plan_ids": ["018f8f2f-1fd8-7688-bb12-8bfb6b756710"],
+  "voter": "reviewer.local",
+  "score": 0.91,
+  "confidence": 0.84,
+  "rationale": "The branch has explicit local-runner constraints, preserves source-plan history, and compiles to a separate goal candidate.",
+  "evidence": [
+    "plan branch has source_plan_id set",
+    "compiled branch uses a new goal_id",
+    "strict review and branching are enabled"
+  ]
+}

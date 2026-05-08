@@ -11,16 +11,19 @@ Local binaries are executor tools. A runner may use `git`, `docker`, `helm`,
 task declares them in `ExecutionProfile.local_tools` and the runner advertises
 the matching capabilities. The sandbox runner's `/commands/run` path is
 disabled by default, requires a known task workspace, refuses path-like binary
-names, enforces an allowlist, and writes bounded command evidence artifacts.
+names, enforces both the node allowlist and task-local binary/subcommand/argument
+policy, and writes bounded command evidence artifacts.
 
 Ephemeral Kubernetes runners are capacity, not authority. A Job may host a
 runner sidecar or temporary Restate service executor, but the coordinator still
 owns task state, approvals, budgets, and validation. Prefer
 `ExecutionProfile.capacity` with an approved `ephemeralRunnerTemplates` entry so
-the coordinator or executor framework chooses when to create capacity. Manual
-Job manifests are fixtures and escape hatches, not the normal task-distribution
-path. Use `jattg-agent-toolbox` for bounded Jobs when the task needs the shared
-toolset; use slim service images for always-on control-plane Deployments.
+the coordinator or executor framework chooses when to create capacity. Kubernetes
+capacity should be created by a backend provisioner using the Rust
+`kube`/`k8s-openapi` control-plane path. Manual Job manifests are fixtures and
+escape hatches, not the normal task-distribution path. Use
+`jattg-agent-toolbox` for bounded Jobs when the task needs the shared toolset;
+use slim service images for always-on control-plane Deployments.
 
 `SandboxProfile.isolation` describes the requested boundary:
 
@@ -101,6 +104,17 @@ The launch plan contains:
 - git and object-storage result refs.
 
 The local runner only plans and records. A production Kubernetes, Kata, Firecracker, or provider-backed executor should consume this plan, launch the workload, write the artifact manifest, and replace the metadata-only attestation with enforcement evidence.
+
+The Kubernetes helper turns the plan into a bounded Job manifest:
+
+```sh
+coat deploy cluster executor-job render \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json
+```
+
+The manifest is still a deployment artifact, not durable truth. The coordinator
+keeps the task state, budget, approvals, retries, and validation result.
 
 Live git worktree creation is a separate local-development result channel, not a sandbox boundary. It is disabled unless `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`, the repo is under `SANDBOX_APPROVED_GIT_REPO_ROOTS`, and the request carries an approval ID when `SANDBOX_REQUIRE_LIVE_GIT_WORKTREE_APPROVAL=true`. Strong sandbox validation should still depend on `SandboxAttestation`, not on the existence of a git worktree.
 

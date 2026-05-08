@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatOperatorDefaults",
+  "type": "object",
+  "properties": {
+    "goal_store_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "latest_goal_selector": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "restate_ingress": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

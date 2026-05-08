@@ -30,14 +30,19 @@ server.stderr.on("data", (chunk) => {
 try {
   await waitForHealth();
   await assertHtmlSurface();
+  await assertBrandAssets();
   await assertStylesheet();
   await assertClientScript();
+  await assertOverviewApi();
   await assertFollowUpsApi();
   await assertFollowUpDraftApi();
   await assertChatApi();
+  await assertGoalSubmitAssignsWorkflowId();
+  await assertUnsupportedWorkflowHandlerGuard();
   await assertMcpTools();
   await assertMcpChatAssistBehavior();
   await assertMcpFollowUpDraftBehavior();
+  await assertMcpApplyResearchOutputBehavior();
   console.log("coat-control-plane-web smoke passed");
 } finally {
   server.kill("SIGTERM");
@@ -71,10 +76,33 @@ async function assertHtmlSurface() {
     "COAT Task Graph Manager",
     "coat.theme",
     "theme-color",
+    "/brand/coat-mark.svg",
+    "/brand/coat-icon-32.png",
+    "/site.webmanifest",
     "<div id=\"root\"></div>",
     "/assets/",
   ]) {
     assert(html.includes(expected), `html includes ${expected}`);
+  }
+}
+
+async function assertBrandAssets() {
+  const assets = [
+    { path: "/brand/coat-mark.svg", contentType: "image/svg+xml" },
+    { path: "/brand/coat-logo.png", contentType: "image/png" },
+    { path: "/brand/coat-icon-32.png", contentType: "image/png" },
+    { path: "/brand/coat-icon-180.png", contentType: "image/png" },
+    { path: "/site.webmanifest", contentType: "application/json" },
+  ];
+  for (const asset of assets) {
+    const response = await fetch(`${baseUrl}${asset.path}`);
+    assert(response.ok, `${asset.path} returns ok`);
+    assert(
+      response.headers.get("content-type")?.startsWith(asset.contentType),
+      `${asset.path} content type starts with ${asset.contentType}`,
+    );
+    const body = new Uint8Array(await response.arrayBuffer());
+    assert(body.length > 100, `${asset.path} has non-empty content`);
   }
 }
 
@@ -134,6 +162,60 @@ async function assertChatApi() {
   assert(
     Array.isArray(draft.initial_tasks) && draft.initial_tasks.length === 0,
     "draft plan does not invent executable initial tasks before planning review",
+  );
+}
+
+async function assertOverviewApi() {
+  const response = await fetch(`${baseUrl}/api/overview`);
+  assert(response.ok, "overview api returns ok even when backend services are absent");
+  const body = await response.json();
+  assertEqual(body.control_surface, "coat-control-plane-web", "overview control surface");
+  assert(
+    String(body.authority_note).includes("Restate and the Rust services remain authoritative"),
+    "overview states that the gateway is not the durable engine",
+  );
+  assert(Array.isArray(body.services), "overview includes service health rows");
+  assert(
+    body.services.some((service) => service.name === "goal-store" && typeof service.url === "string"),
+    "overview reports goal-store backend health probe target",
+  );
+  assert(body.follow_ups && Array.isArray(body.follow_ups.items), "overview includes flattened follow-up queue");
+  assert(body.goals && typeof body.goals.status === "number", "overview includes goal-store proxy result");
+  assert(body.runner_status && typeof body.runner_status.status === "number", "overview includes runner registry proxy result");
+}
+
+async function assertGoalSubmitAssignsWorkflowId() {
+  const response = await fetch(`${baseUrl}/api/goals/submit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      title: "Gateway-assigned goal id smoke",
+      objective: "Submitting without an id should still target a durable workflow instance.",
+    }),
+  });
+  assert(response.ok, "goal submit endpoint returns a gateway result");
+  const body = await response.json();
+  assertEqual(body.status, 0, "goal submit reports unavailable local Restate as proxy status 0");
+  const match = String(body.url).match(/\/GoalWorkflow\/([0-9a-f-]{36})\/run$/);
+  assert(match, "goal submit assigns a workflow id in the Restate URL");
+  assert(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(match[1]),
+    "assigned workflow id is UUID-shaped",
+  );
+}
+
+async function assertUnsupportedWorkflowHandlerGuard() {
+  const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
+  const response = await fetch(`${baseUrl}/api/goals/${goalId}/native-subagent-spawn`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assertEqual(response.status, 400, "unsupported workflow handler is rejected before proxying");
+  const body = await response.json();
+  assert(
+    String(body.error).includes("unsupported workflow handler"),
+    "unsupported workflow handler response explains the guardrail",
   );
 }
 
@@ -228,6 +310,38 @@ async function assertMcpFollowUpDraftBehavior() {
   assert(
     body.prompt.includes("MUST identify any questions that block execution"),
     "mcp follow-up prompt requires blocking questions",
+  );
+}
+
+async function assertMcpApplyResearchOutputBehavior() {
+  const body = await callMcp("coat_apply_research_output", {
+    goal_id: "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+    research_output: {
+      use_plan: {
+        facts_to_use: ["Use the supported framework adapter instead of inventing a custom runner bus."],
+        proposed_task_updates: [
+          {
+            role: "research",
+            title: "Validate standard runner integration libraries",
+            prompt: "Prefer standard SDKs and typed contracts for new runner integrations.",
+            reason: "research use plan identified an implementation dependency",
+          },
+        ],
+      },
+    },
+  });
+  assertEqual(body.goal_id, "018f8f2f-1fd8-7688-bb12-8bfb6b756602", "research apply preserves goal id");
+  assert(Array.isArray(body.applied_directives), "research apply returns generated steering directives");
+  assertEqual(body.applied_directives.length, 2, "research apply creates one constraint and one goal-update directive");
+  assertEqual(body.applied_directives[0].kind.kind, "add_constraint", "research fact becomes constraint directive");
+  assertEqual(body.applied_directives[1].kind.kind, "inject_task", "goal update becomes coordinator-owned task directive");
+  assert(
+    body.applied_directives[1].kind.prompt.includes("Prefer standard SDKs"),
+    "research goal update is preserved in child task prompt",
+  );
+  assert(
+    body.responses.every((response) => response.status === 0),
+    "research apply reports backend proxy failures without losing generated directives",
   );
 }
 

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanCandidateSelectionRequest",
+  "type": "object",
+  "properties": {
+    "candidate_plan_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "operator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "require_compiled_goal": {
+      "type": "boolean",
+      "default": true
+    },
+    "selector": {
+      "$ref": "#/$defs/BranchSelector"
+    }
+  },
+  "required": [
+    "candidate_plan_id",
+    "selector",
+    "reason"
+  ],
+  "$defs": {
+    "BranchSelector": {
+      "type": "string",
+      "enum": [
+        "human",
+        "voter_quorum",
+        "highest_score",
+        "unifier",
+        "coordinator_policy"
+      ]
+    }
+  }
+}

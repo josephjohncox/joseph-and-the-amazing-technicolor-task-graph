@@ -1,0 +1,35 @@
+{
+  "id": "diag-example-repo-feature-src-lib-rs-20260507T120000Z",
+  "type": "ide.lsp.diagnostics.changed",
+  "subject": "example/repo feature/lsp src/lib.rs",
+  "dedupe_key": "example/repo:feature/lsp:src/lib.rs:20260507T120000Z",
+  "time": "2026-05-07T12:00:00Z",
+  "provider": "vscode",
+  "workspace": "example-repo",
+  "repo": "example/repo",
+  "branch": "feature/lsp",
+  "commit_sha": "abc1234",
+  "uri": "file:///workspace/src/lib.rs",
+  "language_id": "rust",
+  "diagnostics": [
+    {
+      "severity": 1,
+      "source": "rust-analyzer",
+      "code": "E0597",
+      "message": "borrowed value does not live long enough",
+      "range": {
+        "start": { "line": 42, "character": 13 },
+        "end": { "line": 42, "character": 20 }
+      }
+    },
+    {
+      "severity": 2,
+      "source": "rust-analyzer",
+      "message": "unused import",
+      "range": {
+        "start": { "line": 3, "character": 4 },
+        "end": { "line": 3, "character": 16 }
+      }
+    }
+  ]
+}

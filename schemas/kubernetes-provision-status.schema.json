@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KubernetesProvisionStatus",
+  "type": "string",
+  "enum": [
+    "planned",
+    "server_dry_run_accepted",
+    "applied",
+    "failed"
+  ]
+}

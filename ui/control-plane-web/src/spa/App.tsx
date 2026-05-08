@@ -205,7 +205,13 @@ export function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">JT</div>
+          <img
+            className="brand-mark"
+            src="/brand/coat-logo.png"
+            width="50"
+            height="50"
+            alt="Joseph and the Amazing Technicolor Task Graph"
+          />
           <div>
             <strong>Task Graph Manager</strong>
             <span>Joseph and the Amazing Technicolor Task Graph</span>

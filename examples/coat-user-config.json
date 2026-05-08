@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "purpose": "COAT user configuration; prefer env vars and SecretRefs for secrets.",
+  "config": {
+    "paths": {
+      "data_dir": "~/.coat/data",
+      "cache_dir": "~/.coat/cache"
+    }
+  }
+}

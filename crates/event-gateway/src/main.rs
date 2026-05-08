@@ -823,6 +823,7 @@ fn normalize_webhook_event(
             event.dedupe_key = dedupe_key;
         }
     }
+    event = normalize_signal_event(event);
     event
 }
 
@@ -1176,6 +1177,305 @@ fn payload_with_observability_metadata(
     }
 }
 
+fn normalize_signal_event(mut event: ExternalEvent) -> ExternalEvent {
+    match &event.source_kind {
+        EventSourceKind::IdeLsp | EventSourceKind::IdeDiagnostics => {
+            event = normalize_ide_signal(event);
+        }
+        EventSourceKind::Ci
+        | EventSourceKind::CiTestFailure
+        | EventSourceKind::Git
+        | EventSourceKind::BranchActivity
+        | EventSourceKind::PullRequest
+        | EventSourceKind::PullRequestReview
+        | EventSourceKind::GitHubWebhook
+        | EventSourceKind::GitLabWebhook => {
+            event = normalize_change_activity_signal(event);
+        }
+        _ => {}
+    }
+    event
+}
+
+fn normalize_ide_signal(mut event: ExternalEvent) -> ExternalEvent {
+    let diagnostics = event
+        .payload
+        .get("diagnostics")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut error_count = 0u64;
+    let mut warning_count = 0u64;
+    let mut information_count = 0u64;
+    let mut hint_count = 0u64;
+    for diagnostic in &diagnostics {
+        match diagnostic_severity(diagnostic.get("severity")) {
+            Some("error") => error_count += 1,
+            Some("warning") => warning_count += 1,
+            Some("information") => information_count += 1,
+            Some("hint") => hint_count += 1,
+            _ => {}
+        }
+    }
+    let uri = first_string([
+        json_path_string(&event.payload, &["uri"]),
+        json_path_string(&event.payload, &["textDocument", "uri"]),
+        json_path_string(&event.payload, &["document", "uri"]),
+    ]);
+    let file_path = first_string([
+        json_path_string(&event.payload, &["file_path"]),
+        json_path_string(&event.payload, &["path"]),
+        uri.as_deref().and_then(file_path_from_uri),
+    ]);
+    let repo = first_string([
+        json_path_string(&event.payload, &["repo"]),
+        json_path_string(&event.payload, &["repository"]),
+    ]);
+    let branch = first_string([
+        json_path_string(&event.payload, &["branch"]),
+        json_path_string(&event.payload, &["git", "branch"]),
+    ]);
+    if event.subject.is_none() {
+        event.subject = first_string([
+            file_path.clone(),
+            uri.clone(),
+            repo.as_ref()
+                .zip(branch.as_ref())
+                .map(|(repo, branch)| format!("{repo}@{branch}")),
+        ]);
+    }
+    let metadata = serde_json::json!({
+        "provider": first_string([
+            json_path_string(&event.payload, &["provider"]),
+            json_path_string(&event.payload, &["ide"]),
+        ]).unwrap_or_else(|| "ide_lsp".to_string()),
+        "workspace": first_string([
+            json_path_string(&event.payload, &["workspace"]),
+            json_path_string(&event.payload, &["workspace_folder"]),
+            json_path_string(&event.payload, &["root_uri"]),
+        ]),
+        "repo": repo,
+        "branch": branch,
+        "commit_sha": first_string([
+            json_path_string(&event.payload, &["commit_sha"]),
+            json_path_string(&event.payload, &["git", "sha"]),
+        ]),
+        "uri": uri,
+        "file_path": file_path,
+        "language_id": first_string([
+            json_path_string(&event.payload, &["language_id"]),
+            json_path_string(&event.payload, &["languageId"]),
+        ]),
+        "diagnostic_count": diagnostics.len(),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "information_count": information_count,
+        "hint_count": hint_count,
+        "max_severity": ide_max_severity(error_count, warning_count, information_count, hint_count),
+    });
+    event.payload = payload_with_metadata(event.payload, "_coat_ide", metadata);
+    event
+}
+
+fn normalize_change_activity_signal(mut event: ExternalEvent) -> ExternalEvent {
+    let repo = first_string([
+        json_path_string(&event.payload, &["repository", "full_name"]),
+        json_path_string(&event.payload, &["project", "path_with_namespace"]),
+        json_path_string(&event.payload, &["repo"]),
+        json_path_string(&event.payload, &["repository"]),
+    ]);
+    let branch = first_string([
+        json_path_string(&event.payload, &["branch"]),
+        json_path_string(&event.payload, &["ref_name"]),
+        json_path_string(&event.payload, &["head_branch"]),
+        json_path_string(&event.payload, &["pull_request", "head", "ref"]),
+        json_path_string(&event.payload, &["merge_request", "source_branch"]),
+        json_path_string(&event.payload, &["object_attributes", "source_branch"]),
+        json_path_string(&event.payload, &["ref"]).and_then(|value| strip_git_ref(&value)),
+    ]);
+    let base_branch = first_string([
+        json_path_string(&event.payload, &["base_branch"]),
+        json_path_string(&event.payload, &["pull_request", "base", "ref"]),
+        json_path_string(&event.payload, &["merge_request", "target_branch"]),
+        json_path_string(&event.payload, &["object_attributes", "target_branch"]),
+    ]);
+    let pull_request_number = first_string([
+        json_path_string(&event.payload, &["pull_request", "number"]),
+        json_path_string(&event.payload, &["pull_request_number"]),
+        json_path_string(&event.payload, &["number"]),
+        json_path_string(&event.payload, &["merge_request", "iid"]),
+        json_path_string(&event.payload, &["object_attributes", "iid"]),
+    ]);
+    if event.subject.is_none() {
+        event.subject = first_string([
+            repo.as_ref()
+                .zip(pull_request_number.as_ref())
+                .map(|(repo, number)| format!("{repo}#{number}")),
+            repo.as_ref()
+                .zip(branch.as_ref())
+                .map(|(repo, branch)| format!("{repo}@{branch}")),
+            branch.clone(),
+        ]);
+    }
+    let metadata = serde_json::json!({
+        "provider": change_activity_provider(&event),
+        "repo": repo,
+        "branch": branch,
+        "base_branch": base_branch,
+        "commit_sha": first_string([
+            json_path_string(&event.payload, &["after"]),
+            json_path_string(&event.payload, &["sha"]),
+            json_path_string(&event.payload, &["commit_sha"]),
+            json_path_string(&event.payload, &["head_sha"]),
+            json_path_string(&event.payload, &["pull_request", "head", "sha"]),
+            json_path_string(&event.payload, &["workflow_run", "head_sha"]),
+            json_path_string(&event.payload, &["check_run", "head_sha"]),
+        ]),
+        "actor": first_string([
+            json_path_string(&event.payload, &["sender", "login"]),
+            json_path_string(&event.payload, &["user", "username"]),
+            json_path_string(&event.payload, &["actor"]),
+            json_path_string(&event.payload, &["pusher", "name"]),
+        ]),
+        "pull_request_number": pull_request_number,
+        "pull_request_url": first_string([
+            json_path_string(&event.payload, &["pull_request", "html_url"]),
+            json_path_string(&event.payload, &["merge_request", "url"]),
+            json_path_string(&event.payload, &["pr_url"]),
+            json_path_string(&event.payload, &["pull_request_url"]),
+        ]),
+        "workflow_name": first_string([
+            json_path_string(&event.payload, &["workflow_run", "name"]),
+            json_path_string(&event.payload, &["workflow"]),
+            json_path_string(&event.payload, &["workflow_name"]),
+            json_path_string(&event.payload, &["check_run", "name"]),
+            json_path_string(&event.payload, &["job_name"]),
+        ]),
+        "run_id": first_string([
+            json_path_string(&event.payload, &["workflow_run", "id"]),
+            json_path_string(&event.payload, &["run_id"]),
+            json_path_string(&event.payload, &["check_run", "id"]),
+            json_path_string(&event.payload, &["pipeline", "id"]),
+        ]),
+        "status": first_string([
+            json_path_string(&event.payload, &["workflow_run", "status"]),
+            json_path_string(&event.payload, &["status"]),
+            json_path_string(&event.payload, &["check_run", "status"]),
+        ]),
+        "conclusion": first_string([
+            json_path_string(&event.payload, &["workflow_run", "conclusion"]),
+            json_path_string(&event.payload, &["conclusion"]),
+            json_path_string(&event.payload, &["check_run", "conclusion"]),
+        ]),
+        "failed_test_count": first_string([
+            json_path_string(&event.payload, &["failed_test_count"]),
+            json_path_string(&event.payload, &["tests", "failed"]),
+            json_path_string(&event.payload, &["summary", "failed"]),
+        ]),
+        "details_url": first_string([
+            json_path_string(&event.payload, &["workflow_run", "html_url"]),
+            json_path_string(&event.payload, &["check_run", "html_url"]),
+            json_path_string(&event.payload, &["details_url"]),
+            json_path_string(&event.payload, &["url"]),
+        ]),
+    });
+    event.payload = payload_with_metadata(event.payload, "_coat_change_activity", metadata);
+    event
+}
+
+fn payload_with_metadata(
+    mut payload: serde_json::Value,
+    key: &str,
+    metadata: serde_json::Value,
+) -> serde_json::Value {
+    match &mut payload {
+        serde_json::Value::Object(object) => {
+            object.insert(key.to_string(), metadata);
+            payload
+        }
+        other => {
+            let mut object = serde_json::Map::new();
+            object.insert("body".to_string(), other.clone());
+            object.insert(key.to_string(), metadata);
+            serde_json::Value::Object(object)
+        }
+    }
+}
+
+fn diagnostic_severity(value: Option<&serde_json::Value>) -> Option<&'static str> {
+    match value {
+        Some(serde_json::Value::Number(number)) => match number.as_u64() {
+            Some(1) => Some("error"),
+            Some(2) => Some("warning"),
+            Some(3) => Some("information"),
+            Some(4) => Some("hint"),
+            _ => None,
+        },
+        Some(serde_json::Value::String(value)) => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "1" | "error" => Some("error"),
+                "2" | "warning" | "warn" => Some("warning"),
+                "3" | "information" | "info" => Some("information"),
+                "4" | "hint" => Some("hint"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn ide_max_severity(
+    error_count: u64,
+    warning_count: u64,
+    information_count: u64,
+    hint_count: u64,
+) -> Option<&'static str> {
+    if error_count > 0 {
+        Some("error")
+    } else if warning_count > 0 {
+        Some("warning")
+    } else if information_count > 0 {
+        Some("information")
+    } else if hint_count > 0 {
+        Some("hint")
+    } else {
+        None
+    }
+}
+
+fn file_path_from_uri(uri: &str) -> Option<String> {
+    uri.strip_prefix("file://").map(str::to_string)
+}
+
+fn strip_git_ref(value: &str) -> Option<String> {
+    value
+        .strip_prefix("refs/heads/")
+        .or_else(|| {
+            value
+                .strip_prefix("refs/pull/")
+                .and_then(|value| value.split('/').next())
+        })
+        .map(str::to_string)
+        .or_else(|| {
+            if value.trim().is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        })
+}
+
+fn change_activity_provider(event: &ExternalEvent) -> &'static str {
+    match &event.source_kind {
+        EventSourceKind::GitHubWebhook => "github",
+        EventSourceKind::GitLabWebhook => "gitlab",
+        EventSourceKind::Ci | EventSourceKind::CiTestFailure => "ci",
+        EventSourceKind::Git | EventSourceKind::BranchActivity => "git",
+        EventSourceKind::PullRequest | EventSourceKind::PullRequestReview => "pull_request",
+        _ => "generic",
+    }
+}
+
 fn observability_subject(
     service: Option<&str>,
     alertname: Option<&str>,
@@ -1340,7 +1640,7 @@ fn normalize_generic_event(
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     });
-    Ok(ExternalEvent {
+    let event = ExternalEvent {
         id: event_id,
         source_id,
         source_kind: source
@@ -1353,7 +1653,8 @@ fn normalize_generic_event(
         received_at: None,
         headers: header_map(headers),
         payload,
-    })
+    };
+    Ok(normalize_signal_event(event))
 }
 
 fn normalize_sqs_message(
@@ -2620,6 +2921,170 @@ mod tests {
         assert_eq!(event.subject.as_deref(), Some("tests failed"));
         assert_eq!(event.dedupe_key, "delivery-1");
         assert_eq!(event.source_kind, EventSourceKind::Ci);
+    }
+
+    #[test]
+    fn normalizes_ide_lsp_diagnostics_into_signal_metadata() {
+        let source = coat_domain::EventSource {
+            id: "ide-lsp".to_string(),
+            kind: EventSourceKind::IdeLsp,
+            enabled: true,
+            description: "IDE diagnostics".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 4096,
+                allowed_event_types: vec!["ide.lsp.diagnostics.changed".to_string()],
+                id_json_pointer: Some("/id".to_string()),
+                type_json_pointer: Some("/type".to_string()),
+                subject_json_pointer: Some("/subject".to_string()),
+                dedupe_json_pointer: Some("/dedupe_key".to_string()),
+                dedupe_header: None,
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            sqs: None,
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::HumanReview,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: true,
+                dedupe_window_seconds: 900,
+            },
+        };
+
+        let event = normalize_generic_event(
+            Some(&source),
+            "ide-lsp".to_string(),
+            &HeaderMap::new(),
+            br#"{
+                "id": "diag-1",
+                "type": "ide.lsp.diagnostics.changed",
+                "subject": "src/lib.rs",
+                "dedupe_key": "repo:branch:src/lib.rs",
+                "provider": "vscode",
+                "repo": "example/repo",
+                "branch": "feature/lsp",
+                "uri": "file:///workspace/src/lib.rs",
+                "language_id": "rust",
+                "diagnostics": [
+                    {"severity": 1, "message": "borrowed value does not live long enough"},
+                    {"severity": "warning", "message": "unused import"},
+                    {"severity": 4, "message": "style hint"}
+                ]
+            }"#,
+        )
+        .expect("IDE event normalizes");
+
+        assert_eq!(event.source_kind, EventSourceKind::IdeLsp);
+        assert_eq!(
+            event.payload.pointer("/_coat_ide/provider"),
+            Some(&serde_json::json!("vscode"))
+        );
+        assert_eq!(
+            event.payload.pointer("/_coat_ide/error_count"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            event.payload.pointer("/_coat_ide/warning_count"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            event.payload.pointer("/_coat_ide/max_severity"),
+            Some(&serde_json::json!("error"))
+        );
+    }
+
+    #[test]
+    fn normalizes_ci_test_failure_into_change_activity_metadata() {
+        let source = coat_domain::EventSource {
+            id: "pr-ci".to_string(),
+            kind: EventSourceKind::CiTestFailure,
+            enabled: true,
+            description: "PR CI failures".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 4096,
+                allowed_event_types: vec!["ci.test.failed".to_string()],
+                id_json_pointer: Some("/run_id".to_string()),
+                type_json_pointer: Some("/type".to_string()),
+                subject_json_pointer: None,
+                dedupe_json_pointer: Some("/dedupe_key".to_string()),
+                dedupe_header: None,
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            sqs: None,
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::CreateGoal,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: false,
+                dedupe_window_seconds: 3600,
+            },
+        };
+
+        let event = normalize_generic_event(
+            Some(&source),
+            "pr-ci".to_string(),
+            &HeaderMap::new(),
+            br#"{
+                "run_id": "123456",
+                "type": "ci.test.failed",
+                "dedupe_key": "example/repo:42:123456",
+                "repo": "example/repo",
+                "branch": "feature/runtime-fix",
+                "base_branch": "main",
+                "pull_request_number": "42",
+                "pull_request_url": "https://github.com/example/repo/pull/42",
+                "workflow_name": "CI",
+                "conclusion": "failure",
+                "failed_test_count": 3,
+                "details_url": "https://github.com/example/repo/actions/runs/123456"
+            }"#,
+        )
+        .expect("CI failure event normalizes");
+
+        assert_eq!(event.subject.as_deref(), Some("example/repo#42"));
+        assert_eq!(
+            event.payload.pointer("/_coat_change_activity/provider"),
+            Some(&serde_json::json!("ci"))
+        );
+        assert_eq!(
+            event.payload.pointer("/_coat_change_activity/branch"),
+            Some(&serde_json::json!("feature/runtime-fix"))
+        );
+        assert_eq!(
+            event
+                .payload
+                .pointer("/_coat_change_activity/pull_request_number"),
+            Some(&serde_json::json!("42"))
+        );
+        assert_eq!(
+            event
+                .payload
+                .pointer("/_coat_change_activity/failed_test_count"),
+            Some(&serde_json::json!("3"))
+        );
     }
 
     #[test]

@@ -315,6 +315,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
             .apply_steering(directive.into_inner(), &self.spawn_policy)
             .map_err(domain_error)?;
         ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "steering_applied").await?;
         Ok(Json(Some(state)))
     }
 
@@ -699,7 +700,7 @@ async fn notify_approval_requested(
         task_id: approval.task_id,
         event: NotificationEvent::ApprovalRequested,
         message: format!(
-            "Approval {} is required to {}. Risk: {:?}. Reason: {}. Approve with: coat approve --goal-id {} --approval-id {} --approved true",
+            "Approval {} is required to {}. Risk: {:?}. Reason: {}. Approve with: coat human approve --goal-id {} --approval-id {} --approved true",
             approval.id,
             approval.requested_action,
             approval.risk,

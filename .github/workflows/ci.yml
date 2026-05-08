@@ -24,6 +24,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo check --workspace
       - run: cargo test --workspace
+      - run: cargo build -p coat-cli
       - run: cargo run -p coat-domain --bin generate-schemas -- schemas
       - run: git diff --exit-code schemas
       - run: buf lint
@@ -38,5 +39,5 @@ jobs:
       - run: npm run --prefix sidecars/staff-engineer-runner-ts build
       - run: npm install --prefix ui/control-plane-web
       - run: npm run --prefix ui/control-plane-web build
-      - run: docker compose -f infra/compose/docker-compose.yml config
-      - run: docker compose --env-file infra/compose/restate-cloud.env.example -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud config
+      - run: target/debug/coat compose config
+      - run: target/debug/coat compose config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env

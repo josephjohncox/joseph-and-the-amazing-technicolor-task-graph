@@ -46,10 +46,10 @@ query surfaces.
 Render and inspect the main chart before touching a cluster:
 
 ```sh
-helm lint infra/helm/jattg
-helm template jattg infra/helm/jattg > /tmp/jattg.yaml
-coat k8s render --output infra/k8s/rendered.yaml
-coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
+coat deploy chart lint
+coat deploy chart template --output /tmp/jattg.yaml
+coat deploy cluster render --output infra/k8s/rendered.yaml
+coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client
 ```
 
 Check the operator values file for:
@@ -71,19 +71,15 @@ commit the rendered Secret values from examples.
 Install with Helm:
 
 ```sh
-helm upgrade --install jattg infra/helm/jattg \
-  --namespace jattg \
-  --create-namespace \
-  --values path/to/operator-values.yaml
+coat deploy chart upgrade \
+  --values path/to/operator-values.yaml \
+  --wait
 ```
 
 Wait for the core services:
 
 ```sh
-kubectl -n jattg rollout status deployment/coordinator
-kubectl -n jattg rollout status deployment/goal-store
-kubectl -n jattg rollout status deployment/runner-registry
-kubectl -n jattg rollout status deployment/control-web
+coat deploy cluster status --timeout 120s
 ```
 
 Register the coordinator with Restate Cloud or the self-hosted Restate admin API
@@ -94,8 +90,9 @@ according to `docs/operations/restate-cloud.md`.
 Single-user mode is the default. For team access, apply an OIDC front door:
 
 ```sh
-kubectl apply --dry-run=client \
-  -f infra/k8s/examples/control-web-oidc-gateway.yaml
+coat deploy cluster apply \
+  --file infra/k8s/examples/control-web-oidc-gateway.yaml \
+  --dry-run=client
 ```
 
 Edit issuer URL, redirect URL, host, TLS secret, client ID, client secret, and
@@ -108,12 +105,14 @@ approval refs, and runners labeled for `oidc_user_delegation`.
 
 ## Ephemeral Runners
 
-Render static burst runner examples:
+Dynamic burst capacity should come from `ExecutionProfile.capacity`,
+`ephemeralRunnerTemplates`, and the backend provisioner. Render static burst
+runner examples only as fixtures or emergency manifests:
 
 ```sh
-coat k8s ephemeral-jobs render \
+coat deploy cluster ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
-coat k8s ephemeral-jobs apply \
+coat deploy cluster ephemeral-jobs apply \
   --file infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml \
   --dry-run=client
 ```
@@ -121,9 +120,26 @@ coat k8s ephemeral-jobs apply \
 Review namespace, NetworkPolicies, ServiceAccounts, injected env, image tags,
 resource limits, and secrets before applying for real.
 
-Production per-task Kubernetes execution should later use `SandboxLaunchPlan`
-to create bounded Jobs with the requested `runtimeClassName`, resource limits,
-network policy labels, and attestation output.
+Production per-task Kubernetes execution should flow through the sandbox-runner
+provisioner after budget and approval checks pass. Plan-only requests return the
+Kubernetes objects; live requests use the Rust Kubernetes API path when
+`SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`.
+
+For operator inspection, render a bounded Job from a `SandboxLaunchPlan`:
+
+```sh
+coat deploy cluster executor-job render \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json
+coat deploy cluster executor-job apply \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json \
+  --dry-run=client
+```
+
+Review the selected image, command, runtime class, service account, workspace
+volume, resource limits, network policy labels, and plan ConfigMap before using
+any manual apply path.
 
 ## Smoke Test
 
@@ -141,7 +157,7 @@ coat store goals
 Then inspect:
 
 - `coat store tasks --goal-id <goal-id>`;
-- `coat notify --queue`;
+- `coat human notify --queue`;
 - `coat event sources`;
 - `coat memory health`;
 - `control-web` through the private or OIDC-protected URL.
@@ -151,7 +167,7 @@ Then inspect:
 Rollback the chart:
 
 ```sh
-helm rollback jattg --namespace jattg
+coat deploy chart rollback --wait
 ```
 
 Pause autonomous ingress before destructive maintenance:
@@ -172,5 +188,5 @@ Pause autonomous ingress before destructive maintenance:
 - Control-web is private, VPN-restricted, or OIDC-protected.
 - Event-source activation approval is enabled for risky source registration.
 - Human feedback and approval notifications are visible in the notifier queue.
-- `cargo test --workspace`, `buf lint`, `helm lint infra/helm/jattg`, and
+- `cargo test --workspace`, `buf lint`, `coat deploy chart lint`, and
   rendered manifest checks pass in CI.

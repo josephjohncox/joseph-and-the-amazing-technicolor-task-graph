@@ -30,27 +30,44 @@ The Compose event gateway listens on `:9089`, defaults to a JSONL journal, can s
 
 The Compose control gateway listens on `:9090`. It reads goal-store projections, workflow status/progress, runner status, notifier threads, event gateway sources/triggers/events, and memory gateway results. It can also draft goals/plans/steering through the chat assistant, submit memory join/retract/edit/repair commands, and convert sourced research output into `GoalWorkflow/steer` directives. Set `COAT_CONTROL_GATEWAY_TOKEN` to protect `/api/*` and `COAT_CONTROL_MCP_TOKEN` to protect `/mcp`.
 
-The default Compose runner pool intentionally has multiple task lanes. Primary runner ports are exposed for local inspection, while additional review/research/local-model lanes are internal-only and selected through `coat-runner-registry`. Use the interactive `coat setup local-auth` wizard to create the env file for hosted provider keys, Bedrock/AWS routing, local Ollama/vLLM endpoints, and control-gateway chat model settings. Use `coat setup local-auth --write-env --output infra/compose/local-providers.env` when automation needs the non-interactive template path. Use `coat compose config` and `coat compose up` for the normal local lifecycle.
+The default Compose runner pool intentionally has multiple task lanes. Primary runner ports are exposed for local inspection, while additional review/research/local-model lanes are internal-only and selected through `coat-runner-registry`. Use the interactive `coat setup local-auth` wizard to create the env file for hosted provider keys, Bedrock/AWS routing, local Ollama/vLLM endpoints, and control-gateway chat model settings. Use `coat setup local-auth --write-env --output infra/compose/local-providers.env` when automation needs the non-interactive template path. Use `coat deploy local preflight`, `coat deploy local config`, and `coat deploy local up` for the normal local lifecycle.
+
+Deploy commands read `.coat/project.json` and `~/.coat/config.json` for
+non-secret defaults. Use `coat --config-profile local` for Compose,
+`coat --config-profile restate-cloud` for local services with Restate Cloud, and
+`coat --config-profile eks` for AWS EKS. Use `coat setup config --list-profiles`
+and `coat setup config --show --profile eks` to inspect the resolved view before
+starting a stack. Set `COAT_CONFIG` only when a machine should use a non-default
+user config file.
+
+`coat deploy local up` refuses to launch an all-stub runner pool unless
+`--allow-stub-runners` is explicit. The interactive auth wizard flips selected
+runner lanes from `stub` to `live`; the non-interactive env template stays
+stubbed until edited. That keeps local smoke tests available without hiding the
+fact that no live model/provider environment is configured.
 
 Compose defaults to single-user mode. Multi-user OIDC MCP delegation is an extension path and requires an external OIDC-aware gateway or broker; do not enable user-delegated MCP auth by sharing local browser or CLI tokens.
 
 Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` for production-like event-gateway deployments. With that switch enabled, risky enabled sources such as webhooks, calendars, schedules, or goal-creating routes require an approval reference at registration time. Use `coat event register --approval-id ...` or register proposed sources disabled first when the approval has not happened yet.
 
-For personal Restate Cloud usage, prefer `coat compose up --restate-cloud`.
+For personal Restate Cloud usage, prefer `coat --config-profile restate-cloud
+deploy local up --restate-cloud --allow-stub-runners` for smoke stacks, or pass
+a live provider env file.
 It uses `infra/compose/docker-compose.restate-cloud.yml` with the
 `restate-cloud` profile, creates the local env file from the example when
 missing, blocks placeholder values, starts the Restate Cloud tunnel client,
 configures coordinator request identity verification through
 `RESTATE_IDENTITY_KEYS` or `RESTATE_SIGNING_PUBLIC_KEY`, and points the event
-gateway at the tunnel ingress. Use `coat compose up --restate-cloud
---register-cloud` when you want detached startup plus coordinator registration.
+gateway at the tunnel ingress. Use `coat --config-profile restate-cloud deploy
+local up --restate-cloud --register-cloud --allow-stub-runners` when you want
+detached startup plus coordinator registration for the smoke stack.
 See `docs/operations/restate-cloud.md`.
 
 Postgres/pgvector is available as an optional profile for local operational-store development:
 
 ```sh
-coat compose up --profile db postgres
-COAT_GOAL_STORE_BACKEND=postgres coat compose up --profile db postgres goal-store
+coat deploy local up --allow-stub-runners --profile db postgres
+COAT_GOAL_STORE_BACKEND=postgres coat deploy local up --allow-stub-runners --profile db postgres goal-store
 ```
 
 The profile mounts `infra/db/migrations/` into `/docker-entrypoint-initdb.d` on first boot. For production, run the same migrations with a real migration tool and managed credentials instead of relying on container init scripts.
@@ -59,18 +76,30 @@ The profile mounts `infra/db/migrations/` into `/docker-entrypoint-initdb.d` on 
 
 Kubernetes manifests live in `infra/k8s/base/all.yaml`.
 
-Keep Kubernetes under `coat k8s`, not `coat compose`. The commands share the
+Keep Kubernetes under `coat deploy cluster`, not `coat deploy local`. The commands share the
 same service-boundary assumptions, but they target different runtimes:
-Compose starts local containers; `coat k8s render` and `coat k8s
-ephemeral-jobs apply` materialize and apply cluster manifests; Helm installs
-the packaged `infra/helm/jattg` chart.
+Compose starts local containers; `coat deploy cluster render` materializes base cluster
+manifests for operators; Helm installs the packaged `infra/helm/jattg` chart.
+Dynamic runner and executor capacity should be created by the coordinator or
+executor provisioner through backend Kubernetes API calls, not by workers
+hand-applying snippets.
 
 Render, validate, and apply the base manifest through the CLI:
 
 ```sh
-coat k8s render --output infra/k8s/rendered.yaml
-coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
-coat k8s apply --file infra/k8s/rendered.yaml --namespace jattg
+coat deploy cluster render --output infra/k8s/rendered.yaml
+coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client
+coat deploy cluster apply --file infra/k8s/rendered.yaml --namespace jattg
+coat deploy cluster status --timeout 120s
+```
+
+With the standard EKS profile, the same commands can omit namespace and manifest
+defaults:
+
+```sh
+coat --config-profile eks deploy cluster render
+coat --config-profile eks deploy cluster apply --dry-run=client
+coat --config-profile eks deploy cluster status --timeout 120s
 ```
 
 Expected production hardening:
@@ -92,7 +121,7 @@ Expected production hardening:
 - Add per-task sandbox Jobs and set `runtimeClassName` for gVisor, Kata, Firecracker, or provider-integrated sandboxes when the node pool supports them.
 - Use `infra/k8s/examples/sandbox-runtimeclasses.yaml` and `infra/k8s/examples/sandbox-task-pod.yaml` as starting points for RuntimeClass, Pod security context, and NetworkPolicy setup.
 - Keep model-serving nodes separate from executor nodes when possible. See `docs/operations/model-runner-clusters.md` for GB10/DGX Spark, Mac mini, and mixed GPU/CPU runner fleets.
-- Use `infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` and `docs/operations/ephemeral-kubernetes-runners.md` for burst runner Jobs, short-lived Claude Code/Codex/model-provider runners, and temporary Restate service executors.
+- Use `ExecutionProfile.capacity` plus Helm-provided `ephemeralRunnerTemplates` for burst runner Jobs, short-lived Claude Code/Codex/model-provider runners, and temporary Restate service executors. Keep `infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` as a fixture and escape hatch.
 - Add ingress and TLS according to the target cluster.
 - For multi-user dashboard access, use `infra/k8s/examples/control-web-oidc-gateway.yaml` as an OAuth2 Proxy front-door example. It authenticates the SPA/control gateway without changing the Rust engine and keeps COAT in single-user mode until a goal explicitly uses `McpContextRef.access_mode=multi_user_oidc`.
 - For Restate Cloud-backed clusters, prefer the Restate Operator `RestateCloudEnvironment` and `RestateDeployment` path in `infra/k8s/examples/restate-cloud-environment.yaml`.
@@ -102,18 +131,18 @@ Expected production hardening:
 
 The Helm chart lives in `infra/helm/jattg`. It follows the same logical service boundaries as `infra/k8s/base/all.yaml`, but is values-driven for release installation.
 
-The chart also supports disabled-by-default `.Values.ephemeralJobs` entries.
-Use them for bounded runner or executor Jobs that run the `jattg-agent-toolbox`
-image, register with the runner registry or Restate, and terminate by
-`activeDeadlineSeconds` plus `ttlSecondsAfterFinished`.
-`infra/helm/jattg/values-ephemeral-example.yaml` renders a model-provider burst
-runner example against the same chart.
-For raw manifest workflows, render the reusable example Jobs with:
+The chart exposes `.Values.ephemeralRunnerTemplates` as the normal capacity
+template library for backend provisioners. The disabled-by-default
+`.Values.ephemeralJobs` entries are manual escape hatches for bounded runner or
+executor Jobs that run the `jattg-agent-toolbox` image, register with the runner
+registry or Restate, and terminate by `activeDeadlineSeconds` plus
+`ttlSecondsAfterFinished`.
+For raw manifest fixtures, render the reusable example Jobs with:
 
 ```sh
-coat k8s ephemeral-jobs render \
+coat deploy cluster ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
-coat k8s ephemeral-jobs apply \
+coat deploy cluster ephemeral-jobs apply \
   --file infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml \
   --dry-run=client
 ```
@@ -122,17 +151,39 @@ Drop `--dry-run=client` only after reviewing the rendered namespace,
 NetworkPolicies, ServiceAccounts, Secrets, runner image tags, resource limits,
 and any injected environment references for the target cluster.
 
+For per-task execution from a durable sandbox launch plan, the backend path is
+`coat-sandbox-runner` `POST /kubernetes/executor-jobs/provision`. Plan-only
+mode returns the generated ConfigMap and Job objects; when
+`SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, server dry-run and apply modes use
+the Rust `kube`/`k8s-openapi` control-plane client.
+
+Use the CLI renderer only for operator inspection:
+
+```sh
+coat deploy cluster executor-job render \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json
+coat deploy cluster executor-job apply \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json \
+  --dry-run=client
+```
+
+This helper does not make the Job authoritative; Restate and the coordinator
+still own task state, approval, retry, and validation.
+
 Local validation:
 
 ```sh
-helm lint infra/helm/jattg
-helm template jattg infra/helm/jattg > /tmp/jattg-helm.yaml
+coat deploy chart lint
+coat deploy chart template --output /tmp/jattg-helm.yaml
+coat deploy chart upgrade --values path/to/operator-values.yaml --dry-run
 ```
 
 Package locally:
 
 ```sh
-CHART_VERSION=0.2.0 APP_VERSION=0.2.0 scripts/package-helm-chart.sh
+coat deploy chart package --chart-version 0.2.0 --app-version 0.2.0
 ```
 
 GitHub chart releases are separate from binary releases. See `docs/operations/releases.md`.

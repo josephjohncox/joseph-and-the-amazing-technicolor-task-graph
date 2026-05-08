@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatCloudProvider",
+  "type": "string",
+  "enum": [
+    "local",
+    "restate_cloud",
+    "aws",
+    "other"
+  ]
+}

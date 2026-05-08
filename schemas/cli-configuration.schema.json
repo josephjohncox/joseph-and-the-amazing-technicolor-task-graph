@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatCliConfig",
+  "type": "object",
+  "properties": {
+    "interactive_setup": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "output_format": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "require_project_for_durable_commands": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "warn_uninitialized": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  }
+}

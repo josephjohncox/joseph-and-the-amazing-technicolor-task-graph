@@ -9,6 +9,8 @@ rust-version.workspace = true
 coat-domain = { path = "../domain" }
 anyhow.workspace = true
 axum.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

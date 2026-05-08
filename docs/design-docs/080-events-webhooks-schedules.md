@@ -77,11 +77,11 @@ When `COAT_GOAL_STORE_URL` is set, accepted activation references are projected 
 
 ## Generic Event Sources
 
-Generic event sources let agents and outside systems respond to events that do not deserve a bespoke adapter yet: CI results, git branch updates, issue tracker changes, chat commands, monitoring alerts, database change notifications, memory updates, runner heartbeats, or agent topology proposals.
+Generic event sources let agents and outside systems respond to events that do not deserve a bespoke adapter yet: IDE/LSP diagnostics, CI results, PR test failures, git branch updates, issue tracker changes, chat commands, monitoring alerts, database change notifications, memory updates, runner heartbeats, or agent topology proposals.
 
 Use this pattern:
 
-1. Register an `EventSource` with `kind=generic`, `ci`, `git`, `issue_tracker`, `chat`, `monitoring_alert`, `database_change`, `agent_event`, `runner_event`, `goal_lifecycle`, or `memory_event`.
+1. Register an `EventSource` with `kind=generic`, `ide_lsp`, `ide_diagnostics`, `ci`, `ci_test_failure`, `git`, `branch_activity`, `pull_request`, `pull_request_review`, `issue_tracker`, `chat`, `monitoring_alert`, `database_change`, `agent_event`, `runner_event`, `goal_lifecycle`, or `memory_event`.
 2. Configure `generic.allowed_event_types` and JSON Pointer fields such as `/id`, `/type`, `/subject`, and `/delivery_id`.
 3. Emit raw JSON or CloudEvents-compatible JSON to `POST /events/generic/{source_id}`.
 4. The gateway normalizes the payload into `ExternalEvent`, applies dedupe, and routes according to `EventGoalRoute`.
@@ -89,6 +89,52 @@ Use this pattern:
 `POST /events` still accepts a fully normalized `ExternalEvent`; add `?route=true` when an operator or upstream bus wants the gateway to route the event from its registered source policy. `POST /events/generic/{source_id}` routes by default unless `?route=false` is set.
 
 Use generic sources as the first integration boundary. Add provider-specific adapters only when auth, normalization, rate limiting, or schema validation is stable enough to justify a typed adapter.
+
+## IDE, Branch, PR, And Test-Failure Signals
+
+Human work-in-progress should be visible to the task graph without giving the
+IDE or git host direct control over workers. IDE extensions, local file
+watchers, git hooks, repository webhooks, and CI systems should send bounded
+events into `coat-event-gateway`:
+
+- `kind=ide_lsp` or `kind=ide_diagnostics` for LSP diagnostics, workspace
+  diagnostics, type errors, and editor-reported compile feedback;
+- `kind=branch_activity` or `kind=git` for branch pushes, local dirty-state
+  changes, ready-for-review signals, and branch deletion;
+- `kind=pull_request` or `kind=pull_request_review` for PR opened, updated,
+  review-requested, review-comment, and human-review events;
+- `kind=ci_test_failure` or `kind=ci` for workflow failures, required-check
+  failures, flaky-test recurrences, and PR test failures.
+
+The gateway normalizes IDE payloads into `payload._coat_ide` with provider,
+workspace, repo, branch, commit SHA, URI, file path, language ID, diagnostic
+counts, and max severity. It normalizes branch, PR, and CI payloads into
+`payload._coat_change_activity` with provider, repo, branch, base branch, commit
+SHA, actor, PR number/URL, workflow/run IDs, conclusion, failed-test count, and
+details URL.
+
+Use this data for routing and memory, not as an automatic permission to edit
+code. Good patterns:
+
+1. Record branch activity so dashboards and memory can correlate human work
+   with agent work.
+2. Route IDE errors to human review or a bounded reviewer/tester goal when the
+   same diagnostic persists across edits.
+3. Route PR test failures to a tester or staff-engineer worker that first reads
+   branch/PR context, durable memory, and the failed test evidence.
+4. Write memory after resolution: diagnostic signature, branch, PR, failed
+   test, fix attempt, and whether the failure recurred.
+
+Local smoke examples:
+
+```sh
+coat event register --file examples/event-source-ide-lsp.json
+coat event register --file examples/event-source-branch-activity.json
+coat event register --file examples/event-source-pr-ci-failure.json
+coat event emit --source-id ide-lsp-diagnostics --file examples/generic-event-ide-lsp-diagnostics.json
+coat event emit --source-id branch-activity --file examples/generic-event-branch-updated.json
+coat event emit --source-id pr-ci-failures --file examples/generic-event-pr-ci-failed.json
+```
 
 ## Observability And Live System Events
 

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KubernetesExecutorJobProvisionResponse",
+  "type": "object",
+  "properties": {
+    "config_map_name": {
+      "type": "string"
+    },
+    "diagnostics": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "job_name": {
+      "type": "string"
+    },
+    "manifest": true,
+    "namespace": {
+      "type": "string"
+    },
+    "objects": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/KubernetesObjectRef"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/KubernetesProvisionStatus"
+    }
+  },
+  "required": [
+    "status",
+    "namespace",
+    "job_name",
+    "config_map_name",
+    "manifest"
+  ],
+  "$defs": {
+    "KubernetesObjectRef": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "resource_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "api_version",
+        "kind",
+        "namespace",
+        "name"
+      ]
+    },
+    "KubernetesProvisionStatus": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "server_dry_run_accepted",
+        "applied",
+        "failed"
+      ]
+    }
+  }
+}

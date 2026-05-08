@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapacityProvisioningPolicy",
+  "description": "Task-local policy for adding execution capacity.\n\nThe coordinator or executor framework interprets this policy. Operators\nshould not hand-create one-off Kubernetes Jobs for every task; instead, task\nexecution can reference approved templates that provision bounded runner or\nservice-executor capacity and then register through the normal runner\nregistry or Restate deployment path.",
+  "type": "object",
+  "properties": {
+    "max_pending_provisions": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "mode": {
+      "$ref": "#/$defs/CapacityProvisioningMode"
+    },
+    "provisioner": {
+      "$ref": "#/$defs/CapacityProvisionerPolicy",
+      "default": {
+        "allow_manual_manifest_escape_hatch": true,
+        "backend": "kubernetes_controller",
+        "controller_ref": "coat-kubernetes-provisioner",
+        "field_manager": "coat-kubernetes-provisioner",
+        "namespace": "jattg-ephemeral",
+        "service_account": "jattg-ephemeral-runner"
+      }
+    },
+    "request_timeout_seconds": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "require_human_approval": {
+      "type": "boolean"
+    },
+    "template_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/EphemeralRunnerTemplateRef"
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "request_timeout_seconds",
+    "max_pending_provisions",
+    "require_human_approval"
+  ],
+  "$defs": {
+    "CapacityProvisionerBackend": {
+      "type": "string",
+      "enum": [
+        "kubernetes_controller",
+        "kubernetes_api",
+        "external_provisioner",
+        "manual_manifest"
+      ]
+    },
+    "CapacityProvisionerPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_manual_manifest_escape_hatch": {
+          "type": "boolean"
+        },
+        "backend": {
+          "$ref": "#/$defs/CapacityProvisionerBackend"
+        },
+        "controller_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "field_manager": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "backend",
+        "field_manager",
+        "allow_manual_manifest_escape_hatch"
+      ]
+    },
+    "CapacityProvisioningMode": {
+      "type": "string",
+      "enum": [
+        "registered_runners_only",
+        "prefer_registered_then_ephemeral",
+        "ephemeral_only"
+      ]
+    },
+    "EphemeralCapacityKind": {
+      "type": "string",
+      "enum": [
+        "runner_job",
+        "restate_service_executor",
+        "sandbox_job"
+      ]
+    },
+    "EphemeralRunnerTemplateRef": {
+      "type": "object",
+      "properties": {
+        "active_deadline_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "config_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/EphemeralCapacityKind"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "name": {
+          "type": "string"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "ttl_seconds_after_finished": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "test",
+        "review",
+        "mcp_tools",
+        "durable_child_tasks",
+        "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
+        "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "ephemeral_provisioning",
+        "network_open",
+        "formal_verification"
+      ]
+    }
+  }
+}

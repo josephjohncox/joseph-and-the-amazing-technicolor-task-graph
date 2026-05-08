@@ -28,8 +28,10 @@ use coat_domain::{
     GoalStoreArtifactRecordResponse, GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest,
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
     GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
-    GoalStoreTaskListResponse, PlanCompileRequest, PlanCompileResult, PlanDraftRequest, PlanId,
-    PlanRevisionRequest, PlanStatus, TaskId, TaskRecord, TaskStatus, WorkerKind,
+    GoalStoreTaskListResponse, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
+    PlanCandidateVoteRequest, PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult,
+    PlanDraftRequest, PlanId, PlanRevisionRequest, PlanStatus, TaskId, TaskRecord, TaskStatus,
+    WorkerKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -82,6 +84,20 @@ impl ApiError {
     fn internal(error: impl Into<anyhow::Error>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            error: error.into(),
+        }
+    }
+
+    fn bad_request(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            error: error.into(),
+        }
+    }
+
+    fn not_found(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
             error: error.into(),
         }
     }
@@ -228,6 +244,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/goal-store/plans/{plan_id}", get(get_plan))
         .route("/goal-store/plans/{plan_id}/revisions", post(revise_plan))
         .route("/goal-store/plans/{plan_id}/compile", post(compile_plan))
+        .route(
+            "/goal-store/plans/{plan_id}/candidate-votes",
+            post(vote_plan_candidate),
+        )
+        .route(
+            "/goal-store/plans/{plan_id}/candidate-selection",
+            post(select_plan_candidate),
+        )
         .route("/goal-store/goals", get(list_goals))
         .route("/goal-store/tasks", get(list_all_tasks))
         .route("/goal-store/approvals", get(list_all_approvals))
@@ -409,10 +433,9 @@ async fn revise_plan(
     Path(plan_id): Path<Uuid>,
     Json(request): Json<PlanRevisionRequest>,
 ) -> Result<Json<DurablePlanResponse>, ApiError> {
-    let mut plan = load_plan(&state, plan_id).await?.ok_or_else(|| ApiError {
-        status: StatusCode::NOT_FOUND,
-        error: anyhow::anyhow!("plan {plan_id} not found"),
-    })?;
+    let mut plan = load_plan(&state, plan_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(anyhow::anyhow!("plan {plan_id} not found")))?;
     plan.apply_revision(request);
     upsert_plan_record(&state, &plan)
         .await
@@ -428,16 +451,99 @@ async fn compile_plan(
     Path(plan_id): Path<Uuid>,
     Json(mut request): Json<PlanCompileRequest>,
 ) -> Result<Json<PlanCompileResult>, ApiError> {
-    let mut plan = load_plan(&state, plan_id).await?.ok_or_else(|| ApiError {
-        status: StatusCode::NOT_FOUND,
-        error: anyhow::anyhow!("plan {plan_id} not found"),
-    })?;
+    let mut plan = load_plan(&state, plan_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(anyhow::anyhow!("plan {plan_id} not found")))?;
     request.plan_id = Some(plan_id);
     let result = plan.compile_goal(request);
     upsert_plan_record(&state, &plan)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(result))
+}
+
+async fn vote_plan_candidate(
+    State(state): State<AppState>,
+    Path(plan_id): Path<Uuid>,
+    Json(request): Json<PlanCandidateVoteRequest>,
+) -> Result<Json<PlanCandidateVoteResponse>, ApiError> {
+    let mut plan = load_plan(&state, plan_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(anyhow::anyhow!("plan {plan_id} not found")))?;
+    let candidate = load_plan(&state, request.candidate_plan_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::not_found(anyhow::anyhow!(
+                "candidate plan {} not found",
+                request.candidate_plan_id
+            ))
+        })?;
+    ensure_candidate_branch(plan_id, &candidate)?;
+
+    let vote = plan.record_candidate_vote(request);
+    upsert_plan_record(&state, &plan)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(PlanCandidateVoteResponse {
+        accepted: true,
+        plan,
+        vote,
+    }))
+}
+
+async fn select_plan_candidate(
+    State(state): State<AppState>,
+    Path(plan_id): Path<Uuid>,
+    Json(request): Json<PlanCandidateSelectionRequest>,
+) -> Result<Json<PlanCandidateSelectionResponse>, ApiError> {
+    let mut plan = load_plan(&state, plan_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found(anyhow::anyhow!("plan {plan_id} not found")))?;
+    let candidate = load_plan(&state, request.candidate_plan_id)
+        .await?
+        .ok_or_else(|| {
+            ApiError::not_found(anyhow::anyhow!(
+                "candidate plan {} not found",
+                request.candidate_plan_id
+            ))
+        })?;
+    ensure_candidate_branch(plan_id, &candidate)?;
+    if request.require_compiled_goal && candidate.compiled_goal_id.is_none() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "candidate plan {} has no compiled_goal_id",
+            candidate.id
+        )));
+    }
+
+    let compiled_goal_id = candidate.compiled_goal_id;
+    let selection = plan.select_candidate(request, compiled_goal_id);
+    upsert_plan_record(&state, &plan)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(PlanCandidateSelectionResponse {
+        accepted: true,
+        plan,
+        selection,
+    }))
+}
+
+fn ensure_candidate_branch(
+    source_plan_id: PlanId,
+    candidate: &DurablePlan,
+) -> Result<(), ApiError> {
+    if candidate.id == source_plan_id {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "candidate plan cannot be the source plan"
+        )));
+    }
+    if candidate.source_plan_id != Some(source_plan_id) {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "candidate plan {} is not a branch of source plan {}",
+            candidate.id,
+            source_plan_id
+        )));
+    }
+    Ok(())
 }
 
 async fn list_goals(
@@ -1599,14 +1705,25 @@ async fn append_journal(state: &AppState, entry: JournalEntry) -> anyhow::Result
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        Json,
+        extract::{Path, State},
+    };
     use coat_domain::{
-        ArtifactKind, ArtifactRef, CheckpointRef, EventSourceApprovalRecord,
+        ArtifactKind, ArtifactRef, BranchSelector, CheckpointRef, EventSourceApprovalRecord,
         EventSourceApprovalStatus, EventSourceKind, GoalEventKind, GoalEventRecord, GoalSpec,
         GoalState, GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest,
+        PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest,
         PlanDraftRequest, ProtocolMetadata,
     };
+    use tokio::sync::RwLock;
 
-    use super::{GoalStore, checkpoints_from_artifacts};
+    use super::{
+        AppState, GoalStore, GoalStoreBackend, checkpoints_from_artifacts, select_plan_candidate,
+        upsert_plan_record, vote_plan_candidate,
+    };
 
     #[test]
     fn snapshot_indexes_goal_tasks_and_events() {
@@ -1652,6 +1769,113 @@ mod tests {
         store.apply_plan(plan);
 
         assert!(store.plans.contains_key(&plan_id));
+    }
+
+    #[tokio::test]
+    async fn plan_candidate_handlers_enforce_branch_and_compilation() {
+        let state = AppState {
+            store: Arc::new(RwLock::new(GoalStore::default())),
+            journal_path: None,
+            backend: GoalStoreBackend::Memory,
+            postgres: None,
+        };
+        let source = coat_domain::DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: None,
+            title: "Source plan".to_string(),
+            objective: "Pick a branch candidate.".to_string(),
+            repo: None,
+            prompt: "Plan first.".to_string(),
+            mode: Default::default(),
+            status: None,
+            author: None,
+            summary: None,
+            authoring: Default::default(),
+            plan: Default::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        let mut candidate = coat_domain::DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: Some(source.id),
+            title: "Candidate plan".to_string(),
+            objective: "Candidate branch.".to_string(),
+            repo: None,
+            prompt: "Branch candidate.".to_string(),
+            mode: Default::default(),
+            status: None,
+            author: None,
+            summary: None,
+            authoring: Default::default(),
+            plan: Default::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        upsert_plan_record(&state, &source).await.unwrap();
+        upsert_plan_record(&state, &candidate).await.unwrap();
+
+        let uncompiled_selection = select_plan_candidate(
+            State(state.clone()),
+            Path(source.id),
+            Json(PlanCandidateSelectionRequest {
+                candidate_plan_id: candidate.id,
+                selector: BranchSelector::HighestScore,
+                reason: "compiled winner required".to_string(),
+                operator: Some("operator".to_string()),
+                require_compiled_goal: true,
+            }),
+        )
+        .await;
+        assert!(uncompiled_selection.is_err());
+
+        candidate.compile_goal(PlanCompileRequest {
+            plan_id: Some(candidate.id),
+            goal_id: None,
+            title_override: None,
+            objective_override: None,
+            strict_review: false,
+            human_steered: false,
+            enable_branching: true,
+        });
+        upsert_plan_record(&state, &candidate).await.unwrap();
+
+        let vote = vote_plan_candidate(
+            State(state.clone()),
+            Path(source.id),
+            Json(PlanCandidateVoteRequest {
+                candidate_plan_id: candidate.id,
+                ranked_plan_ids: vec![candidate.id],
+                voter: Some("reviewer".to_string()),
+                score: 0.9,
+                confidence: 0.8,
+                rationale: "branch evidence is strongest".to_string(),
+                evidence: vec!["compiled goal exists".to_string()],
+            }),
+        )
+        .await
+        .expect("vote accepted")
+        .0;
+        assert_eq!(vote.vote.candidate_plan_id, candidate.id);
+
+        let selected = select_plan_candidate(
+            State(state.clone()),
+            Path(source.id),
+            Json(PlanCandidateSelectionRequest {
+                candidate_plan_id: candidate.id,
+                selector: BranchSelector::HighestScore,
+                reason: "highest score with compiled goal".to_string(),
+                operator: Some("operator".to_string()),
+                require_compiled_goal: true,
+            }),
+        )
+        .await
+        .expect("selection accepted")
+        .0;
+        assert_eq!(selected.selection.candidate_plan_id, candidate.id);
+        assert!(selected.selection.selected_compiled_goal_id.is_some());
+        assert_eq!(selected.plan.status, coat_domain::PlanStatus::Superseded);
     }
 
     #[test]

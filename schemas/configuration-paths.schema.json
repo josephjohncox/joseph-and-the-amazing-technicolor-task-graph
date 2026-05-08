@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatConfigPaths",
+  "type": "object",
+  "properties": {
+    "cache_dir": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "data_dir": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "local_provider_env": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "project_root": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "restate_cloud_env": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

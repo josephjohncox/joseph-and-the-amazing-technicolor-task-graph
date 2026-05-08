@@ -17,10 +17,10 @@ Make Restate Cloud a supported durable substrate for personal COAT usage and cor
 
 - `cargo check -p coat-coordinator`
 - `cargo check -p coat-cli`
-- `coat compose config`
-- `coat compose config --restate-cloud`
+- `coat deploy local config`
+- `coat deploy local config --restate-cloud`
 - CI verifies the Restate Cloud Compose profile with placeholder env.
-- `coat restate register-cloud --dry-run`
+- `coat deploy restate register-cloud --dry-run`
 
 ## Follow-Ups
 

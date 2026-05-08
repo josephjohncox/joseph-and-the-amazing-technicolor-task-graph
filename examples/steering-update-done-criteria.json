@@ -1,0 +1,17 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756713",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Replace a poorly authored done criteria contract with the explicit criteria the coordinator should enforce.",
+  "kind": {
+    "kind": "update_done_criteria",
+    "done_criteria": {
+      "tests_pass": true,
+      "artifact_exists": true,
+      "validator_score_min": 0.92
+    },
+    "reason": "The original goal was under-specified and needs a concrete validation threshold.",
+    "apply_to_open_tasks": true,
+    "reopen_terminal_tasks": false
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756712",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Tighten the goal evidence contract and reopen completed work that must be checked against it.",
+  "kind": {
+    "kind": "expand_done_criteria",
+    "tests_pass": true,
+    "artifact_exists": true,
+    "validator_score_min": 0.9,
+    "min_satisfaction_score": 0.9,
+    "reason": "The goal now requires stronger test and artifact evidence.",
+    "apply_to_open_tasks": true,
+    "reopen_terminal_tasks": true
+  }
+}

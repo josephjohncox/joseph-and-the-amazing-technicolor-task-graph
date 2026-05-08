@@ -15,56 +15,112 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::OnceLock,
 };
 
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use coat_domain::{
-    BranchRequest, BranchSelectionRequest, ChildTaskRequest, ControlLoopMode, EventSource,
-    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalRecord, GoalSpec, GraphColorRef,
-    HumanApproval, MemoryContextRequest, MemoryEditPreviewRequest, MemoryEditRequest,
-    MemoryJoinRequest, MemoryRepairRequest, MemoryRetractRequest, MemorySearchRequest,
-    MemoryWriteRequest, NotificationRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion,
-    PlanQuestionStatus, PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine,
-    ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration, StandardReviewCheck,
-    SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
+    BranchRequest, BranchSelectionRequest, ChildTaskRequest, CoatCliConfig, CoatCloudConfig,
+    CoatConfig, CoatConfigPaths, CoatKubernetesConfig, CoatLocalDeployConfig, CoatOperatorDefaults,
+    CoatProfileConfig, CoatProjectConfig, CoatRestateCloudConfig, CoatServiceEndpoints,
+    CoatUserConfig, ControlLoopMode, EventSource, ExternalEvent, GoalAuthoringGuidance, GoalPlan,
+    GoalRecord, GoalSpec, GraphColorRef, HumanApproval, MemoryContextRequest,
+    MemoryEditPreviewRequest, MemoryEditRequest, MemoryJoinRequest, MemoryRepairRequest,
+    MemoryRetractRequest, MemorySearchRequest, MemoryWriteRequest, NetworkAccess,
+    NotificationRequest, PlanCandidateSelectionRequest, PlanCandidateVoteRequest,
+    PlanCompileRequest, PlanDraftRequest, PlanQuestion, PlanQuestionStatus, PlanRevisionRequest,
+    PlanningMode, RestartRequest, ReviewDoctrine, ReviewDoctrinePreset, RunnerDispatchRequest,
+    RunnerRegistration, SandboxLaunchPlan, SandboxResourcePlan, SandboxSecurityPlan,
+    StandardReviewCheck, SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority,
+    TaskPurpose, TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
 };
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use uuid::Uuid;
 
+const COAT_PROJECT_MARKER: &str = ".coat/project.json";
+const DEFAULT_USER_CONFIG: &str = "~/.coat/config.json";
+const DEFAULT_LOCAL_PROVIDER_ENV: &str = "infra/compose/local-providers.env";
+const DEFAULT_RESTATE_CLOUD_ENV: &str = "infra/compose/restate-cloud.env";
+const DEFAULT_K8S_MANIFEST: &str = "infra/k8s/base/all.yaml";
+const DEFAULT_K8S_RENDERED_MANIFEST: &str = "infra/k8s/rendered.yaml";
+const DEFAULT_K8S_NAMESPACE: &str = "jattg";
+const DEFAULT_RESTATE_TUNNEL_NAME: &str = "jattg-personal";
+const DEFAULT_RESTATE_REGION: &str = "us";
+const DEFAULT_RESTATE_SERVICE_URL: &str = "http://coordinator:9080";
+const DEFAULT_RESTATE_LOCAL_INGRESS: &str = "http://localhost:18080";
+const DEFAULT_RESTATE_LOCAL_ADMIN: &str = "http://localhost:19070";
+const DEFAULT_COORDINATOR_URL: &str = "http://localhost:9080";
+const DEFAULT_RESTATE_INGRESS: &str = "http://localhost:8080";
+const DEFAULT_SANDBOX_RUNNER_URL: &str = "http://localhost:9083";
+const DEFAULT_RUNNER_REGISTRY_URL: &str = "http://localhost:9085";
+const DEFAULT_NOTIFIER_URL: &str = "http://localhost:9086";
+const DEFAULT_MEMORY_GATEWAY_URL: &str = "http://localhost:9087";
+const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
+const DEFAULT_EVENT_GATEWAY_URL: &str = "http://localhost:9089";
+const DEFAULT_CONTROL_MCP_URL: &str = "http://localhost:9090/mcp";
+
+static CONFIG_PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
+
 #[derive(Debug, Parser)]
 #[command(name = "coat")]
 #[command(about = "COAT operator CLI for Joseph and the Amazing Technicolor Task Graph")]
+#[command(
+    long_about = "COAT — Coordinator Of Agentic Tasks — is the operator CLI for goals, plans, humans, memory, runners, events, and deployment workflows."
+)]
 struct Cli {
+    #[arg(
+        long,
+        global = true,
+        env = "COAT_PROFILE",
+        help = "Select a COAT config profile without editing env or config files"
+    )]
+    config_profile: Option<String>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Init(InitArgs),
+    #[command(about = "Open a guided dialogue for common operator workflows")]
+    Guide(GuideArgs),
+    #[command(about = "Plan, inspect, and compile durable planning artifacts")]
     Plan(PlanCommand),
+    #[command(about = "Submit, steer, inspect, branch, and cancel durable goals")]
     Goal(GoalCommand),
+    #[command(about = "Respond to human approval and notification queues")]
+    Human(HumanCommand),
+    #[command(about = "Manage local, Kubernetes, Helm, and Restate deployment workflows")]
+    Deploy(DeployCommand),
+    #[command(about = "Manage external events, webhooks, schedules, and event buses")]
     Event(EventCommand),
+    #[command(about = "Register, inspect, and test distributed runners")]
     Runner(RunnerCommand),
+    #[command(about = "Write, search, join, edit, repair, and inspect durable memory")]
     Memory(MemoryCommand),
-    Approve(ApproveArgs),
-    Notify(NotifyArgs),
+    #[command(about = "Inspect goal-store projections and audit records")]
     Store(StoreCommand),
+    #[command(about = "Plan, create, snapshot, and clean sandbox workspaces")]
     Sandbox(SandboxCommand),
+    #[command(about = "Plan, bump, and cut binary or chart releases")]
     Release(ReleaseCommand),
+    #[command(about = "Configure provider auth and chat-client MCP integrations")]
     Setup(SetupCommand),
-    FollowUps(FollowUpsArgs),
-    Compose(ComposeCommand),
-    K8s(K8sCommand),
-    Restate(RestateCommand),
+    Init(InitArgs),
+}
+
+#[derive(Debug, Args)]
+struct GuideArgs {
+    #[arg(long)]
+    print: bool,
 }
 
 #[derive(Debug, Args)]
 struct InitArgs {
     #[arg(long, default_value = ".")]
     path: PathBuf,
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -80,6 +136,9 @@ enum PlanSubcommand {
     Show(PlanShowArgs),
     Revise(PlanReviseArgs),
     Compile(PlanCompileArgs),
+    VoteCandidate(PlanVoteCandidateArgs),
+    SelectCandidate(PlanSelectCandidateArgs),
+    FollowUps(FollowUpsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -178,6 +237,26 @@ struct PlanCompileArgs {
     human_steered: bool,
     #[arg(long)]
     enable_branching: bool,
+}
+
+#[derive(Debug, Args)]
+struct PlanVoteCandidateArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    plan_id: Uuid,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PlanSelectCandidateArgs {
+    #[command(flatten)]
+    store: PlanStoreArgs,
+    #[arg(long)]
+    plan_id: Uuid,
+    #[arg(long)]
+    file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -977,6 +1056,107 @@ struct ReleaseCutArgs {
 }
 
 #[derive(Debug, Args)]
+struct HelmCommand {
+    #[command(subcommand)]
+    command: HelmSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum HelmSubcommand {
+    Lint(HelmLintArgs),
+    Template(HelmTemplateArgs),
+    Upgrade(HelmUpgradeArgs),
+    Rollback(HelmRollbackArgs),
+    Package(HelmPackageArgs),
+}
+
+#[derive(Debug, Args)]
+struct HelmLintArgs {
+    #[arg(long, default_value = "helm")]
+    helm: String,
+    #[arg(long, default_value = "infra/helm/jattg")]
+    chart: PathBuf,
+    #[arg(short = 'f', long = "values")]
+    values: Vec<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct HelmTemplateArgs {
+    #[arg(long, default_value = "helm")]
+    helm: String,
+    #[arg(long, default_value = "jattg")]
+    release: String,
+    #[arg(long, default_value = "infra/helm/jattg")]
+    chart: PathBuf,
+    #[arg(short = 'f', long = "values")]
+    values: Vec<PathBuf>,
+    #[arg(long = "set")]
+    set_values: Vec<String>,
+    #[arg(long)]
+    namespace: Option<String>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long)]
+    include_crds: bool,
+}
+
+#[derive(Debug, Args)]
+struct HelmUpgradeArgs {
+    #[arg(long, default_value = "helm")]
+    helm: String,
+    #[arg(long, default_value = "jattg")]
+    release: String,
+    #[arg(long, default_value = "infra/helm/jattg")]
+    chart: PathBuf,
+    #[arg(short = 'f', long = "values")]
+    values: Vec<PathBuf>,
+    #[arg(long = "set")]
+    set_values: Vec<String>,
+    #[arg(long, default_value = "jattg")]
+    namespace: String,
+    #[arg(long)]
+    no_create_namespace: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    wait: bool,
+    #[arg(long)]
+    timeout: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct HelmRollbackArgs {
+    #[arg(long, default_value = "helm")]
+    helm: String,
+    #[arg(long, default_value = "jattg")]
+    release: String,
+    #[arg(long)]
+    revision: Option<u32>,
+    #[arg(long, default_value = "jattg")]
+    namespace: String,
+    #[arg(long)]
+    wait: bool,
+    #[arg(long)]
+    timeout: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct HelmPackageArgs {
+    #[arg(long, default_value = "scripts/package-helm-chart.sh")]
+    script: PathBuf,
+    #[arg(long, default_value = "infra/helm/jattg")]
+    chart_dir: PathBuf,
+    #[arg(long, default_value = "dist/helm")]
+    dist_dir: PathBuf,
+    #[arg(long)]
+    chart_version: Option<String>,
+    #[arg(long)]
+    app_version: Option<String>,
+    #[arg(long)]
+    release_url: Option<String>,
+}
+
+#[derive(Debug, Args)]
 struct FollowUpsArgs {
     #[arg(long, default_value = "docs/exec-plans/active")]
     dir: PathBuf,
@@ -994,8 +1174,55 @@ struct SetupCommand {
 
 #[derive(Debug, Subcommand)]
 enum SetupSubcommand {
+    Config(ConfigSetupArgs),
     LocalAuth(LocalAuthArgs),
     ChatClient(ChatClientArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigSetupArgs {
+    #[arg(long)]
+    write_project: bool,
+    #[arg(long)]
+    write_user: bool,
+    #[arg(long)]
+    show: bool,
+    #[arg(long)]
+    list_profiles: bool,
+    #[arg(long)]
+    profile: Option<String>,
+    #[arg(long)]
+    force: bool,
+    #[arg(long, default_value = ".")]
+    project_root: PathBuf,
+    #[arg(long, default_value = DEFAULT_USER_CONFIG)]
+    user_config: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct HumanCommand {
+    #[command(subcommand)]
+    command: HumanSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum HumanSubcommand {
+    Approve(ApproveArgs),
+    Notify(NotifyArgs),
+}
+
+#[derive(Debug, Args)]
+struct DeployCommand {
+    #[command(subcommand)]
+    command: DeploySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum DeploySubcommand {
+    Local(ComposeCommand),
+    Cluster(K8sCommand),
+    Chart(HelmCommand),
+    Restate(RestateCommand),
 }
 
 #[derive(Debug, Args)]
@@ -1046,6 +1273,27 @@ struct ChatClientArgs {
     print_commands: bool,
 }
 
+impl Default for ChatClientArgs {
+    fn default() -> Self {
+        Self {
+            mcp_url: "http://localhost:9090/mcp".to_string(),
+            server_name: "coat-control".to_string(),
+            token_env: "COAT_CONTROL_MCP_TOKEN".to_string(),
+            no_token: false,
+            claude_scope: "user".to_string(),
+            install_codex_mcp: false,
+            install_claude_mcp: false,
+            write_claude_project_config: false,
+            claude_project_config: PathBuf::from(".mcp.json"),
+            write_skill: false,
+            skill_dir: PathBuf::from(".claude/skills/coat-control-plane"),
+            install_codex_skill: false,
+            install_claude_skill: false,
+            print_commands: false,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 struct ComposeCommand {
     #[command(subcommand)]
@@ -1054,9 +1302,27 @@ struct ComposeCommand {
 
 #[derive(Debug, Subcommand)]
 enum ComposeSubcommand {
+    Preflight(ComposePreflightArgs),
     Up(ComposeUpArgs),
     Config(ComposeConfigArgs),
     Down(ComposeDownArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct ComposePreflightArgs {
+    #[arg(long)]
+    restate_cloud: bool,
+    #[arg(
+        long = "restate-cloud-env-file",
+        default_value = "infra/compose/restate-cloud.env"
+    )]
+    restate_cloud_env_file: PathBuf,
+    #[arg(long = "env-file")]
+    env_file: Vec<PathBuf>,
+    #[arg(long)]
+    allow_uninitialized: bool,
+    #[arg(long)]
+    allow_stub_runners: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1078,12 +1344,38 @@ struct ComposeUpArgs {
     register_cloud: bool,
     #[arg(long)]
     init_env: bool,
+    #[arg(long)]
+    skip_preflight: bool,
+    #[arg(long)]
+    allow_uninitialized: bool,
+    #[arg(long)]
+    allow_stub_runners: bool,
     #[arg(long, env = "RESTATE_TUNNEL_NAME", default_value = "jattg-personal")]
     tunnel_name: String,
     #[arg(long, default_value = "http://coordinator:9080")]
     service_url: String,
     #[arg(value_name = "SERVICE")]
     services: Vec<String>,
+}
+
+impl Default for ComposeUpArgs {
+    fn default() -> Self {
+        Self {
+            restate_cloud: false,
+            restate_cloud_env_file: PathBuf::from("infra/compose/restate-cloud.env"),
+            env_file: Vec::new(),
+            profile: Vec::new(),
+            detach: false,
+            register_cloud: false,
+            init_env: false,
+            skip_preflight: false,
+            allow_uninitialized: false,
+            allow_stub_runners: false,
+            tunnel_name: "jattg-personal".to_string(),
+            service_url: "http://coordinator:9080".to_string(),
+            services: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1099,6 +1391,8 @@ struct ComposeConfigArgs {
     env_file: Vec<PathBuf>,
     #[arg(long)]
     profile: Vec<String>,
+    #[arg(long)]
+    allow_placeholder_env: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1124,7 +1418,9 @@ struct K8sCommand {
 enum K8sSubcommand {
     Render(RenderArgs),
     Apply(K8sApplyArgs),
+    Status(K8sStatusArgs),
     EphemeralJobs(EphemeralJobsCommand),
+    ExecutorJob(ExecutorJobCommand),
 }
 
 #[derive(Debug, Args)]
@@ -1137,6 +1433,18 @@ struct EphemeralJobsCommand {
 enum EphemeralJobsSubcommand {
     Render(EphemeralJobsRenderArgs),
     Apply(EphemeralJobsApplyArgs),
+}
+
+#[derive(Debug, Args)]
+struct ExecutorJobCommand {
+    #[command(subcommand)]
+    command: ExecutorJobSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ExecutorJobSubcommand {
+    Render(ExecutorJobRenderArgs),
+    Apply(ExecutorJobApplyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -1174,6 +1482,22 @@ struct K8sApplyArgs {
     dry_run: Option<String>,
 }
 
+#[derive(Debug, Args, Clone)]
+struct K8sStatusArgs {
+    #[arg(long, default_value = "kubectl")]
+    kubectl: String,
+    #[arg(long)]
+    context: Option<String>,
+    #[arg(long)]
+    kubeconfig: Option<PathBuf>,
+    #[arg(long, default_value = "jattg")]
+    namespace: String,
+    #[arg(long)]
+    timeout: Option<String>,
+    #[arg(value_name = "DEPLOYMENT")]
+    deployment: Vec<String>,
+}
+
 #[derive(Debug, Args)]
 struct EphemeralJobsRenderArgs {
     #[arg(
@@ -1203,6 +1527,56 @@ struct EphemeralJobsApplyArgs {
     kubeconfig: Option<PathBuf>,
     #[arg(long)]
     namespace: Option<String>,
+    #[arg(long, value_name = "client|server")]
+    dry_run: Option<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+struct ExecutorJobRenderArgs {
+    #[arg(long = "launch-plan")]
+    launch_plan: PathBuf,
+    #[arg(long, default_value = "infra/k8s/rendered-sandbox-executor-job.json")]
+    output: PathBuf,
+    #[arg(long, default_value = "jattg-sandboxes")]
+    namespace: String,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
+    image: Option<String>,
+    #[arg(long, default_value = "jattg-sandbox-task")]
+    service_account: String,
+    #[arg(long)]
+    runtime_class: Option<String>,
+    #[arg(long)]
+    workspace_pvc: Option<String>,
+    #[arg(long, default_value = "/workspace")]
+    workspace_mount_path: String,
+    #[arg(long, default_value_t = 0)]
+    backoff_limit: i32,
+    #[arg(long, default_value_t = 3600)]
+    active_deadline_seconds: i64,
+    #[arg(long, default_value_t = 3600)]
+    ttl_seconds_after_finished: i32,
+    #[arg(long = "executor-command")]
+    executor_command: Vec<String>,
+    #[arg(long = "env")]
+    env: Vec<String>,
+    #[arg(long = "label")]
+    label: Vec<String>,
+    #[arg(long = "annotation")]
+    annotation: Vec<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+struct ExecutorJobApplyArgs {
+    #[command(flatten)]
+    render: ExecutorJobRenderArgs,
+    #[arg(long, default_value = "kubectl")]
+    kubectl: String,
+    #[arg(long)]
+    context: Option<String>,
+    #[arg(long)]
+    kubeconfig: Option<PathBuf>,
     #[arg(long, value_name = "client|server")]
     dry_run: Option<String>,
 }
@@ -1264,24 +1638,273 @@ struct RestateRegisterCloudArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
-        Commands::Init(args) => init(args),
-        Commands::Plan(args) => plan(args).await,
-        Commands::Goal(args) => goal(args).await,
-        Commands::Event(args) => event(args).await,
-        Commands::Runner(args) => runner(args).await,
-        Commands::Memory(args) => memory(args).await,
-        Commands::Approve(args) => approve(args).await,
-        Commands::Notify(args) => notify(args).await,
-        Commands::Store(args) => store(args).await,
-        Commands::Sandbox(args) => sandbox(args).await,
-        Commands::Release(args) => release(args),
-        Commands::Setup(args) => setup(args),
-        Commands::FollowUps(args) => follow_ups(args),
-        Commands::Compose(args) => compose(args),
-        Commands::K8s(args) => k8s(args),
-        Commands::Restate(args) => restate(args),
+    let cli = Cli::parse();
+    let _ = CONFIG_PROFILE_OVERRIDE.set(cli.config_profile.clone());
+    match cli
+        .command
+        .unwrap_or(Commands::Guide(GuideArgs { print: false }))
+    {
+        command => {
+            warn_if_project_not_initialized(&command)?;
+            match command {
+                Commands::Guide(args) => guide(args).await,
+                Commands::Init(args) => init(args),
+                Commands::Plan(args) => plan(args).await,
+                Commands::Goal(args) => goal(args).await,
+                Commands::Human(args) => human(args).await,
+                Commands::Deploy(args) => deploy(args),
+                Commands::Event(args) => event(args).await,
+                Commands::Runner(args) => runner(args).await,
+                Commands::Memory(args) => memory(args).await,
+                Commands::Store(args) => store(args).await,
+                Commands::Sandbox(args) => sandbox(args).await,
+                Commands::Release(args) => release(args),
+                Commands::Setup(args) => setup(args),
+            }
+        }
     }
+}
+
+async fn guide(args: GuideArgs) -> anyhow::Result<()> {
+    if args.print {
+        print_command_map();
+        return Ok(());
+    }
+
+    let theme = ColorfulTheme::default();
+    println!("COAT guided operator dialogue");
+    let choices = [
+        "Draft a durable plan JSON",
+        "Draft a durable goal JSON",
+        "Inspect latest goal progress",
+        "Show the human queue",
+        "Approve or reject a request",
+        "Start the local Compose stack",
+        "Configure COAT project/user config",
+        "Configure local provider auth",
+        "Install chat-client MCP/skill integration",
+        "Show active plan follow-ups",
+        "Print command map",
+    ];
+    let choice = Select::with_theme(&theme)
+        .with_prompt("What do you want to do?")
+        .items(&choices)
+        .default(0)
+        .interact()?;
+
+    match choice {
+        0 => guided_plan_draft(&theme).await,
+        1 => guided_goal_draft(&theme),
+        2 => {
+            goal(GoalCommand {
+                command: GoalSubcommand::Progress(GoalIdArgs {
+                    restate_ingress: "http://localhost:8080".to_string(),
+                    selector: GoalSelectorArgs {
+                        goal_id: None,
+                        latest: true,
+                        goal_store_url: "http://localhost:9088".to_string(),
+                    },
+                }),
+            })
+            .await
+        }
+        3 => {
+            human(HumanCommand {
+                command: HumanSubcommand::Notify(NotifyArgs {
+                    notifier_url: "http://localhost:9086".to_string(),
+                    file: None,
+                    threads: false,
+                    queue: true,
+                    thread_key: None,
+                }),
+            })
+            .await
+        }
+        4 => guided_approval(&theme).await,
+        5 => {
+            if Confirm::with_theme(&theme)
+                .with_prompt("Run `coat deploy local up --allow-stub-runners` now?")
+                .default(true)
+                .interact()?
+            {
+                let mut args = ComposeUpArgs::default();
+                args.allow_stub_runners = true;
+                deploy(DeployCommand {
+                    command: DeploySubcommand::Local(ComposeCommand {
+                        command: ComposeSubcommand::Up(args),
+                    }),
+                })
+            } else {
+                println!("Run later with: coat deploy local preflight");
+                println!("Then run: coat deploy local up --allow-stub-runners");
+                Ok(())
+            }
+        }
+        6 => setup(SetupCommand {
+            command: SetupSubcommand::Config(ConfigSetupArgs {
+                write_project: false,
+                write_user: false,
+                show: false,
+                list_profiles: false,
+                profile: None,
+                force: false,
+                project_root: PathBuf::from("."),
+                user_config: PathBuf::from(DEFAULT_USER_CONFIG),
+            }),
+        }),
+        7 => setup(SetupCommand {
+            command: SetupSubcommand::LocalAuth(LocalAuthArgs {
+                output: PathBuf::from("infra/compose/local-providers.env"),
+                write_env: false,
+                check: false,
+                print_commands: false,
+            }),
+        }),
+        8 => setup(SetupCommand {
+            command: SetupSubcommand::ChatClient(ChatClientArgs::default()),
+        }),
+        9 => {
+            plan(PlanCommand {
+                command: PlanSubcommand::FollowUps(FollowUpsArgs {
+                    dir: PathBuf::from("docs/exec-plans/active"),
+                    json: false,
+                    include_empty: false,
+                }),
+            })
+            .await
+        }
+        _ => {
+            print_command_map();
+            Ok(())
+        }
+    }
+}
+
+fn print_command_map() {
+    println!("COAT command map");
+    println!("  coat guide                         interactive workflow picker");
+    println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
+    println!("  coat goal <draft|lint|submit|list|progress|tasks|steer|branch|restart|cancel>");
+    println!("  coat human <approve|notify>");
+    println!("  coat deploy local <preflight|up|config|down>");
+    println!("  coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>");
+    println!("  coat deploy chart <lint|template|upgrade|rollback|package>");
+    println!("  coat deploy restate <cloud-env|tunnel-docker|register-cloud>");
+    println!("  coat runner <list|status|register|dispatch>");
+    println!("  coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>");
+    println!("  coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>");
+    println!("  coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>");
+    println!("  coat setup <config|local-auth|chat-client>");
+}
+
+async fn guided_plan_draft(theme: &ColorfulTheme) -> anyhow::Result<()> {
+    let title: String = Input::with_theme(theme)
+        .with_prompt("Plan title")
+        .interact_text()?;
+    let objective: String = Input::with_theme(theme)
+        .with_prompt("Objective")
+        .interact_text()?;
+    let output: String = Input::with_theme(theme)
+        .with_prompt("Output JSON path")
+        .default("examples/plan-draft-from-guide.json".to_string())
+        .interact_text()?;
+    plan(PlanCommand {
+        command: PlanSubcommand::Draft(PlanDraftArgs {
+            store: PlanStoreArgs {
+                goal_store_url: "http://localhost:9088".to_string(),
+            },
+            file: None,
+            source_plan_id: None,
+            title: Some(title),
+            objective: Some(objective.clone()),
+            prompt: Some(objective),
+            repo: None,
+            mode: "interactive".to_string(),
+            author: Some("operator".to_string()),
+            summary: None,
+            out: Some(PathBuf::from(output)),
+            emit_only: true,
+            acceptance_evidence: Vec::new(),
+            constraint: Vec::new(),
+            out_of_scope: Vec::new(),
+            assumption: Vec::new(),
+            open_question: Vec::new(),
+            subgoal: Vec::new(),
+            initial_task: Vec::new(),
+        }),
+    })
+    .await
+}
+
+fn guided_goal_draft(theme: &ColorfulTheme) -> anyhow::Result<()> {
+    let title: String = Input::with_theme(theme)
+        .with_prompt("Goal title")
+        .interact_text()?;
+    let objective: String = Input::with_theme(theme)
+        .with_prompt("Objective")
+        .interact_text()?;
+    let output: String = Input::with_theme(theme)
+        .with_prompt("Output JSON path")
+        .default("examples/goal-draft-from-guide.json".to_string())
+        .interact_text()?;
+    draft_goal(DraftGoalArgs {
+        title,
+        objective,
+        repo: None,
+        out: Some(PathBuf::from(output)),
+        strict_review: true,
+        human_steered: false,
+        enable_branching: false,
+        plan_summary: None,
+        acceptance_evidence: Vec::new(),
+        constraint: Vec::new(),
+        out_of_scope: Vec::new(),
+        assumption: Vec::new(),
+        open_question: Vec::new(),
+        review_preset: Vec::new(),
+        subgoal: Vec::new(),
+        initial_task: Vec::new(),
+    })
+}
+
+async fn guided_approval(theme: &ColorfulTheme) -> anyhow::Result<()> {
+    let goal_id_raw: String = Input::with_theme(theme)
+        .with_prompt("Goal ID (leave blank to use latest)")
+        .allow_empty(true)
+        .interact_text()?;
+    let approval_id_raw: String = Input::with_theme(theme)
+        .with_prompt("Approval ID")
+        .interact_text()?;
+    let approved = Confirm::with_theme(theme)
+        .with_prompt("Approve this request?")
+        .default(true)
+        .interact()?;
+    let note: String = Input::with_theme(theme)
+        .with_prompt("Optional note")
+        .allow_empty(true)
+        .interact_text()?;
+    human(HumanCommand {
+        command: HumanSubcommand::Approve(ApproveArgs {
+            restate_ingress: "http://localhost:8080".to_string(),
+            selector: GoalSelectorArgs {
+                goal_id: if goal_id_raw.trim().is_empty() {
+                    None
+                } else {
+                    Some(Uuid::parse_str(goal_id_raw.trim()).context("parse goal id")?)
+                },
+                latest: goal_id_raw.trim().is_empty(),
+                goal_store_url: "http://localhost:9088".to_string(),
+            },
+            approval_id: Uuid::parse_str(approval_id_raw.trim()).context("parse approval id")?,
+            approved,
+            note: if note.trim().is_empty() {
+                None
+            } else {
+                Some(note)
+            },
+        }),
+    })
+    .await
 }
 
 fn follow_ups(args: FollowUpsArgs) -> anyhow::Result<()> {
@@ -1587,6 +2210,159 @@ fn release_plan_json(
     }))
 }
 
+fn helm(args: HelmCommand) -> anyhow::Result<()> {
+    match args.command {
+        HelmSubcommand::Lint(args) => {
+            run_status_command(&args.helm, helm_lint_args(&args), "run helm lint")
+        }
+        HelmSubcommand::Template(args) => {
+            let command_args = helm_template_args(&args);
+            if let Some(output) = args.output {
+                let command_output = Command::new(&args.helm)
+                    .args(&command_args)
+                    .output()
+                    .context("run helm template")?;
+                if !command_output.status.success() {
+                    bail!(
+                        "helm template exited with {}: {}{}",
+                        command_output.status,
+                        String::from_utf8_lossy(&command_output.stderr),
+                        String::from_utf8_lossy(&command_output.stdout)
+                    );
+                }
+                if let Some(parent) = output.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&output, command_output.stdout)?;
+                println!("rendered {}", output.display());
+                Ok(())
+            } else {
+                run_status_command(&args.helm, command_args, "run helm template")
+            }
+        }
+        HelmSubcommand::Upgrade(args) => {
+            run_status_command(&args.helm, helm_upgrade_args(&args), "run helm upgrade")
+        }
+        HelmSubcommand::Rollback(args) => {
+            run_status_command(&args.helm, helm_rollback_args(&args), "run helm rollback")
+        }
+        HelmSubcommand::Package(args) => helm_package(args),
+    }
+}
+
+fn run_status_command(program: &str, args: Vec<String>, description: &str) -> anyhow::Result<()> {
+    let status = Command::new(program)
+        .args(&args)
+        .status()
+        .with_context(|| description.to_string())?;
+    if !status.success() {
+        bail!("{program} exited with {status}");
+    }
+    Ok(())
+}
+
+fn helm_lint_args(args: &HelmLintArgs) -> Vec<String> {
+    let mut command_args = vec!["lint".to_string(), args.chart.display().to_string()];
+    append_helm_values(&mut command_args, &args.values);
+    command_args
+}
+
+fn helm_template_args(args: &HelmTemplateArgs) -> Vec<String> {
+    let mut command_args = vec![
+        "template".to_string(),
+        args.release.clone(),
+        args.chart.display().to_string(),
+    ];
+    append_helm_values(&mut command_args, &args.values);
+    append_helm_set_values(&mut command_args, &args.set_values);
+    if let Some(namespace) = args.namespace.as_deref() {
+        command_args.push("--namespace".to_string());
+        command_args.push(namespace.to_string());
+    }
+    if args.include_crds {
+        command_args.push("--include-crds".to_string());
+    }
+    command_args
+}
+
+fn helm_upgrade_args(args: &HelmUpgradeArgs) -> Vec<String> {
+    let mut command_args = vec![
+        "upgrade".to_string(),
+        "--install".to_string(),
+        args.release.clone(),
+        args.chart.display().to_string(),
+        "--namespace".to_string(),
+        args.namespace.clone(),
+    ];
+    if !args.no_create_namespace {
+        command_args.push("--create-namespace".to_string());
+    }
+    append_helm_values(&mut command_args, &args.values);
+    append_helm_set_values(&mut command_args, &args.set_values);
+    if args.dry_run {
+        command_args.push("--dry-run".to_string());
+    }
+    if args.wait {
+        command_args.push("--wait".to_string());
+    }
+    if let Some(timeout) = args.timeout.as_deref() {
+        command_args.push("--timeout".to_string());
+        command_args.push(timeout.to_string());
+    }
+    command_args
+}
+
+fn helm_rollback_args(args: &HelmRollbackArgs) -> Vec<String> {
+    let mut command_args = vec!["rollback".to_string(), args.release.clone()];
+    if let Some(revision) = args.revision {
+        command_args.push(revision.to_string());
+    }
+    command_args.push("--namespace".to_string());
+    command_args.push(args.namespace.clone());
+    if args.wait {
+        command_args.push("--wait".to_string());
+    }
+    if let Some(timeout) = args.timeout.as_deref() {
+        command_args.push("--timeout".to_string());
+        command_args.push(timeout.to_string());
+    }
+    command_args
+}
+
+fn append_helm_values(command_args: &mut Vec<String>, values: &[PathBuf]) {
+    for value in values {
+        command_args.push("--values".to_string());
+        command_args.push(value.display().to_string());
+    }
+}
+
+fn append_helm_set_values(command_args: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        command_args.push("--set".to_string());
+        command_args.push(value.clone());
+    }
+}
+
+fn helm_package(args: HelmPackageArgs) -> anyhow::Result<()> {
+    let mut command = Command::new(&args.script);
+    command.env("CHART_DIR", &args.chart_dir);
+    command.env("DIST_DIR", &args.dist_dir);
+    if let Some(chart_version) = args.chart_version {
+        command.env("CHART_VERSION", chart_version);
+    }
+    if let Some(app_version) = args.app_version {
+        command.env("APP_VERSION", app_version);
+    }
+    if let Some(release_url) = args.release_url {
+        command.env("RELEASE_URL", release_url);
+    }
+    let status = command.status().context("run Helm chart package script")?;
+    if !status.success() {
+        bail!("Helm chart package script exited with {status}");
+    }
+    Ok(())
+}
+
 fn normalize_tag_suffix(tag_suffix: Option<&str>) -> anyhow::Result<Option<String>> {
     let Some(raw) = tag_suffix else {
         return Ok(None);
@@ -1804,7 +2580,8 @@ fn replace_yaml_root_value(contents: &str, key: &str, value: &str) -> anyhow::Re
 
 async fn store(args: StoreCommand) -> anyhow::Result<()> {
     match args.command {
-        StoreSubcommand::Policy(args) => {
+        StoreSubcommand::Policy(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/policy",
@@ -1814,7 +2591,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Goals(args) => {
+        StoreSubcommand::Goals(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals",
@@ -1824,7 +2602,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Plans(args) => {
+        StoreSubcommand::Plans(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/plans",
@@ -1834,7 +2613,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::AllTasks(args) => {
+        StoreSubcommand::AllTasks(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/tasks",
@@ -1844,7 +2624,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Approvals(args) => {
+        StoreSubcommand::Approvals(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             let mut params = Vec::new();
             if let Some(goal_id) = args.goal_id {
                 params.push(format!("goal_id={goal_id}"));
@@ -1870,7 +2651,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::EventSourceApprovals(args) => {
+        StoreSubcommand::EventSourceApprovals(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             let mut params = Vec::new();
             if let Some(source_id) = args.source_id {
                 params.push(format!("source_id={source_id}"));
@@ -1899,7 +2681,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Goal(args) => {
+        StoreSubcommand::Goal(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}",
@@ -1910,7 +2693,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Tasks(args) => {
+        StoreSubcommand::Tasks(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}/tasks",
@@ -1921,7 +2705,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Events(args) => {
+        StoreSubcommand::Events(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}/events",
@@ -1932,7 +2717,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Artifacts(args) => {
+        StoreSubcommand::Artifacts(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}/artifacts",
@@ -1943,7 +2729,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::Checkpoints(args) => {
+        StoreSubcommand::Checkpoints(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}/checkpoints",
@@ -1954,7 +2741,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::RecordArtifacts(args) => {
+        StoreSubcommand::RecordArtifacts(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             let request: serde_json::Value = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -1967,7 +2755,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        StoreSubcommand::GoalApprovals(args) => {
+        StoreSubcommand::GoalApprovals(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
             get_url(
                 &format!(
                     "{}/goal-store/goals/{}/approvals",
@@ -1983,7 +2772,8 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
 
 async fn plan(args: PlanCommand) -> anyhow::Result<()> {
     match args.command {
-        PlanSubcommand::Draft(args) => {
+        PlanSubcommand::Draft(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
             let request = plan_draft_request_from_args(&args)?;
             if args.emit_only || args.out.is_some() {
                 return write_json_or_stdout(&request, args.out.as_ref());
@@ -1999,7 +2789,8 @@ async fn plan(args: PlanCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        PlanSubcommand::List(args) => {
+        PlanSubcommand::List(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
             let mut params = Vec::new();
             for status in args.status {
                 params.push(format!("status={status}"));
@@ -2022,7 +2813,8 @@ async fn plan(args: PlanCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        PlanSubcommand::Show(args) => {
+        PlanSubcommand::Show(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
             get_url(
                 &format!(
                     "{}/goal-store/plans/{}",
@@ -2033,7 +2825,8 @@ async fn plan(args: PlanCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        PlanSubcommand::Revise(args) => {
+        PlanSubcommand::Revise(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
             let request: PlanRevisionRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2047,7 +2840,8 @@ async fn plan(args: PlanCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        PlanSubcommand::Compile(args) => {
+        PlanSubcommand::Compile(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
             let mut request = if let Some(file) = &args.file {
                 read_json_file::<PlanCompileRequest>(file)?
             } else {
@@ -2100,12 +2894,60 @@ async fn plan(args: PlanCommand) -> anyhow::Result<()> {
             )
             .await
         }
+        PlanSubcommand::VoteCandidate(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
+            let request: PlanCandidateVoteRequest = read_json_file(&args.file)?;
+            post_json_to_url(
+                &format!(
+                    "{}/goal-store/plans/{}/candidate-votes",
+                    args.store.goal_store_url.trim_end_matches('/'),
+                    args.plan_id
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
+        PlanSubcommand::SelectCandidate(mut args) => {
+            args.store = effective_plan_store_args(args.store)?;
+            let request: PlanCandidateSelectionRequest = read_json_file(&args.file)?;
+            post_json_to_url(
+                &format!(
+                    "{}/goal-store/plans/{}/candidate-selection",
+                    args.store.goal_store_url.trim_end_matches('/'),
+                    args.plan_id
+                ),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
+        PlanSubcommand::FollowUps(args) => follow_ups(args),
+    }
+}
+
+async fn human(args: HumanCommand) -> anyhow::Result<()> {
+    match args.command {
+        HumanSubcommand::Approve(args) => approve(args).await,
+        HumanSubcommand::Notify(args) => notify(args).await,
+    }
+}
+
+fn deploy(args: DeployCommand) -> anyhow::Result<()> {
+    match args.command {
+        DeploySubcommand::Local(args) => compose(args),
+        DeploySubcommand::Cluster(args) => k8s(args),
+        DeploySubcommand::Chart(args) => helm(args),
+        DeploySubcommand::Restate(args) => restate(args),
     }
 }
 
 async fn sandbox(args: SandboxCommand) -> anyhow::Result<()> {
     match args.command {
-        SandboxSubcommand::Plan(args) => {
+        SandboxSubcommand::Plan(mut args) => {
+            args.sandbox_runner_url = effective_sandbox_runner_url(&args.sandbox_runner_url)?;
             let request: serde_json::Value = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2118,7 +2960,8 @@ async fn sandbox(args: SandboxCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        SandboxSubcommand::Create(args) => {
+        SandboxSubcommand::Create(mut args) => {
+            args.sandbox_runner_url = effective_sandbox_runner_url(&args.sandbox_runner_url)?;
             let request: serde_json::Value = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2131,7 +2974,8 @@ async fn sandbox(args: SandboxCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        SandboxSubcommand::Snapshot(args) => {
+        SandboxSubcommand::Snapshot(mut args) => {
+            args.sandbox_runner_url = effective_sandbox_runner_url(&args.sandbox_runner_url)?;
             let request = serde_json::json!({ "workspace_id": args.workspace_id });
             post_json_to_url(
                 &format!("{}/snapshot", args.sandbox_runner_url.trim_end_matches('/')),
@@ -2141,7 +2985,8 @@ async fn sandbox(args: SandboxCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        SandboxSubcommand::Cleanup(args) => {
+        SandboxSubcommand::Cleanup(mut args) => {
+            args.sandbox_runner_url = effective_sandbox_runner_url(&args.sandbox_runner_url)?;
             let request = serde_json::json!({ "workspace_id": args.workspace_id });
             post_json_to_url(
                 &format!("{}/cleanup", args.sandbox_runner_url.trim_end_matches('/')),
@@ -2156,7 +3001,8 @@ async fn sandbox(args: SandboxCommand) -> anyhow::Result<()> {
 
 async fn event(args: EventCommand) -> anyhow::Result<()> {
     match args.command {
-        EventSubcommand::Sources(args) => {
+        EventSubcommand::Sources(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             get_url(
                 &format!(
                     "{}/event-sources",
@@ -2166,7 +3012,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::Register(args) => {
+        EventSubcommand::Register(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             let request: EventSource = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2179,7 +3026,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::Ingest(args) => {
+        EventSubcommand::Ingest(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             let request: ExternalEvent = read_json_file(&args.file)?;
             let route = if args.route { "?route=true" } else { "" };
             post_json_to_url(
@@ -2194,7 +3042,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::Emit(args) => {
+        EventSubcommand::Emit(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             let request: serde_json::Value = read_json_file(&args.file)?;
             let route = if args.no_route {
                 "?route=false"
@@ -2214,7 +3063,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::Webhook(args) => {
+        EventSubcommand::Webhook(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             let request: serde_json::Value = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2228,7 +3078,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::PollSqs(args) => {
+        EventSubcommand::PollSqs(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             let mut query = Vec::new();
             query.push(format!("route={}", (!args.no_route)));
             if let Some(max_messages) = args.max_messages {
@@ -2248,7 +3099,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::Trigger(args) => {
+        EventSubcommand::Trigger(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             let request: TriggeredGoalRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!("{}/triggers", args.event_gateway_url.trim_end_matches('/')),
@@ -2258,14 +3110,16 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        EventSubcommand::List(args) => {
+        EventSubcommand::List(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             get_url(
                 &format!("{}/events", args.event_gateway_url.trim_end_matches('/')),
                 args.token.as_deref(),
             )
             .await
         }
-        EventSubcommand::Triggers(args) => {
+        EventSubcommand::Triggers(mut args) => {
+            args.event_gateway_url = effective_event_gateway_url(&args.event_gateway_url)?;
             get_url(
                 &format!("{}/triggers", args.event_gateway_url.trim_end_matches('/')),
                 args.token.as_deref(),
@@ -2277,7 +3131,8 @@ async fn event(args: EventCommand) -> anyhow::Result<()> {
 
 async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
     match args.command {
-        MemorySubcommand::Write(args) => {
+        MemorySubcommand::Write(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryWriteRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2290,7 +3145,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Search(args) => {
+        MemorySubcommand::Search(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemorySearchRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2303,7 +3159,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Context(args) => {
+        MemorySubcommand::Context(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryContextRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2316,7 +3173,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Join(args) => {
+        MemorySubcommand::Join(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryJoinRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2329,7 +3187,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Retract(args) => {
+        MemorySubcommand::Retract(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryRetractRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2342,7 +3201,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Edit(args) => {
+        MemorySubcommand::Edit(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryEditRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2355,7 +3215,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::PreviewEdit(args) => {
+        MemorySubcommand::PreviewEdit(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryEditPreviewRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2368,7 +3229,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Repair(args) => {
+        MemorySubcommand::Repair(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             let request: MemoryRepairRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!(
@@ -2381,7 +3243,8 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        MemorySubcommand::Events(args) => {
+        MemorySubcommand::Events(mut args) => {
+            args.memory_gateway_url = effective_memory_gateway_url(&args.memory_gateway_url)?;
             get_url(
                 &format!(
                     "{}/memory/events/{}",
@@ -2397,21 +3260,24 @@ async fn memory(args: MemoryCommand) -> anyhow::Result<()> {
 
 async fn runner(args: RunnerCommand) -> anyhow::Result<()> {
     match args.command {
-        RunnerSubcommand::List(args) => {
+        RunnerSubcommand::List(mut args) => {
+            args.registry_url = effective_runner_registry_url(&args.registry_url)?;
             get_url(
                 &format!("{}/runners", args.registry_url.trim_end_matches('/')),
                 None,
             )
             .await
         }
-        RunnerSubcommand::Status(args) => {
+        RunnerSubcommand::Status(mut args) => {
+            args.registry_url = effective_runner_registry_url(&args.registry_url)?;
             get_url(
                 &format!("{}/runners/status", args.registry_url.trim_end_matches('/')),
                 None,
             )
             .await
         }
-        RunnerSubcommand::Register(args) => {
+        RunnerSubcommand::Register(mut args) => {
+            args.registry_url = effective_runner_registry_url(&args.registry_url)?;
             let registration: RunnerRegistration = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!("{}/runners", args.registry_url.trim_end_matches('/')),
@@ -2421,7 +3287,8 @@ async fn runner(args: RunnerCommand) -> anyhow::Result<()> {
             )
             .await
         }
-        RunnerSubcommand::Dispatch(args) => {
+        RunnerSubcommand::Dispatch(mut args) => {
+            args.registry_url = effective_runner_registry_url(&args.registry_url)?;
             let request: RunnerDispatchRequest = read_json_file(&args.file)?;
             post_json_to_url(
                 &format!("{}/dispatch", args.registry_url.trim_end_matches('/')),
@@ -2434,7 +3301,8 @@ async fn runner(args: RunnerCommand) -> anyhow::Result<()> {
     }
 }
 
-async fn notify(args: NotifyArgs) -> anyhow::Result<()> {
+async fn notify(mut args: NotifyArgs) -> anyhow::Result<()> {
+    args.notifier_url = effective_notifier_url(&args.notifier_url)?;
     if args.queue {
         return get_url(
             &format!("{}/queue", args.notifier_url.trim_end_matches('/')),
@@ -2477,56 +3345,704 @@ fn init(args: InitArgs) -> anyhow::Result<()> {
     fs::create_dir_all(args.path.join("docs/exec-plans/active"))?;
     fs::create_dir_all(args.path.join("docs/exec-plans/completed"))?;
     fs::create_dir_all(args.path.join("schemas"))?;
-    println!("initialized COAT directories under {}", args.path.display());
+    write_project_marker(&args.path, args.force)?;
+    println!("initialized COAT project under {}", args.path.display());
+    println!("next: coat setup config --list-profiles");
+    println!("next: coat setup config --show");
+    println!("next: coat setup local-auth");
     Ok(())
+}
+
+fn write_project_marker(path: &Path, force: bool) -> anyhow::Result<()> {
+    let marker = path.join(COAT_PROJECT_MARKER);
+    if marker.exists() && !force {
+        println!("{} already exists", marker.display());
+        return Ok(());
+    }
+    if let Some(parent) = marker.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = CoatProjectConfig::default();
+    fs::write(&marker, serde_json::to_string_pretty(&content)? + "\n")
+        .with_context(|| format!("write {}", marker.display()))?;
+    println!("wrote {}", marker.display());
+    Ok(())
+}
+
+fn write_user_config(path: &Path, force: bool) -> anyhow::Result<()> {
+    let path = expand_home_path(path)?;
+    if path.exists() && !force {
+        println!("{} already exists", path.display());
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let content = CoatUserConfig::default();
+    fs::write(&path, serde_json::to_string_pretty(&content)? + "\n")
+        .with_context(|| format!("write {}", path.display()))?;
+    println!("wrote {}", path.display());
+    Ok(())
+}
+
+fn warn_if_project_not_initialized(command: &Commands) -> anyhow::Result<()> {
+    let check = command_project_init_check(command);
+    if check == ProjectInitCheck::None {
+        return Ok(());
+    }
+    let cwd = env::current_dir().context("read current directory")?;
+    if find_coat_project_root(&cwd).is_none() {
+        let cli_config = load_resolved_coat_config()
+            .map(|resolved| resolved.config.cli)
+            .unwrap_or_default();
+        match project_init_action(
+            false,
+            check,
+            &cli_config,
+            env_flag_enabled("COAT_ALLOW_UNINITIALIZED"),
+        ) {
+            ProjectInitAction::Proceed => {}
+            ProjectInitAction::Warn => {
+                eprintln!(
+                    "warning: COAT project is not initialized; missing {COAT_PROJECT_MARKER} in {} or its parents. Run `coat init` before durable project workflows.",
+                    cwd.display()
+                );
+            }
+            ProjectInitAction::Fail => {
+                bail!(
+                    "COAT project is not initialized; missing {COAT_PROJECT_MARKER} in {} or its parents. Run `coat init`, or set COAT_ALLOW_UNINITIALIZED=1 only for intentional one-off operator commands.",
+                    cwd.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectInitCheck {
+    None,
+    WarnOnly,
+    Durable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectInitAction {
+    Proceed,
+    Warn,
+    Fail,
+}
+
+fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
+    match command {
+        Commands::Init(_) | Commands::Setup(_) | Commands::Guide(_) => ProjectInitCheck::None,
+        Commands::Goal(command) => match &command.command {
+            GoalSubcommand::Draft(_) | GoalSubcommand::Lint(_) | GoalSubcommand::ReviewChecks => {
+                ProjectInitCheck::WarnOnly
+            }
+            GoalSubcommand::List(_)
+            | GoalSubcommand::Submit(_)
+            | GoalSubcommand::Status(_)
+            | GoalSubcommand::Progress(_)
+            | GoalSubcommand::Tasks(_)
+            | GoalSubcommand::Steer(_)
+            | GoalSubcommand::SteerStandard(_)
+            | GoalSubcommand::Restart(_)
+            | GoalSubcommand::Branch(_)
+            | GoalSubcommand::SelectBranch(_)
+            | GoalSubcommand::Cancel(_) => ProjectInitCheck::Durable,
+        },
+        Commands::Plan(command) => match &command.command {
+            PlanSubcommand::Draft(args) if args.emit_only || args.out.is_some() => {
+                ProjectInitCheck::WarnOnly
+            }
+            PlanSubcommand::FollowUps(_) => ProjectInitCheck::WarnOnly,
+            PlanSubcommand::Draft(_)
+            | PlanSubcommand::List(_)
+            | PlanSubcommand::Show(_)
+            | PlanSubcommand::Revise(_)
+            | PlanSubcommand::Compile(_)
+            | PlanSubcommand::VoteCandidate(_)
+            | PlanSubcommand::SelectCandidate(_) => ProjectInitCheck::Durable,
+        },
+        Commands::Deploy(command) => match &command.command {
+            DeploySubcommand::Local(_) => ProjectInitCheck::WarnOnly,
+            DeploySubcommand::Cluster(_)
+            | DeploySubcommand::Chart(_)
+            | DeploySubcommand::Restate(_) => ProjectInitCheck::Durable,
+        },
+        Commands::Human(_)
+        | Commands::Event(_)
+        | Commands::Runner(_)
+        | Commands::Memory(_)
+        | Commands::Store(_)
+        | Commands::Sandbox(_)
+        | Commands::Release(_) => ProjectInitCheck::Durable,
+    }
+}
+
+fn project_init_action(
+    initialized: bool,
+    check: ProjectInitCheck,
+    cli: &CoatCliConfig,
+    allow_uninitialized: bool,
+) -> ProjectInitAction {
+    if initialized || check == ProjectInitCheck::None {
+        return ProjectInitAction::Proceed;
+    }
+    let warn = cli.warn_uninitialized.unwrap_or(true);
+    let require = cli.require_project_for_durable_commands.unwrap_or(true);
+    if check == ProjectInitCheck::Durable && require && !allow_uninitialized {
+        ProjectInitAction::Fail
+    } else if warn {
+        ProjectInitAction::Warn
+    } else {
+        ProjectInitAction::Proceed
+    }
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    env::var(key)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn find_coat_project_root(start: &Path) -> Option<PathBuf> {
+    for candidate in start.ancestors() {
+        if candidate.join(COAT_PROJECT_MARKER).is_file() {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResolvedCoatConfig {
+    project_root: Option<PathBuf>,
+    project_config_path: Option<PathBuf>,
+    user_config_path: Option<PathBuf>,
+    config: CoatConfig,
+}
+
+fn load_resolved_coat_config() -> anyhow::Result<ResolvedCoatConfig> {
+    let cwd = env::current_dir().context("read current directory")?;
+    let project_root = find_coat_project_root(&cwd);
+    let mut resolved = ResolvedCoatConfig {
+        project_root: project_root.clone(),
+        project_config_path: None,
+        user_config_path: None,
+        config: CoatConfig::default(),
+    };
+
+    if let Some(root) = &project_root {
+        let path = root.join(COAT_PROJECT_MARKER);
+        let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let project: CoatProjectConfig =
+            serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+        merge_coat_config(&mut resolved.config, project.config);
+        resolved.project_config_path = Some(path);
+    }
+
+    let user_path = default_user_config_path()?;
+    if user_path.is_file() {
+        let raw = fs::read_to_string(&user_path)
+            .with_context(|| format!("read {}", user_path.display()))?;
+        let user: CoatUserConfig =
+            serde_json::from_str(&raw).with_context(|| format!("parse {}", user_path.display()))?;
+        merge_coat_config(&mut resolved.config, user.config);
+        resolved.user_config_path = Some(user_path);
+    }
+
+    let profile = CONFIG_PROFILE_OVERRIDE
+        .get()
+        .and_then(|profile| profile.clone())
+        .filter(|profile| !profile.trim().is_empty())
+        .or_else(|| env::var("COAT_PROFILE").ok())
+        .filter(|profile| !profile.trim().is_empty())
+        .or_else(|| resolved.config.active_profile.clone());
+    if let Some(profile) = profile.as_deref() {
+        apply_config_profile(&mut resolved.config, profile)?;
+    }
+
+    Ok(resolved)
+}
+
+fn merge_coat_config(base: &mut CoatConfig, overlay: CoatConfig) {
+    replace_if_some(&mut base.active_profile, overlay.active_profile);
+    merge_profile_configs(&mut base.profiles, overlay.profiles);
+    merge_config_paths(&mut base.paths, overlay.paths);
+    merge_service_endpoints(&mut base.service_endpoints, overlay.service_endpoints);
+    merge_local_deploy_config(&mut base.local_deploy, overlay.local_deploy);
+    merge_cloud_config(&mut base.cloud, overlay.cloud);
+    merge_kubernetes_config(&mut base.kubernetes, overlay.kubernetes);
+    merge_cli_config(&mut base.cli, overlay.cli);
+    merge_operator_defaults(&mut base.defaults, overlay.defaults);
+}
+
+fn apply_config_profile(config: &mut CoatConfig, profile_name: &str) -> anyhow::Result<()> {
+    let Some(profile) = config
+        .profiles
+        .iter()
+        .find(|profile| profile.name == profile_name)
+        .cloned()
+    else {
+        bail!(
+            "COAT profile `{profile_name}` is not defined. Run `coat setup config --list-profiles`."
+        );
+    };
+    config.active_profile = Some(profile.name.clone());
+    merge_config_paths(&mut config.paths, profile.paths);
+    merge_service_endpoints(&mut config.service_endpoints, profile.service_endpoints);
+    merge_local_deploy_config(&mut config.local_deploy, profile.local_deploy);
+    merge_cloud_config(&mut config.cloud, profile.cloud);
+    merge_kubernetes_config(&mut config.kubernetes, profile.kubernetes);
+    merge_cli_config(&mut config.cli, profile.cli);
+    merge_operator_defaults(&mut config.defaults, profile.defaults);
+    Ok(())
+}
+
+fn merge_profile_configs(base: &mut Vec<CoatProfileConfig>, overlay: Vec<CoatProfileConfig>) {
+    for profile in overlay {
+        if let Some(existing) = base
+            .iter_mut()
+            .find(|existing| existing.name == profile.name)
+        {
+            merge_profile_config(existing, profile);
+        } else {
+            base.push(profile);
+        }
+    }
+}
+
+fn merge_profile_config(base: &mut CoatProfileConfig, overlay: CoatProfileConfig) {
+    base.kind = overlay.kind;
+    if !overlay.description.is_empty() {
+        base.description = overlay.description;
+    }
+    merge_config_paths(&mut base.paths, overlay.paths);
+    merge_service_endpoints(&mut base.service_endpoints, overlay.service_endpoints);
+    merge_local_deploy_config(&mut base.local_deploy, overlay.local_deploy);
+    merge_cloud_config(&mut base.cloud, overlay.cloud);
+    merge_kubernetes_config(&mut base.kubernetes, overlay.kubernetes);
+    merge_cli_config(&mut base.cli, overlay.cli);
+    merge_operator_defaults(&mut base.defaults, overlay.defaults);
+}
+
+fn merge_config_paths(base: &mut CoatConfigPaths, overlay: CoatConfigPaths) {
+    replace_if_some(&mut base.project_root, overlay.project_root);
+    replace_if_some(&mut base.local_provider_env, overlay.local_provider_env);
+    replace_if_some(&mut base.restate_cloud_env, overlay.restate_cloud_env);
+    replace_if_some(&mut base.data_dir, overlay.data_dir);
+    replace_if_some(&mut base.cache_dir, overlay.cache_dir);
+}
+
+fn merge_service_endpoints(base: &mut CoatServiceEndpoints, overlay: CoatServiceEndpoints) {
+    replace_if_some(&mut base.restate_ingress, overlay.restate_ingress);
+    replace_if_some(&mut base.restate_admin, overlay.restate_admin);
+    replace_if_some(&mut base.coordinator_url, overlay.coordinator_url);
+    replace_if_some(&mut base.sandbox_runner_url, overlay.sandbox_runner_url);
+    replace_if_some(&mut base.runner_registry_url, overlay.runner_registry_url);
+    replace_if_some(&mut base.notifier_url, overlay.notifier_url);
+    replace_if_some(&mut base.memory_gateway_url, overlay.memory_gateway_url);
+    replace_if_some(&mut base.goal_store_url, overlay.goal_store_url);
+    replace_if_some(&mut base.event_gateway_url, overlay.event_gateway_url);
+    replace_if_some(&mut base.control_mcp_url, overlay.control_mcp_url);
+}
+
+fn merge_local_deploy_config(base: &mut CoatLocalDeployConfig, overlay: CoatLocalDeployConfig) {
+    append_unique(&mut base.env_files, overlay.env_files);
+    replace_if_some(
+        &mut base.restate_cloud_env_file,
+        overlay.restate_cloud_env_file,
+    );
+    replace_if_some(&mut base.allow_stub_runners, overlay.allow_stub_runners);
+    replace_if_some(&mut base.allow_uninitialized, overlay.allow_uninitialized);
+    append_unique(&mut base.profiles, overlay.profiles);
+}
+
+fn merge_cloud_config(base: &mut CoatCloudConfig, overlay: CoatCloudConfig) {
+    replace_if_some(&mut base.provider, overlay.provider);
+    replace_if_some(&mut base.region, overlay.region);
+    replace_if_some(&mut base.secret_provider, overlay.secret_provider);
+    replace_if_some(&mut base.object_store, overlay.object_store);
+    merge_restate_cloud_config(&mut base.restate_cloud, overlay.restate_cloud);
+}
+
+fn merge_restate_cloud_config(base: &mut CoatRestateCloudConfig, overlay: CoatRestateCloudConfig) {
+    replace_if_some(&mut base.env_file, overlay.env_file);
+    replace_if_some(&mut base.tunnel_name, overlay.tunnel_name);
+    replace_if_some(&mut base.region, overlay.region);
+    replace_if_some(&mut base.service_url, overlay.service_url);
+    replace_if_some(&mut base.local_ingress_url, overlay.local_ingress_url);
+    replace_if_some(&mut base.local_admin_url, overlay.local_admin_url);
+    replace_if_some(&mut base.coordinator_url, overlay.coordinator_url);
+}
+
+fn merge_kubernetes_config(base: &mut CoatKubernetesConfig, overlay: CoatKubernetesConfig) {
+    replace_if_some(&mut base.distribution, overlay.distribution);
+    replace_if_some(&mut base.kubectl, overlay.kubectl);
+    replace_if_some(&mut base.context, overlay.context);
+    replace_if_some(&mut base.kubeconfig, overlay.kubeconfig);
+    replace_if_some(&mut base.namespace, overlay.namespace);
+    replace_if_some(&mut base.manifest, overlay.manifest);
+    replace_if_some(&mut base.rendered_manifest, overlay.rendered_manifest);
+    replace_if_some(&mut base.helm_release, overlay.helm_release);
+    replace_if_some(&mut base.helm_chart, overlay.helm_chart);
+    append_unique(&mut base.helm_values, overlay.helm_values);
+    replace_if_some(&mut base.image_registry, overlay.image_registry);
+    replace_if_some(&mut base.service_account, overlay.service_account);
+    replace_if_some(&mut base.secret_provider, overlay.secret_provider);
+    replace_if_some(&mut base.workload_identity, overlay.workload_identity);
+    replace_if_some(&mut base.object_store, overlay.object_store);
+}
+
+fn merge_cli_config(base: &mut CoatCliConfig, overlay: CoatCliConfig) {
+    replace_if_some(&mut base.output_format, overlay.output_format);
+    replace_if_some(&mut base.interactive_setup, overlay.interactive_setup);
+    replace_if_some(&mut base.warn_uninitialized, overlay.warn_uninitialized);
+    replace_if_some(
+        &mut base.require_project_for_durable_commands,
+        overlay.require_project_for_durable_commands,
+    );
+}
+
+fn merge_operator_defaults(base: &mut CoatOperatorDefaults, overlay: CoatOperatorDefaults) {
+    replace_if_some(&mut base.goal_store_url, overlay.goal_store_url);
+    replace_if_some(&mut base.restate_ingress, overlay.restate_ingress);
+    replace_if_some(&mut base.latest_goal_selector, overlay.latest_goal_selector);
+}
+
+fn replace_if_some<T>(slot: &mut Option<T>, value: Option<T>) {
+    if value.is_some() {
+        *slot = value;
+    }
+}
+
+fn append_unique(values: &mut Vec<String>, additions: Vec<String>) {
+    for value in additions {
+        if !values.iter().any(|existing| existing == &value) {
+            values.push(value);
+        }
+    }
+}
+
+fn default_user_config_path() -> anyhow::Result<PathBuf> {
+    match env::var("COAT_CONFIG") {
+        Ok(path) if !path.trim().is_empty() => expand_home_path(Path::new(&path)),
+        _ => expand_home_path(Path::new(DEFAULT_USER_CONFIG)),
+    }
+}
+
+fn config_path(value: &str, project_root: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let expanded = expand_home_path(Path::new(value))?;
+    if expanded.is_absolute() {
+        return Ok(expanded);
+    }
+    Ok(project_root
+        .map(|root| root.join(expanded.clone()))
+        .unwrap_or(expanded))
+}
+
+fn print_resolved_config(profile: Option<&str>) -> anyhow::Result<()> {
+    let resolved = match profile {
+        Some(profile) => {
+            let mut resolved = load_resolved_coat_config()?;
+            apply_config_profile(&mut resolved.config, profile)?;
+            resolved
+        }
+        None => load_resolved_coat_config()?,
+    };
+    let mut output = serde_json::json!({
+        "active_profile": resolved.config.active_profile,
+        "project_root": resolved.project_root.as_ref().map(|path| path.display().to_string()),
+        "project_config": resolved.project_config_path.as_ref().map(|path| path.display().to_string()),
+        "user_config": resolved.user_config_path.as_ref().map(|path| path.display().to_string()),
+        "user_config_default": default_user_config_path()?.display().to_string(),
+        "config": resolved.config,
+    });
+    overlay_env_status(&mut output);
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn print_config_profiles() -> anyhow::Result<()> {
+    let resolved = load_resolved_coat_config()?;
+    println!("COAT config profiles");
+    for profile in &resolved.config.profiles {
+        let active = if Some(profile.name.as_str()) == resolved.config.active_profile.as_deref() {
+            " active"
+        } else {
+            ""
+        };
+        println!("  {} ({:?}){active}", profile.name, profile.kind);
+        if !profile.description.is_empty() {
+            println!("    {}", profile.description);
+        }
+    }
+    Ok(())
+}
+
+fn overlay_env_status(output: &mut serde_json::Value) {
+    output["env_overrides"] = serde_json::json!({
+        "COAT_CONFIG": env::var("COAT_CONFIG").ok(),
+        "COAT_PROFILE": env::var("COAT_PROFILE").ok(),
+        "COAT_GOAL_ID": env::var("COAT_GOAL_ID").ok().map(|_| "<set>"),
+        "COAT_RESTATE_INGRESS": env::var("COAT_RESTATE_INGRESS").ok(),
+        "COAT_GOAL_STORE_URL": env::var("COAT_GOAL_STORE_URL").ok(),
+        "COAT_EVENT_GATEWAY_URL": env::var("COAT_EVENT_GATEWAY_URL").ok(),
+        "COAT_MEMORY_GATEWAY_URL": env::var("COAT_MEMORY_GATEWAY_URL").ok(),
+        "COAT_SANDBOX_RUNNER_URL": env::var("COAT_SANDBOX_RUNNER_URL").ok(),
+        "COAT_RUNNER_REGISTRY": env::var("COAT_RUNNER_REGISTRY").ok(),
+        "COAT_NOTIFIER_URL": env::var("COAT_NOTIFIER_URL").ok(),
+        "COAT_CONTROL_MCP_URL": env::var("COAT_CONTROL_MCP_URL").ok(),
+        "COAT_ALLOW_UNINITIALIZED": env::var("COAT_ALLOW_UNINITIALIZED").ok(),
+    });
+}
+
+fn effective_restate_ingress(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_RESTATE_INGRESS {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_RESTATE_INGRESS,
+        config
+            .service_endpoints
+            .restate_ingress
+            .or(config.defaults.restate_ingress),
+    ))
+}
+
+fn effective_sandbox_runner_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_SANDBOX_RUNNER_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_SANDBOX_RUNNER_URL,
+        config.service_endpoints.sandbox_runner_url,
+    ))
+}
+
+fn effective_runner_registry_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_RUNNER_REGISTRY_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_RUNNER_REGISTRY_URL,
+        config.service_endpoints.runner_registry_url,
+    ))
+}
+
+fn effective_notifier_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_NOTIFIER_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_NOTIFIER_URL,
+        config.service_endpoints.notifier_url,
+    ))
+}
+
+fn effective_memory_gateway_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_MEMORY_GATEWAY_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_MEMORY_GATEWAY_URL,
+        config.service_endpoints.memory_gateway_url,
+    ))
+}
+
+fn effective_goal_store_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_GOAL_STORE_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_GOAL_STORE_URL,
+        config
+            .service_endpoints
+            .goal_store_url
+            .or(config.defaults.goal_store_url),
+    ))
+}
+
+fn effective_event_gateway_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_EVENT_GATEWAY_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_EVENT_GATEWAY_URL,
+        config.service_endpoints.event_gateway_url,
+    ))
+}
+
+fn effective_control_mcp_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_CONTROL_MCP_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_CONTROL_MCP_URL,
+        config.service_endpoints.control_mcp_url,
+    ))
+}
+
+fn endpoint_from_config(value: &str, cli_default: &str, configured: Option<String>) -> String {
+    if value == cli_default {
+        configured.unwrap_or_else(|| value.to_string())
+    } else {
+        value.to_string()
+    }
+}
+
+fn effective_goal_selector_args(mut args: GoalSelectorArgs) -> anyhow::Result<GoalSelectorArgs> {
+    args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
+    Ok(args)
+}
+
+fn effective_goal_id_args(mut args: GoalIdArgs) -> anyhow::Result<GoalIdArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_goal_tasks_args(mut args: GoalTasksArgs) -> anyhow::Result<GoalTasksArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_steer_goal_args(mut args: SteerGoalArgs) -> anyhow::Result<SteerGoalArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_steer_standard_goal_args(
+    mut args: SteerStandardGoalArgs,
+) -> anyhow::Result<SteerStandardGoalArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_restart_goal_args(mut args: RestartGoalArgs) -> anyhow::Result<RestartGoalArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_branch_goal_args(mut args: BranchGoalArgs) -> anyhow::Result<BranchGoalArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_select_branch_args(mut args: SelectBranchArgs) -> anyhow::Result<SelectBranchArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_cancel_goal_args(mut args: CancelGoalArgs) -> anyhow::Result<CancelGoalArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_approve_args(mut args: ApproveArgs) -> anyhow::Result<ApproveArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_plan_store_args(mut args: PlanStoreArgs) -> anyhow::Result<PlanStoreArgs> {
+    args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
+    Ok(args)
 }
 
 async fn goal(args: GoalCommand) -> anyhow::Result<()> {
     match args.command {
         GoalSubcommand::Draft(args) => draft_goal(args),
-        GoalSubcommand::List(args) => list_goals(args).await,
-        GoalSubcommand::Submit(args) => submit_goal(args).await,
+        GoalSubcommand::List(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
+            list_goals(args).await
+        }
+        GoalSubcommand::Submit(mut args) => {
+            args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+            submit_goal(args).await
+        }
         GoalSubcommand::Status(args) => {
+            let args = effective_goal_id_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             restate_post_without_body(&args.restate_ingress, goal_id, "status").await
         }
         GoalSubcommand::Progress(args) => {
+            let args = effective_goal_id_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             restate_post_without_body(&args.restate_ingress, goal_id, "progress").await
         }
         GoalSubcommand::Tasks(args) => {
+            let args = effective_goal_tasks_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             let query = task_query_from_args(&args)?;
             restate_post_json(&args.restate_ingress, goal_id, "tasks", &query).await
         }
         GoalSubcommand::Lint(args) => lint_goal(args),
         GoalSubcommand::Steer(args) => {
+            let args = effective_steer_goal_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             let directive: SteeringDirective =
                 read_goal_scoped_json_file(&args.file, goal_id, "SteeringDirective")?;
             restate_post_json(&args.restate_ingress, goal_id, "steer", &directive).await
         }
-        GoalSubcommand::SteerStandard(args) => steer_standard_goal(args).await,
+        GoalSubcommand::SteerStandard(args) => {
+            steer_standard_goal(effective_steer_standard_goal_args(args)?).await
+        }
         GoalSubcommand::ReviewChecks => review_checks(),
         GoalSubcommand::Restart(args) => {
+            let args = effective_restart_goal_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             let request: RestartRequest =
                 read_goal_scoped_json_file(&args.file, goal_id, "RestartRequest")?;
             restate_post_json(&args.restate_ingress, goal_id, "restart", &request).await
         }
         GoalSubcommand::Branch(args) => {
+            let args = effective_branch_goal_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             let request: BranchRequest =
                 read_goal_scoped_json_file(&args.file, goal_id, "BranchRequest")?;
             restate_post_json(&args.restate_ingress, goal_id, "branch", &request).await
         }
         GoalSubcommand::SelectBranch(args) => {
+            let args = effective_select_branch_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             let request: BranchSelectionRequest =
                 read_goal_scoped_json_file(&args.file, goal_id, "BranchSelectionRequest")?;
             restate_post_json(&args.restate_ingress, goal_id, "select_branch", &request).await
         }
         GoalSubcommand::Cancel(args) => {
+            let args = effective_cancel_goal_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
             restate_post_json(&args.restate_ingress, goal_id, "cancel", &args.reason).await
         }
@@ -2981,6 +4497,7 @@ fn write_json_or_stdout<T: serde::Serialize>(
 }
 
 async fn approve(args: ApproveArgs) -> anyhow::Result<()> {
+    let args = effective_approve_args(args)?;
     let goal_id = resolve_goal_id(&args.selector).await?;
     let approval = HumanApproval {
         approval_id: args.approval_id,
@@ -3184,9 +4701,58 @@ fn latest_goal_id_from_value(value: &serde_json::Value) -> anyhow::Result<Uuid> 
 
 fn setup(args: SetupCommand) -> anyhow::Result<()> {
     match args.command {
+        SetupSubcommand::Config(args) => config_setup(args),
         SetupSubcommand::LocalAuth(args) => local_auth_setup(args),
         SetupSubcommand::ChatClient(args) => chat_client_setup(args),
     }
+}
+
+fn config_setup(args: ConfigSetupArgs) -> anyhow::Result<()> {
+    let default_action =
+        !args.write_project && !args.write_user && !args.show && !args.list_profiles;
+    if default_action {
+        return interactive_config_setup(args);
+    }
+    if args.write_project {
+        write_project_marker(&args.project_root, args.force)?;
+    }
+    if args.write_user {
+        write_user_config(&args.user_config, args.force)?;
+    }
+    if args.list_profiles {
+        print_config_profiles()?;
+    }
+    if args.show {
+        print_resolved_config(args.profile.as_deref())?;
+    }
+    Ok(())
+}
+
+fn interactive_config_setup(args: ConfigSetupArgs) -> anyhow::Result<()> {
+    let theme = ColorfulTheme::default();
+    println!("COAT configuration setup");
+    if Confirm::with_theme(&theme)
+        .with_prompt("Write or refresh project config at .coat/project.json?")
+        .default(true)
+        .interact()?
+    {
+        write_project_marker(&args.project_root, args.force)?;
+    }
+    if Confirm::with_theme(&theme)
+        .with_prompt("Write user config template at ~/.coat/config.json?")
+        .default(false)
+        .interact()?
+    {
+        write_user_config(&args.user_config, args.force)?;
+    }
+    if Confirm::with_theme(&theme)
+        .with_prompt("Show resolved config paths and values?")
+        .default(true)
+        .interact()?
+    {
+        print_resolved_config(args.profile.as_deref())?;
+    }
+    Ok(())
 }
 
 fn local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
@@ -3241,6 +4807,26 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
         env_text = populate_secret_env_values(env_text);
     }
 
+    if selections.contains(&0) {
+        env_text = replace_env_line(env_text, "CODEX_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "CODEX_REVIEW_RUNNER_MODE", "live");
+    }
+
+    if selections.contains(&1) {
+        env_text = replace_env_line(env_text, "CLAUDE_CODE_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "STAFF_ENGINEER_RUNNER_MODE", "live");
+    }
+
+    if selections.contains(&2) {
+        let bedrock_model: String = Input::with_theme(&theme)
+            .with_prompt("Bedrock model id")
+            .default("anthropic.claude-3-5-sonnet-20241022-v2:0".to_string())
+            .interact_text()?;
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "bedrock");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &bedrock_model);
+    }
+
     if selections.contains(&3) || selections.contains(&4) {
         let local_kind_default = if selections.contains(&4) {
             "vllm"
@@ -3267,9 +4853,25 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
                 "http://host.docker.internal:11434/v1".to_string()
             })
             .interact_text()?;
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_LOCAL_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_KIND", &local_kind);
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_MODEL", &local_model);
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_ENDPOINT", &local_endpoint);
+    }
+
+    if selections.contains(&5) {
+        let hf_model: String = Input::with_theme(&theme)
+            .with_prompt("Hugging Face endpoint model")
+            .default("hf-endpoint-model".to_string())
+            .interact_text()?;
+        let hf_endpoint: String = Input::with_theme(&theme)
+            .with_prompt("Hugging Face OpenAI-compatible endpoint")
+            .default("https://api.endpoints.huggingface.cloud/v1".to_string())
+            .interact_text()?;
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "hugging_face");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &hf_model);
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_ENDPOINT", &hf_endpoint);
     }
 
     if selections.contains(&6) {
@@ -3336,7 +4938,11 @@ fn write_local_provider_env(path: &Path, env_text: &str) -> anyhow::Result<()> {
     fs::write(path, env_text)?;
     println!("wrote {}", path.display());
     println!(
-        "use with: docker compose --env-file {} -f infra/compose/docker-compose.yml up --build",
+        "preflight with: coat deploy local preflight --env-file {}",
+        path.display()
+    );
+    println!(
+        "use with: coat deploy local up --env-file {}",
         path.display()
     );
     Ok(())
@@ -3429,8 +5035,10 @@ fn print_local_auth_commands() {
     println!("  hf auth login");
     println!("after auth, write an env file with:");
     println!("  coat setup local-auth --write-env --output infra/compose/local-providers.env");
-    println!("then start Compose with that env file:");
-    println!("  coat compose up --env-file infra/compose/local-providers.env");
+    println!("  # or run `coat setup local-auth` interactively to flip selected lanes live");
+    println!("then preflight and start Compose with that env file:");
+    println!("  coat deploy local preflight --env-file infra/compose/local-providers.env");
+    println!("  coat deploy local up --env-file infra/compose/local-providers.env");
 }
 
 fn probe_command(command: &str) -> (bool, String) {
@@ -3462,7 +5070,8 @@ fn local_provider_env_template() -> &'static str {
     include_str!("../../../infra/compose/local-providers.env.example")
 }
 
-fn chat_client_setup(args: ChatClientArgs) -> anyhow::Result<()> {
+fn chat_client_setup(mut args: ChatClientArgs) -> anyhow::Result<()> {
+    args.mcp_url = effective_control_mcp_url(&args.mcp_url)?;
     if chat_client_default_action(&args) {
         return interactive_chat_client_setup(args);
     }
@@ -3597,10 +5206,9 @@ fn print_chat_client_commands(args: &ChatClientArgs) -> anyhow::Result<()> {
     println!("COAT chat-client setup");
     println!("1. Configure provider credentials and local model endpoints:");
     println!("  coat setup local-auth --write-env --output infra/compose/local-providers.env");
-    println!("2. Start a local or remote control gateway. Local example:");
-    println!(
-        "  docker compose --env-file infra/compose/local-providers.env -f infra/compose/docker-compose.yml up --build"
-    );
+    println!("2. Preflight and start a local or remote control gateway. Local example:");
+    println!("  coat deploy local preflight --env-file infra/compose/local-providers.env");
+    println!("  coat deploy local up --env-file infra/compose/local-providers.env");
     println!("3. Export the MCP token in the shell that launches the chat client:");
     if args.no_token {
         println!("  # no token requested for this install");
@@ -3787,16 +5395,45 @@ fn workflow_url(ingress: &str, goal_id: Uuid, handler: &str) -> String {
 
 fn compose(args: ComposeCommand) -> anyhow::Result<()> {
     match args.command {
-        ComposeSubcommand::Up(args) => {
+        ComposeSubcommand::Preflight(args) => {
+            let env_files = effective_compose_env_files(args.env_file)?;
+            let restate_cloud_env_file =
+                effective_restate_cloud_env_file(&args.restate_cloud_env_file)?;
+            run_local_compose_preflight(LocalComposePreflightInput {
+                env_files: &env_files,
+                restate_cloud: args.restate_cloud,
+                restate_cloud_env_file: &restate_cloud_env_file,
+                allow_uninitialized: effective_allow_uninitialized(args.allow_uninitialized)?,
+                allow_stub_runners: effective_allow_stub_runners(args.allow_stub_runners)?,
+            })
+        }
+        ComposeSubcommand::Up(mut args) => {
+            args.env_file = effective_compose_env_files(args.env_file)?;
+            args.profile = effective_compose_profiles(args.profile)?;
+            args.restate_cloud_env_file =
+                effective_restate_cloud_env_file(&args.restate_cloud_env_file)?;
+            args.allow_uninitialized = effective_allow_uninitialized(args.allow_uninitialized)?;
+            args.allow_stub_runners = effective_allow_stub_runners(args.allow_stub_runners)?;
             if args.restate_cloud {
                 ensure_restate_cloud_env_file(&args.restate_cloud_env_file, args.init_env)?;
                 if args.init_env {
                     return Ok(());
                 }
             }
+            if !args.skip_preflight {
+                run_local_compose_preflight(LocalComposePreflightInput {
+                    env_files: &args.env_file,
+                    restate_cloud: args.restate_cloud,
+                    restate_cloud_env_file: &args.restate_cloud_env_file,
+                    allow_uninitialized: args.allow_uninitialized,
+                    allow_stub_runners: args.allow_stub_runners,
+                })?;
+            }
             let register_cloud = args.register_cloud;
-            let tunnel_name = args.tunnel_name.clone();
-            let service_url = args.service_url.clone();
+            let tunnel_name = effective_restate_tunnel_name(&args.tunnel_name)?;
+            let service_url = effective_restate_service_url(&args.service_url)?;
+            args.tunnel_name = tunnel_name.clone();
+            args.service_url = service_url.clone();
             run_docker_compose(compose_up_command_args(&args), "run docker compose up")?;
             if register_cloud {
                 restate_register_cloud(RestateRegisterCloudArgs {
@@ -3807,8 +5444,12 @@ fn compose(args: ComposeCommand) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        ComposeSubcommand::Config(args) => {
-            if args.restate_cloud {
+        ComposeSubcommand::Config(mut args) => {
+            args.env_file = effective_compose_env_files(args.env_file)?;
+            args.profile = effective_compose_profiles(args.profile)?;
+            args.restate_cloud_env_file =
+                effective_restate_cloud_env_file(&args.restate_cloud_env_file)?;
+            if args.restate_cloud && !args.allow_placeholder_env {
                 ensure_restate_cloud_env_file(&args.restate_cloud_env_file, false)?;
             }
             run_docker_compose(
@@ -3816,10 +5457,466 @@ fn compose(args: ComposeCommand) -> anyhow::Result<()> {
                 "run docker compose config",
             )
         }
-        ComposeSubcommand::Down(args) => {
+        ComposeSubcommand::Down(mut args) => {
+            args.env_file = effective_compose_env_files(args.env_file)?;
             run_docker_compose(compose_down_command_args(&args), "run docker compose down")
         }
     }
+}
+
+struct LocalComposePreflightInput<'a> {
+    env_files: &'a [PathBuf],
+    restate_cloud: bool,
+    restate_cloud_env_file: &'a Path,
+    allow_uninitialized: bool,
+    allow_stub_runners: bool,
+}
+
+fn run_local_compose_preflight(input: LocalComposePreflightInput<'_>) -> anyhow::Result<()> {
+    let cwd = env::current_dir().context("read current directory")?;
+    let initialized = find_coat_project_root(&cwd).is_some();
+    let mut failures = Vec::new();
+    let mut warnings = Vec::new();
+
+    if !Path::new("infra/compose/docker-compose.yml").is_file() {
+        failures
+            .push("missing infra/compose/docker-compose.yml; run from a COAT checkout".to_string());
+    }
+
+    let (docker_available, docker_detail) = probe_command("docker");
+    if !docker_available {
+        failures.push("docker CLI is not available on PATH".to_string());
+    } else if !docker_detail.is_empty() {
+        warnings.push(format!("docker CLI detected {docker_detail}"));
+    }
+
+    if input.restate_cloud && !input.restate_cloud_env_file.exists() {
+        failures.push(format!(
+            "{} is missing; run `coat deploy local up --restate-cloud --init-env` first",
+            input.restate_cloud_env_file.display()
+        ));
+    }
+
+    let env_values = match compose_env_values(input.env_files) {
+        Ok(values) => values,
+        Err(error) => {
+            failures.push(error.to_string());
+            BTreeMap::new()
+        }
+    };
+    let (mut model_warnings, mut model_failures) = compose_model_preflight_findings(
+        initialized,
+        input.env_files,
+        &env_values,
+        input.allow_uninitialized,
+        input.allow_stub_runners,
+    );
+    warnings.append(&mut model_warnings);
+    failures.append(&mut model_failures);
+
+    println!("COAT local Compose preflight");
+    if failures.is_empty() && warnings.is_empty() {
+        println!(
+            "  ok: project init, Compose files, Docker, runner modes, and model env look usable"
+        );
+    }
+    for warning in &warnings {
+        println!("  warn: {warning}");
+    }
+    for failure in &failures {
+        println!("  fail: {failure}");
+    }
+
+    if !failures.is_empty() {
+        bail!(
+            "local Compose preflight failed. Run `coat init`, configure models with `coat setup local-auth`, or pass `--allow-stub-runners` for an intentional stub smoke stack."
+        );
+    }
+    Ok(())
+}
+
+fn effective_compose_env_files(env_files: Vec<PathBuf>) -> anyhow::Result<Vec<PathBuf>> {
+    if env_files.is_empty() {
+        let resolved = load_resolved_coat_config()?;
+        let project_root = resolved.project_root.as_deref();
+        let config_paths = resolved
+            .config
+            .local_deploy
+            .env_files
+            .iter()
+            .map(|path| config_path(path, project_root))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let existing_config_paths = config_paths
+            .iter()
+            .filter(|path| path.exists())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !existing_config_paths.is_empty() {
+            eprintln!(
+                "using local provider env file(s) from COAT config: {}",
+                existing_config_paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return Ok(existing_config_paths);
+        }
+        if !config_paths.is_empty() {
+            eprintln!(
+                "configured local provider env file(s) do not exist yet: {}",
+                config_paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        let default = project_root
+            .map(|root| root.join(DEFAULT_LOCAL_PROVIDER_ENV))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_LOCAL_PROVIDER_ENV));
+        if default.exists() {
+            eprintln!(
+                "using default local provider env file: {}",
+                default.display()
+            );
+            return Ok(vec![default]);
+        }
+    }
+    Ok(env_files)
+}
+
+fn effective_compose_profiles(profiles: Vec<String>) -> anyhow::Result<Vec<String>> {
+    if !profiles.is_empty() {
+        return Ok(profiles);
+    }
+    Ok(load_resolved_coat_config()?.config.local_deploy.profiles)
+}
+
+fn effective_allow_stub_runners(flag: bool) -> anyhow::Result<bool> {
+    Ok(flag
+        || load_resolved_coat_config()?
+            .config
+            .local_deploy
+            .allow_stub_runners
+            .unwrap_or(false))
+}
+
+fn effective_allow_uninitialized(flag: bool) -> anyhow::Result<bool> {
+    Ok(flag
+        || load_resolved_coat_config()?
+            .config
+            .local_deploy
+            .allow_uninitialized
+            .unwrap_or(false))
+}
+
+fn effective_restate_cloud_env_file(path: &Path) -> anyhow::Result<PathBuf> {
+    let default = Path::new(DEFAULT_RESTATE_CLOUD_ENV);
+    if path != default {
+        return Ok(path.to_path_buf());
+    }
+    let resolved = load_resolved_coat_config()?;
+    match resolved
+        .config
+        .cloud
+        .restate_cloud
+        .env_file
+        .or(resolved.config.local_deploy.restate_cloud_env_file)
+    {
+        Some(configured) => config_path(&configured, resolved.project_root.as_deref()),
+        None => Ok(path.to_path_buf()),
+    }
+}
+
+fn effective_restate_tunnel_name(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_RESTATE_TUNNEL_NAME {
+        return Ok(value.to_string());
+    }
+    Ok(load_resolved_coat_config()?
+        .config
+        .cloud
+        .restate_cloud
+        .tunnel_name
+        .unwrap_or_else(|| value.to_string()))
+}
+
+fn effective_restate_service_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_RESTATE_SERVICE_URL && value != DEFAULT_COORDINATOR_URL {
+        return Ok(value.to_string());
+    }
+    Ok(load_resolved_coat_config()?
+        .config
+        .cloud
+        .restate_cloud
+        .service_url
+        .unwrap_or_else(|| value.to_string()))
+}
+
+fn compose_env_values(env_files: &[PathBuf]) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut values = BTreeMap::new();
+    for env_file in env_files {
+        let content =
+            fs::read_to_string(env_file).with_context(|| format!("read {}", env_file.display()))?;
+        for (key, value) in parse_env_file_content(&content) {
+            values.insert(key, value);
+        }
+    }
+    for (key, value) in env::vars() {
+        if key.starts_with("COAT_")
+            || key.starts_with("CODEX_")
+            || key.starts_with("CLAUDE_")
+            || key.starts_with("ANTHROPIC_")
+            || key.starts_with("OPENAI_")
+            || key.starts_with("MODEL_PROVIDER_")
+            || key.starts_with("LOCAL_MODEL_PROVIDER_")
+            || key.starts_with("MEMORY_GATEWAY_")
+            || key.starts_with("AWS_")
+        {
+            values.insert(key, value);
+        }
+    }
+    Ok(values)
+}
+
+fn parse_env_file_content(content: &str) -> BTreeMap<String, String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            let (key, value) = trimmed.split_once('=')?;
+            Some((
+                key.trim().to_string(),
+                strip_env_value_comment(value.trim()).to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn strip_env_value_comment(value: &str) -> &str {
+    value
+        .split_once(" #")
+        .map(|(value, _)| value)
+        .unwrap_or(value)
+        .trim()
+}
+
+fn compose_model_preflight_findings(
+    initialized: bool,
+    env_files: &[PathBuf],
+    values: &BTreeMap<String, String>,
+    allow_uninitialized: bool,
+    allow_stub_runners: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut failures = Vec::new();
+
+    if !initialized {
+        let message = format!("missing {COAT_PROJECT_MARKER}; run `coat init` in this checkout");
+        if allow_uninitialized {
+            warnings.push(message);
+        } else {
+            failures.push(message);
+        }
+    }
+
+    if env_files.is_empty() {
+        warnings.push(format!(
+            "no provider env file was supplied and {DEFAULT_LOCAL_PROVIDER_ENV} was not found"
+        ));
+    }
+
+    let runner_modes = compose_runner_modes(values);
+    let stub_lanes = runner_modes
+        .iter()
+        .filter(|(_, _, mode)| runner_mode_is_stub(mode))
+        .map(|(name, key, _)| format!("{name} ({key})"))
+        .collect::<Vec<_>>();
+    if stub_lanes.len() == runner_modes.len() {
+        let message = format!(
+            "all Compose agent lanes are stubbed: {}",
+            stub_lanes.join(", ")
+        );
+        if allow_stub_runners {
+            warnings.push(message);
+        } else {
+            failures.push(message);
+        }
+    } else if !stub_lanes.is_empty() {
+        warnings.push(format!("stubbed Compose lanes: {}", stub_lanes.join(", ")));
+    }
+
+    for (lane, key, mode) in runner_modes {
+        if runner_mode_is_stub(&mode) {
+            continue;
+        }
+        failures.extend(live_runner_setup_issues(lane, key, values));
+    }
+
+    if memory_embedding_needs_token(values) {
+        warnings.push(
+            "memory embeddings use the OpenAI endpoint but neither MEMORY_GATEWAY_EMBEDDING_TOKEN nor OPENAI_API_KEY is set".to_string(),
+        );
+    }
+
+    (warnings, failures)
+}
+
+fn compose_runner_modes(
+    values: &BTreeMap<String, String>,
+) -> Vec<(&'static str, &'static str, String)> {
+    [
+        ("codex", "CODEX_RUNNER_MODE"),
+        ("codex-reviewer", "CODEX_REVIEW_RUNNER_MODE"),
+        ("claude-code", "CLAUDE_CODE_RUNNER_MODE"),
+        ("staff-engineer", "STAFF_ENGINEER_RUNNER_MODE"),
+        ("model-provider", "MODEL_PROVIDER_RUNNER_MODE"),
+        (
+            "model-provider-research",
+            "MODEL_PROVIDER_RESEARCH_RUNNER_MODE",
+        ),
+        ("model-provider-local", "MODEL_PROVIDER_LOCAL_RUNNER_MODE"),
+    ]
+    .into_iter()
+    .map(|(lane, key)| {
+        (
+            lane,
+            key,
+            env_value(values, key)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "stub".to_string()),
+        )
+    })
+    .collect()
+}
+
+fn runner_mode_is_stub(mode: &str) -> bool {
+    let normalized = mode.trim().to_ascii_lowercase();
+    normalized.is_empty() || normalized == "stub"
+}
+
+fn live_runner_setup_issues(
+    lane: &'static str,
+    key: &'static str,
+    values: &BTreeMap<String, String>,
+) -> Vec<String> {
+    match key {
+        "CODEX_RUNNER_MODE" | "CODEX_REVIEW_RUNNER_MODE" => {
+            if any_env_present(values, &["OPENAI_API_KEY", "CODEX_API_KEY"]) {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "{lane} is live but OPENAI_API_KEY or CODEX_API_KEY is not set"
+                )]
+            }
+        }
+        "CLAUDE_CODE_RUNNER_MODE" | "STAFF_ENGINEER_RUNNER_MODE" => {
+            if any_env_present(
+                values,
+                &[
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                ],
+            ) {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "{lane} is live but no Anthropic or Claude Code auth env is set"
+                )]
+            }
+        }
+        "MODEL_PROVIDER_RUNNER_MODE" => model_provider_setup_issues(
+            lane,
+            values,
+            "MODEL_PROVIDER_KIND",
+            "MODEL_PROVIDER_MODEL",
+            "MODEL_PROVIDER_ENDPOINT",
+        ),
+        "MODEL_PROVIDER_RESEARCH_RUNNER_MODE" => model_provider_setup_issues(
+            lane,
+            values,
+            "MODEL_PROVIDER_RESEARCH_KIND",
+            "MODEL_PROVIDER_RESEARCH_MODEL",
+            "MODEL_PROVIDER_RESEARCH_ENDPOINT",
+        ),
+        "MODEL_PROVIDER_LOCAL_RUNNER_MODE" => model_provider_setup_issues(
+            lane,
+            values,
+            "LOCAL_MODEL_PROVIDER_KIND",
+            "LOCAL_MODEL_PROVIDER_MODEL",
+            "LOCAL_MODEL_PROVIDER_ENDPOINT",
+        ),
+        _ => Vec::new(),
+    }
+}
+
+fn model_provider_setup_issues(
+    lane: &'static str,
+    values: &BTreeMap<String, String>,
+    kind_key: &'static str,
+    model_key: &'static str,
+    endpoint_key: &'static str,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let kind = env_value(values, kind_key).unwrap_or_else(|| "open_ai_compatible".to_string());
+    if !env_present(values, model_key) {
+        issues.push(format!("{lane} is live but {model_key} is not set"));
+    }
+    match kind.as_str() {
+        "bedrock" => {
+            if !any_env_present(values, &["AWS_REGION", "AWS_DEFAULT_REGION"]) {
+                issues.push(format!("{lane} is bedrock-backed but no AWS region is set"));
+            }
+            if !any_env_present(values, &["AWS_PROFILE", "AWS_ACCESS_KEY_ID"]) {
+                issues.push(format!(
+                    "{lane} is bedrock-backed but no AWS profile or access key is set"
+                ));
+            }
+        }
+        "open_ai" => {
+            if !env_present(values, "OPENAI_API_KEY") {
+                issues.push(format!(
+                    "{lane} is open_ai-backed but OPENAI_API_KEY is not set"
+                ));
+            }
+        }
+        _ => {
+            if !env_present(values, endpoint_key) {
+                issues.push(format!("{lane} is live but {endpoint_key} is not set"));
+            }
+        }
+    }
+    issues
+}
+
+fn memory_embedding_needs_token(values: &BTreeMap<String, String>) -> bool {
+    let url = env_value(values, "MEMORY_GATEWAY_EMBEDDING_URL").unwrap_or_default();
+    url.contains("api.openai.com")
+        && !any_env_present(
+            values,
+            &["MEMORY_GATEWAY_EMBEDDING_TOKEN", "OPENAI_API_KEY"],
+        )
+}
+
+fn any_env_present(values: &BTreeMap<String, String>, names: &[&str]) -> bool {
+    names.iter().any(|name| env_present(values, name))
+}
+
+fn env_present(values: &BTreeMap<String, String>, name: &str) -> bool {
+    env_value(values, name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn env_value(values: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    values
+        .get(name)
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn run_docker_compose(args: Vec<String>, description: &str) -> anyhow::Result<()> {
@@ -3916,7 +6013,7 @@ fn ensure_restate_cloud_env_file(env_file: &Path, init_only: bool) -> anyhow::Re
         );
         if !init_only {
             bail!(
-                "{} contains placeholders; edit it with RESTATE_ENVIRONMENT_ID, RESTATE_BEARER_TOKEN, RESTATE_CLOUD_REGION, and RESTATE_SIGNING_PUBLIC_KEY, then rerun `coat compose up --restate-cloud`",
+                "{} contains placeholders; edit it with RESTATE_ENVIRONMENT_ID, RESTATE_BEARER_TOKEN, RESTATE_CLOUD_REGION, and RESTATE_SIGNING_PUBLIC_KEY, then rerun `coat deploy local up --restate-cloud`",
                 env_file.display()
             );
         }
@@ -3961,16 +6058,23 @@ fn restate_cloud_env_placeholders(content: &str) -> Vec<&'static str> {
 fn k8s(args: K8sCommand) -> anyhow::Result<()> {
     match args.command {
         K8sSubcommand::Render(args) => {
-            let manifest = fs::read_to_string("infra/k8s/base/all.yaml")
-                .context("read infra/k8s/base/all.yaml")?;
+            let args = effective_k8s_render_args(args)?;
+            let source = effective_k8s_render_source()?;
+            let manifest = fs::read_to_string(&source)
+                .with_context(|| format!("read {}", source.display()))?;
             if let Some(parent) = args.output.parent() {
                 fs::create_dir_all(parent)?;
             }
             fs::write(&args.output, manifest)?;
-            println!("rendered {}", args.output.display());
+            println!(
+                "rendered {} from {}",
+                args.output.display(),
+                source.display()
+            );
             Ok(())
         }
-        K8sSubcommand::Apply(args) => apply_k8s_manifest(args),
+        K8sSubcommand::Apply(args) => apply_k8s_manifest(effective_k8s_apply_args(args)?),
+        K8sSubcommand::Status(args) => k8s_status(effective_k8s_status_args(args)?),
         K8sSubcommand::EphemeralJobs(args) => match args.command {
             EphemeralJobsSubcommand::Render(args) => {
                 let manifest = fs::read_to_string(&args.source)
@@ -3988,12 +6092,138 @@ fn k8s(args: K8sCommand) -> anyhow::Result<()> {
             }
             EphemeralJobsSubcommand::Apply(args) => apply_ephemeral_jobs(args),
         },
+        K8sSubcommand::ExecutorJob(args) => match args.command {
+            ExecutorJobSubcommand::Render(args) => {
+                render_executor_job(effective_executor_job_render_args(args)?)
+            }
+            ExecutorJobSubcommand::Apply(args) => {
+                apply_executor_job(effective_executor_job_apply_args(args)?)
+            }
+        },
     }
+}
+
+fn effective_k8s_render_args(mut args: RenderArgs) -> anyhow::Result<RenderArgs> {
+    if args.output == PathBuf::from(DEFAULT_K8S_RENDERED_MANIFEST) {
+        let resolved = load_resolved_coat_config()?;
+        if let Some(rendered) = resolved.config.kubernetes.rendered_manifest {
+            args.output = config_path(&rendered, resolved.project_root.as_deref())?;
+        }
+    }
+    Ok(args)
+}
+
+fn effective_k8s_render_source() -> anyhow::Result<PathBuf> {
+    let resolved = load_resolved_coat_config()?;
+    match resolved.config.kubernetes.manifest {
+        Some(manifest) => config_path(&manifest, resolved.project_root.as_deref()),
+        None => Ok(PathBuf::from(DEFAULT_K8S_MANIFEST)),
+    }
+}
+
+fn effective_k8s_apply_args(mut args: K8sApplyArgs) -> anyhow::Result<K8sApplyArgs> {
+    let resolved = load_resolved_coat_config()?;
+    let project_root = resolved.project_root.as_deref();
+    let k8s = resolved.config.kubernetes;
+    if args.file == PathBuf::from(DEFAULT_K8S_MANIFEST) {
+        if let Some(manifest) = k8s.manifest {
+            args.file = config_path(&manifest, project_root)?;
+        }
+    }
+    if args.kubectl == "kubectl" {
+        if let Some(kubectl) = k8s.kubectl {
+            args.kubectl = kubectl;
+        }
+    }
+    if args.context.is_none() {
+        args.context = k8s.context;
+    }
+    if args.kubeconfig.is_none() {
+        args.kubeconfig = k8s
+            .kubeconfig
+            .map(|path| config_path(&path, project_root))
+            .transpose()?;
+    }
+    if args.namespace.is_none() {
+        args.namespace = k8s.namespace;
+    }
+    Ok(args)
+}
+
+fn effective_k8s_status_args(mut args: K8sStatusArgs) -> anyhow::Result<K8sStatusArgs> {
+    let resolved = load_resolved_coat_config()?;
+    let project_root = resolved.project_root.as_deref();
+    let k8s = resolved.config.kubernetes;
+    if args.kubectl == "kubectl" {
+        if let Some(kubectl) = k8s.kubectl {
+            args.kubectl = kubectl;
+        }
+    }
+    if args.context.is_none() {
+        args.context = k8s.context;
+    }
+    if args.kubeconfig.is_none() {
+        args.kubeconfig = k8s
+            .kubeconfig
+            .map(|path| config_path(&path, project_root))
+            .transpose()?;
+    }
+    if args.namespace == DEFAULT_K8S_NAMESPACE {
+        if let Some(namespace) = k8s.namespace {
+            args.namespace = namespace;
+        }
+    }
+    Ok(args)
+}
+
+fn effective_executor_job_render_args(
+    mut args: ExecutorJobRenderArgs,
+) -> anyhow::Result<ExecutorJobRenderArgs> {
+    let k8s = load_resolved_coat_config()?.config.kubernetes;
+    if args.namespace == "jattg-sandboxes" {
+        if let Some(namespace) = k8s.namespace {
+            args.namespace = format!("{namespace}-sandboxes");
+        }
+    }
+    if args.service_account == "jattg-sandbox-task" {
+        if let Some(service_account) = k8s.service_account {
+            args.service_account = service_account;
+        }
+    }
+    Ok(args)
+}
+
+fn effective_executor_job_apply_args(
+    mut args: ExecutorJobApplyArgs,
+) -> anyhow::Result<ExecutorJobApplyArgs> {
+    args.render = effective_executor_job_render_args(args.render)?;
+    let resolved = load_resolved_coat_config()?;
+    let project_root = resolved.project_root.as_deref();
+    let k8s = resolved.config.kubernetes;
+    if args.kubectl == "kubectl" {
+        if let Some(kubectl) = k8s.kubectl {
+            args.kubectl = kubectl;
+        }
+    }
+    if args.context.is_none() {
+        args.context = k8s.context;
+    }
+    if args.kubeconfig.is_none() {
+        args.kubeconfig = k8s
+            .kubeconfig
+            .map(|path| config_path(&path, project_root))
+            .transpose()?;
+    }
+    Ok(args)
 }
 
 fn apply_k8s_manifest(args: K8sApplyArgs) -> anyhow::Result<()> {
     if !args.file.exists() {
-        bail!("{} does not exist; pass --file or run `coat k8s render --output {}` first", args.file.display(), args.file.display());
+        bail!(
+            "{} does not exist; pass --file or run `coat deploy cluster render --output {}` first",
+            args.file.display(),
+            args.file.display()
+        );
     }
     let command_args = kubectl_apply_args(KubectlApplySpec {
         file: args.file,
@@ -4016,7 +6246,7 @@ fn apply_k8s_manifest(args: K8sApplyArgs) -> anyhow::Result<()> {
 fn apply_ephemeral_jobs(args: EphemeralJobsApplyArgs) -> anyhow::Result<()> {
     if !args.file.exists() {
         bail!(
-            "{} does not exist; run `coat k8s ephemeral-jobs render --output {}` first or pass --file",
+            "{} does not exist; run `coat deploy cluster ephemeral-jobs render --output {}` first or pass --file",
             args.file.display(),
             args.file.display()
         );
@@ -4031,6 +6261,463 @@ fn apply_ephemeral_jobs(args: EphemeralJobsApplyArgs) -> anyhow::Result<()> {
         bail!("kubectl apply exited with {status}");
     }
     Ok(())
+}
+
+fn render_executor_job(args: ExecutorJobRenderArgs) -> anyhow::Result<()> {
+    let plan: SandboxLaunchPlan = read_json_file(&args.launch_plan)?;
+    let manifest = executor_job_manifest(&plan, &args)?;
+    if let Some(parent) = args.output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &args.output,
+        format!("{}\n", serde_json::to_string_pretty(&manifest)?),
+    )?;
+    println!(
+        "rendered sandbox executor Job {} from {}",
+        args.output.display(),
+        args.launch_plan.display()
+    );
+    Ok(())
+}
+
+fn apply_executor_job(args: ExecutorJobApplyArgs) -> anyhow::Result<()> {
+    render_executor_job(args.render.clone())?;
+    let command_args = kubectl_apply_args(KubectlApplySpec {
+        file: args.render.output,
+        context: args.context,
+        kubeconfig: args.kubeconfig,
+        namespace: Some(args.render.namespace),
+        dry_run: args.dry_run,
+    })?;
+    println!("{} {}", shell_quote(&args.kubectl), command_args.join(" "));
+    let status = Command::new(&args.kubectl)
+        .args(&command_args)
+        .status()
+        .context("run kubectl apply for sandbox executor Job")?;
+    if !status.success() {
+        bail!("kubectl apply exited with {status}");
+    }
+    Ok(())
+}
+
+fn k8s_status(args: K8sStatusArgs) -> anyhow::Result<()> {
+    let deployments = if args.deployment.is_empty() {
+        vec![
+            "coordinator".to_string(),
+            "goal-store".to_string(),
+            "runner-registry".to_string(),
+            "control-web".to_string(),
+        ]
+    } else {
+        args.deployment.clone()
+    };
+
+    for deployment in deployments {
+        let command_args = kubectl_rollout_status_args(&args, &deployment);
+        println!("{} {}", shell_quote(&args.kubectl), command_args.join(" "));
+        let status = Command::new(&args.kubectl)
+            .args(&command_args)
+            .status()
+            .with_context(|| format!("run kubectl rollout status for {deployment}"))?;
+        if !status.success() {
+            bail!("kubectl rollout status for {deployment} exited with {status}");
+        }
+    }
+    Ok(())
+}
+
+fn executor_job_manifest(
+    plan: &SandboxLaunchPlan,
+    args: &ExecutorJobRenderArgs,
+) -> anyhow::Result<serde_json::Value> {
+    let job_name = k8s_name(
+        args.name
+            .clone()
+            .unwrap_or_else(|| format!("jattg-executor-{}", short_uuid(plan.task_id))),
+    );
+    let plan_config_name = k8s_name(format!("{job_name}-plan"));
+    let image = args.image.clone().or_else(|| plan.image.clone()).unwrap_or_else(|| {
+        "ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:latest"
+            .to_string()
+    });
+    let runtime_class = args
+        .runtime_class
+        .clone()
+        .or_else(|| plan.runtime_class.clone());
+    let command = if args.executor_command.is_empty() {
+        plan.command.clone()
+    } else {
+        args.executor_command.clone()
+    };
+    let extra_env = parse_kv_pairs(&args.env, "--env")?;
+    let extra_labels = parse_kv_pairs(&args.label, "--label")?;
+    let extra_annotations = parse_kv_pairs(&args.annotation, "--annotation")?;
+
+    let mut labels = serde_json::Map::new();
+    insert_json_string(
+        &mut labels,
+        "app.kubernetes.io/name",
+        "jattg-sandbox-executor",
+    );
+    insert_json_string(&mut labels, "app.kubernetes.io/part-of", "jattg");
+    insert_json_string(
+        &mut labels,
+        "app.kubernetes.io/component",
+        "sandbox-executor",
+    );
+    insert_json_string(&mut labels, "jattg.dev/goal-id", plan.goal_id.to_string());
+    insert_json_string(&mut labels, "jattg.dev/task-id", plan.task_id.to_string());
+    insert_json_string(
+        &mut labels,
+        "jattg.dev/workspace-id",
+        plan.workspace_id.to_string(),
+    );
+    insert_json_string(
+        &mut labels,
+        "jattg.dev/sandbox-backend",
+        plan.backend.as_str(),
+    );
+    insert_json_string(
+        &mut labels,
+        "jattg.dev/network-access",
+        network_access_as_str(&plan.network.access),
+    );
+    for (key, value) in &plan.network.network_policy_labels {
+        insert_json_string(
+            &mut labels,
+            key.as_str(),
+            sanitize_label_value(value.as_str()),
+        );
+    }
+    for (key, value) in extra_labels {
+        insert_json_string(&mut labels, key, sanitize_label_value(value));
+    }
+
+    let mut annotations = serde_json::Map::new();
+    insert_json_string(
+        &mut annotations,
+        "jattg.dev/artifact-manifest-path",
+        &plan.artifact_manifest_path,
+    );
+    insert_json_string(
+        &mut annotations,
+        "jattg.dev/checkpoint-manifest-path",
+        &plan.checkpoint_manifest_path,
+    );
+    if let Some(egress) = &plan.network.egress_policy_ref {
+        insert_json_string(&mut annotations, "jattg.dev/egress-policy-ref", egress);
+    }
+    if let Some(ingress) = &plan.network.ingress_policy_ref {
+        insert_json_string(&mut annotations, "jattg.dev/ingress-policy-ref", ingress);
+    }
+    if let Some(apparmor) = &plan.security.apparmor_profile {
+        insert_json_string(
+            &mut annotations,
+            "container.apparmor.security.beta.kubernetes.io/executor",
+            apparmor,
+        );
+    }
+    for (key, value) in extra_annotations {
+        insert_json_string(&mut annotations, key, value);
+    }
+
+    let mut env = vec![
+        env_var("COAT_GOAL_ID", plan.goal_id.to_string()),
+        env_var("COAT_TASK_ID", plan.task_id.to_string()),
+        env_var("COAT_WORKSPACE_ID", plan.workspace_id.to_string()),
+        env_var("COAT_SANDBOX_BACKEND", plan.backend.as_str()),
+        env_var(
+            "COAT_SANDBOX_NETWORK_ACCESS",
+            network_access_as_str(&plan.network.access),
+        ),
+        env_var("COAT_WORKSPACE_PATH", &plan.workspace_path),
+        env_var("COAT_WORKSPACE_MOUNT_PATH", &args.workspace_mount_path),
+        env_var("COAT_LAUNCH_PLAN_PATH", "/coat/sandbox-launch-plan.json"),
+        env_var("COAT_ARTIFACT_MANIFEST_PATH", &plan.artifact_manifest_path),
+        env_var(
+            "COAT_CHECKPOINT_MANIFEST_PATH",
+            &plan.checkpoint_manifest_path,
+        ),
+    ];
+    if let Some(pids_limit) = plan.resources.pids_limit {
+        env.push(env_var("COAT_PIDS_LIMIT", pids_limit.to_string()));
+    }
+    for (key, value) in &plan.environment {
+        env.push(env_var(key.clone(), value));
+    }
+    for (key, value) in extra_env {
+        env.push(env_var(key, value));
+    }
+
+    let mut container = serde_json::Map::new();
+    container.insert("name".to_string(), serde_json::json!("executor"));
+    container.insert("image".to_string(), serde_json::json!(image));
+    container.insert(
+        "imagePullPolicy".to_string(),
+        serde_json::json!("IfNotPresent"),
+    );
+    if let Some((entrypoint, entrypoint_args)) = split_executor_command(&command) {
+        container.insert("command".to_string(), serde_json::json!([entrypoint]));
+        if !entrypoint_args.is_empty() {
+            container.insert("args".to_string(), serde_json::json!(entrypoint_args));
+        }
+    }
+    container.insert("env".to_string(), serde_json::Value::Array(env));
+    container.insert(
+        "volumeMounts".to_string(),
+        serde_json::json!([
+            {
+                "name": "launch-plan",
+                "mountPath": "/coat/sandbox-launch-plan.json",
+                "subPath": "sandbox-launch-plan.json",
+                "readOnly": true
+            },
+            {
+                "name": "workspace",
+                "mountPath": args.workspace_mount_path.clone()
+            }
+        ]),
+    );
+    if let Some(resources) = container_resources(&plan.resources) {
+        container.insert("resources".to_string(), resources);
+    }
+    container.insert(
+        "securityContext".to_string(),
+        container_security_context(&plan.security),
+    );
+
+    let mut pod_spec = serde_json::Map::new();
+    pod_spec.insert(
+        "serviceAccountName".to_string(),
+        serde_json::json!(args.service_account.clone()),
+    );
+    pod_spec.insert("restartPolicy".to_string(), serde_json::json!("Never"));
+    if let Some(runtime_class) = runtime_class {
+        pod_spec.insert(
+            "runtimeClassName".to_string(),
+            serde_json::json!(runtime_class),
+        );
+    }
+    pod_spec.insert(
+        "containers".to_string(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(container)]),
+    );
+    pod_spec.insert(
+        "volumes".to_string(),
+        serde_json::json!([
+            {
+                "name": "launch-plan",
+                "configMap": {
+                    "name": plan_config_name.clone()
+                }
+            },
+            workspace_volume(args.workspace_pvc.as_deref())
+        ]),
+    );
+
+    let config_map = serde_json::json!({
+        "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+            "name": plan_config_name,
+            "namespace": args.namespace.clone(),
+            "labels": labels.clone()
+        },
+        "data": {
+            "sandbox-launch-plan.json": serde_json::to_string_pretty(plan)?
+        }
+    });
+    let job = serde_json::json!({
+        "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+            "name": job_name,
+            "namespace": args.namespace.clone(),
+            "labels": labels.clone(),
+            "annotations": annotations.clone()
+        },
+        "spec": {
+            "backoffLimit": args.backoff_limit,
+            "activeDeadlineSeconds": args.active_deadline_seconds,
+            "ttlSecondsAfterFinished": args.ttl_seconds_after_finished,
+            "template": {
+                "metadata": {
+                    "labels": labels,
+                    "annotations": annotations
+                },
+                "spec": pod_spec
+            }
+        }
+    });
+    Ok(serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": [config_map, job]
+    }))
+}
+
+fn parse_kv_pairs(raw: &[String], flag_name: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut pairs = BTreeMap::new();
+    for item in raw {
+        let (key, value) = item
+            .split_once('=')
+            .with_context(|| format!("{flag_name} expects key=value, got {item:?}"))?;
+        let key = key.trim();
+        if key.is_empty() {
+            bail!("{flag_name} key must not be empty");
+        }
+        pairs.insert(key.to_string(), value.trim().to_string());
+    }
+    Ok(pairs)
+}
+
+fn insert_json_string(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: impl Into<String>,
+    value: impl Into<String>,
+) {
+    map.insert(key.into(), serde_json::Value::String(value.into()));
+}
+
+fn env_var(name: impl Into<String>, value: impl ToString) -> serde_json::Value {
+    serde_json::json!({
+        "name": name.into(),
+        "value": value.to_string()
+    })
+}
+
+fn split_executor_command(command: &[String]) -> Option<(String, Vec<String>)> {
+    let (entrypoint, args) = command.split_first()?;
+    Some((entrypoint.clone(), args.to_vec()))
+}
+
+fn container_resources(resources: &SandboxResourcePlan) -> Option<serde_json::Value> {
+    let mut limits = serde_json::Map::new();
+    if let Some(cpu_millis) = resources.cpu_limit_millis {
+        insert_json_string(&mut limits, "cpu", format!("{cpu_millis}m"));
+    }
+    if let Some(memory_mb) = resources.memory_limit_mb {
+        insert_json_string(&mut limits, "memory", format!("{memory_mb}Mi"));
+    }
+    if let Some(ephemeral_storage_mb) = resources.ephemeral_storage_mb {
+        insert_json_string(
+            &mut limits,
+            "ephemeral-storage",
+            format!("{ephemeral_storage_mb}Mi"),
+        );
+    }
+    if limits.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "limits": limits.clone(),
+        "requests": limits
+    }))
+}
+
+fn container_security_context(security: &SandboxSecurityPlan) -> serde_json::Value {
+    let mut context = serde_json::Map::new();
+    context.insert(
+        "readOnlyRootFilesystem".to_string(),
+        security.read_only_rootfs.into(),
+    );
+    context.insert(
+        "allowPrivilegeEscalation".to_string(),
+        (!security.no_new_privileges).into(),
+    );
+    context.insert("runAsNonRoot".to_string(), security.run_as_non_root.into());
+    if !security.drop_capabilities.is_empty() {
+        context.insert(
+            "capabilities".to_string(),
+            serde_json::json!({ "drop": security.drop_capabilities.clone() }),
+        );
+    }
+    if let Some(seccomp) = &security.seccomp_profile {
+        context.insert("seccompProfile".to_string(), seccomp_profile(seccomp));
+    }
+    serde_json::Value::Object(context)
+}
+
+fn seccomp_profile(profile: &str) -> serde_json::Value {
+    match profile {
+        "RuntimeDefault" | "runtime_default" | "runtime-default" => {
+            serde_json::json!({ "type": "RuntimeDefault" })
+        }
+        "Unconfined" | "unconfined" => serde_json::json!({ "type": "Unconfined" }),
+        localhost => serde_json::json!({
+            "type": "Localhost",
+            "localhostProfile": localhost
+        }),
+    }
+}
+
+fn workspace_volume(pvc: Option<&str>) -> serde_json::Value {
+    match pvc {
+        Some(claim_name) => serde_json::json!({
+            "name": "workspace",
+            "persistentVolumeClaim": {
+                "claimName": claim_name
+            }
+        }),
+        None => serde_json::json!({
+            "name": "workspace",
+            "emptyDir": {}
+        }),
+    }
+}
+
+fn short_uuid(id: Uuid) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+fn k8s_name(input: impl Into<String>) -> String {
+    let mut value = input
+        .into()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while value.contains("--") {
+        value = value.replace("--", "-");
+    }
+    value = value.trim_matches('-').to_string();
+    if value.is_empty() {
+        return "jattg-executor".to_string();
+    }
+    value.truncate(63);
+    value.trim_matches('-').to_string()
+}
+
+fn sanitize_label_value(value: impl Into<String>) -> String {
+    let mut value = value
+        .into()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    value.truncate(63);
+    value
+        .trim_matches(|ch| ch == '-' || ch == '_' || ch == '.')
+        .to_string()
+}
+
+fn network_access_as_str(access: &NetworkAccess) -> &'static str {
+    match access {
+        NetworkAccess::Disabled => "disabled",
+        NetworkAccess::Restricted => "restricted",
+        NetworkAccess::Open => "open",
+    }
 }
 
 #[derive(Debug)]
@@ -4078,12 +6765,100 @@ fn kubectl_ephemeral_jobs_apply_args(args: &EphemeralJobsApplyArgs) -> anyhow::R
     })
 }
 
+fn kubectl_rollout_status_args(args: &K8sStatusArgs, deployment: &str) -> Vec<String> {
+    let mut command_args = Vec::new();
+    if let Some(context) = args.context.as_deref() {
+        command_args.push("--context".to_string());
+        command_args.push(context.to_string());
+    }
+    if let Some(kubeconfig) = &args.kubeconfig {
+        command_args.push("--kubeconfig".to_string());
+        command_args.push(kubeconfig.display().to_string());
+    }
+    command_args.push("--namespace".to_string());
+    command_args.push(args.namespace.clone());
+    command_args.push("rollout".to_string());
+    command_args.push("status".to_string());
+    command_args.push(if deployment.contains('/') {
+        deployment.to_string()
+    } else {
+        format!("deployment/{deployment}")
+    });
+    if let Some(timeout) = args.timeout.as_deref() {
+        command_args.push(format!("--timeout={timeout}"));
+    }
+    command_args
+}
+
 fn restate(args: RestateCommand) -> anyhow::Result<()> {
     match args.command {
-        RestateSubcommand::CloudEnv(args) => restate_cloud_env(args),
-        RestateSubcommand::TunnelDocker(args) => restate_tunnel_docker(args),
-        RestateSubcommand::RegisterCloud(args) => restate_register_cloud(args),
+        RestateSubcommand::CloudEnv(args) => {
+            restate_cloud_env(effective_restate_cloud_env_args(args)?)
+        }
+        RestateSubcommand::TunnelDocker(args) => {
+            restate_tunnel_docker(effective_restate_tunnel_docker_args(args)?)
+        }
+        RestateSubcommand::RegisterCloud(args) => {
+            restate_register_cloud(effective_restate_register_cloud_args(args)?)
+        }
     }
+}
+
+fn effective_restate_cloud_env_args(
+    mut args: RestateCloudEnvArgs,
+) -> anyhow::Result<RestateCloudEnvArgs> {
+    let cloud = load_resolved_coat_config()?.config.cloud.restate_cloud;
+    if args.tunnel_name == DEFAULT_RESTATE_TUNNEL_NAME {
+        if let Some(tunnel_name) = cloud.tunnel_name.clone() {
+            args.tunnel_name = tunnel_name;
+        }
+    }
+    if args.region == DEFAULT_RESTATE_REGION {
+        if let Some(region) = cloud.region.clone() {
+            args.region = region;
+        }
+    }
+    if args.ingress_url == DEFAULT_RESTATE_LOCAL_INGRESS {
+        if let Some(ingress_url) = cloud.local_ingress_url.clone() {
+            args.ingress_url = ingress_url;
+        }
+    }
+    if args.admin_url == DEFAULT_RESTATE_LOCAL_ADMIN {
+        if let Some(admin_url) = cloud.local_admin_url.clone() {
+            args.admin_url = admin_url;
+        }
+    }
+    if args.coordinator_url == DEFAULT_COORDINATOR_URL {
+        if let Some(coordinator_url) = cloud.coordinator_url {
+            args.coordinator_url = coordinator_url;
+        }
+    }
+    Ok(args)
+}
+
+fn effective_restate_tunnel_docker_args(
+    mut args: RestateTunnelDockerArgs,
+) -> anyhow::Result<RestateTunnelDockerArgs> {
+    let cloud = load_resolved_coat_config()?.config.cloud.restate_cloud;
+    if args.tunnel_name == DEFAULT_RESTATE_TUNNEL_NAME {
+        if let Some(tunnel_name) = cloud.tunnel_name.clone() {
+            args.tunnel_name = tunnel_name;
+        }
+    }
+    if args.region == DEFAULT_RESTATE_REGION {
+        if let Some(region) = cloud.region {
+            args.region = region;
+        }
+    }
+    Ok(args)
+}
+
+fn effective_restate_register_cloud_args(
+    mut args: RestateRegisterCloudArgs,
+) -> anyhow::Result<RestateRegisterCloudArgs> {
+    args.tunnel_name = effective_restate_tunnel_name(&args.tunnel_name)?;
+    args.service_url = effective_restate_service_url(&args.service_url)?;
+    Ok(args)
 }
 
 fn restate_cloud_env(args: RestateCloudEnvArgs) -> anyhow::Result<()> {
@@ -4125,7 +6900,7 @@ fn restate_cloud_env(args: RestateCloudEnvArgs) -> anyhow::Result<()> {
         shell_quote(&args.tunnel_name)
     );
     println!(
-        "#   coat restate register-cloud --tunnel-name {} --service-url {}",
+        "#   coat deploy restate register-cloud --tunnel-name {} --service-url {}",
         shell_quote(&args.tunnel_name),
         shell_quote(&args.coordinator_url)
     );
@@ -4198,14 +6973,26 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatClientArgs, ComposeConfigArgs, ComposeUpArgs, EphemeralJobsApplyArgs,
-        KubectlApplySpec, bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
-        compose_config_command_args, compose_up_command_args, ensure_json_goal_id,
-        extract_follow_ups, kubectl_apply_args, kubectl_ephemeral_jobs_apply_args, latest_goal_id_from_value,
-        release_plan_json, replace_env_line, replace_toml_section_value, replace_yaml_root_value,
+        ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs, DEFAULT_GOAL_STORE_URL,
+        DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs, HelmTemplateArgs,
+        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec, PlanSubcommand,
+        ProjectInitAction, ProjectInitCheck, apply_config_profile, bump_release_versions,
+        chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
+        compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
+        compose_up_command_args, endpoint_from_config, ensure_json_goal_id, executor_job_manifest,
+        extract_follow_ups, helm_template_args, helm_upgrade_args, kubectl_apply_args,
+        kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args, latest_goal_id_from_value,
+        merge_coat_config, parse_env_file_content, project_init_action, release_plan_json,
+        replace_env_line, replace_toml_section_value, replace_yaml_root_value,
         restate_cloud_env_placeholders,
     };
-    use std::path::PathBuf;
+    use clap::{CommandFactory, Parser};
+    use coat_domain::{
+        CoatCliConfig, CoatConfig, CoatLocalDeployConfig, CoatServiceEndpoints, NetworkAccess,
+        SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan, SandboxResourcePlan,
+        SandboxSecurityPlan,
+    };
+    use std::{collections::BTreeMap, path::PathBuf};
     use uuid::Uuid;
 
     #[test]
@@ -4232,6 +7019,186 @@ mod tests {
                 "Add live adapter tests.".to_string(),
                 "Document production rollout.".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn visible_cli_hierarchy_hides_legacy_top_level_duplicates() {
+        let command = Cli::command();
+        let visible = command
+            .get_subcommands()
+            .filter(|command| !command.is_hide_set())
+            .map(|command| command.get_name().to_string())
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "guide", "plan", "goal", "human", "deploy", "event", "runner", "memory", "store",
+            "sandbox", "release", "setup", "init",
+        ] {
+            assert!(
+                visible.contains(&expected.to_string()),
+                "visible commands should include {expected}: {visible:?}"
+            );
+        }
+        for legacy in [
+            "compose",
+            "k8s",
+            "helm",
+            "restate",
+            "approve",
+            "notify",
+            "follow-ups",
+        ] {
+            assert!(
+                !visible.contains(&legacy.to_string()),
+                "legacy duplicate command should be hidden: {legacy}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_root_config_profile_override() {
+        let cli = Cli::parse_from([
+            "coat",
+            "--config-profile",
+            "restate-cloud",
+            "deploy",
+            "local",
+            "config",
+            "--restate-cloud",
+        ]);
+
+        assert_eq!(cli.config_profile.as_deref(), Some("restate-cloud"));
+        assert!(matches!(cli.command, Some(Commands::Deploy(_))));
+    }
+
+    #[test]
+    fn canonical_hierarchy_parses_deploy_human_and_plan_followups() {
+        let deploy = Cli::try_parse_from(["coat", "deploy", "local", "config"])
+            .expect("parse deploy local config");
+        assert!(matches!(
+            deploy.command,
+            Some(Commands::Deploy(ref deploy))
+                if matches!(deploy.command, DeploySubcommand::Local(_))
+        ));
+
+        let preflight = Cli::try_parse_from([
+            "coat",
+            "deploy",
+            "local",
+            "preflight",
+            "--allow-stub-runners",
+        ])
+        .expect("parse deploy local preflight");
+        assert!(matches!(
+            preflight.command,
+            Some(Commands::Deploy(ref deploy))
+                if matches!(deploy.command, DeploySubcommand::Local(_))
+        ));
+
+        let human = Cli::try_parse_from(["coat", "human", "notify", "--queue"])
+            .expect("parse human notify");
+        assert!(matches!(
+            human.command,
+            Some(Commands::Human(ref human))
+                if matches!(human.command, HumanSubcommand::Notify(_))
+        ));
+
+        let follow_ups = Cli::try_parse_from(["coat", "plan", "follow-ups", "--json"])
+            .expect("parse plan follow-ups");
+        assert!(matches!(
+            follow_ups.command,
+            Some(Commands::Plan(ref plan))
+                if matches!(plan.command, PlanSubcommand::FollowUps(_))
+        ));
+    }
+
+    #[test]
+    fn compose_preflight_blocks_uninitialized_all_stub_stack_by_default() {
+        let values = BTreeMap::new();
+        let (_warnings, failures) =
+            compose_model_preflight_findings(false, &[], &values, false, false);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("missing .coat/project.json")),
+            "uninitialized project should fail: {failures:?}"
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("all Compose agent lanes are stubbed")),
+            "all-stub Compose should fail unless explicitly allowed: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_allows_intentional_stub_smoke_stack() {
+        let values = BTreeMap::new();
+        let (warnings, failures) =
+            compose_model_preflight_findings(true, &[], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "stub smoke should be allowed: {failures:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("all Compose agent lanes are stubbed")),
+            "allowed stubs should still be visible: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_requires_live_model_configuration() {
+        let values = BTreeMap::from([
+            ("MODEL_PROVIDER_RUNNER_MODE".to_string(), "live".to_string()),
+            (
+                "MODEL_PROVIDER_KIND".to_string(),
+                "open_ai_compatible".to_string(),
+            ),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[], &values, false, true);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("MODEL_PROVIDER_MODEL")),
+            "live model-provider should require a model: {failures:?}"
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("MODEL_PROVIDER_ENDPOINT")),
+            "live OpenAI-compatible provider should require an endpoint: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_env_parser_and_runner_modes_honor_non_stub_values() {
+        let values = parse_env_file_content(
+            r#"
+            # comments are ignored
+            CODEX_RUNNER_MODE=live
+            MODEL_PROVIDER_LOCAL_RUNNER_MODE=live # comment
+            LOCAL_MODEL_PROVIDER_MODEL=llama3.1
+            LOCAL_MODEL_PROVIDER_ENDPOINT=http://host.docker.internal:11434/v1
+            "#,
+        );
+        let modes = compose_runner_modes(&values);
+
+        assert!(
+            modes
+                .iter()
+                .any(|(lane, _key, mode)| *lane == "codex" && mode == "live")
+        );
+        assert!(
+            modes
+                .iter()
+                .any(|(lane, _key, mode)| *lane == "model-provider-local" && mode == "live")
         );
     }
 
@@ -4341,6 +7308,226 @@ mod tests {
     }
 
     #[test]
+    fn kubectl_rollout_status_args_target_default_namespace_and_timeout() {
+        let args = K8sStatusArgs {
+            kubectl: "kubectl".to_string(),
+            context: Some("prod".to_string()),
+            kubeconfig: Some(PathBuf::from("/tmp/kubeconfig")),
+            namespace: "jattg".to_string(),
+            timeout: Some("120s".to_string()),
+            deployment: Vec::new(),
+        };
+
+        assert_eq!(
+            kubectl_rollout_status_args(&args, "coordinator"),
+            vec![
+                "--context",
+                "prod",
+                "--kubeconfig",
+                "/tmp/kubeconfig",
+                "--namespace",
+                "jattg",
+                "rollout",
+                "status",
+                "deployment/coordinator",
+                "--timeout=120s",
+            ]
+        );
+        assert_eq!(
+            kubectl_rollout_status_args(&args, "statefulset/postgres"),
+            vec![
+                "--context",
+                "prod",
+                "--kubeconfig",
+                "/tmp/kubeconfig",
+                "--namespace",
+                "jattg",
+                "rollout",
+                "status",
+                "statefulset/postgres",
+                "--timeout=120s",
+            ]
+        );
+    }
+
+    #[test]
+    fn executor_job_manifest_projects_launch_plan_to_bounded_job() {
+        let goal_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756602").expect("uuid");
+        let task_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756603").expect("uuid");
+        let workspace_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756604").expect("uuid");
+        let plan = SandboxLaunchPlan {
+            goal_id,
+            task_id,
+            workspace_id,
+            backend: SandboxBackend::KubernetesJob,
+            runtime_class: Some("gvisor".to_string()),
+            image: Some("ghcr.io/example/custom-executor:0.1.0".to_string()),
+            workspace_path: "/workspaces/goal/task".to_string(),
+            artifact_manifest_path: "/workspace/artifacts/artifact-manifest.json".to_string(),
+            checkpoint_manifest_path: "/workspace/checkpoints/checkpoint-manifest.json".to_string(),
+            command: vec![
+                "/bin/sh".to_string(),
+                "-lc".to_string(),
+                "cargo test --workspace".to_string(),
+            ],
+            environment: BTreeMap::from([("RUST_LOG".to_string(), "info".to_string())]),
+            required_capabilities: Vec::new(),
+            resources: SandboxResourcePlan {
+                cpu_limit_millis: Some(750),
+                memory_limit_mb: Some(1024),
+                pids_limit: Some(128),
+                ephemeral_storage_mb: Some(2048),
+            },
+            security: SandboxSecurityPlan {
+                read_only_rootfs: true,
+                no_new_privileges: true,
+                run_as_non_root: true,
+                seccomp_profile: Some("RuntimeDefault".to_string()),
+                apparmor_profile: Some("runtime/default".to_string()),
+                drop_capabilities: vec!["ALL".to_string()],
+            },
+            network: SandboxNetworkPlan {
+                access: NetworkAccess::Restricted,
+                deny_by_default: true,
+                egress_policy_ref: Some("control-plane-only".to_string()),
+                ingress_policy_ref: None,
+                network_policy_labels: BTreeMap::from([(
+                    "jattg.dev/network-profile".to_string(),
+                    "control-plane-only".to_string(),
+                )]),
+                allowed_internal_services: vec!["runner-registry".to_string()],
+            },
+            git_result: None,
+            object_prefix: None,
+            warnings: Vec::new(),
+        };
+        let args = ExecutorJobRenderArgs {
+            launch_plan: PathBuf::from("sandbox-launch-plan.json"),
+            output: PathBuf::from("/tmp/executor-job.json"),
+            namespace: "jattg-sandboxes".to_string(),
+            name: Some("task-executor".to_string()),
+            image: None,
+            service_account: "jattg-sandbox-task".to_string(),
+            runtime_class: None,
+            workspace_pvc: Some("task-workspaces".to_string()),
+            workspace_mount_path: "/workspace".to_string(),
+            backoff_limit: 0,
+            active_deadline_seconds: 900,
+            ttl_seconds_after_finished: 120,
+            executor_command: Vec::new(),
+            env: vec!["EXTRA_FLAG=true".to_string()],
+            label: vec!["owner=validator".to_string()],
+            annotation: vec!["example.com/reason=smoke".to_string()],
+        };
+
+        let manifest = executor_job_manifest(&plan, &args).expect("manifest");
+        assert_eq!(manifest["kind"], "List");
+        let items = manifest["items"].as_array().expect("items");
+        assert_eq!(items[0]["kind"], "ConfigMap");
+        assert_eq!(items[1]["kind"], "Job");
+        let job = &items[1];
+        assert_eq!(job["metadata"]["name"], "task-executor");
+        assert_eq!(
+            job["metadata"]["labels"]["jattg.dev/task-id"],
+            task_id.to_string()
+        );
+        assert_eq!(job["metadata"]["labels"]["owner"], "validator");
+        assert_eq!(
+            job["metadata"]["annotations"]["jattg.dev/egress-policy-ref"],
+            "control-plane-only"
+        );
+        assert_eq!(job["spec"]["activeDeadlineSeconds"], 900);
+        assert_eq!(
+            job["spec"]["template"]["spec"]["runtimeClassName"],
+            "gvisor"
+        );
+        let container = &job["spec"]["template"]["spec"]["containers"][0];
+        assert_eq!(container["image"], "ghcr.io/example/custom-executor:0.1.0");
+        assert_eq!(container["command"], serde_json::json!(["/bin/sh"]));
+        assert_eq!(
+            container["args"],
+            serde_json::json!(["-lc", "cargo test --workspace"])
+        );
+        assert_eq!(container["resources"]["limits"]["cpu"], "750m");
+        assert_eq!(container["resources"]["limits"]["memory"], "1024Mi");
+        assert_eq!(
+            container["securityContext"]["allowPrivilegeEscalation"],
+            false
+        );
+        assert_eq!(
+            job["spec"]["template"]["spec"]["volumes"][1]["persistentVolumeClaim"]["claimName"],
+            "task-workspaces"
+        );
+    }
+
+    #[test]
+    fn helm_template_args_render_release_with_values_and_sets() {
+        let args = HelmTemplateArgs {
+            helm: "helm".to_string(),
+            release: "jattg".to_string(),
+            chart: PathBuf::from("infra/helm/jattg"),
+            values: vec![PathBuf::from("operator-values.yaml")],
+            set_values: vec!["global.imageTag=0.2.0".to_string()],
+            namespace: Some("jattg".to_string()),
+            output: Some(PathBuf::from("/tmp/jattg.yaml")),
+            include_crds: true,
+        };
+
+        assert_eq!(
+            helm_template_args(&args),
+            vec![
+                "template",
+                "jattg",
+                "infra/helm/jattg",
+                "--values",
+                "operator-values.yaml",
+                "--set",
+                "global.imageTag=0.2.0",
+                "--namespace",
+                "jattg",
+                "--include-crds",
+            ]
+        );
+    }
+
+    #[test]
+    fn helm_upgrade_args_install_with_namespace_values_wait_and_dry_run() {
+        let args = HelmUpgradeArgs {
+            helm: "helm".to_string(),
+            release: "jattg".to_string(),
+            chart: PathBuf::from("infra/helm/jattg"),
+            values: vec![PathBuf::from("operator-values.yaml")],
+            set_values: vec!["config.COAT_GOAL_STORE_BACKEND=postgres".to_string()],
+            namespace: "jattg".to_string(),
+            no_create_namespace: false,
+            dry_run: true,
+            wait: true,
+            timeout: Some("10m".to_string()),
+        };
+
+        assert_eq!(
+            helm_upgrade_args(&args),
+            vec![
+                "upgrade",
+                "--install",
+                "jattg",
+                "infra/helm/jattg",
+                "--namespace",
+                "jattg",
+                "--create-namespace",
+                "--values",
+                "operator-values.yaml",
+                "--set",
+                "config.COAT_GOAL_STORE_BACKEND=postgres",
+                "--dry-run",
+                "--wait",
+                "--timeout",
+                "10m",
+            ]
+        );
+    }
+
+    #[test]
     fn compose_restate_cloud_register_uses_detached_tunnel_profile() {
         let args = ComposeUpArgs {
             restate_cloud: true,
@@ -4350,6 +7537,9 @@ mod tests {
             detach: false,
             register_cloud: true,
             init_env: false,
+            skip_preflight: false,
+            allow_uninitialized: false,
+            allow_stub_runners: false,
             tunnel_name: "jattg-personal".to_string(),
             service_url: "http://coordinator:9080".to_string(),
             services: vec!["coordinator".to_string()],
@@ -4386,6 +7576,7 @@ mod tests {
             restate_cloud_env_file: PathBuf::from("infra/compose/restate-cloud.env"),
             env_file: Vec::new(),
             profile: Vec::new(),
+            allow_placeholder_env: false,
         };
 
         assert_eq!(
@@ -4434,6 +7625,151 @@ mod tests {
         assert_eq!(
             updated,
             "OPENAI_API_KEY=\nLOCAL_MODEL_PROVIDER_KIND=vllm\nOTHER=value\n"
+        );
+    }
+
+    #[test]
+    fn coat_config_merge_preserves_project_defaults_and_user_overrides() {
+        let mut base = CoatConfig {
+            service_endpoints: CoatServiceEndpoints {
+                goal_store_url: Some("http://localhost:9088".to_string()),
+                ..CoatServiceEndpoints::default()
+            },
+            local_deploy: CoatLocalDeployConfig {
+                env_files: vec!["infra/compose/local-providers.env".to_string()],
+                allow_stub_runners: Some(false),
+                ..CoatLocalDeployConfig::default()
+            },
+            ..CoatConfig::default()
+        };
+        let overlay = CoatConfig {
+            service_endpoints: CoatServiceEndpoints {
+                goal_store_url: Some("http://remote-goal-store:9088".to_string()),
+                ..CoatServiceEndpoints::default()
+            },
+            local_deploy: CoatLocalDeployConfig {
+                env_files: vec![
+                    "infra/compose/local-providers.env".to_string(),
+                    "~/.coat/local-providers.env".to_string(),
+                ],
+                allow_stub_runners: Some(true),
+                ..CoatLocalDeployConfig::default()
+            },
+            ..CoatConfig::default()
+        };
+
+        merge_coat_config(&mut base, overlay);
+
+        assert_eq!(
+            base.service_endpoints.goal_store_url.as_deref(),
+            Some("http://remote-goal-store:9088")
+        );
+        assert_eq!(
+            base.local_deploy.env_files,
+            vec![
+                "infra/compose/local-providers.env".to_string(),
+                "~/.coat/local-providers.env".to_string()
+            ]
+        );
+        assert_eq!(base.local_deploy.allow_stub_runners, Some(true));
+    }
+
+    #[test]
+    fn standard_config_profiles_drive_cloud_and_eks_defaults() {
+        let mut restate_cloud = CoatConfig::project_defaults();
+        apply_config_profile(&mut restate_cloud, "restate-cloud").expect("restate profile");
+        assert_eq!(
+            restate_cloud.defaults.restate_ingress.as_deref(),
+            Some("http://localhost:18080")
+        );
+        assert_eq!(
+            restate_cloud.cloud.restate_cloud.env_file.as_deref(),
+            Some("infra/compose/restate-cloud.env")
+        );
+        assert_eq!(
+            restate_cloud.local_deploy.profiles,
+            vec!["restate-cloud".to_string()]
+        );
+
+        let mut eks = CoatConfig::project_defaults();
+        apply_config_profile(&mut eks, "eks").expect("eks profile");
+        assert_eq!(eks.kubernetes.namespace.as_deref(), Some("jattg"));
+        assert_eq!(
+            eks.kubernetes.helm_chart.as_deref(),
+            Some("infra/helm/jattg")
+        );
+        assert_eq!(eks.cloud.object_store.as_deref(), Some("s3"));
+        assert_eq!(
+            eks.kubernetes.workload_identity.as_deref(),
+            Some("irsa_or_eks_pod_identity")
+        );
+    }
+
+    #[test]
+    fn endpoint_resolution_only_replaces_builtin_defaults() {
+        assert_eq!(
+            endpoint_from_config(
+                DEFAULT_GOAL_STORE_URL,
+                DEFAULT_GOAL_STORE_URL,
+                Some("http://profile-goal-store:9088".to_string())
+            ),
+            "http://profile-goal-store:9088"
+        );
+        assert_eq!(
+            endpoint_from_config(
+                "http://explicit-goal-store:9088",
+                DEFAULT_GOAL_STORE_URL,
+                Some("http://profile-goal-store:9088".to_string())
+            ),
+            "http://explicit-goal-store:9088"
+        );
+        assert_eq!(
+            endpoint_from_config(DEFAULT_GOAL_STORE_URL, DEFAULT_GOAL_STORE_URL, None),
+            DEFAULT_GOAL_STORE_URL
+        );
+    }
+
+    #[test]
+    fn project_init_policy_requires_initialized_durable_commands() {
+        let cli = CoatCliConfig {
+            warn_uninitialized: Some(true),
+            require_project_for_durable_commands: Some(true),
+            ..CoatCliConfig::default()
+        };
+
+        assert_eq!(
+            project_init_action(false, ProjectInitCheck::Durable, &cli, false),
+            ProjectInitAction::Fail
+        );
+        assert_eq!(
+            project_init_action(false, ProjectInitCheck::Durable, &cli, true),
+            ProjectInitAction::Warn
+        );
+        assert_eq!(
+            project_init_action(false, ProjectInitCheck::WarnOnly, &cli, false),
+            ProjectInitAction::Warn
+        );
+        assert_eq!(
+            project_init_action(true, ProjectInitCheck::Durable, &cli, false),
+            ProjectInitAction::Proceed
+        );
+    }
+
+    #[test]
+    fn project_init_policy_can_be_relaxed_by_config() {
+        let cli = CoatCliConfig {
+            warn_uninitialized: Some(false),
+            require_project_for_durable_commands: Some(false),
+            ..CoatCliConfig::default()
+        };
+
+        assert_eq!(
+            project_init_action(false, ProjectInitCheck::Durable, &cli, false),
+            ProjectInitAction::Proceed
+        );
+        assert_eq!(
+            project_init_action(false, ProjectInitCheck::WarnOnly, &cli, false),
+            ProjectInitAction::Proceed
         );
     }
 

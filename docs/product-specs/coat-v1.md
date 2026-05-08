@@ -2,7 +2,7 @@
 
 ## Problem
 
-Long-running agent systems fail when the agent loop owns too much: global plan, tool side effects, retry policy, context, and completion judgment. Joseph and the Amazing Technicolor Task Graph makes the loop durable and explicit by modeling the work as a task tree. `coat` is the short operational slug.
+Long-running agent systems fail when the agent loop owns too much: global plan, tool side effects, retry policy, context, and completion judgment. Joseph and the Amazing Technicolor Task Graph makes the loop durable and explicit by modeling the work as a task tree. COAT — Coordinator Of Agentic Tasks — is the short operational name.
 
 ## Goal
 
@@ -32,7 +32,7 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - Goal satisfaction can require actor work, critic review, review unification, and score thresholds.
 - Live Codex, Claude Code, staff-engineer, and generic model-provider integrations can be enabled behind environment gates.
 - Distributed runner registrations can route tasks to separate nodes, Claude Code wrappers, Bedrock, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, and local model providers.
-- Ephemeral Kubernetes Jobs can add bounded runner or Restate executor capacity from the `jattg-agent-toolbox` image, with optional ConfigMap/Secret injection, deadlines, TTL cleanup, runner registration, and service registration examples.
+- Ephemeral Kubernetes Jobs can add bounded runner or Restate executor capacity from approved `ExecutionProfile.capacity` templates; the normal backend path provisions through Rust Kubernetes control-plane clients, while rendered manifests remain examples and escape hatches.
 - Runner and sandbox deployments can apply optional NetworkPolicies or equivalent egress/ingress policy refs so restricted tasks have deny-by-default blast-radius controls, model endpoint allowlists, control-plane-only egress, and approval-triggering open-network exceptions.
 - Dispatch responses expose ranked runner/model candidates and explicit rejection reasons.
 - Sidecars expose a non-secret capability document for operator inspection.

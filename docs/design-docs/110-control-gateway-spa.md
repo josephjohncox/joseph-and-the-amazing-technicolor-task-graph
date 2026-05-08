@@ -56,6 +56,9 @@ Appearance is a first-class shell concern. The SPA provides a light, dark, and
 system theme switcher, stores the operator preference locally, sets the
 document color scheme before React boots, and themes React Flow, dialogs,
 forms, cards, and status affordances through shared CSS variables.
+The sidebar uses the COAT logo from the shared brand assets, while browser and
+installed-app surfaces use compact icons generated from the same source artwork
+plus the simplified technicolor task-graph mark.
 
 The frontend stack is intentionally standard:
 

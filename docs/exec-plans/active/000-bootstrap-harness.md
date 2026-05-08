@@ -11,6 +11,7 @@ Create the repo harness that lets agents and engineers navigate the project with
 - Keep source references in `docs/references/source-links.md`.
 - Keep implementation work split into numbered execution plans.
 - Add doc-gardening checks in CI to catch stale slugs and missing source-of-truth docs.
+- Add doc-gardening checks for the canonical `coat` command hierarchy and installed-CLI examples.
 - Add `docs/README.md` as the documentation map and reading order.
 - Require service and sidecar entrypoints to include purpose and architecture-reference headers.
 - Add doc comments for public cross-service domain contracts.
@@ -19,6 +20,7 @@ Create the repo harness that lets agents and engineers navigate the project with
 
 - Keep `docs/exec-plans/active/` current as new work appears, and move finished plans to `docs/exec-plans/completed/` only after acceptance evidence is recorded.
 - Extend doc-gardening checks when a new source-of-truth doc, service entrypoint, or public contract becomes mandatory.
+- Keep stale command checks aligned with the canonical hierarchy whenever the CLI tree changes.
 
 ## Acceptance
 
@@ -26,3 +28,4 @@ Create the repo harness that lets agents and engineers navigate the project with
 - Code entrypoints explain their service boundary and link to relevant architecture docs.
 - Every future subsystem has a specific execution plan.
 - `Agent.md` points to `AGENTS.md`.
+- Docs and code-facing operator messages do not reintroduce legacy top-level Compose, Kubernetes, human-feedback, development-runner, or old environment-prefix usage.

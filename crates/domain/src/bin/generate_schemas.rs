@@ -15,30 +15,39 @@ use coat_domain::{
     AgentRunRequest, AgentRunResult, ApprovalEvaluation, ApprovalGatePolicy, ApprovalRecord,
     ApprovalRequest, AuthDistributionPolicy, BranchGroup, BranchRequest, BranchSelectionRequest,
     BranchVoteOutput, BranchVoteRecord, BranchingPolicy, CalendarEventSource, CalendarProvider,
+    CapacityProvisionerBackend, CapacityProvisionerPolicy, CapacityProvisioningPolicy,
     CheckpointKind, CheckpointMode, CheckpointPolicy, CheckpointRef, ChildTaskRequest,
-    ChildTaskRequestChannel, ControlLoopPolicy, DeviceAuthProvider, DurablePlan,
-    DurablePlanListResponse, DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy,
-    EmbeddingProviderKind, EventGoalRoute, EventRouteMode, EventSource,
-    EventSourceApprovalListResponse, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
-    EventSourceApprovalRecordResponse, EventSourceApprovalStatus, EventSourceKind,
-    ExecutionProfile, ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy,
-    GitResultRef, GoalArtifactRecord, GoalAuthoringGuidance, GoalEventBackend, GoalEventKind,
-    GoalEventRecord, GoalPlan, GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord,
-    GoalSpec, GoalState, GoalStateAuthority, GoalStoreApprovalListResponse,
-    GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest, GoalStoreArtifactRecordResponse,
+    ChildTaskRequestChannel, CoatCliConfig, CoatCloudConfig, CoatCloudProvider, CoatConfig,
+    CoatConfigPaths, CoatKubernetesConfig, CoatKubernetesDistribution, CoatLocalDeployConfig,
+    CoatOperatorDefaults, CoatProfileConfig, CoatProfileKind, CoatProjectConfig,
+    CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopPolicy,
+    DeviceAuthProvider, DurablePlan, DurablePlanListResponse, DurablePlanResponse,
+    DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind, EphemeralRunnerTemplateRef,
+    EventGoalRoute, EventRouteMode, EventSource, EventSourceApprovalListResponse,
+    EventSourceApprovalRecord, EventSourceApprovalRecordRequest, EventSourceApprovalRecordResponse,
+    EventSourceApprovalStatus, EventSourceKind, ExecutionProfile, ExecutorGuardrailPolicy,
+    ExternalEvent, GenericEventSource, GitResultPolicy, GitResultRef, GoalArtifactRecord,
+    GoalAuthoringGuidance, GoalEventBackend, GoalEventKind, GoalEventRecord, GoalPlan,
+    GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord, GoalSpec, GoalState,
+    GoalStateAuthority, GoalStoreApprovalListResponse, GoalStoreArtifactListResponse,
+    GoalStoreArtifactRecordRequest, GoalStoreArtifactRecordResponse,
     GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest, GoalStoreEventAppendResponse,
     GoalStoreEventListResponse, GoalStoreGoalResponse, GoalStorePolicy, GoalStoreProjectionMode,
     GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
     GoalStoreTaskListResponse, GoalTriggerTemplate, GraphColorAssignmentMode, GraphColorPolicy,
-    GraphColorRef, HumanApproval, HumanFeedback, InformationUsePlan, LearningSignal, McpAccessMode,
-    McpAuthRef, McpContextRef, MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse,
-    MemoryEditPreviewRequest, MemoryEditPreviewResponse, MemoryEditRequest, MemoryEditResponse,
-    MemoryEpisode, MemoryEvent, MemoryJoinRequest, MemoryJoinResponse, MemoryPolicy,
-    MemoryRepairRequest, MemoryRepairResponse, MemoryRetractRequest, MemoryRetractResponse,
-    MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse, MemoryStoreRef,
-    MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute,
+    GraphColorRef, HumanApproval, HumanFeedback, InformationUsePlan,
+    KubernetesExecutorJobProvisionRequest, KubernetesExecutorJobProvisionResponse,
+    KubernetesObjectRef, KubernetesProvisionMode, KubernetesProvisionStatus, LearningSignal,
+    McpAccessMode, McpAuthRef, McpContextRef, MemoryAdapterReport, MemoryContextRequest,
+    MemoryContextResponse, MemoryEditPreviewRequest, MemoryEditPreviewResponse, MemoryEditRequest,
+    MemoryEditResponse, MemoryEpisode, MemoryEvent, MemoryJoinRequest, MemoryJoinResponse,
+    MemoryPolicy, MemoryRepairRequest, MemoryRepairResponse, MemoryRetractRequest,
+    MemoryRetractResponse, MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse,
+    MemoryStoreRef, MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute,
     NativeSubagentSpawnPolicy, NotificationPolicy, NotificationRequest, ObjectStorageArtifactRef,
-    ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef, OidcDelegationPolicy, PlanCompileRequest,
+    ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef, OidcDelegationPolicy,
+    PlanCandidateSelection, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
+    PlanCandidateVote, PlanCandidateVoteRequest, PlanCandidateVoteResponse, PlanCompileRequest,
     PlanCompileResult, PlanDecision, PlanDraftRequest, PlanQuestion, PlanRevision,
     PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata, ResearchOutput,
     ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest, ResultChannelPolicy,
@@ -66,6 +75,81 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| PathBuf::from("schemas"));
     fs::create_dir_all(&out_dir).with_context(|| format!("create {}", out_dir.display()))?;
 
+    write_schema(
+        &out_dir,
+        "project-configuration.schema.json",
+        schema_for!(CoatProjectConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "user-configuration.schema.json",
+        schema_for!(CoatUserConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "configuration.schema.json",
+        schema_for!(CoatConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "configuration-profile.schema.json",
+        schema_for!(CoatProfileConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "configuration-profile-kind.schema.json",
+        schema_for!(CoatProfileKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "configuration-paths.schema.json",
+        schema_for!(CoatConfigPaths),
+    )?;
+    write_schema(
+        &out_dir,
+        "service-endpoints-configuration.schema.json",
+        schema_for!(CoatServiceEndpoints),
+    )?;
+    write_schema(
+        &out_dir,
+        "local-deploy-configuration.schema.json",
+        schema_for!(CoatLocalDeployConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-defaults-configuration.schema.json",
+        schema_for!(CoatOperatorDefaults),
+    )?;
+    write_schema(
+        &out_dir,
+        "cloud-configuration.schema.json",
+        schema_for!(CoatCloudConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "cloud-provider.schema.json",
+        schema_for!(CoatCloudProvider),
+    )?;
+    write_schema(
+        &out_dir,
+        "restate-cloud-configuration.schema.json",
+        schema_for!(CoatRestateCloudConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-configuration.schema.json",
+        schema_for!(CoatKubernetesConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-distribution.schema.json",
+        schema_for!(CoatKubernetesDistribution),
+    )?;
+    write_schema(
+        &out_dir,
+        "cli-configuration.schema.json",
+        schema_for!(CoatCliConfig),
+    )?;
     write_schema(&out_dir, "goal-spec.schema.json", schema_for!(GoalSpec))?;
     write_schema(&out_dir, "goal-state.schema.json", schema_for!(GoalState))?;
     write_schema(
@@ -159,6 +243,36 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "plan-compile-result.schema.json",
         schema_for!(PlanCompileResult),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-candidate-vote-request.schema.json",
+        schema_for!(PlanCandidateVoteRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-candidate-vote.schema.json",
+        schema_for!(PlanCandidateVote),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-candidate-vote-response.schema.json",
+        schema_for!(PlanCandidateVoteResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-candidate-selection-request.schema.json",
+        schema_for!(PlanCandidateSelectionRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-candidate-selection.schema.json",
+        schema_for!(PlanCandidateSelection),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-candidate-selection-response.schema.json",
+        schema_for!(PlanCandidateSelectionResponse),
     )?;
     write_schema(
         &out_dir,
@@ -829,6 +943,51 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "execution-profile.schema.json",
         schema_for!(ExecutionProfile),
+    )?;
+    write_schema(
+        &out_dir,
+        "capacity-provisioning-policy.schema.json",
+        schema_for!(CapacityProvisioningPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "capacity-provisioner-policy.schema.json",
+        schema_for!(CapacityProvisionerPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "capacity-provisioner-backend.schema.json",
+        schema_for!(CapacityProvisionerBackend),
+    )?;
+    write_schema(
+        &out_dir,
+        "ephemeral-runner-template-ref.schema.json",
+        schema_for!(EphemeralRunnerTemplateRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-provision-mode.schema.json",
+        schema_for!(KubernetesProvisionMode),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-provision-status.schema.json",
+        schema_for!(KubernetesProvisionStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-object-ref.schema.json",
+        schema_for!(KubernetesObjectRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-executor-job-provision-request.schema.json",
+        schema_for!(KubernetesExecutorJobProvisionRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "kubernetes-executor-job-provision-response.schema.json",
+        schema_for!(KubernetesExecutorJobProvisionResponse),
     )?;
     write_schema(
         &out_dir,

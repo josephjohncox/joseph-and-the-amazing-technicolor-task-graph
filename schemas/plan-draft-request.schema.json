@@ -280,6 +280,52 @@
         "max_patch_size"
       ]
     },
+    "CapacityProvisionerBackend": {
+      "type": "string",
+      "enum": [
+        "kubernetes_controller",
+        "kubernetes_api",
+        "external_provisioner",
+        "manual_manifest"
+      ]
+    },
+    "CapacityProvisionerPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_manual_manifest_escape_hatch": {
+          "type": "boolean"
+        },
+        "backend": {
+          "$ref": "#/$defs/CapacityProvisionerBackend"
+        },
+        "controller_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "field_manager": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "backend",
+        "field_manager",
+        "allow_manual_manifest_escape_hatch"
+      ]
+    },
     "CapacityProvisioningMode": {
       "type": "string",
       "enum": [
@@ -299,6 +345,17 @@
         },
         "mode": {
           "$ref": "#/$defs/CapacityProvisioningMode"
+        },
+        "provisioner": {
+          "$ref": "#/$defs/CapacityProvisionerPolicy",
+          "default": {
+            "allow_manual_manifest_escape_hatch": true,
+            "backend": "kubernetes_controller",
+            "controller_ref": "coat-kubernetes-provisioner",
+            "field_manager": "coat-kubernetes-provisioner",
+            "namespace": "jattg-ephemeral",
+            "service_account": "jattg-ephemeral-runner"
+          }
         },
         "request_timeout_seconds": {
           "type": "integer",
@@ -605,6 +662,14 @@
           "default": {
             "max_pending_provisions": 1,
             "mode": "registered_runners_only",
+            "provisioner": {
+              "allow_manual_manifest_escape_hatch": true,
+              "backend": "kubernetes_controller",
+              "controller_ref": "coat-kubernetes-provisioner",
+              "field_manager": "coat-kubernetes-provisioner",
+              "namespace": "jattg-ephemeral",
+              "service_account": "jattg-ephemeral-runner"
+            },
             "request_timeout_seconds": 600,
             "require_human_approval": true,
             "template_refs": []

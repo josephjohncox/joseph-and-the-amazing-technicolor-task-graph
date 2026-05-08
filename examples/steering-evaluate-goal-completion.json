@@ -1,0 +1,10 @@
+{
+  "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756711",
+  "task_id": null,
+  "operator": "joseph",
+  "message": "Run a coordinator-owned goal completion evaluation against the current durable task state.",
+  "kind": {
+    "kind": "evaluate_goal_completion",
+    "reason": "The operator wants the coordinator to recompute satisfaction before creating more tasks."
+  }
+}

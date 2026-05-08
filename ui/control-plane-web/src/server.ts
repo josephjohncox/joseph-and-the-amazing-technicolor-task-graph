@@ -179,7 +179,7 @@ function contentTypeFor(pathname: string): string {
   if (pathname.endsWith(".png")) return "image/png";
   if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) return "image/jpeg";
   if (pathname.endsWith(".ico")) return "image/x-icon";
-  if (pathname.endsWith(".json")) return "application/json; charset=utf-8";
+  if (pathname.endsWith(".json") || pathname.endsWith(".webmanifest")) return "application/json; charset=utf-8";
   return "application/octet-stream";
 }
 

@@ -68,7 +68,7 @@ Run goal authoring as a short actor/critic loop before submitting anything durab
 
 7. Steering loop
 
-   Use `coat goal steer` for changes after submission. Do not edit durable state by hand. Steering can add constraints, update the objective, inject bounded tasks, request research, pause, resume, or cancel.
+   Use `coat goal steer` for changes after submission. Do not edit durable state by hand. Steering can add constraints, update the objective, inject bounded tasks, request research, evaluate goal completion, expand or edit done criteria, pause, resume, or cancel.
 
 ## Durable Planning Mode
 
@@ -122,6 +122,20 @@ coat plan compile \
   --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
   --file examples/plan-compile-branch-new-goal.json \
   --out examples/drafts/local-model-runner-branch-goal.json
+```
+
+Score and select branch candidates through the goal-store instead of editing plan
+JSON directly. The source plan keeps the votes and selected candidate; the
+candidate plan must have `source_plan_id` equal to the source plan ID, and
+selection requires a compiled `goal_id` by default:
+
+```sh
+coat plan vote-candidate \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/plan-candidate-vote.json
+coat plan select-candidate \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/plan-candidate-selection.json
 ```
 
 ## Copyable LLM Prompts
@@ -227,6 +241,8 @@ field is missing and prints `goal_id`, `workflow_url`, and an
 `execution.subagents`: Leave this at the default for almost every goal. In COAT, "subagent" means a durable child task created by the coordinator and routed through the runner registry. Do not write goals that ask Codex, Claude Code, an SDK harness, or an MCP client to spawn its own hidden subagents. Workers request more help by returning `ChildTaskRequest` values in `AgentRunResult.child_requests`.
 
 `done_criteria`: Set `tests_pass = true` when code paths change. Set `artifact_exists = true` for reports, plans, PRs, generated schemas, or deployment manifests. Use `validator_score_min` for review-quality thresholds.
+
+Criterion steering: Use `evaluate_goal_completion` when the coordinator should recompute satisfaction from durable task state before creating more tasks. Use `expand_done_criteria` when evidence requirements become stricter; it is monotonic and rejects boolean relaxations. Use `update_done_criteria` only when the original criterion was wrong and needs an explicit replacement. Set `apply_to_open_tasks` to push the new criterion into unfinished work, and set `reopen_terminal_tasks` only when completed work must be checked again under the new contract.
 
 `review_policy`: Keep enabled for any task that changes code, deployment, policy, memory promotion, or user-visible behavior. Use at least one critic and a unifier when multiple branches or agents contribute.
 
@@ -337,6 +353,17 @@ coat goal steer \
   --file examples/steering-request-research.json
 ```
 
+Steer the coordinator to evaluate or revise completion criteria:
+
+```sh
+coat goal steer \
+  --file examples/steering-evaluate-goal-completion.json
+coat goal steer \
+  --file examples/steering-expand-done-criteria.json
+coat goal steer \
+  --file examples/steering-update-done-criteria.json
+```
+
 Steer with a standard check directly:
 
 ```sh
@@ -353,7 +380,7 @@ coat goal steer-standard \
 Approve a waiting task:
 
 ```sh
-coat approve \
+coat human approve \
   --approval-id <approval-request-id> \
   --approved true
 ```

@@ -76,6 +76,9 @@ if [ "$print_commands" = true ]; then
   printf '  ollama pull llama3.1\n'
   printf '  vllm serve <model> --host 0.0.0.0 --port 8000\n'
   printf '  hf auth login\n'
+  printf 'run `coat setup local-auth` interactively to flip selected runner lanes live\n'
+  printf 'then preflight Compose with:\n'
+  printf '  coat deploy local preflight --env-file %s\n' "$output"
 fi
 
 if [ "$write_env" = true ]; then

@@ -217,7 +217,7 @@ The coordinator stores these refs and treats them as artifact evidence. It does 
 
 Approval is evaluated before a runnable task is dispatched. `SandboxProfile.approval_policy` expresses the task-local posture (`never`, `on_request`, or `always`), while `GoalSpec.approval_policy` defines the control-plane risk rules. The default gate requests approval for open network, non-isolated runners, secret-bearing MCP contexts, dangerous MCP tools, privileged runner capabilities, any native subagent spawning policy, any `never` policy outside an isolated runner, and any `never` policy that lacks strong sandbox attestation.
 
-When approval is required, the coordinator creates an `ApprovalRequest`, marks the task `waiting_approval`, stores notification delivery reports, and emits an `approval_requested` notification. `coat approve --goal-id ... --approval-id ...` updates durable state; accepted approvals resume the frontier loop, rejected approvals block the task.
+When approval is required, the coordinator creates an `ApprovalRequest`, marks the task `waiting_approval`, stores notification delivery reports, and emits an `approval_requested` notification. `coat human approve --goal-id ... --approval-id ...` updates durable state; accepted approvals resume the frontier loop, rejected approvals block the task.
 
 ## Distributed Runners And Model Routing
 

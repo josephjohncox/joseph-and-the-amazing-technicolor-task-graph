@@ -1,0 +1,75 @@
+{
+  "mode": "plan_only",
+  "namespace": "jattg-sandboxes",
+  "name": "executor-smoke",
+  "image": null,
+  "service_account": "jattg-sandbox-task",
+  "runtime_class": null,
+  "workspace_pvc": "sandbox-workspaces",
+  "workspace_mount_path": "/workspace",
+  "field_manager": "coat-sandbox-runner",
+  "active_deadline_seconds": 900,
+  "ttl_seconds_after_finished": 300,
+  "backoff_limit": 0,
+  "labels": {
+    "capacity.jattg.dev/source": "coordinator-policy"
+  },
+  "annotations": {
+    "capacity.jattg.dev/policy": "sandbox-executor"
+  },
+  "launch_plan": {
+    "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+    "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+    "workspace_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756604",
+    "backend": "kubernetes_job",
+    "runtime_class": "gvisor",
+    "image": "ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:latest",
+    "workspace_path": "/workspace",
+    "artifact_manifest_path": "/workspace/artifacts/artifact-manifest.json",
+    "checkpoint_manifest_path": "/workspace/checkpoints/checkpoint-manifest.json",
+    "command": [
+      "/bin/sh",
+      "-lc",
+      "echo COAT executor placeholder; test -f /coat/sandbox-launch-plan.json"
+    ],
+    "environment": {
+      "RUST_LOG": "info"
+    },
+    "required_capabilities": [
+      "kubernetes_job_sandbox"
+    ],
+    "resources": {
+      "cpu_limit_millis": 750,
+      "memory_limit_mb": 1024,
+      "pids_limit": 128,
+      "ephemeral_storage_mb": 2048
+    },
+    "security": {
+      "read_only_rootfs": true,
+      "no_new_privileges": true,
+      "run_as_non_root": true,
+      "seccomp_profile": "RuntimeDefault",
+      "apparmor_profile": "runtime/default",
+      "drop_capabilities": [
+        "ALL"
+      ]
+    },
+    "network": {
+      "access": "restricted",
+      "deny_by_default": true,
+      "egress_policy_ref": "control-plane-only",
+      "ingress_policy_ref": null,
+      "network_policy_labels": {
+        "jattg.dev/network-profile": "control-plane-only"
+      },
+      "allowed_internal_services": [
+        "runner-registry",
+        "goal-store",
+        "object-store"
+      ]
+    },
+    "git_result": null,
+    "object_prefix": null,
+    "warnings": []
+  }
+}

@@ -34,32 +34,32 @@ control-web-build:
 ts-build: sidecars-build control-web-build
 
 helm-lint:
-	helm lint infra/helm/jattg
+	coat deploy chart lint
 
 helm-package:
-	scripts/package-helm-chart.sh
+	coat deploy chart package
 
 ci: fmt-check check test schemas proto-lint docs-check ts-build
 	git diff --check
 	git diff --exit-code schemas
 
 compose-config:
-	docker compose -f infra/compose/docker-compose.yml config
+	coat deploy local config
 
 compose-cloud-config:
-	docker compose --env-file infra/compose/restate-cloud.env.example -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud config
+	coat deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
 
 compose-up:
-	docker compose -f infra/compose/docker-compose.yml up --build
+	coat deploy local up --allow-stub-runners
 
 compose-cloud-up:
-	docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml --profile restate-cloud up --build
+	coat deploy local up --restate-cloud --allow-stub-runners
 
 compose-down:
-	docker compose -f infra/compose/docker-compose.yml down
+	coat deploy local down
 
 compose-cloud-down:
-	docker compose --env-file infra/compose/restate-cloud.env -f infra/compose/docker-compose.yml -f infra/compose/docker-compose.restate-cloud.yml down
+	coat deploy local down --restate-cloud
 
 k8s-render:
-	coat k8s render --output infra/k8s/rendered.yaml
+	coat deploy cluster render --output infra/k8s/rendered.yaml

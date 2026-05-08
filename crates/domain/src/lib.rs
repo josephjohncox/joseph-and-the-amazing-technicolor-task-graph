@@ -29,6 +29,554 @@ pub type PlanId = Uuid;
 pub type TaskId = Uuid;
 pub type CheckpointId = Uuid;
 
+/// Project-local COAT configuration stored at `.coat/project.json`.
+///
+/// This file is meant to be committed when a checkout wants shared non-secret
+/// defaults. Machine-local credentials, user tokens, and workstation-specific
+/// overrides belong in `~/.coat/config.json`, environment variables, or secret
+/// providers.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatProjectConfig {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    pub project: String,
+    #[serde(default = "default_coat_cli_slug")]
+    pub cli: String,
+    #[serde(default = "default_jattg_package_slug")]
+    pub package_slug: String,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub config: CoatConfig,
+}
+
+impl Default for CoatProjectConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            project: "joseph-and-the-amazing-technicolor-task-graph".to_string(),
+            cli: default_coat_cli_slug(),
+            package_slug: default_jattg_package_slug(),
+            purpose: "COAT project configuration; no secrets belong in this file.".to_string(),
+            config: CoatConfig::project_defaults(),
+        }
+    }
+}
+
+/// User and machine-local COAT configuration stored at `~/.coat/config.json`.
+///
+/// This file is outside the repo by default. It may point at local env files or
+/// secret references, but it should still avoid raw provider tokens whenever a
+/// SecretRef, env var, keychain, cloud secret manager, or workload identity path
+/// can be used instead.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatUserConfig {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub config: CoatConfig,
+}
+
+impl Default for CoatUserConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            purpose: "COAT user configuration; prefer env vars and SecretRefs for secrets."
+                .to_string(),
+            config: CoatConfig::user_defaults(),
+        }
+    }
+}
+
+/// Standard non-secret configuration shared by project and user config files.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatConfig {
+    /// Profile name applied after project and user config are merged.
+    ///
+    /// Operators can override this with `COAT_PROFILE` for one shell/session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<CoatProfileConfig>,
+    #[serde(default, skip_serializing_if = "CoatConfigPaths::is_default")]
+    pub paths: CoatConfigPaths,
+    #[serde(default, skip_serializing_if = "CoatServiceEndpoints::is_default")]
+    pub service_endpoints: CoatServiceEndpoints,
+    #[serde(default, skip_serializing_if = "CoatLocalDeployConfig::is_default")]
+    pub local_deploy: CoatLocalDeployConfig,
+    #[serde(default, skip_serializing_if = "CoatCloudConfig::is_default")]
+    pub cloud: CoatCloudConfig,
+    #[serde(default, skip_serializing_if = "CoatKubernetesConfig::is_default")]
+    pub kubernetes: CoatKubernetesConfig,
+    #[serde(default, skip_serializing_if = "CoatCliConfig::is_default")]
+    pub cli: CoatCliConfig,
+    #[serde(default, skip_serializing_if = "CoatOperatorDefaults::is_default")]
+    pub defaults: CoatOperatorDefaults,
+}
+
+impl CoatConfig {
+    pub fn project_defaults() -> Self {
+        Self {
+            active_profile: Some("local".to_string()),
+            profiles: standard_coat_profiles(),
+            paths: CoatConfigPaths::default(),
+            service_endpoints: CoatServiceEndpoints::default(),
+            local_deploy: CoatLocalDeployConfig::default(),
+            cloud: CoatCloudConfig::default(),
+            kubernetes: CoatKubernetesConfig::default(),
+            cli: CoatCliConfig::default(),
+            defaults: CoatOperatorDefaults::default(),
+        }
+    }
+
+    pub fn user_defaults() -> Self {
+        Self {
+            active_profile: None,
+            profiles: Vec::new(),
+            paths: CoatConfigPaths {
+                data_dir: Some("~/.coat/data".to_string()),
+                cache_dir: Some("~/.coat/cache".to_string()),
+                ..CoatConfigPaths::default()
+            },
+            service_endpoints: CoatServiceEndpoints::default(),
+            local_deploy: CoatLocalDeployConfig::default(),
+            cloud: CoatCloudConfig::default(),
+            kubernetes: CoatKubernetesConfig::default(),
+            cli: CoatCliConfig::default(),
+            defaults: CoatOperatorDefaults::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatProfileConfig {
+    pub name: String,
+    pub kind: CoatProfileKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "CoatConfigPaths::is_default")]
+    pub paths: CoatConfigPaths,
+    #[serde(default, skip_serializing_if = "CoatServiceEndpoints::is_default")]
+    pub service_endpoints: CoatServiceEndpoints,
+    #[serde(default, skip_serializing_if = "CoatLocalDeployConfig::is_default")]
+    pub local_deploy: CoatLocalDeployConfig,
+    #[serde(default, skip_serializing_if = "CoatCloudConfig::is_default")]
+    pub cloud: CoatCloudConfig,
+    #[serde(default, skip_serializing_if = "CoatKubernetesConfig::is_default")]
+    pub kubernetes: CoatKubernetesConfig,
+    #[serde(default, skip_serializing_if = "CoatCliConfig::is_default")]
+    pub cli: CoatCliConfig,
+    #[serde(default, skip_serializing_if = "CoatOperatorDefaults::is_default")]
+    pub defaults: CoatOperatorDefaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoatProfileKind {
+    Cli,
+    LocalCompose,
+    RestateCloud,
+    Eks,
+    Kubernetes,
+}
+
+fn standard_coat_profiles() -> Vec<CoatProfileConfig> {
+    vec![
+        CoatProfileConfig {
+            name: "cli".to_string(),
+            kind: CoatProfileKind::Cli,
+            description: "Operator CLI defaults with local service endpoints.".to_string(),
+            cli: CoatCliConfig {
+                output_format: Some("human".to_string()),
+                interactive_setup: Some(true),
+                warn_uninitialized: Some(true),
+                require_project_for_durable_commands: Some(true),
+            },
+            service_endpoints: CoatServiceEndpoints::local_defaults(),
+            defaults: CoatOperatorDefaults {
+                goal_store_url: Some("http://localhost:9088".to_string()),
+                restate_ingress: Some("http://localhost:8080".to_string()),
+                latest_goal_selector: Some("latest".to_string()),
+            },
+            ..default_profile("cli", CoatProfileKind::Cli)
+        },
+        CoatProfileConfig {
+            name: "local".to_string(),
+            kind: CoatProfileKind::LocalCompose,
+            description: "Local Docker Compose stack with localhost service endpoints.".to_string(),
+            paths: CoatConfigPaths {
+                local_provider_env: Some("infra/compose/local-providers.env".to_string()),
+                restate_cloud_env: Some("infra/compose/restate-cloud.env".to_string()),
+                data_dir: Some(".coat/data".to_string()),
+                cache_dir: Some(".coat/cache".to_string()),
+                ..CoatConfigPaths::default()
+            },
+            service_endpoints: CoatServiceEndpoints::local_defaults(),
+            local_deploy: CoatLocalDeployConfig {
+                env_files: vec!["infra/compose/local-providers.env".to_string()],
+                restate_cloud_env_file: Some("infra/compose/restate-cloud.env".to_string()),
+                allow_stub_runners: Some(false),
+                allow_uninitialized: Some(false),
+                profiles: Vec::new(),
+            },
+            cloud: CoatCloudConfig::project_defaults(),
+            defaults: CoatOperatorDefaults {
+                goal_store_url: Some("http://localhost:9088".to_string()),
+                restate_ingress: Some("http://localhost:8080".to_string()),
+                latest_goal_selector: Some("latest".to_string()),
+            },
+            ..default_profile("local", CoatProfileKind::LocalCompose)
+        },
+        CoatProfileConfig {
+            name: "restate-cloud".to_string(),
+            kind: CoatProfileKind::RestateCloud,
+            description: "Local services using Restate Cloud through a tunnel.".to_string(),
+            service_endpoints: CoatServiceEndpoints {
+                restate_ingress: Some("http://localhost:18080".to_string()),
+                restate_admin: Some("http://localhost:19070".to_string()),
+                ..CoatServiceEndpoints::local_defaults()
+            },
+            local_deploy: CoatLocalDeployConfig {
+                env_files: vec!["infra/compose/local-providers.env".to_string()],
+                restate_cloud_env_file: Some("infra/compose/restate-cloud.env".to_string()),
+                allow_stub_runners: Some(false),
+                allow_uninitialized: Some(false),
+                profiles: vec!["restate-cloud".to_string()],
+            },
+            cloud: CoatCloudConfig::project_defaults(),
+            defaults: CoatOperatorDefaults {
+                goal_store_url: Some("http://localhost:9088".to_string()),
+                restate_ingress: Some("http://localhost:18080".to_string()),
+                latest_goal_selector: Some("latest".to_string()),
+            },
+            ..default_profile("restate-cloud", CoatProfileKind::RestateCloud)
+        },
+        CoatProfileConfig {
+            name: "eks".to_string(),
+            kind: CoatProfileKind::Eks,
+            description: "AWS EKS deployment defaults using jattg namespace and Helm chart."
+                .to_string(),
+            kubernetes: CoatKubernetesConfig::eks_defaults(),
+            cloud: CoatCloudConfig {
+                provider: Some(CoatCloudProvider::Aws),
+                region: Some("us-west-2".to_string()),
+                secret_provider: Some("aws_secrets_manager_or_external_secrets".to_string()),
+                object_store: Some("s3".to_string()),
+                ..CoatCloudConfig::project_defaults()
+            },
+            ..default_profile("eks", CoatProfileKind::Eks)
+        },
+    ]
+}
+
+fn default_profile(name: &str, kind: CoatProfileKind) -> CoatProfileConfig {
+    CoatProfileConfig {
+        name: name.to_string(),
+        kind,
+        description: String::new(),
+        paths: CoatConfigPaths::default(),
+        service_endpoints: CoatServiceEndpoints::default(),
+        local_deploy: CoatLocalDeployConfig::default(),
+        cloud: CoatCloudConfig::default(),
+        kubernetes: CoatKubernetesConfig::default(),
+        cli: CoatCliConfig::default(),
+        defaults: CoatOperatorDefaults::default(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatConfigPaths {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_provider_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restate_cloud_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
+}
+
+impl CoatConfigPaths {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatServiceEndpoints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restate_ingress: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restate_admin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_runner_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner_registry_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notifier_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_gateway_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_store_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_gateway_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_mcp_url: Option<String>,
+}
+
+impl CoatServiceEndpoints {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl CoatServiceEndpoints {
+    pub fn local_defaults() -> Self {
+        Self {
+            restate_ingress: Some("http://localhost:8080".to_string()),
+            restate_admin: Some("http://localhost:9070".to_string()),
+            coordinator_url: Some("http://localhost:9080".to_string()),
+            sandbox_runner_url: Some("http://localhost:9083".to_string()),
+            runner_registry_url: Some("http://localhost:9085".to_string()),
+            notifier_url: Some("http://localhost:9086".to_string()),
+            memory_gateway_url: Some("http://localhost:9087".to_string()),
+            goal_store_url: Some("http://localhost:9088".to_string()),
+            event_gateway_url: Some("http://localhost:9089".to_string()),
+            control_mcp_url: Some("http://localhost:9090/mcp".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatLocalDeployConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restate_cloud_env_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_stub_runners: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_uninitialized: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
+}
+
+impl CoatLocalDeployConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatCloudConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<CoatCloudProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_store: Option<String>,
+    #[serde(default, skip_serializing_if = "CoatRestateCloudConfig::is_default")]
+    pub restate_cloud: CoatRestateCloudConfig,
+}
+
+impl CoatCloudConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl CoatCloudConfig {
+    pub fn project_defaults() -> Self {
+        Self {
+            provider: Some(CoatCloudProvider::Local),
+            region: Some("us".to_string()),
+            secret_provider: Some("env_or_secret_ref".to_string()),
+            object_store: Some("minio_or_s3_compatible".to_string()),
+            restate_cloud: CoatRestateCloudConfig {
+                env_file: Some("infra/compose/restate-cloud.env".to_string()),
+                tunnel_name: Some("jattg-personal".to_string()),
+                region: Some("us".to_string()),
+                service_url: Some("http://coordinator:9080".to_string()),
+                local_ingress_url: Some("http://localhost:18080".to_string()),
+                local_admin_url: Some("http://localhost:19070".to_string()),
+                coordinator_url: Some("http://localhost:9080".to_string()),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoatCloudProvider {
+    Local,
+    RestateCloud,
+    Aws,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatRestateCloudConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_ingress_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_admin_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_url: Option<String>,
+}
+
+impl CoatRestateCloudConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatKubernetesConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution: Option<CoatKubernetesDistribution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kubectl: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kubeconfig: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered_manifest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helm_release: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helm_chart: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub helm_values: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_registry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_store: Option<String>,
+}
+
+impl CoatKubernetesConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl CoatKubernetesConfig {
+    pub fn eks_defaults() -> Self {
+        Self {
+            distribution: Some(CoatKubernetesDistribution::Eks),
+            kubectl: Some("kubectl".to_string()),
+            context: None,
+            kubeconfig: None,
+            namespace: Some("jattg".to_string()),
+            manifest: Some("infra/k8s/base/all.yaml".to_string()),
+            rendered_manifest: Some("infra/k8s/rendered.yaml".to_string()),
+            helm_release: Some("jattg".to_string()),
+            helm_chart: Some("infra/helm/jattg".to_string()),
+            helm_values: Vec::new(),
+            image_registry: Some("ghcr.io/josephjohncox".to_string()),
+            service_account: Some("jattg-control-plane".to_string()),
+            secret_provider: Some("external_secrets_or_aws_secrets_manager".to_string()),
+            workload_identity: Some("irsa_or_eks_pod_identity".to_string()),
+            object_store: Some("s3".to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoatKubernetesDistribution {
+    Eks,
+    Generic,
+    Kind,
+    K3s,
+    Gke,
+    Aks,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatCliConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interactive_setup: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn_uninitialized: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_project_for_durable_commands: Option<bool>,
+}
+
+impl CoatCliConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatOperatorDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_store_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restate_ingress: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_goal_selector: Option<String>,
+}
+
+impl CoatOperatorDefaults {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+fn default_coat_cli_slug() -> String {
+    "coat".to_string()
+}
+
+fn default_jattg_package_slug() -> String {
+    "jattg".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 /// User-authored executable contract for a durable goal.
@@ -642,6 +1190,9 @@ pub struct DurablePlan {
     pub current: PlanRevision,
     #[serde(default)]
     pub revisions: Vec<PlanRevision>,
+    #[serde(default)]
+    pub candidate_votes: Vec<PlanCandidateVote>,
+    pub selected_candidate: Option<PlanCandidateSelection>,
     pub compiled_goal_id: Option<GoalId>,
     pub compiled_quality: Option<GoalQualityReport>,
     pub created_at: Option<String>,
@@ -687,6 +1238,8 @@ impl DurablePlan {
             source_prompt: request.prompt,
             current: revision.clone(),
             revisions: vec![revision],
+            candidate_votes: Vec::new(),
+            selected_candidate: None,
             compiled_goal_id: None,
             compiled_quality: None,
             created_at: Some(now.clone()),
@@ -760,7 +1313,51 @@ impl DurablePlan {
         self.updated_at = Some(now);
         self.compiled_goal_id = None;
         self.compiled_quality = None;
+        self.selected_candidate = None;
         revision
+    }
+
+    pub fn record_candidate_vote(
+        &mut self,
+        request: PlanCandidateVoteRequest,
+    ) -> PlanCandidateVote {
+        let now = now_unix_timestamp_string();
+        let vote = PlanCandidateVote {
+            id: Uuid::new_v4(),
+            source_plan_id: self.id,
+            candidate_plan_id: request.candidate_plan_id,
+            ranked_plan_ids: request.ranked_plan_ids,
+            voter: request.voter,
+            score: request.score,
+            confidence: request.confidence,
+            rationale: request.rationale,
+            evidence: request.evidence,
+            created_at: Some(now.clone()),
+        };
+        self.candidate_votes.push(vote.clone());
+        self.updated_at = Some(now);
+        vote
+    }
+
+    pub fn select_candidate(
+        &mut self,
+        request: PlanCandidateSelectionRequest,
+        selected_compiled_goal_id: Option<GoalId>,
+    ) -> PlanCandidateSelection {
+        let now = now_unix_timestamp_string();
+        let selection = PlanCandidateSelection {
+            source_plan_id: self.id,
+            candidate_plan_id: request.candidate_plan_id,
+            selector: request.selector,
+            reason: request.reason,
+            operator: request.operator,
+            selected_compiled_goal_id,
+            selected_at: Some(now.clone()),
+        };
+        self.selected_candidate = Some(selection.clone());
+        self.status = PlanStatus::Superseded;
+        self.updated_at = Some(now);
+        selection
     }
 
     pub fn compile_goal(&mut self, request: PlanCompileRequest) -> PlanCompileResult {
@@ -874,6 +1471,76 @@ pub struct PlanCompileResult {
     pub plan_id: PlanId,
     pub goal: GoalSpec,
     pub quality: GoalQualityReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanCandidateVoteRequest {
+    pub candidate_plan_id: PlanId,
+    #[serde(default)]
+    pub ranked_plan_ids: Vec<PlanId>,
+    pub voter: Option<String>,
+    pub score: f32,
+    pub confidence: f32,
+    pub rationale: String,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanCandidateVote {
+    pub id: Uuid,
+    pub source_plan_id: PlanId,
+    pub candidate_plan_id: PlanId,
+    #[serde(default)]
+    pub ranked_plan_ids: Vec<PlanId>,
+    pub voter: Option<String>,
+    pub score: f32,
+    pub confidence: f32,
+    pub rationale: String,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanCandidateVoteResponse {
+    pub accepted: bool,
+    pub plan: DurablePlan,
+    pub vote: PlanCandidateVote,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanCandidateSelectionRequest {
+    pub candidate_plan_id: PlanId,
+    pub selector: BranchSelector,
+    pub reason: String,
+    pub operator: Option<String>,
+    #[serde(default = "default_true")]
+    pub require_compiled_goal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanCandidateSelection {
+    pub source_plan_id: PlanId,
+    pub candidate_plan_id: PlanId,
+    pub selector: BranchSelector,
+    pub reason: String,
+    pub operator: Option<String>,
+    pub selected_compiled_goal_id: Option<GoalId>,
+    pub selected_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanCandidateSelectionResponse {
+    pub accepted: bool,
+    pub plan: DurablePlan,
+    pub selection: PlanCandidateSelection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -2042,6 +2709,51 @@ impl GoalState {
                     check.as_str()
                 )
             }
+            SteeringDirectiveKind::EvaluateGoalCompletion { reason } => {
+                let report = self.evaluate_goal_completion();
+                format!(
+                    "steering_goal_completion_evaluated:{}:{:.3}:{reason}",
+                    if report.satisfied {
+                        "satisfied"
+                    } else {
+                        "not_satisfied"
+                    },
+                    report.score
+                )
+            }
+            SteeringDirectiveKind::UpdateDoneCriteria {
+                done_criteria,
+                reason,
+                apply_to_open_tasks,
+                reopen_terminal_tasks,
+            } => {
+                self.ensure_goal_updates_allowed()?;
+                Self::validate_done_criteria(done_criteria)?;
+                self.goal.done_criteria = done_criteria.clone();
+                self.propagate_goal_done_criteria(*apply_to_open_tasks, *reopen_terminal_tasks);
+                self.refresh_goal_status();
+                format!("steering_done_criteria_updated:{reason}")
+            }
+            SteeringDirectiveKind::ExpandDoneCriteria {
+                tests_pass,
+                artifact_exists,
+                validator_score_min,
+                min_satisfaction_score,
+                reason,
+                apply_to_open_tasks,
+                reopen_terminal_tasks,
+            } => {
+                self.ensure_goal_updates_allowed()?;
+                self.expand_done_criteria(
+                    *tests_pass,
+                    *artifact_exists,
+                    *validator_score_min,
+                    *min_satisfaction_score,
+                    *apply_to_open_tasks,
+                    *reopen_terminal_tasks,
+                )?;
+                format!("steering_done_criteria_expanded:{reason}")
+            }
             SteeringDirectiveKind::Pause { reason } => {
                 self.status = GoalStatus::Paused;
                 format!("steering_paused:{reason}")
@@ -2061,6 +2773,107 @@ impl GoalState {
         self.steering_directives.push(directive);
         self.events.push(StateEvent::new(event_message));
         Ok(())
+    }
+
+    pub fn evaluate_goal_completion(&mut self) -> SatisfactionReport {
+        self.refresh_goal_status();
+        self.satisfaction
+            .clone()
+            .unwrap_or_else(|| self.satisfaction_report())
+    }
+
+    fn ensure_goal_updates_allowed(&self) -> Result<(), DomainError> {
+        if self.goal.control_policy.allow_goal_updates {
+            Ok(())
+        } else {
+            Err(DomainError::SteeringDenied(
+                "goal updates are disabled".to_string(),
+            ))
+        }
+    }
+
+    fn validate_done_criteria(done_criteria: &DoneCriteria) -> Result<(), DomainError> {
+        if let Some(score) = done_criteria.validator_score_min {
+            Self::validate_score("done_criteria.validator_score_min", score)?;
+        }
+        Ok(())
+    }
+
+    fn validate_score(field: &str, score: f32) -> Result<(), DomainError> {
+        if score.is_finite() && (0.0..=1.0).contains(&score) {
+            Ok(())
+        } else {
+            Err(DomainError::SteeringDenied(format!(
+                "{field} must be between 0.0 and 1.0"
+            )))
+        }
+    }
+
+    fn expand_done_criteria(
+        &mut self,
+        tests_pass: Option<bool>,
+        artifact_exists: Option<bool>,
+        validator_score_min: Option<f32>,
+        min_satisfaction_score: Option<f32>,
+        apply_to_open_tasks: bool,
+        reopen_terminal_tasks: bool,
+    ) -> Result<(), DomainError> {
+        if matches!(tests_pass, Some(false)) || matches!(artifact_exists, Some(false)) {
+            return Err(DomainError::SteeringDenied(
+                "expand_done_criteria cannot relax boolean criteria; use update_done_criteria for explicit edits"
+                    .to_string(),
+            ));
+        }
+        if matches!(tests_pass, Some(true)) {
+            self.goal.done_criteria.tests_pass = true;
+        }
+        if matches!(artifact_exists, Some(true)) {
+            self.goal.done_criteria.artifact_exists = true;
+        }
+        if let Some(score) = validator_score_min {
+            Self::validate_score("validator_score_min", score)?;
+            self.goal.done_criteria.validator_score_min = Some(
+                self.goal
+                    .done_criteria
+                    .validator_score_min
+                    .map_or(score, |current| current.max(score)),
+            );
+        }
+        if let Some(score) = min_satisfaction_score {
+            Self::validate_score("min_satisfaction_score", score)?;
+            self.goal.review_policy.min_satisfaction_score =
+                self.goal.review_policy.min_satisfaction_score.max(score);
+        }
+        self.propagate_goal_done_criteria(apply_to_open_tasks, reopen_terminal_tasks);
+        self.refresh_goal_status();
+        Ok(())
+    }
+
+    fn propagate_goal_done_criteria(
+        &mut self,
+        apply_to_open_tasks: bool,
+        reopen_terminal_tasks: bool,
+    ) {
+        let criteria = self.goal.done_criteria.clone();
+        let mut reopened = Vec::new();
+        for task in self.tasks.values_mut() {
+            let is_root = task.parent_id.is_none();
+            let should_reopen = reopen_terminal_tasks
+                && task.purpose.is_work_like()
+                && task.status.is_terminal_ok();
+            if is_root || (apply_to_open_tasks && !task.status.is_terminal()) || should_reopen {
+                task.done_criteria = criteria.clone();
+            }
+            if should_reopen {
+                task.status = TaskStatus::Runnable;
+                reopened.push(task.id);
+            }
+        }
+        for task_id in reopened {
+            self.events.push(StateEvent::new(format!(
+                "steering_done_criteria_reopened_task:{task_id}"
+            )));
+        }
     }
 
     pub fn apply_restart_request(
@@ -5788,6 +6601,28 @@ pub enum SteeringDirectiveKind {
         topic: Option<String>,
         reason: String,
     },
+    EvaluateGoalCompletion {
+        reason: String,
+    },
+    UpdateDoneCriteria {
+        done_criteria: DoneCriteria,
+        reason: String,
+        #[serde(default)]
+        apply_to_open_tasks: bool,
+        #[serde(default)]
+        reopen_terminal_tasks: bool,
+    },
+    ExpandDoneCriteria {
+        tests_pass: Option<bool>,
+        artifact_exists: Option<bool>,
+        validator_score_min: Option<f32>,
+        min_satisfaction_score: Option<f32>,
+        reason: String,
+        #[serde(default)]
+        apply_to_open_tasks: bool,
+        #[serde(default)]
+        reopen_terminal_tasks: bool,
+    },
     Pause {
         reason: String,
     },
@@ -7314,6 +8149,8 @@ pub struct RunnerSelector {
 pub struct CapacityProvisioningPolicy {
     pub mode: CapacityProvisioningMode,
     #[serde(default)]
+    pub provisioner: CapacityProvisionerPolicy,
+    #[serde(default)]
     pub template_refs: Vec<EphemeralRunnerTemplateRef>,
     pub request_timeout_seconds: u64,
     pub max_pending_provisions: u32,
@@ -7329,12 +8166,24 @@ impl CapacityProvisioningPolicy {
                     | CapacityProvisioningMode::EphemeralOnly
             )
     }
+
+    pub fn expects_backend_provisioner(&self) -> bool {
+        matches!(
+            self.mode,
+            CapacityProvisioningMode::PreferRegisteredThenEphemeral
+                | CapacityProvisioningMode::EphemeralOnly
+        ) && !matches!(
+            self.provisioner.backend,
+            CapacityProvisionerBackend::ManualManifest
+        )
+    }
 }
 
 impl Default for CapacityProvisioningPolicy {
     fn default() -> Self {
         Self {
             mode: CapacityProvisioningMode::RegisteredRunnersOnly,
+            provisioner: CapacityProvisionerPolicy::default(),
             template_refs: Vec::new(),
             request_timeout_seconds: 600,
             max_pending_provisions: 1,
@@ -7349,6 +8198,39 @@ pub enum CapacityProvisioningMode {
     RegisteredRunnersOnly,
     PreferRegisteredThenEphemeral,
     EphemeralOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct CapacityProvisionerPolicy {
+    pub backend: CapacityProvisionerBackend,
+    pub controller_ref: Option<String>,
+    pub namespace: Option<String>,
+    pub service_account: Option<String>,
+    pub field_manager: String,
+    pub allow_manual_manifest_escape_hatch: bool,
+}
+
+impl Default for CapacityProvisionerPolicy {
+    fn default() -> Self {
+        Self {
+            backend: CapacityProvisionerBackend::KubernetesController,
+            controller_ref: Some("coat-kubernetes-provisioner".to_string()),
+            namespace: Some("jattg-ephemeral".to_string()),
+            service_account: Some("jattg-ephemeral-runner".to_string()),
+            field_manager: "coat-kubernetes-provisioner".to_string(),
+            allow_manual_manifest_escape_hatch: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacityProvisionerBackend {
+    KubernetesController,
+    KubernetesApi,
+    ExternalProvisioner,
+    ManualManifest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -7371,6 +8253,77 @@ pub enum EphemeralCapacityKind {
     RunnerJob,
     RestateServiceExecutor,
     SandboxJob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KubernetesProvisionMode {
+    PlanOnly,
+    ServerDryRun,
+    Apply,
+}
+
+impl Default for KubernetesProvisionMode {
+    fn default() -> Self {
+        Self::PlanOnly
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KubernetesProvisionStatus {
+    Planned,
+    ServerDryRunAccepted,
+    Applied,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct KubernetesObjectRef {
+    pub api_version: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub uid: Option<String>,
+    pub resource_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct KubernetesExecutorJobProvisionRequest {
+    pub launch_plan: SandboxLaunchPlan,
+    #[serde(default)]
+    pub mode: KubernetesProvisionMode,
+    pub namespace: String,
+    pub name: Option<String>,
+    pub image: Option<String>,
+    pub service_account: Option<String>,
+    pub runtime_class: Option<String>,
+    pub workspace_pvc: Option<String>,
+    pub workspace_mount_path: String,
+    pub field_manager: String,
+    pub active_deadline_seconds: Option<u64>,
+    pub ttl_seconds_after_finished: Option<u64>,
+    pub backoff_limit: u32,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub annotations: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct KubernetesExecutorJobProvisionResponse {
+    pub status: KubernetesProvisionStatus,
+    pub namespace: String,
+    pub job_name: String,
+    pub config_map_name: String,
+    #[serde(default)]
+    pub objects: Vec<KubernetesObjectRef>,
+    pub manifest: serde_json::Value,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
 }
 
 impl RunnerSelector {
@@ -9813,8 +10766,14 @@ pub enum EventSourceKind {
     GoalLifecycle,
     MemoryEvent,
     Ci,
+    CiTestFailure,
     Git,
+    BranchActivity,
+    PullRequest,
+    PullRequestReview,
     IssueTracker,
+    IdeLsp,
+    IdeDiagnostics,
     Chat,
     MonitoringAlert,
     PrometheusAlertmanager,
@@ -11007,6 +11966,85 @@ mod tests {
         assert_eq!(result.goal.plan.subgoals[0].id, "plan-contracts");
         assert_eq!(result.goal.repo.as_deref(), Some("repo"));
         assert!(result.goal.review_policy.doctrine.enabled);
+    }
+
+    #[test]
+    fn durable_plan_records_candidate_votes_and_selection() {
+        let mut source = DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: None,
+            title: "Parent plan".to_string(),
+            objective: "Choose the best implementation branch.".to_string(),
+            repo: Some("repo".to_string()),
+            prompt: "Branch the plan and pick a winner.".to_string(),
+            mode: PlanningMode::Interactive,
+            status: None,
+            author: None,
+            summary: None,
+            authoring: GoalAuthoringGuidance::default(),
+            plan: GoalPlan::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        let mut candidate = DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: Some(source.id),
+            title: "Candidate plan".to_string(),
+            objective: "Implement the strongest branch.".to_string(),
+            repo: Some("repo".to_string()),
+            prompt: "Candidate branch.".to_string(),
+            mode: PlanningMode::Interactive,
+            status: None,
+            author: None,
+            summary: None,
+            authoring: GoalAuthoringGuidance::default(),
+            plan: GoalPlan::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        let compiled = candidate.compile_goal(PlanCompileRequest {
+            plan_id: Some(candidate.id),
+            goal_id: None,
+            title_override: None,
+            objective_override: None,
+            strict_review: false,
+            human_steered: false,
+            enable_branching: true,
+        });
+
+        let vote = source.record_candidate_vote(PlanCandidateVoteRequest {
+            candidate_plan_id: candidate.id,
+            ranked_plan_ids: vec![candidate.id],
+            voter: Some("reviewer".to_string()),
+            score: 0.91,
+            confidence: 0.84,
+            rationale: "Best evidence and least risk.".to_string(),
+            evidence: vec!["compile output reviewed".to_string()],
+        });
+        assert_eq!(vote.source_plan_id, source.id);
+        assert_eq!(source.candidate_votes.len(), 1);
+
+        let selection = source.select_candidate(
+            PlanCandidateSelectionRequest {
+                candidate_plan_id: candidate.id,
+                selector: BranchSelector::HighestScore,
+                reason: "highest scored compiled candidate".to_string(),
+                operator: Some("operator".to_string()),
+                require_compiled_goal: true,
+            },
+            candidate.compiled_goal_id,
+        );
+        assert_eq!(source.status, PlanStatus::Superseded);
+        assert_eq!(selection.selected_compiled_goal_id, Some(compiled.goal.id));
+        assert_eq!(
+            source
+                .selected_candidate
+                .as_ref()
+                .map(|selected| selected.candidate_plan_id),
+            Some(candidate.id)
+        );
     }
 
     #[test]
@@ -12373,6 +13411,195 @@ mod tests {
     }
 
     #[test]
+    fn steering_can_evaluate_goal_completion() {
+        let mut goal = GoalSpec::new(
+            "evaluate completion",
+            "let the coordinator recompute whether the durable goal is satisfied",
+        );
+        goal.review_policy.enabled = false;
+        goal.done_criteria = DoneCriteria {
+            tests_pass: false,
+            artifact_exists: false,
+            validator_score_min: None,
+        };
+        let mut state = GoalState::new(goal);
+        for task in state.tasks.values_mut() {
+            task.status = TaskStatus::Done;
+        }
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "evaluate final evidence".to_string(),
+                    kind: SteeringDirectiveKind::EvaluateGoalCompletion {
+                        reason: "operator asked for a completion pass".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("completion steering applies");
+
+        let report = state.satisfaction.clone().expect("satisfaction report");
+        assert!(report.satisfied);
+        assert_eq!(state.status, GoalStatus::Done);
+        assert!(state.events.iter().any(|event| {
+            event
+                .message
+                .starts_with("steering_goal_completion_evaluated:satisfied")
+        }));
+    }
+
+    #[test]
+    fn steering_updates_goal_and_open_task_done_criteria() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "criteria update",
+            "allow operator steering to repair the durable success contract",
+        ));
+        let root = state.root_task().expect("root task").clone();
+        let child_id = state
+            .insert_child_task(
+                root.id,
+                &root,
+                ChildTaskRequest {
+                    role: WorkerKind::Tester,
+                    purpose: Some(TaskPurpose::Work),
+                    title: Some("criterion child".to_string()),
+                    subgoal_id: Some("criteria".to_string()),
+                    color: None,
+                    prompt: "run the stricter criterion".to_string(),
+                    reason: "test fixture".to_string(),
+                    dependencies: Vec::new(),
+                    budget: None,
+                    sandbox: None,
+                    done_criteria: None,
+                    review_doctrine: None,
+                    execution: None,
+                    priority: TaskPriority::Normal,
+                    tags: Vec::new(),
+                },
+            )
+            .expect("child inserted");
+        let criteria = DoneCriteria {
+            tests_pass: true,
+            artifact_exists: false,
+            validator_score_min: Some(0.92),
+        };
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "replace the done criteria".to_string(),
+                    kind: SteeringDirectiveKind::UpdateDoneCriteria {
+                        done_criteria: criteria.clone(),
+                        reason: "the original criterion was too vague".to_string(),
+                        apply_to_open_tasks: true,
+                        reopen_terminal_tasks: false,
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("criteria steering applies");
+
+        assert_eq!(state.goal.done_criteria, criteria);
+        assert_eq!(
+            state.root_task().expect("root task").done_criteria,
+            criteria
+        );
+        assert_eq!(state.tasks[&child_id].done_criteria, criteria);
+    }
+
+    #[test]
+    fn steering_expands_done_criteria_and_reopens_terminal_work() {
+        let mut goal = GoalSpec::new(
+            "criteria expansion",
+            "tighten the durable criterion and force old work through a new pass",
+        );
+        goal.review_policy.enabled = false;
+        goal.done_criteria = DoneCriteria {
+            tests_pass: false,
+            artifact_exists: false,
+            validator_score_min: None,
+        };
+        let mut state = GoalState::new(goal);
+        let root_id = state.root_task().expect("root task").id;
+        state.tasks.get_mut(&root_id).expect("root task").status = TaskStatus::Done;
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "expand the done criteria".to_string(),
+                    kind: SteeringDirectiveKind::ExpandDoneCriteria {
+                        tests_pass: Some(true),
+                        artifact_exists: Some(true),
+                        validator_score_min: Some(0.95),
+                        min_satisfaction_score: Some(0.9),
+                        reason: "new evidence requirements were discovered".to_string(),
+                        apply_to_open_tasks: false,
+                        reopen_terminal_tasks: true,
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("criteria expansion applies");
+
+        assert!(state.goal.done_criteria.tests_pass);
+        assert!(state.goal.done_criteria.artifact_exists);
+        assert_eq!(state.goal.done_criteria.validator_score_min, Some(0.95));
+        assert_eq!(state.goal.review_policy.min_satisfaction_score, 0.9);
+        assert_eq!(state.tasks[&root_id].status, TaskStatus::Runnable);
+        assert_eq!(state.status, GoalStatus::Running);
+        assert!(state.events.iter().any(|event| {
+            event
+                .message
+                .starts_with("steering_done_criteria_reopened_task:")
+        }));
+    }
+
+    #[test]
+    fn expand_done_criteria_rejects_relaxing_boolean_criteria() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "criteria expansion guard",
+            "protect monotonic criterion expansion from accidental relaxation",
+        ));
+
+        let err = state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "try to relax tests".to_string(),
+                    kind: SteeringDirectiveKind::ExpandDoneCriteria {
+                        tests_pass: Some(false),
+                        artifact_exists: None,
+                        validator_score_min: None,
+                        min_satisfaction_score: None,
+                        reason: "bad steering".to_string(),
+                        apply_to_open_tasks: true,
+                        reopen_terminal_tasks: false,
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect_err("relaxing expansion is rejected");
+
+        assert!(err.to_string().contains("cannot relax boolean criteria"));
+    }
+
+    #[test]
     fn standard_review_steering_spawns_review_and_research_tasks() {
         let mut goal = GoalSpec::new(
             "steer review",
@@ -12668,6 +13895,11 @@ mod tests {
                 active_deadline_seconds: Some(3600),
                 ttl_seconds_after_finished: Some(900),
             });
+        assert!(task.execution.capacity.expects_backend_provisioner());
+        assert_eq!(
+            task.execution.capacity.provisioner.backend,
+            CapacityProvisionerBackend::KubernetesController
+        );
 
         let request = state
             .ensure_task_approval_or_request(task_id)
@@ -13274,6 +14506,18 @@ mod tests {
         ))
         .expect("steering example parses");
         serde_json::from_str::<SteeringDirective>(include_str!(
+            "../../../examples/steering-evaluate-goal-completion.json"
+        ))
+        .expect("goal completion steering example parses");
+        serde_json::from_str::<SteeringDirective>(include_str!(
+            "../../../examples/steering-expand-done-criteria.json"
+        ))
+        .expect("done criteria expansion steering example parses");
+        serde_json::from_str::<SteeringDirective>(include_str!(
+            "../../../examples/steering-update-done-criteria.json"
+        ))
+        .expect("done criteria update steering example parses");
+        serde_json::from_str::<SteeringDirective>(include_str!(
             "../../../examples/steering-standard-abstraction.json"
         ))
         .expect("standard abstraction steering example parses");
@@ -13393,6 +14637,18 @@ mod tests {
             "../../../examples/plan-compile-branch-new-goal.json"
         ))
         .expect("plan branch compile example parses");
+        serde_json::from_str::<PlanCandidateVoteRequest>(include_str!(
+            "../../../examples/plan-candidate-vote.json"
+        ))
+        .expect("plan candidate vote example parses");
+        serde_json::from_str::<PlanCandidateSelectionRequest>(include_str!(
+            "../../../examples/plan-candidate-selection.json"
+        ))
+        .expect("plan candidate selection example parses");
+        serde_json::from_str::<KubernetesExecutorJobProvisionRequest>(include_str!(
+            "../../../examples/kubernetes-executor-job-provision.json"
+        ))
+        .expect("kubernetes executor job provision example parses");
         serde_json::from_str::<GoalStoreArtifactRecordRequest>(include_str!(
             "../../../examples/goal-store-record-artifacts.json"
         ))

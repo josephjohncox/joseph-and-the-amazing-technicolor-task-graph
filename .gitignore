@@ -3,6 +3,9 @@
 /.uv-cache/
 /.env
 /.env.*
+/.envrc.local
+/.coat/cache/
+/.coat/data/
 !/examples/.env.example
 /infra/compose/*.env
 !/infra/compose/*.env.example

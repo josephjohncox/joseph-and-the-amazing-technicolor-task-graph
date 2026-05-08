@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapacityProvisionerBackend",
+  "type": "string",
+  "enum": [
+    "kubernetes_controller",
+    "kubernetes_api",
+    "external_provisioner",
+    "manual_manifest"
+  ]
+}

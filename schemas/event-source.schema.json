@@ -294,6 +294,52 @@
         "other"
       ]
     },
+    "CapacityProvisionerBackend": {
+      "type": "string",
+      "enum": [
+        "kubernetes_controller",
+        "kubernetes_api",
+        "external_provisioner",
+        "manual_manifest"
+      ]
+    },
+    "CapacityProvisionerPolicy": {
+      "type": "object",
+      "properties": {
+        "allow_manual_manifest_escape_hatch": {
+          "type": "boolean"
+        },
+        "backend": {
+          "$ref": "#/$defs/CapacityProvisionerBackend"
+        },
+        "controller_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "field_manager": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "backend",
+        "field_manager",
+        "allow_manual_manifest_escape_hatch"
+      ]
+    },
     "CapacityProvisioningMode": {
       "type": "string",
       "enum": [
@@ -313,6 +359,17 @@
         },
         "mode": {
           "$ref": "#/$defs/CapacityProvisioningMode"
+        },
+        "provisioner": {
+          "$ref": "#/$defs/CapacityProvisionerPolicy",
+          "default": {
+            "allow_manual_manifest_escape_hatch": true,
+            "backend": "kubernetes_controller",
+            "controller_ref": "coat-kubernetes-provisioner",
+            "field_manager": "coat-kubernetes-provisioner",
+            "namespace": "jattg-ephemeral",
+            "service_account": "jattg-ephemeral-runner"
+          }
         },
         "request_timeout_seconds": {
           "type": "integer",
@@ -569,8 +626,14 @@
         "goal_lifecycle",
         "memory_event",
         "ci",
+        "ci_test_failure",
         "git",
+        "branch_activity",
+        "pull_request",
+        "pull_request_review",
         "issue_tracker",
+        "ide_lsp",
+        "ide_diagnostics",
         "chat",
         "monitoring_alert",
         "prometheus_alertmanager",
@@ -590,6 +653,14 @@
           "default": {
             "max_pending_provisions": 1,
             "mode": "registered_runners_only",
+            "provisioner": {
+              "allow_manual_manifest_escape_hatch": true,
+              "backend": "kubernetes_controller",
+              "controller_ref": "coat-kubernetes-provisioner",
+              "field_manager": "coat-kubernetes-provisioner",
+              "namespace": "jattg-ephemeral",
+              "service_account": "jattg-ephemeral-runner"
+            },
             "request_timeout_seconds": 600,
             "require_human_approval": true,
             "template_refs": []
@@ -888,6 +959,14 @@
             "capacity": {
               "max_pending_provisions": 1,
               "mode": "registered_runners_only",
+              "provisioner": {
+                "allow_manual_manifest_escape_hatch": true,
+                "backend": "kubernetes_controller",
+                "controller_ref": "coat-kubernetes-provisioner",
+                "field_manager": "coat-kubernetes-provisioner",
+                "namespace": "jattg-ephemeral",
+                "service_account": "jattg-ephemeral-runner"
+              },
               "request_timeout_seconds": 600,
               "require_human_approval": true,
               "template_refs": []
@@ -2412,6 +2491,100 @@
           "required": [
             "kind",
             "check",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "evaluate_goal_completion"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apply_to_open_tasks": {
+              "type": "boolean",
+              "default": false
+            },
+            "done_criteria": {
+              "$ref": "#/$defs/DoneCriteria"
+            },
+            "kind": {
+              "type": "string",
+              "const": "update_done_criteria"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "reopen_terminal_tasks": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "kind",
+            "done_criteria",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apply_to_open_tasks": {
+              "type": "boolean",
+              "default": false
+            },
+            "artifact_exists": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "expand_done_criteria"
+            },
+            "min_satisfaction_score": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "reopen_terminal_tasks": {
+              "type": "boolean",
+              "default": false
+            },
+            "tests_pass": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "validator_score_min": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            }
+          },
+          "required": [
+            "kind",
             "reason"
           ]
         },

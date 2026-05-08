@@ -28,7 +28,8 @@ coat setup local-auth --write-env --output infra/compose/local-providers.env
 Start the gateway locally, or point the commands below at a remote gateway URL:
 
 ```sh
-coat compose up --env-file infra/compose/local-providers.env
+coat deploy local preflight --env-file infra/compose/local-providers.env
+coat deploy local up --env-file infra/compose/local-providers.env
 ```
 
 Install MCP and the skill interactively:

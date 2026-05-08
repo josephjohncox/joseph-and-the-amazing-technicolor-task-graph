@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatCloudConfig",
+  "type": "object",
+  "properties": {
+    "object_store": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoatCloudProvider"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "region": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "restate_cloud": {
+      "$ref": "#/$defs/CoatRestateCloudConfig"
+    },
+    "secret_provider": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "CoatCloudProvider": {
+      "type": "string",
+      "enum": [
+        "local",
+        "restate_cloud",
+        "aws",
+        "other"
+      ]
+    },
+    "CoatRestateCloudConfig": {
+      "type": "object",
+      "properties": {
+        "coordinator_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env_file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_admin_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_ingress_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tunnel_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

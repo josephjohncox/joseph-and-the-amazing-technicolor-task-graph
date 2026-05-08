@@ -38,6 +38,28 @@
     "kind"
   ],
   "$defs": {
+    "DoneCriteria": {
+      "type": "object",
+      "properties": {
+        "artifact_exists": {
+          "type": "boolean"
+        },
+        "tests_pass": {
+          "type": "boolean"
+        },
+        "validator_score_min": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "tests_pass",
+        "artifact_exists"
+      ]
+    },
     "StandardReviewCheck": {
       "type": "string",
       "enum": [
@@ -164,6 +186,100 @@
           "required": [
             "kind",
             "check",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "evaluate_goal_completion"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apply_to_open_tasks": {
+              "type": "boolean",
+              "default": false
+            },
+            "done_criteria": {
+              "$ref": "#/$defs/DoneCriteria"
+            },
+            "kind": {
+              "type": "string",
+              "const": "update_done_criteria"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "reopen_terminal_tasks": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "kind",
+            "done_criteria",
+            "reason"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apply_to_open_tasks": {
+              "type": "boolean",
+              "default": false
+            },
+            "artifact_exists": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "expand_done_criteria"
+            },
+            "min_satisfaction_score": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "reopen_terminal_tasks": {
+              "type": "boolean",
+              "default": false
+            },
+            "tests_pass": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "validator_score_min": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            }
+          },
+          "required": [
+            "kind",
             "reason"
           ]
         },

@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "project": "joseph-and-the-amazing-technicolor-task-graph",
+  "cli": "coat",
+  "package_slug": "jattg",
+  "purpose": "COAT project configuration; no secrets belong in this file.",
+  "config": {
+    "active_profile": "local",
+    "profiles": [
+      {
+        "name": "cli",
+        "kind": "cli",
+        "description": "Operator CLI defaults with local service endpoints.",
+        "service_endpoints": {
+          "restate_ingress": "http://localhost:8080",
+          "restate_admin": "http://localhost:9070",
+          "coordinator_url": "http://localhost:9080",
+          "sandbox_runner_url": "http://localhost:9083",
+          "runner_registry_url": "http://localhost:9085",
+          "notifier_url": "http://localhost:9086",
+          "memory_gateway_url": "http://localhost:9087",
+          "goal_store_url": "http://localhost:9088",
+          "event_gateway_url": "http://localhost:9089",
+          "control_mcp_url": "http://localhost:9090/mcp"
+        },
+        "cli": {
+          "output_format": "human",
+          "interactive_setup": true,
+          "warn_uninitialized": true,
+          "require_project_for_durable_commands": true
+        },
+        "defaults": {
+          "goal_store_url": "http://localhost:9088",
+          "restate_ingress": "http://localhost:8080",
+          "latest_goal_selector": "latest"
+        }
+      },
+      {
+        "name": "local",
+        "kind": "local_compose",
+        "description": "Local Docker Compose stack with localhost service endpoints.",
+        "paths": {
+          "local_provider_env": "infra/compose/local-providers.env",
+          "restate_cloud_env": "infra/compose/restate-cloud.env",
+          "data_dir": ".coat/data",
+          "cache_dir": ".coat/cache"
+        },
+        "service_endpoints": {
+          "restate_ingress": "http://localhost:8080",
+          "restate_admin": "http://localhost:9070",
+          "coordinator_url": "http://localhost:9080",
+          "sandbox_runner_url": "http://localhost:9083",
+          "runner_registry_url": "http://localhost:9085",
+          "notifier_url": "http://localhost:9086",
+          "memory_gateway_url": "http://localhost:9087",
+          "goal_store_url": "http://localhost:9088",
+          "event_gateway_url": "http://localhost:9089",
+          "control_mcp_url": "http://localhost:9090/mcp"
+        },
+        "local_deploy": {
+          "env_files": [
+            "infra/compose/local-providers.env"
+          ],
+          "restate_cloud_env_file": "infra/compose/restate-cloud.env",
+          "allow_stub_runners": false,
+          "allow_uninitialized": false
+        },
+        "cloud": {
+          "provider": "local",
+          "region": "us",
+          "secret_provider": "env_or_secret_ref",
+          "object_store": "minio_or_s3_compatible",
+          "restate_cloud": {
+            "env_file": "infra/compose/restate-cloud.env",
+            "tunnel_name": "jattg-personal",
+            "region": "us",
+            "service_url": "http://coordinator:9080",
+            "local_ingress_url": "http://localhost:18080",
+            "local_admin_url": "http://localhost:19070",
+            "coordinator_url": "http://localhost:9080"
+          }
+        },
+        "defaults": {
+          "goal_store_url": "http://localhost:9088",
+          "restate_ingress": "http://localhost:8080",
+          "latest_goal_selector": "latest"
+        }
+      },
+      {
+        "name": "restate-cloud",
+        "kind": "restate_cloud",
+        "description": "Local services using Restate Cloud through a tunnel.",
+        "service_endpoints": {
+          "restate_ingress": "http://localhost:18080",
+          "restate_admin": "http://localhost:19070",
+          "coordinator_url": "http://localhost:9080",
+          "sandbox_runner_url": "http://localhost:9083",
+          "runner_registry_url": "http://localhost:9085",
+          "notifier_url": "http://localhost:9086",
+          "memory_gateway_url": "http://localhost:9087",
+          "goal_store_url": "http://localhost:9088",
+          "event_gateway_url": "http://localhost:9089",
+          "control_mcp_url": "http://localhost:9090/mcp"
+        },
+        "local_deploy": {
+          "env_files": [
+            "infra/compose/local-providers.env"
+          ],
+          "restate_cloud_env_file": "infra/compose/restate-cloud.env",
+          "allow_stub_runners": false,
+          "allow_uninitialized": false,
+          "profiles": [
+            "restate-cloud"
+          ]
+        },
+        "cloud": {
+          "provider": "local",
+          "region": "us",
+          "secret_provider": "env_or_secret_ref",
+          "object_store": "minio_or_s3_compatible",
+          "restate_cloud": {
+            "env_file": "infra/compose/restate-cloud.env",
+            "tunnel_name": "jattg-personal",
+            "region": "us",
+            "service_url": "http://coordinator:9080",
+            "local_ingress_url": "http://localhost:18080",
+            "local_admin_url": "http://localhost:19070",
+            "coordinator_url": "http://localhost:9080"
+          }
+        },
+        "defaults": {
+          "goal_store_url": "http://localhost:9088",
+          "restate_ingress": "http://localhost:18080",
+          "latest_goal_selector": "latest"
+        }
+      },
+      {
+        "name": "eks",
+        "kind": "eks",
+        "description": "AWS EKS deployment defaults using jattg namespace and Helm chart.",
+        "cloud": {
+          "provider": "aws",
+          "region": "us-west-2",
+          "secret_provider": "aws_secrets_manager_or_external_secrets",
+          "object_store": "s3",
+          "restate_cloud": {
+            "env_file": "infra/compose/restate-cloud.env",
+            "tunnel_name": "jattg-personal",
+            "region": "us",
+            "service_url": "http://coordinator:9080",
+            "local_ingress_url": "http://localhost:18080",
+            "local_admin_url": "http://localhost:19070",
+            "coordinator_url": "http://localhost:9080"
+          }
+        },
+        "kubernetes": {
+          "distribution": "eks",
+          "kubectl": "kubectl",
+          "namespace": "jattg",
+          "manifest": "infra/k8s/base/all.yaml",
+          "rendered_manifest": "infra/k8s/rendered.yaml",
+          "helm_release": "jattg",
+          "helm_chart": "infra/helm/jattg",
+          "image_registry": "ghcr.io/josephjohncox",
+          "service_account": "jattg-control-plane",
+          "secret_provider": "external_secrets_or_aws_secrets_manager",
+          "workload_identity": "irsa_or_eks_pod_identity",
+          "object_store": "s3"
+        }
+      }
+    ]
+  }
+}

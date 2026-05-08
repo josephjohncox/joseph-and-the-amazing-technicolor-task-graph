@@ -21,12 +21,14 @@ COAT builds a durable task-tree control plane for long-running agent work. The c
 2. `../README.md`: local commands and project overview.
 3. `../ARCHITECTURE.md`: durable coordinator, service boundaries, and authority model.
 4. `product-specs/coat-v1.md`: product intent, non-goals, and success criteria.
-5. `operations/local-dev.md`: local validation and smoke workflows.
-6. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
-7. `operations/chat-client-integration.md`: Codex, Claude Code, skill, and remote MCP chat-client setup.
-8. `operations/ephemeral-kubernetes-runners.md`: burst runners, temporary Restate executors, and toolbox injection.
-9. `operations/operator-install.md`: provider-neutral production installation path.
-10. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
+5. `operations/cli.md`: command hierarchy, dialogue surfaces, and canonical command groups.
+6. `operations/configuration.md`: `.coat/project.json`, `~/.coat/config.json`, profile selection, and secret boundaries.
+7. `operations/local-dev.md`: local validation and smoke workflows.
+8. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
+9. `operations/chat-client-integration.md`: Codex, Claude Code, skill, and remote MCP chat-client setup.
+10. `operations/ephemeral-kubernetes-runners.md`: burst runners, temporary Restate executors, and toolbox injection.
+11. `operations/operator-install.md`: provider-neutral production installation path.
+12. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
 
 ## Design Docs
 
@@ -69,4 +71,4 @@ Update docs when behavior, service boundaries, public contracts, deployment knob
 
 Active execution plans must include a `## Follow-Ups` section. Treat that section as the durable continuation surface for later sessions: append unresolved work there, remove items only when the acceptance evidence is recorded, and move completed plans to `docs/exec-plans/completed/` only after follow-ups are either closed or intentionally transferred.
 
-Use `coat follow-ups` to list all active plan continuation items, and `coat follow-ups --json` when another tool or dashboard should consume the queue.
+Use `coat plan follow-ups` to list all active plan continuation items, and `coat plan follow-ups --json` when another tool or dashboard should consume the queue.

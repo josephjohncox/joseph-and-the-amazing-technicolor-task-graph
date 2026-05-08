@@ -11,15 +11,16 @@ Use this mode when you want durable goals to keep progressing across local proce
 3. Initialize the local Compose env file, fill in the values, validate the merged Compose config, then start the stack:
 
 ```sh
-coat compose up --restate-cloud --init-env
+coat --config-profile restate-cloud deploy local up --restate-cloud --init-env
 # edit infra/compose/restate-cloud.env
-coat compose config --restate-cloud
-coat compose up --restate-cloud
+coat --config-profile restate-cloud deploy local config --restate-cloud
+coat --config-profile restate-cloud deploy local up --restate-cloud --allow-stub-runners
 ```
 
-`coat compose up --restate-cloud` uses `infra/compose/docker-compose.yml`,
-`infra/compose/docker-compose.restate-cloud.yml`, the `restate-cloud` profile,
-and `infra/compose/restate-cloud.env`. If the env file is missing, the CLI
+`coat --config-profile restate-cloud` applies the standard Restate Cloud config
+profile: local Restate ingress/admin defaults point at the tunnel ports, the
+Compose `restate-cloud` profile is enabled, and the env file comes from
+`config.cloud.restate_cloud.env_file`. If the env file is missing, the CLI
 copies `infra/compose/restate-cloud.env.example` and stops so secrets are not
 silently defaulted. If placeholders remain, the CLI lists the keys to fill in.
 
@@ -28,31 +29,30 @@ The tunnel container maps Restate Cloud's ingress/admin proxies to host ports `1
 Start detached and register the coordinator through the tunnel in one command:
 
 ```sh
-coat compose up --restate-cloud --register-cloud
+coat --config-profile restate-cloud deploy local up --restate-cloud --register-cloud --allow-stub-runners
 ```
 
 `--register-cloud` implies detached Compose startup, then wraps `restate
 deployments register --tunnel-name <name> <service-url>`. Use `--tunnel-name`
-or `RESTATE_TUNNEL_NAME` if you changed the tunnel name from `jattg-personal`.
-You can still call `coat restate register-cloud --dry-run` when you only want
-to inspect the registration command.
+if you changed the tunnel name from `jattg-personal`. You can still call
+`coat --config-profile restate-cloud deploy restate register-cloud --dry-run`
+when you only want to inspect the registration command.
 
 Submit and inspect goals through the cloud ingress proxy:
 
 ```sh
-COAT_RESTATE_INGRESS=http://localhost:18080 \
-  coat goal submit --file examples/goal-template-structured.json
+coat --config-profile restate-cloud goal submit --file examples/goal-template-structured.json
 ```
 
 The coordinator validates Restate request identity when `RESTATE_IDENTITY_KEYS` or `RESTATE_SIGNING_PUBLIC_KEY` is set. Keep it set for any service reachable by Restate Cloud, including local tunnel scenarios.
 
 ## CLI Helpers
 
-`coat restate cloud-env` prints the local environment exports COAT expects.
+`coat deploy restate cloud-env` prints the local environment exports COAT expects.
 
-`coat restate tunnel-docker` prints an explicit `docker run` command for the official tunnel client when you do not want to use Compose.
+`coat deploy restate tunnel-docker` prints an explicit `docker run` command for the official tunnel client when you do not want to use Compose.
 
-`coat restate register-cloud` remains available as a lower-level helper and wraps:
+`coat deploy restate register-cloud` remains available as a lower-level helper and wraps:
 
 ```sh
 restate deployments register --tunnel-name <name> <service-url>
@@ -73,10 +73,10 @@ Do not expose a coordinator without identity verification. Restate Cloud signs r
 
 ## Kubernetes With Restate Cloud
 
-`coat compose` intentionally does not manage Kubernetes. Compose is the local
+`coat deploy local` intentionally does not manage Kubernetes. Compose is the local
 Docker lifecycle; cluster manifests and ephemeral runner Jobs live under
-`coat k8s`, while packaged installs use the `infra/helm/jattg` chart. Use
-`coat k8s render` and `coat k8s apply --dry-run=client` for raw manifest
+`coat deploy cluster`, while packaged installs use the `infra/helm/jattg` chart. Use
+`coat deploy cluster render` and `coat deploy cluster apply --dry-run=client` for raw manifest
 workflows before moving to a real apply.
 
 For clusters, prefer the Restate Operator path. The operator provides `RestateCloudEnvironment` and `RestateDeployment` resources so services can remain private and still register with Restate Cloud through an operator-managed tunnel.

@@ -5,13 +5,22 @@ time-boxed local-model worker, a short-lived Claude Code/Codex runner, or a
 temporary Restate service executor. Restate and the coordinator still own
 durable state; Jobs only provide execution capacity.
 
-Ephemeral capacity should normally be requested by the coordinator or executor
-framework from approved templates, not hand-created by an operator for each
-task. A task expresses this through `ExecutionProfile.capacity`:
+Ephemeral capacity should be requested by the coordinator or executor framework
+from approved templates, not hand-created by an operator for each task. A task
+expresses this through `ExecutionProfile.capacity`, and the provisioner backend
+is part of that policy:
 
 ```json
 {
   "mode": "prefer_registered_then_ephemeral",
+  "provisioner": {
+    "backend": "kubernetes_controller",
+    "controller_ref": "coat-kubernetes-provisioner",
+    "namespace": "jattg-ephemeral",
+    "service_account": "jattg-ephemeral-runner",
+    "field_manager": "coat-kubernetes-provisioner",
+    "allow_manual_manifest_escape_hatch": true
+  },
   "template_refs": [
     {
       "name": "codex-burst",
@@ -29,9 +38,16 @@ task. A task expresses this through `ExecutionProfile.capacity`:
 ```
 
 The provisioner resolves the template, creates the bounded Job or temporary
-executor, waits for normal runner registration or Restate service registration,
-and then dispatches through the same registry path as persistent runners.
-`registered_runners_only` remains the default.
+executor through the Kubernetes control plane, waits for normal runner
+registration or Restate service registration, and then dispatches through the
+same registry path as persistent runners. `registered_runners_only` remains the
+default.
+
+Use the standard Rust Kubernetes client stack for live control-plane operations:
+`kube` plus `k8s-openapi`. The current sandbox-runner exposes
+`POST /kubernetes/executor-jobs/provision`; plan-only mode returns the exact
+ConfigMap and Job objects, while live mode uses Kubernetes server-side apply
+when `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`.
 
 ## Image Model
 
@@ -86,9 +102,12 @@ Do not place raw credentials in task state, runner registration, diagnostics, or
 memory. Prefer workload identity, External Secrets, Vault, cloud secret stores,
 or short-lived broker leases.
 
-## Runner Jobs
+## Template Library
 
-`infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` includes examples for:
+`infra/k8s/examples/ephemeral-agent-runner-jobs.yaml` is an operator fixture and
+escape hatch. It mirrors the templates that should normally live in
+`.Values.ephemeralRunnerTemplates` and be consumed by the backend provisioner.
+It includes examples for:
 
 - a model-provider runner Job that can point at vLLM, Ollama, Bedrock, or an
   OpenAI-compatible gateway;
@@ -96,11 +115,11 @@ or short-lived broker leases.
 - a temporary coordinator Restate service executor with a Service and
   registration Job.
 
-Render the reusable raw manifest set from the CLI when you want an operator
-example or a fixture:
+Render the reusable raw manifest set from the CLI only when you want an operator
+example, CI fixture, or emergency manual apply:
 
 ```sh
-coat k8s ephemeral-jobs render \
+coat deploy cluster ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
 ```
 
@@ -150,15 +169,60 @@ executor if:
 Do not use a Job for the only production coordinator unless the operator accepts
 that deadline-driven shutdown behavior.
 
+## Per-Task Executor Jobs
+
+`SandboxLaunchPlan` is the durable handoff from the sandbox runner to a concrete
+executor. The backend provisioner path is:
+
+1. coordinator approves a task with `SandboxBackend::KubernetesJob`;
+2. sandbox-runner creates or receives a `SandboxLaunchPlan`;
+3. sandbox-runner calls Kubernetes with the standard Rust `kube` client;
+4. the Job writes artifact, checkpoint, git, and object-store results;
+5. the coordinator validates the returned evidence.
+
+Plan a bounded Job without contacting the cluster:
+
+```sh
+curl -sS -X POST http://localhost:9083/kubernetes/executor-jobs/provision \
+  -H 'content-type: application/json' \
+  --data @examples/kubernetes-executor-job-provision.json
+```
+
+When `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, set
+`"mode": "server_dry_run"` or `"mode": "apply"` in the provision request to use
+the live Kubernetes API. The endpoint applies a ConfigMap containing the
+`SandboxLaunchPlan` and a bounded Job using server-side apply and the request's
+`field_manager`.
+
+The CLI renderer remains useful for inspection and dry-run fixtures:
+
+```sh
+coat deploy cluster executor-job render \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json
+coat deploy cluster executor-job apply \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json \
+  --dry-run=client
+```
+
+The rendered manifest includes a ConfigMap copy of the launch plan, task labels,
+runtime class, security context, resource limits, workspace volume, plan
+environment, and network-policy labels. The executor writes artifacts back
+through the task workspace or object-store refs; the coordinator then validates
+the result and records the attestation.
+
 ## Helm
 
-The chart exposes `.Values.ephemeralRunnerTemplates` as the standard template
-library for coordinator/executor provisioning. Helm renders these templates into
-the `jattg-ephemeral-runner-templates` ConfigMap. A provisioner should read that
-ConfigMap, select a template from `ExecutionProfile.capacity.template_refs`, and
-materialize a bounded Job only after budget and approval checks pass.
+The chart exposes `.Values.ephemeralRunnerTemplates` as the standard capacity
+template library for coordinator/executor provisioning. Helm renders these
+templates into the `jattg-ephemeral-runner-templates` ConfigMap. A provisioner
+should read that ConfigMap, select a template from
+`ExecutionProfile.capacity.template_refs`, and materialize a bounded Job only
+after budget and approval checks pass.
 
-`.Values.ephemeralJobs` remains as a disabled-by-default manual escape hatch.
+`.Values.ephemeralJobs` remains as a disabled-by-default manual escape hatch, not
+the normal autoscaling or task-execution path.
 Each manual entry can
 set:
 
@@ -210,5 +274,7 @@ ephemeralJobs:
 Render before applying:
 
 ```sh
-helm template jattg infra/helm/jattg -f infra/helm/jattg/values-ephemeral-example.yaml
+coat deploy chart template \
+  --values infra/helm/jattg/values-ephemeral-example.yaml \
+  --output /tmp/jattg-ephemeral.yaml
 ```

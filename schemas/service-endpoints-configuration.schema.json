@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatServiceEndpoints",
+  "type": "object",
+  "properties": {
+    "control_mcp_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "coordinator_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "event_gateway_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "goal_store_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "memory_gateway_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "notifier_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "restate_admin": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "restate_ingress": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runner_registry_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "sandbox_runner_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

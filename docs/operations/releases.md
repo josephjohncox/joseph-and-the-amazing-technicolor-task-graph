@@ -150,13 +150,15 @@ The workflow runs `helm lint`, packages `infra/helm/jattg`, generates `index.yam
 Local chart packaging:
 
 ```sh
-CHART_VERSION=0.2.0 APP_VERSION=0.2.0 scripts/package-helm-chart.sh
+coat deploy chart package --chart-version 0.2.0 --app-version 0.2.0
 ```
 
 Install from a chart release:
 
 ```sh
-helm install jattg https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.2.0/jattg-0.2.0.tgz
+coat deploy chart upgrade \
+  --chart https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.2.0/jattg-0.2.0.tgz \
+  --wait
 ```
 
 ## Guardrails
@@ -165,4 +167,4 @@ helm install jattg https://github.com/josephjohncox/joseph-and-the-amazing-techn
 - Do not put live secrets in chart defaults.
 - Keep binary and chart tags separate.
 - Prefer `coat release cut --version X --push` over hand-written release tags.
-- Run `cargo test --workspace`, `buf lint`, `make ts-build`, and `helm lint infra/helm/jattg` before tagging when local tools are available.
+- Run `cargo test --workspace`, `buf lint`, `make ts-build`, and `coat deploy chart lint` before tagging when local tools are available.

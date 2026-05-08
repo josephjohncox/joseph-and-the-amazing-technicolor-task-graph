@@ -2,6 +2,24 @@
 
 ## Build
 
+The repo includes a committed `.envrc` for direnv. It adds `target/release`,
+`target/debug`, `scripts/`, and local Node package bins to `PATH`, then watches
+COAT config files for reloads. It does not export service endpoint env vars.
+Endpoint defaults come from `.coat/project.json` and `~/.coat/config.json`.
+
+```sh
+direnv allow
+cargo build -p coat-cli
+coat guide --print
+coat setup config --list-profiles
+coat setup config --show
+```
+
+After the build, `coat` resolves from the checkout-local `target` directory.
+Copy `.envrc.local.example` to `.envrc.local` only when a workstation should
+load provider env files, tokens, or a rare machine-local config override
+automatically.
+
 ```sh
 make ci
 cargo check --workspace
@@ -15,20 +33,21 @@ npm run --prefix ui/control-plane-web build
 npm run --prefix ui/control-plane-web smoke
 ```
 
-## Compose
+## Local Deploy
 
 ```sh
-coat compose config
-coat compose up
-coat compose config --profile db
-coat compose up --profile db
-coat compose up --restate-cloud --init-env
+coat deploy local config
+coat deploy local preflight --allow-stub-runners
+coat deploy local up --allow-stub-runners
+coat deploy local config --profile db
+coat deploy local up --allow-stub-runners --profile db
+coat --config-profile restate-cloud deploy local up --restate-cloud --init-env
 # edit infra/compose/restate-cloud.env
-coat compose config --restate-cloud
-coat compose up --restate-cloud --register-cloud
+coat --config-profile restate-cloud deploy local config --restate-cloud
+coat --config-profile restate-cloud deploy local up --restate-cloud --register-cloud --allow-stub-runners
 ```
 
-`coat compose up --restate-cloud` creates `infra/compose/restate-cloud.env`
+`coat --config-profile restate-cloud deploy local up --restate-cloud` creates `infra/compose/restate-cloud.env`
 from `infra/compose/restate-cloud.env.example` when missing and refuses to
 start while placeholder Restate Cloud values remain. `--register-cloud` starts
 Compose detached and then registers the coordinator through the default
@@ -39,10 +58,24 @@ Create a local provider env file when you want live hosted or local model creden
 ```sh
 coat setup local-auth
 coat setup local-auth --write-env --output infra/compose/local-providers.env
-coat compose up --env-file infra/compose/local-providers.env
+coat deploy local preflight --env-file infra/compose/local-providers.env
+coat deploy local up --env-file infra/compose/local-providers.env
 ```
 
-The setup wizard checks provider CLIs and environment variables without printing secret values, asks which provider surfaces to prepare, and can write `infra/compose/local-providers.env` from the single env template. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
+The setup wizard checks provider CLIs and environment variables without printing secret values, asks which provider surfaces to prepare, flips the selected runner lanes from `stub` to `live`, and can write `infra/compose/local-providers.env` from the single env template. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
+
+`coat init` writes `.coat/project.json`, a non-secret project config with
+standard `cli`, `local`, `restate-cloud`, and `eks` profiles. Most project
+commands warn if that file is missing. `coat setup config --write-user` creates
+a machine-local `~/.coat/config.json` template; use `coat --config-profile ...`
+for one-off profile selection, and set `COAT_CONFIG` only when a machine should
+use a non-default user config file. `coat deploy local up`
+runs preflight before invoking Docker Compose: it checks the init marker,
+Compose files, Docker availability, Restate Cloud env placeholders when enabled,
+runner modes, and model/provider environment. An all-stub runner pool is allowed
+only when `--allow-stub-runners` is explicit or a user config intentionally opts
+into it.
+See `docs/operations/configuration.md` for config layering and secret handling.
 
 The Rust service image builds all `coat` Rust binaries once in a shared builder stage and copies the selected binary into each service image. It defaults to `CARGO_BUILD_JOBS=8` so builds still use parallel Rust compilation without multiplying compiler jobs across every Compose service.
 
@@ -76,7 +109,7 @@ Then include `live_git_worktree.enabled=true` and `live_git_worktree.approval_id
 
 ```sh
 coat init
-coat follow-ups
+coat plan follow-ups
 coat plan draft --file examples/plan-draft-durable-mode.json
 coat plan list
 coat plan revise \
@@ -95,6 +128,12 @@ coat plan compile \
   --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756710 \
   --file examples/plan-compile-branch-new-goal.json \
   --out examples/drafts/local-model-runner-branch-goal.json
+coat plan vote-candidate \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/plan-candidate-vote.json
+coat plan select-candidate \
+  --plan-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
+  --file examples/plan-candidate-selection.json
 coat setup local-auth
 coat setup local-auth --write-env --output infra/compose/local-providers.env
 coat setup chat-client
@@ -106,7 +145,7 @@ coat setup chat-client \
   --mcp-url http://localhost:9090/mcp \
   --install-claude-mcp \
   --install-claude-skill
-coat compose up --restate-cloud
+coat deploy local up --restate-cloud --allow-stub-runners
 coat goal draft \
   --title "Local strict review smoke" \
   --objective "Create a strict-review goal draft with typed doctrine and a bounded initial frontier." \
@@ -127,6 +166,9 @@ coat runner register --file examples/runner-remote-codex.json
 coat event register --file examples/event-source-calendar-schedule.json
 coat event register --file examples/event-source-webhook-hmac.json
 coat event register --file examples/event-source-generic-ci.json
+coat event register --file examples/event-source-ide-lsp.json
+coat event register --file examples/event-source-branch-activity.json
+coat event register --file examples/event-source-pr-ci-failure.json
 coat event register --file examples/event-source-sqs-notifications.json
 coat event register --file examples/event-source-prometheus-alertmanager.json
 coat event register --file examples/event-source-datadog-monitor.json
@@ -140,6 +182,15 @@ coat event ingest --file examples/external-event-calendar.json
 coat event emit \
   --source-id ci-events \
   --file examples/generic-event-ci-failed.json
+coat event emit \
+  --source-id ide-lsp-diagnostics \
+  --file examples/generic-event-ide-lsp-diagnostics.json
+coat event emit \
+  --source-id branch-activity \
+  --file examples/generic-event-branch-updated.json
+coat event emit \
+  --source-id pr-ci-failures \
+  --file examples/generic-event-pr-ci-failed.json
 coat event webhook \
   --source-id prometheus-alertmanager \
   --file examples/prometheus-alertmanager-firing.json
@@ -177,16 +228,16 @@ coat goal select-branch \
 coat goal restart \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756700 \
   --file examples/restart-request-task.json
-coat notify --file examples/notification-approval.json
-coat notify --file examples/notification-webhook.json
-coat notify --file examples/notification-dashboard.json
-coat notify --file examples/notification-email.json
-coat notify --file examples/notification-sqs.json
-coat notify --file examples/notification-pagerduty.json
-coat notify --file examples/notification-tracker-github.json
-coat notify --threads
-coat notify --thread-key local-model-coding-smoke
-coat notify --queue
+coat human notify --file examples/notification-approval.json
+coat human notify --file examples/notification-webhook.json
+coat human notify --file examples/notification-dashboard.json
+coat human notify --file examples/notification-email.json
+coat human notify --file examples/notification-sqs.json
+coat human notify --file examples/notification-pagerduty.json
+coat human notify --file examples/notification-tracker-github.json
+coat human notify --threads
+coat human notify --thread-key local-model-coding-smoke
+coat human notify --queue
 coat store policy
 coat store goals
 coat store plans
@@ -205,10 +256,10 @@ coat memory preview-edit --file examples/memory-edit.json
 coat memory edit --file examples/memory-edit.json
 coat memory repair --file examples/memory-repair.json
 coat memory events --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602
-coat restate cloud-env
-coat restate register-cloud --dry-run
-coat k8s render --output infra/k8s/rendered.yaml
-coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
+coat deploy restate cloud-env
+coat deploy restate register-cloud --dry-run
+coat deploy cluster render --output infra/k8s/rendered.yaml
+coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client
 ```
 
 Manual runner registration is only needed for external workers such as a vLLM node. Sidecars use:
@@ -274,7 +325,7 @@ Use `examples/auth-distribution-codex-device.json` for the node-local shape and 
 Default local mode is single-user. Multi-user OIDC MCP delegation is opt-in and should stay off for local smoke runs unless you are testing an auth broker. Use `examples/mcp-context-multi-user-oidc.json`, set runner capabilities to include `oidc_user_delegation`, label the runner with `auth.oidc.user_delegation=true` and tenant labels, and keep all user tokens in the broker or MCP server. Task state should contain only `UserPrincipalRef`, `OidcDelegationPolicy`, consent refs, and `SecretRef` values.
 
 The notifier stores local in-memory notification threads by `feedback_thread_key`, thread target address, or goal ID. This is for operator visibility in local runs; Restate workflow state remains the source of truth for approval and feedback signals.
-It supports `NotificationTargetKind::dashboard` for the dashboard human queue, `webhook` by posting the `NotificationRequest` JSON to the target address with optional `SecretRef` bearer auth, `slack` through an incoming webhook URL or secret ref, `email` as a structured local outbox, `sqs` through the official AWS SDK, `pager_duty` through Events API v2, and tracker webhook payloads for `git_hub`, `linear`, and `jira`. Set `COAT_EMAIL_OUTBOX_DIR` to persist email outbox messages as JSON files; otherwise they are only visible through notifier threads and `coat notify --queue`.
+It supports `NotificationTargetKind::dashboard` for the dashboard human queue, `webhook` by posting the `NotificationRequest` JSON to the target address with optional `SecretRef` bearer auth, `slack` through an incoming webhook URL or secret ref, `email` as a structured local outbox, `sqs` through the official AWS SDK, `pager_duty` through Events API v2, and tracker webhook payloads for `git_hub`, `linear`, and `jira`. Set `COAT_EMAIL_OUTBOX_DIR` to persist email outbox messages as JSON files; otherwise they are only visible through notifier threads and `coat human notify --queue`.
 
 For outbound SQS notifications, put the queue URL in `NotificationTarget.address` and let the SDK resolve credentials through normal AWS environment variables, profile configuration, IRSA, ECS task roles, or workload identity. Use `COAT_SQS_REGION`, `AWS_REGION`, or `AWS_DEFAULT_REGION` for region selection. Set `COAT_SQS_ENDPOINT_URL` for LocalStack or another SQS-compatible endpoint. FIFO queues get `COAT_SQS_MESSAGE_GROUP_ID` or the default `coat-notifications` group.
 
@@ -351,7 +402,7 @@ The service also has a real Postgres backend. Start the local database and goal 
 
 ```sh
 COAT_GOAL_STORE_BACKEND=postgres \
-  coat compose up --profile db postgres goal-store
+  coat deploy local up --allow-stub-runners --profile db postgres goal-store
 ```
 
 Keep full contract payloads in JSONB and use typed columns for IDs, statuses, roles, subgoals, event kinds, and artifact URIs. Migration scaffolding lives under `infra/db/migrations/`; Compose starts a local `pgvector/pgvector:pg16` database with the `db` profile.
@@ -359,7 +410,7 @@ Keep full contract payloads in JSONB and use typed columns for IDs, statuses, ro
 Approval requests appear in goal state under `approvals` and in notifier threads when the task notification policy includes `approval_requested`. Approve or reject with:
 
 ```sh
-coat approve \
+coat human approve \
   --goal-id <goal-id> \
   --approval-id <approval-request-id> \
   --approved true
@@ -441,7 +492,7 @@ Do not enable live code execution without isolated workspaces and an explicit sa
 
 The sandbox runner listens on `http://localhost:9083` in Compose. It creates a deterministic per-task workspace, records a local registry file, writes `workspace-manifest.json`, and returns git/object-storage result refs that workers can use in their structured results.
 
-Local binary execution is opt-in and allowlisted. `/commands/plan` is always available for approval-aware planning. `/commands/run` only executes bare binary names when `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION=true`, the workspace exists, the command has an approval ID when required, and the binary is listed in `SANDBOX_ALLOWED_LOCAL_BINARIES`. The default allowlist is aimed at validation and operator tooling: `git`, build/test tools, package managers, `docker`, `helm`, and `kubectl`. Keep this disabled unless the runner node is isolated enough for the requested task.
+Local binary execution is opt-in and allowlisted. `/commands/plan` is always available for approval-aware planning. `/commands/run` only executes bare binary names when `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION=true`, the workspace exists, the command has an approval ID when required, and the binary is listed in `SANDBOX_ALLOWED_LOCAL_BINARIES`. When a request supplies task-local `ExecutionProfile.local_tools`, the sandbox runner also enforces denied binaries, allowed subcommands, denied arguments, network requirements, policy timeouts, and output limits before execution. The default allowlist is aimed at validation and operator tooling: `git`, build/test tools, package managers, `docker`, `helm`, and `kubectl`. Keep this disabled unless the runner node is isolated enough for the requested task.
 
 Local Compose advertises only `SANDBOX_SUPPORTED_BACKENDS=local_workspace`. A request can declare `gvisor`, `kata`, `firecracker`, or `kubernetes_job`, but the local runner will return a `SandboxAttestation` warning unless the runner is deployed on infrastructure that can actually enforce that backend. Use `docs/design-docs/100-strong-sandboxing-guardrails.md` for the production pattern.
 
@@ -457,12 +508,16 @@ coat sandbox cleanup --workspace-id <workspace-id>
 
 ## Ephemeral Kubernetes Runner Jobs
 
-Render the reusable bounded Job example set from the CLI:
+Ephemeral capacity is a coordinator/executor policy path. In local docs the
+static manifests are fixtures for review; production should use
+`ExecutionProfile.capacity` and the backend provisioner.
+
+Render the reusable bounded Job example set from the CLI when you need a fixture:
 
 ```sh
-coat k8s ephemeral-jobs render \
+coat deploy cluster ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
-coat k8s ephemeral-jobs apply \
+coat deploy cluster ephemeral-jobs apply \
   --file infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml \
   --dry-run=client
 ```
@@ -470,3 +525,28 @@ coat k8s ephemeral-jobs apply \
 The rendered file contains default-deny network policy, a restricted service
 account, injection ConfigMap, model-provider runner, Claude Code runner, and a
 temporary Restate executor pattern using the `jattg-agent-toolbox` image.
+
+For a single per-task executor, first obtain a launch plan from the sandbox
+runner. The backend provisioner endpoint can plan the ConfigMap and Job objects:
+
+```sh
+curl -sS -X POST http://localhost:9083/kubernetes/executor-jobs/provision \
+  -H 'content-type: application/json' \
+  --data @examples/kubernetes-executor-job-provision.json
+```
+
+The CLI renderer remains available for inspection:
+
+```sh
+coat sandbox plan --file examples/sandbox-workspace-request-gvisor.json > /tmp/sandbox-launch-plan.json
+coat deploy cluster executor-job render \
+  --launch-plan /tmp/sandbox-launch-plan.json \
+  --output /tmp/jattg-executor-job.json
+```
+
+Both paths produce Kubernetes objects containing a ConfigMap with
+`sandbox-launch-plan.json` and a Job that projects runtime class, resources,
+network labels, security context, environment, and command from the plan. Set
+`SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true` and request `server_dry_run` or
+`apply` only when the sandbox runner should contact a real Kubernetes control
+plane.

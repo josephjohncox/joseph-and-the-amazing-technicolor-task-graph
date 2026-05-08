@@ -1,11 +1,15 @@
 #!/usr/bin/env sh
 set -eu
 
-docker compose -f infra/compose/docker-compose.yml config >/dev/null
+coat deploy local config >/dev/null
+coat deploy local config \
+  --restate-cloud \
+  --restate-cloud-env-file infra/compose/restate-cloud.env.example \
+  --allow-placeholder-env >/dev/null
 buf lint >/dev/null
-coat k8s render --output infra/k8s/rendered.yaml >/dev/null
+coat deploy cluster render --output infra/k8s/rendered.yaml >/dev/null
 if command -v kubectl >/dev/null 2>&1; then
-  if ! kubectl apply --dry-run=client -f infra/k8s/rendered.yaml >/dev/null; then
+  if ! coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client >/dev/null; then
     echo "kubectl dry-run skipped or failed because the current kubeconfig is unavailable" >&2
   fi
 fi

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanCandidateVoteRequest",
+  "type": "object",
+  "properties": {
+    "candidate_plan_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "confidence": {
+      "type": "number",
+      "format": "float"
+    },
+    "evidence": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "ranked_plan_ids": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "score": {
+      "type": "number",
+      "format": "float"
+    },
+    "voter": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "candidate_plan_id",
+    "score",
+    "confidence",
+    "rationale"
+  ]
+}

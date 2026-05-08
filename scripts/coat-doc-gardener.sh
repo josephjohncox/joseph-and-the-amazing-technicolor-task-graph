@@ -49,6 +49,25 @@ if rg -n "infra/helm/coat|coat-agent-toolbox|coat/agent-toolbox|coat-config|coat
   exit 1
 fi
 
+if rg -n "coat (compose|k8s|approve|notify|follow-ups)\b|cargo run -p (coat-cli|jattg-cli)|jattg-cli|JATTG_" "$root" \
+  --glob '!target/**' \
+  --glob '!sidecars/**/node_modules/**' \
+  --glob '!ui/control-plane-web/node_modules/**' \
+  --glob '!ui/control-plane-web/dist/**' \
+  --glob '!schemas/**' \
+  --glob '!infra/k8s/rendered.yaml' \
+  --glob '!scripts/coat-doc-gardener.sh' >/tmp/coat-doc-gardener-commands.txt; then
+  cat /tmp/coat-doc-gardener-commands.txt >&2
+  printf 'stale COAT command hierarchy, package, or env-var references found\n' >&2
+  exit 1
+fi
+
+if rg -n '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_STORE|EVENT|CONTROL)_' "$root/.envrc" >/tmp/coat-doc-gardener-direnv.txt; then
+  cat /tmp/coat-doc-gardener-direnv.txt >&2
+  printf 'direnv must not duplicate COAT service endpoint defaults; use .coat/project.json or ~/.coat/config.json\n' >&2
+  exit 1
+fi
+
 plan_count="$(find "$root/docs/exec-plans/active" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
 if [ "$plan_count" -lt 9 ]; then
   printf 'expected active execution plans, found only %s\n' "$plan_count" >&2

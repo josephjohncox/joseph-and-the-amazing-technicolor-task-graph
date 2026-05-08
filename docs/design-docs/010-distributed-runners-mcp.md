@@ -22,11 +22,14 @@ Child tasks inherit the parent execution profile unless they request an override
 Capacity provisioning is explicit. The default is `registered_runners_only`.
 When a task can tolerate burst capacity, set `ExecutionProfile.capacity.mode` to
 `prefer_registered_then_ephemeral` and reference one or more approved
-`EphemeralRunnerTemplateRef` entries. The coordinator or executor provisioner
-resolves those refs from configuration such as the Helm
-`jattg-ephemeral-runner-templates` ConfigMap, creates a bounded Job or temporary
-Restate service executor, waits for registration, and then dispatches normally.
-Workers do not create their own Jobs from prompt text.
+`EphemeralRunnerTemplateRef` entries plus a `CapacityProvisionerPolicy`. The
+coordinator or executor provisioner resolves those refs from configuration such
+as the Helm `jattg-ephemeral-runner-templates` ConfigMap, creates a bounded Job
+or temporary Restate service executor through a backend provisioner, waits for
+registration, and then dispatches normally. In Kubernetes deployments the live
+provisioner should use the Rust `kube`/`k8s-openapi` client path; rendered
+manifests are fixtures and operator escape hatches. Workers do not create their
+own Jobs from prompt text.
 
 ## Subagent Delegation
 
@@ -118,7 +121,10 @@ The tool registry exposes local command access only as an MCP boundary:
 `local_command` posts to the sandbox runner for `/commands/plan` or
 `/commands/run`. The registry does not execute the command in-process.
 `/commands/run` is still opt-in through `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION`
-and writes command evidence artifacts under the task workspace.
+and writes command evidence artifacts under the task workspace. When the MCP
+request includes task-local `local_tools`, the sandbox runner enforces allowed
+subcommands, denied arguments, denied binaries, policy timeouts, and output
+limits before execution.
 
 `RunnerLocality` can require any node, the coordinator node, a local-only runner, or a remote-only runner. The coordinator passes `COAT_COORDINATOR_NODE_ID` into dispatch when it is configured.
 

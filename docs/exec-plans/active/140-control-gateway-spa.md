@@ -21,9 +21,10 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 - Compile the TypeScript gateway and type-check/build the Vite React SPA.
 - Run control gateway smoke tests for browser-facing Vite assets, chat stub responses, and MCP tool listing.
 - Smoke tests must also prove behavior: chat authoring preserves the operator objective, emits acceptance evidence, keeps initial executable tasks coordinator-owned, and MCP follow-up drafting preserves source plan/path/index while producing a structured durable-plan prompt.
+- Smoke tests cover degraded backend visibility, gateway-assigned goal workflow IDs, unsupported workflow-handler rejection, and research-output-to-steering conversion.
 - Run `cargo test --workspace` and `cargo fmt --all --check`.
-- Validate Compose with `coat compose config` when Docker is available.
-- Validate Kubernetes with `coat k8s apply --dry-run=client` when `kubectl` is available.
+- Validate Compose with `coat deploy local config` when Docker is available.
+- Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 - Start the gateway locally and verify `/healthz` and `/mcp` tool listing.
 
 ## Follow-Ups

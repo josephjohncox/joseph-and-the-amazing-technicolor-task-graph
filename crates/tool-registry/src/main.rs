@@ -233,6 +233,7 @@ fn mcp_tools() -> Vec<serde_json::Value> {
                     "workspace_id": {"type": "string"},
                     "goal_id": {"type": "string"},
                     "task_id": {"type": "string"},
+                    "local_tools": {"type": "object"},
                     "approval_id": {"type": "string"}
                 }
             }
@@ -252,6 +253,7 @@ fn mcp_tools() -> Vec<serde_json::Value> {
                     "workspace_id": {"type": "string"},
                     "goal_id": {"type": "string"},
                     "task_id": {"type": "string"},
+                    "local_tools": {"type": "object"},
                     "approval_id": {"type": "string"},
                     "cwd": {"type": "string"},
                     "timeout_seconds": {"type": "integer", "minimum": 1},
@@ -391,15 +393,19 @@ async fn test_command(
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     if let Some(sandbox_runner_url) = state.sandbox_runner_url.as_ref() {
+        let mut payload = serde_json::json!({
+            "workspace_id": arguments.get("workspace_id"),
+            "goal_id": arguments.get("goal_id"),
+            "task_id": arguments.get("task_id"),
+            "command": requested_command,
+            "approval_id": arguments.get("approval_id")
+        });
+        if let Some(local_tools) = arguments.get("local_tools") {
+            payload["local_tools"] = local_tools.clone();
+        }
         let response = reqwest::Client::new()
             .post(format!("{sandbox_runner_url}/commands/plan"))
-            .json(&serde_json::json!({
-                "workspace_id": arguments.get("workspace_id"),
-                "goal_id": arguments.get("goal_id"),
-                "task_id": arguments.get("task_id"),
-                "command": requested_command,
-                "approval_id": arguments.get("approval_id")
-            }))
+            .json(&payload)
             .send()
             .await?;
         let status = response.status();
@@ -472,9 +478,7 @@ async fn local_command(
     } else {
         "commands/plan"
     };
-    let response = reqwest::Client::new()
-        .post(format!("{sandbox_runner_url}/{endpoint}"))
-        .json(&serde_json::json!({
+    let mut payload = serde_json::json!({
             "workspace_id": arguments.get("workspace_id"),
             "goal_id": arguments.get("goal_id"),
             "task_id": arguments.get("task_id"),
@@ -482,7 +486,13 @@ async fn local_command(
             "approval_id": arguments.get("approval_id"),
             "cwd": arguments.get("cwd"),
             "timeout_seconds": arguments.get("timeout_seconds")
-        }))
+    });
+    if let Some(local_tools) = arguments.get("local_tools") {
+        payload["local_tools"] = local_tools.clone();
+    }
+    let response = reqwest::Client::new()
+        .post(format!("{sandbox_runner_url}/{endpoint}"))
+        .json(&payload)
         .send()
         .await?;
     let status = response.status();

@@ -4,16 +4,23 @@
 
 A durable task-tree control plane for long-running agentic engineering work.
 
-`coat` is the short operational slug for the installed CLI and `COAT_*`
-runtime environment variables. Deployable package surfaces use `jattg`: Helm
-chart name, Kubernetes namespace/labels, GitHub release artifacts, and
-published service images.
+COAT — Coordinator Of Agentic Tasks — is the short name for the installed CLI
+and `COAT_*` runtime environment variables. Deployable package surfaces use
+`jattg`: Helm chart name, Kubernetes namespace/labels, GitHub release
+artifacts, and published service images.
 
 The core idea is simple: Restate owns durable time and replay, Rust owns policy and state, Codex owns bounded code execution, and specialized workers produce structured evidence for the coordinator to validate.
 
 ## Quick Start
 
 The docs assume the `coat` CLI is installed and available on `PATH`.
+For checkout-local development, direnv can put the built CLI on `PATH`:
+
+```sh
+direnv allow
+cargo build -p coat-cli
+coat guide --print
+```
 
 ```sh
 make ci
@@ -21,13 +28,23 @@ cargo test --workspace
 buf lint
 make schemas
 coat init
-coat follow-ups
+coat plan follow-ups
 ```
 
-Run the local stack:
+Print the command hierarchy or open a guided operator dialogue:
 
 ```sh
-coat compose up
+coat guide --print
+coat guide
+coat setup config --list-profiles
+coat setup config --show
+```
+
+Run the local stub smoke stack:
+
+```sh
+coat deploy local preflight --allow-stub-runners
+coat deploy local up --allow-stub-runners
 ```
 
 The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model lanes. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, and model route instead of assuming one local agent.
@@ -37,8 +54,23 @@ Set up local provider credentials and model endpoints when you want live hosted 
 ```sh
 coat setup local-auth
 coat setup local-auth --write-env --output infra/compose/local-providers.env
-coat compose up --env-file infra/compose/local-providers.env
+coat deploy local preflight --env-file infra/compose/local-providers.env
+coat deploy local up --env-file infra/compose/local-providers.env
 ```
+
+`coat init` writes `.coat/project.json`, a non-secret project config used by
+CLI preflight checks and profile defaults for `cli`, `local`, `restate-cloud`,
+and `eks`. `~/.coat/config.json` can provide machine-local overrides; use
+`coat --config-profile ...` for one-off profile selection and `COAT_CONFIG`
+only when a machine should use a non-default user config file.
+Endpoint-bearing commands inherit the active profile unless a flag overrides it.
+Most commands warn or fail, depending on command risk, when the checkout is not
+initialized.
+`coat deploy local up` runs the same preflight as `coat deploy local preflight`
+and refuses to start an all-stub stack unless `--allow-stub-runners` is passed.
+The interactive auth wizard flips selected runner lanes from `stub` to `live`;
+the non-interactive template stays stubbed until you edit it.
+See `docs/operations/configuration.md` for config layering and secret rules.
 
 Install COAT into a primary chat client with the remote HTTP MCP gateway and
 the `coat-control-plane` skill. The no-flag command starts an interactive
@@ -62,31 +94,42 @@ The optional web control surface is included in Compose at `http://localhost:909
 Run the local services against Restate Cloud for personal durable use:
 
 ```sh
-coat compose up --restate-cloud --init-env
+coat --config-profile restate-cloud deploy local up --restate-cloud --init-env
 # edit infra/compose/restate-cloud.env with env id, API key, region, and signing public key
-coat compose config --restate-cloud
-coat compose up --restate-cloud --register-cloud
+coat --config-profile restate-cloud deploy local config --restate-cloud
+coat --config-profile restate-cloud deploy local up --restate-cloud --register-cloud --allow-stub-runners
 ```
 
-`coat compose up --restate-cloud` creates `infra/compose/restate-cloud.env`
+`coat --config-profile restate-cloud deploy local up --restate-cloud` creates `infra/compose/restate-cloud.env`
 from the example when it is missing and stops before starting containers if
 placeholder cloud values are still present. `--register-cloud` starts Compose
 detached and then runs `restate deployments register` for the default
 `jattg-personal` tunnel. Pass `--tunnel-name` if you changed the tunnel name.
 
-See `docs/operations/restate-cloud.md` for personal Restate Cloud, public endpoint, and Kubernetes operator paths. Kubernetes remains under `coat k8s` and Helm chart commands rather than `coat compose`.
+See `docs/operations/restate-cloud.md` for personal Restate Cloud, public endpoint, and Kubernetes operator paths. Kubernetes remains under `coat deploy cluster` and Helm chart commands rather than `coat deploy local`.
 
 Render and validate the base Kubernetes manifest with the CLI:
 
 ```sh
-coat k8s render --output infra/k8s/rendered.yaml
-coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client
+coat deploy cluster render --output infra/k8s/rendered.yaml
+coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client
+coat deploy cluster executor-job render \
+  --launch-plan examples/sandbox-launch-plan-kubernetes-job.json \
+  --output /tmp/jattg-executor-job.json
+```
+
+Validate or install the packaged Helm chart with the CLI:
+
+```sh
+coat deploy chart lint
+coat deploy chart template --output /tmp/jattg.yaml
+coat deploy chart upgrade --values path/to/operator-values.yaml --wait
 ```
 
 Start the optional Postgres/pgvector operational store profile when you want SQL-backed dashboard and audit development:
 
 ```sh
-coat compose up --profile db postgres
+coat deploy local up --allow-stub-runners --profile db postgres
 ```
 
 Submit a goal through Restate ingress. In local development, unmatched tasks can fall back to the local stub runner:
@@ -195,7 +238,7 @@ GitHub publishes binaries, GHCR service images, and Helm charts through release 
 
 ## Follow-Ups
 
-Active execution plans keep durable continuation items under `## Follow-Ups`. Use `coat follow-ups` for a human-readable queue, or `coat follow-ups --json` for dashboard/automation input.
+Active execution plans keep durable continuation items under `## Follow-Ups`. Use `coat plan follow-ups` for a human-readable queue, or `coat plan follow-ups --json` for dashboard/automation input.
 
 ## Protocols And Goal Store
 
@@ -213,7 +256,7 @@ Run the Postgres projection locally with:
 
 ```sh
 COAT_GOAL_STORE_BACKEND=postgres \
-  coat compose up --profile db postgres goal-store
+  coat deploy local up --allow-stub-runners --profile db postgres goal-store
 ```
 
 Inspect the projection surface:
@@ -239,9 +282,11 @@ Durable planning mode is stored in the same service:
 coat plan draft --file examples/plan-draft-durable-mode.json
 coat plan revise --plan-id <plan-id> --file examples/plan-revision-answer-questions.json
 coat plan compile --plan-id <plan-id> --strict-review --human-steered
+coat plan vote-candidate --plan-id <source-plan-id> --file examples/plan-candidate-vote.json
+coat plan select-candidate --plan-id <source-plan-id> --file examples/plan-candidate-selection.json
 ```
 
-Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit the goal.
+Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit the goal. Branch votes and selections are stored on the source plan so competing plan candidates can be reviewed before one compiled candidate is promoted.
 
 Task graph colors are durable contract metadata, not just dashboard styling. `GoalSpec.color_policy` supplies a default technicolor palette, subgoals can set stable semantic colors, tasks inherit those colors unless overridden, and `coat goal tasks --color <key>` filters the runnable frontier by workstream. The SPA shows these colors in goal task tables, agent activity, and plan continuity views.
 
@@ -290,14 +335,16 @@ Ephemeral Kubernetes runners and temporary Restate executors use approved
 capacity templates, not ad hoc worker-owned loops. A task can set
 `ExecutionProfile.capacity.mode=prefer_registered_then_ephemeral` and reference
 Helm-provided templates such as `codex-burst` or `model-provider-burst`; the
-coordinator or executor provisioner creates bounded Jobs, waits for normal
-runner/Restate registration, and dispatches through the same durable path. The
-manual manifest examples remain fixtures and escape hatches. See
+coordinator or executor provisioner creates bounded Jobs through the Kubernetes
+control plane, waits for normal runner/Restate registration, and dispatches
+through the same durable path. The backend path uses the Rust `kube` and
+`k8s-openapi` client stack; manual manifest examples remain fixtures and escape
+hatches. See
 `docs/operations/ephemeral-kubernetes-runners.md`.
-Render the reusable example set with:
+The CLI can still render the reusable example set for inspection:
 
 ```sh
-coat k8s ephemeral-jobs render \
+coat deploy cluster ephemeral-jobs render \
   --output infra/k8s/rendered-ephemeral-agent-runner-jobs.yaml
 ```
 
@@ -320,12 +367,25 @@ The tool registry exposes `/mcp` and requires `Authorization: Bearer ...` whenev
 The notifier records local in-memory feedback threads. Operators can inspect them with:
 
 ```sh
-coat notify --threads
-coat notify --thread-key local-model-coding-smoke
-coat notify --queue
+coat human notify --threads
+coat human notify --thread-key local-model-coding-smoke
+coat human notify --queue
 ```
 
 It also accepts dashboard queue targets, Slack incoming webhook targets, generic webhook targets with `SecretRef` bearer auth, and email outbox targets through the same `NotificationRequest` contract. Human approval and feedback state still resumes through coordinator workflows; notifier delivery reports are visibility evidence, not the durable source of truth.
+
+IDE/LSP diagnostics, branch updates, PR activity, and PR test failures are normal event sources. Register the examples below to let editor extensions, local git watchers, repository webhooks, or CI systems signal the durable task graph without invoking workers directly:
+
+```sh
+coat event register --file examples/event-source-ide-lsp.json
+coat event register --file examples/event-source-branch-activity.json
+coat event register --file examples/event-source-pr-ci-failure.json
+coat event emit --source-id ide-lsp-diagnostics --file examples/generic-event-ide-lsp-diagnostics.json
+coat event emit --source-id branch-activity --file examples/generic-event-branch-updated.json
+coat event emit --source-id pr-ci-failures --file examples/generic-event-pr-ci-failed.json
+```
+
+The gateway records IDE signals under `payload._coat_ide` and branch/PR/CI signals under `payload._coat_change_activity` for routing, dashboards, and memory correlation.
 
 ## Control Gateway And SPA
 
@@ -371,7 +431,7 @@ Clean goals carry `authoring` notes and a `plan` with stable subgoal IDs. `initi
 Approval gates are task-local but governed by `GoalSpec.approval_policy`. Dangerous tasks move to `waiting_approval`, send an `approval_requested` notification, and resume when approved:
 
 ```sh
-coat approve \
+coat human approve \
   --goal-id 018f8f2f-1fd8-7688-bb12-8bfb6b756602 \
   --approval-id <approval-request-id> \
   --approved true
@@ -399,6 +459,8 @@ coat sandbox create --file examples/sandbox-workspace-request-gvisor.json
 ```
 
 `SandboxProfile.isolation` can request local workspace, container, gVisor, Kata, Firecracker, Kubernetes Job, namespace-jail, or provider-backed execution. `sandbox plan` renders the launch contract that a real executor can consume; `sandbox create` stores it as `sandbox-launch-plan.json` beside the workspace manifest. Local Compose only attests metadata-only workspaces. Production runners should return enforced `SandboxAttestation` evidence and can require executor output/security guardrail reviews through `ExecutionProfile.guardrails`; see `docs/design-docs/100-strong-sandboxing-guardrails.md`.
+
+For Kubernetes task execution, `coat-sandbox-runner` exposes `POST /kubernetes/executor-jobs/provision`. Plan-only mode returns the ConfigMap and Job objects; when `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, server dry-run and apply modes use the Kubernetes API instead of shelling out to `kubectl`.
 
 Git result channels are metadata-only by default. To create real task worktrees, set `SANDBOX_ENABLE_LIVE_GIT_WORKTREES=true`, set `SANDBOX_APPROVED_GIT_REPO_ROOTS` to comma-separated local repo roots, and include `live_git_worktree.enabled=true` plus an approval ID in the sandbox request. This keeps branch/worktree communication available while preventing workers from creating worktrees against arbitrary repos.
 

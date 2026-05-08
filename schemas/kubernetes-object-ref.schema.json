@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KubernetesObjectRef",
+  "type": "object",
+  "properties": {
+    "api_version": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "resource_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "uid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "api_version",
+    "kind",
+    "namespace",
+    "name"
+  ]
+}

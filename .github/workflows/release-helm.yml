@@ -25,6 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-helm-rust
+
       - uses: azure/setup-helm@v4
 
       - name: Normalize release versions
@@ -41,11 +47,12 @@ jobs:
           echo "tag=chart-v${version}" >> "$GITHUB_OUTPUT"
 
       - name: Package chart
-        env:
-          CHART_VERSION: ${{ steps.version.outputs.version }}
-          APP_VERSION: ${{ steps.version.outputs.app_version }}
-          RELEASE_URL: https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${{ steps.version.outputs.version }}
-        run: scripts/package-helm-chart.sh
+        run: |
+          cargo build -p coat-cli
+          target/debug/coat helm package \
+            --chart-version "${{ steps.version.outputs.version }}" \
+            --app-version "${{ steps.version.outputs.app_version }}" \
+            --release-url "https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${{ steps.version.outputs.version }}"
 
       - uses: softprops/action-gh-release@v2
         with:

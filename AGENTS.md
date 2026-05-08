@@ -2,6 +2,9 @@
 
 This repo builds a durable agent control plane.
 
+COAT — Coordinator Of Agentic Tasks — is the short name for operator commands
+and runtime configuration.
+
 Use `coat` as the short slug for the operator CLI and `COAT_*` runtime environment variables.
 Use `jattg` for Helm charts, Kubernetes names, release artifacts, and published service images.
 
@@ -22,6 +25,8 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Product intent: `docs/product-specs/coat-v1.md`
 - Architecture: `ARCHITECTURE.md`
 - Documentation map: `docs/README.md`
+- CLI hierarchy and dialogue guide: `docs/operations/cli.md`
+- Configuration guide: `docs/operations/configuration.md`
 - Goal authoring guide: `docs/operations/goal-authoring.md`
 - Runner context initialization guide: `docs/operations/runner-context-initialization.md`
 - Distributed memory guide: `docs/design-docs/030-distributed-memory-knowledgebases.md`
@@ -45,6 +50,9 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Shared Rust contracts: `crates/domain/`
 - Event API contract: `docs/api/event-gateway.asyncapi.yaml`
 - Operational database migrations: `infra/db/migrations/`
+- Local shell setup: `.envrc` and `.envrc.local.example`
+- Project config: `.coat/project.json`
+- User config template: `examples/coat-user-config.json`
 
 Update docs when behavior or public contracts change.
 
@@ -78,7 +86,9 @@ Update docs when behavior or public contracts change.
 - `@ctxr/agent-staff-engineer` is a specialized worker, not the platform core.
 - Compose and Kubernetes must run the same logical service boundaries.
 - Ephemeral Kubernetes Jobs may provide burst runner or Restate executor capacity, but Restate/coordinator state remains authoritative.
+- Backend Kubernetes provisioning should use Rust control-plane clients (`kube`/`k8s-openapi`) from coordinator/executor services; rendered manifests are operator fixtures and escape hatches.
 - The TypeScript control gateway and SPA are optional operator surfaces; they must use backend APIs and must not own durable workflow state.
+- Standard configuration is JSON: project profiles live in `.coat/project.json`, user or node defaults live in `~/.coat/config.json`, one-off profile selection uses `coat --config-profile ...`, and raw secrets stay in env vars, SecretRefs, secret stores, or auth brokers. Do not duplicate service endpoint defaults in direnv.
 
 ## Subagent Routing
 
@@ -132,7 +142,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Initial tasks are coordinator-owned work seeds. Workers may request children, but subgoal creation and routing stay in durable state.
 - Steering directives are the human control surface for pausing, resuming, injecting tasks, and requesting research.
 - Runner selection uses role, capabilities, labels, locality, and optional runner ID.
-- Ephemeral capacity is requested through `ExecutionProfile.capacity` and approved template refs; workers must not hand-create Kubernetes Jobs from prompt text.
+- Ephemeral capacity is requested through `ExecutionProfile.capacity`, provisioner policy, and approved template refs; workers must not hand-create Kubernetes Jobs from prompt text.
 - Model routing can target Codex, OpenAI, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, or local processes.
 - Provider runners are wrappers, not coordinators. Codex, Claude Code, Bedrock, vLLM, Ollama, llama.cpp, Hugging Face, and local-process runners must register capabilities and return structured `AgentRunResult` values through the durable runner queue.
 - Dispatch decisions should preserve ranked candidates and rejected-runner reasons for operator debugging.
@@ -178,8 +188,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Postgres is the standard production goal read model. Restate remains authoritative; the goal store is a projection.
 - Use the migration files for dashboard/audit database setup; do not infer database schema from ad hoc JSONL logs.
 - Keep protobuf ID/status/artifact fields typed and put full Rust payloads behind JSON-schema envelopes.
-- External events enter through `coat-event-gateway`; generic events, webhooks, cron, calendar checks, and event buses must not invoke workers directly.
-- Use generic JSON or CloudEvents-compatible event sources for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before adding provider-specific adapters.
+- External events enter through `coat-event-gateway`; generic events, IDE/LSP diagnostics, branch activity, PR events, CI/test failures, webhooks, cron, calendar checks, and event buses must not invoke workers directly.
+- Use generic JSON or CloudEvents-compatible event sources for IDE/LSP, CI, git, branch, PR, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before adding provider-specific adapters.
 - Observability sources such as Prometheus Alertmanager and Datadog must normalize into durable events, search memory for recurrence/persistence evidence, and route through SRE, software-engineering, data-engineering, or data-science goals before PR, dashboard, alert, or runbook changes.
 - Webhook auth must use `WebhookAuthPolicy` and `SecretRef`; shared-secret, bearer, and HMAC-SHA256 are local gateway paths, while mTLS/OIDC should terminate in trusted ingress or secret middleware until implemented.
 - Agent-proposed monitors or schedules require coordinator or human-approved activation.
@@ -192,19 +202,26 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run `buf lint` after proto edits.
 - Run `cargo check --workspace` before handing off.
 - Prefer behavioral tests that would fail for incorrect goal, workflow, routing, validation, persistence, or operator-feedback behavior.
-- Validate Compose with `coat compose config`.
-- Validate Kubernetes with `kubectl apply --dry-run=client -f infra/k8s/base/all.yaml` when `kubectl` is available.
+- Validate Compose with `coat deploy local preflight --allow-stub-runners` and `coat deploy local config`.
+- Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 
 ## Deployment
 
-- Local stack: `coat compose up`
-- Personal Restate Cloud env bootstrap: `coat compose up --restate-cloud --init-env`
-- Personal Restate Cloud stack and registration: `coat compose up --restate-cloud --register-cloud`
+- CLI dialogue and hierarchy: `coat guide --print`
+- Config profiles: `coat setup config --list-profiles`
+- Config inspection: `coat setup config --show`
+- Local stub smoke stack: `coat deploy local up --allow-stub-runners`
+- Personal Restate Cloud env bootstrap: `coat deploy local up --restate-cloud --init-env`
+- Personal Restate Cloud stack and registration: `coat deploy local up --restate-cloud --register-cloud --allow-stub-runners`
 - Local provider auth setup wizard: `coat setup local-auth`
 - Chat client MCP/skill setup wizard: `coat setup chat-client`
-- Restate Cloud registration only: `coat restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
-- Kubernetes render: `coat k8s render --output infra/k8s/rendered.yaml`
-- Kubernetes apply or dry-run: `coat k8s apply --file infra/k8s/rendered.yaml --dry-run=client`
+- Restate Cloud registration only: `coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
+- Kubernetes render: `coat deploy cluster render --output infra/k8s/rendered.yaml`
+- Kubernetes apply or dry-run: `coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client`
+- Kubernetes rollout status: `coat deploy cluster status --timeout 120s`
+- Kubernetes sandbox executor Job render: `coat deploy cluster executor-job render --launch-plan examples/sandbox-launch-plan-kubernetes-job.json --output /tmp/executor-job.json`
+- Helm chart validation: `coat deploy chart lint` and `coat deploy chart template --output /tmp/jattg.yaml`
+- Helm chart install or upgrade: `coat deploy chart upgrade --values path/to/operator-values.yaml --wait`
 - Restate ingress defaults to `http://localhost:8080`.
 - Coordinator service listens on `:9080`.
 - Runner registry listens on `:9085`.
@@ -228,7 +245,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Put detailed implementation steps in execution plans.
 - Prefer decision-complete plans over vague roadmaps.
 - Every active execution plan must include `## Follow-Ups`; preserve unresolved follow-up work across turns until it is completed, explicitly superseded, or moved to another plan.
-- Use `coat follow-ups` to inspect continuation items before choosing the next plan to advance.
+- Use `coat plan follow-ups` to inspect continuation items before choosing the next plan to advance.
 - Record assumptions and validation commands.
 - Use diagrams when they clarify service boundaries.
 

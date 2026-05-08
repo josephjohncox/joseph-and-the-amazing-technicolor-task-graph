@@ -1,0 +1,24 @@
+{
+  "run_id": "123456789",
+  "type": "ci.test.failed",
+  "subject": "example/repo#42",
+  "dedupe_key": "example/repo:42:123456789",
+  "time": "2026-05-07T12:10:00Z",
+  "provider": "github_actions",
+  "repo": "example/repo",
+  "branch": "feature/lsp",
+  "base_branch": "main",
+  "commit_sha": "abc1234",
+  "actor": "joseph",
+  "pull_request_number": 42,
+  "pull_request_url": "https://github.com/example/repo/pull/42",
+  "workflow_name": "CI",
+  "conclusion": "failure",
+  "failed_test_count": 3,
+  "details_url": "https://github.com/example/repo/actions/runs/123456789",
+  "failed_tests": [
+    "tests::normalizes_ide_lsp_diagnostics_into_signal_metadata",
+    "tests::normalizes_ci_test_failure_into_change_activity_metadata",
+    "integration::event_gateway_routes_pr_failure"
+  ]
+}

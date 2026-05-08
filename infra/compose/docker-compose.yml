@@ -330,7 +330,7 @@ services:
         SIDECAR_DIR: sidecars/codex-runner-ts
     environment:
       PORT: 9091
-      CODEX_RUNNER_MODE: stub
+      CODEX_RUNNER_MODE: ${CODEX_RUNNER_MODE:-stub}
       RUNNER_REGISTRY_URL: http://runner-registry:9085
       RUNNER_ENDPOINT: http://codex-runner:9091
       RUNNER_ID: codex-runner-ts
@@ -356,7 +356,7 @@ services:
         SIDECAR_DIR: sidecars/codex-runner-ts
     environment:
       PORT: 9091
-      CODEX_RUNNER_MODE: stub
+      CODEX_RUNNER_MODE: ${CODEX_REVIEW_RUNNER_MODE:-stub}
       CODEX_MODEL: ${CODEX_REVIEW_MODEL:-codex-default}
       RUNNER_REGISTRY_URL: http://runner-registry:9085
       RUNNER_ENDPOINT: http://codex-reviewer-runner:9091
@@ -382,7 +382,7 @@ services:
         SIDECAR_DIR: sidecars/claude-code-runner-ts
     environment:
       PORT: 9094
-      CLAUDE_CODE_RUNNER_MODE: stub
+      CLAUDE_CODE_RUNNER_MODE: ${CLAUDE_CODE_RUNNER_MODE:-stub}
       RUNNER_REGISTRY_URL: http://runner-registry:9085
       RUNNER_ENDPOINT: http://claude-code-runner:9094
       RUNNER_ID: claude-code-runner-ts
@@ -410,7 +410,7 @@ services:
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
       PORT: 9093
-      MODEL_PROVIDER_RUNNER_MODE: stub
+      MODEL_PROVIDER_RUNNER_MODE: ${MODEL_PROVIDER_RUNNER_MODE:-stub}
       MODEL_PROVIDER_KIND: ${MODEL_PROVIDER_KIND:-open_ai_compatible}
       MODEL_PROVIDER_MODEL: ${MODEL_PROVIDER_MODEL:-openai-compatible-model}
       MODEL_PROVIDER_ENDPOINT: ${MODEL_PROVIDER_ENDPOINT:-}
@@ -443,7 +443,7 @@ services:
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
       PORT: 9093
-      MODEL_PROVIDER_RUNNER_MODE: stub
+      MODEL_PROVIDER_RUNNER_MODE: ${MODEL_PROVIDER_RESEARCH_RUNNER_MODE:-stub}
       MODEL_PROVIDER_KIND: ${MODEL_PROVIDER_RESEARCH_KIND:-open_ai_compatible}
       MODEL_PROVIDER_MODEL: ${MODEL_PROVIDER_RESEARCH_MODEL:-openai-compatible-research}
       MODEL_PROVIDER_ENDPOINT: ${MODEL_PROVIDER_RESEARCH_ENDPOINT:-}
@@ -475,7 +475,7 @@ services:
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
       PORT: 9093
-      MODEL_PROVIDER_RUNNER_MODE: stub
+      MODEL_PROVIDER_RUNNER_MODE: ${MODEL_PROVIDER_LOCAL_RUNNER_MODE:-stub}
       MODEL_PROVIDER_KIND: ${LOCAL_MODEL_PROVIDER_KIND:-ollama}
       MODEL_PROVIDER_MODEL: ${LOCAL_MODEL_PROVIDER_MODEL:-llama3.1}
       MODEL_PROVIDER_ENDPOINT: ${LOCAL_MODEL_PROVIDER_ENDPOINT:-http://host.docker.internal:11434/v1}
@@ -501,7 +501,7 @@ services:
         SIDECAR_DIR: sidecars/staff-engineer-runner-ts
     environment:
       PORT: 9092
-      STAFF_ENGINEER_RUNNER_MODE: stub
+      STAFF_ENGINEER_RUNNER_MODE: ${STAFF_ENGINEER_RUNNER_MODE:-stub}
       RUNNER_REGISTRY_URL: http://runner-registry:9085
       RUNNER_ENDPOINT: http://staff-engineer-runner:9092
       RUNNER_ID: staff-engineer-runner-ts

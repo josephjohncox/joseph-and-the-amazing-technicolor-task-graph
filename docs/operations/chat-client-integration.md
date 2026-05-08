@@ -32,6 +32,14 @@ coat deploy local preflight --env-file infra/compose/local-providers.env
 coat deploy local up --env-file infra/compose/local-providers.env
 ```
 
+The local-auth wizard supports tokenless local auth paths as first-class modes.
+Choose runner-local Codex or Claude Code device/browser auth when the runner
+node has already completed `codex login` or `claude login`; choose brokered auth
+when a separate approval/lease service will satisfy the task. The env file
+records only mode and label metadata such as `CODEX_AUTH_MODE=runner_local_device`;
+raw browser sessions, cookies, refresh tokens, and user tokens stay out of COAT
+config and task state.
+
 Install MCP and the skill interactively:
 
 ```sh

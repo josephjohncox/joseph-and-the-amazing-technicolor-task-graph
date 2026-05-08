@@ -4808,13 +4808,96 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     }
 
     if selections.contains(&0) {
+        let auth_choices = [
+            "API key from env file or shell",
+            "Runner-local Codex device/browser login",
+            "Codex App Server URL",
+        ];
+        let auth_choice = Select::with_theme(&theme)
+            .with_prompt("Codex runner auth mode")
+            .items(&auth_choices)
+            .default(1)
+            .interact()?;
         env_text = replace_env_line(env_text, "CODEX_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "CODEX_REVIEW_RUNNER_MODE", "live");
+        match auth_choice {
+            0 => {
+                env_text = replace_env_line(env_text, "CODEX_AUTH_MODE", "env_api_key");
+                env_text = replace_env_line(
+                    env_text,
+                    "CODEX_RUNNER_LABELS_JSON",
+                    &codex_labels_json("env_api_key", None),
+                );
+                env_text = replace_env_line(
+                    env_text,
+                    "CODEX_REVIEW_RUNNER_LABELS_JSON",
+                    &codex_labels_json("env_api_key", Some("review")),
+                );
+            }
+            1 => {
+                env_text = replace_env_line(env_text, "CODEX_AUTH_MODE", "runner_local_device");
+                env_text = replace_env_line(
+                    env_text,
+                    "CODEX_RUNNER_LABELS_JSON",
+                    &codex_labels_json("runner_local_device", None),
+                );
+                env_text = replace_env_line(
+                    env_text,
+                    "CODEX_REVIEW_RUNNER_LABELS_JSON",
+                    &codex_labels_json("runner_local_device", Some("review")),
+                );
+            }
+            _ => {
+                let app_server_url: String = Input::with_theme(&theme)
+                    .with_prompt("Codex App Server URL")
+                    .default("http://host.docker.internal:1455".to_string())
+                    .interact_text()?;
+                env_text = replace_env_line(env_text, "CODEX_AUTH_MODE", "app_server");
+                env_text = replace_env_line(env_text, "CODEX_APP_SERVER_URL", &app_server_url);
+                env_text = replace_env_line(
+                    env_text,
+                    "CODEX_RUNNER_LABELS_JSON",
+                    &codex_labels_json("app_server", None),
+                );
+                env_text = replace_env_line(
+                    env_text,
+                    "CODEX_REVIEW_RUNNER_LABELS_JSON",
+                    &codex_labels_json("app_server", Some("review")),
+                );
+            }
+        }
     }
 
     if selections.contains(&1) {
+        let auth_choices = [
+            "API key/token from env file or shell",
+            "Runner-local Claude Code device/browser login",
+            "Brokered OAuth/device lease resolved by runner",
+        ];
+        let auth_choice = Select::with_theme(&theme)
+            .with_prompt("Claude Code and staff-engineer auth mode")
+            .items(&auth_choices)
+            .default(1)
+            .interact()?;
+        let (auth_mode, device_label) = match auth_choice {
+            0 => ("env_api_key", false),
+            1 => ("runner_local_device", true),
+            _ => ("oauth_device_broker", false),
+        };
         env_text = replace_env_line(env_text, "CLAUDE_CODE_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "STAFF_ENGINEER_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "CLAUDE_CODE_AUTH_MODE", auth_mode);
+        env_text = replace_env_line(env_text, "STAFF_ENGINEER_AUTH_MODE", auth_mode);
+        env_text = replace_env_line(
+            env_text,
+            "CLAUDE_CODE_RUNNER_LABELS_JSON",
+            &claude_labels_json("claude-code", auth_mode, device_label),
+        );
+        env_text = replace_env_line(
+            env_text,
+            "STAFF_ENGINEER_RUNNER_LABELS_JSON",
+            &claude_labels_json("staff-engineer", auth_mode, device_label),
+        );
     }
 
     if selections.contains(&2) {
@@ -4824,6 +4907,7 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
             .interact_text()?;
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "bedrock");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", "aws_profile");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &bedrock_model);
     }
 
@@ -4855,6 +4939,7 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
             .interact_text()?;
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_LOCAL_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_KIND", &local_kind);
+        env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_AUTH_MODE", "none");
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_MODEL", &local_model);
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_ENDPOINT", &local_endpoint);
     }
@@ -4870,6 +4955,7 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
             .interact_text()?;
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "hugging_face");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", "provider_token");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &hf_model);
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_ENDPOINT", &hf_endpoint);
     }
@@ -4951,9 +5037,14 @@ fn write_local_provider_env(path: &Path, env_text: &str) -> anyhow::Result<()> {
 fn populate_secret_env_values(mut env_text: String) -> String {
     for name in [
         "OPENAI_API_KEY",
+        "CODEX_API_KEY",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "MODEL_PROVIDER_API_KEY",
+        "MODEL_PROVIDER_RESEARCH_API_KEY",
+        "HF_TOKEN",
+        "HUGGINGFACE_TOKEN",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
@@ -4966,6 +5057,32 @@ fn populate_secret_env_values(mut env_text: String) -> String {
         }
     }
     env_text
+}
+
+fn codex_labels_json(auth_mode: &str, lane: Option<&str>) -> String {
+    let device_auth = auth_mode == "runner_local_device";
+    let mut value = serde_json::json!({
+        "pool": "default",
+        "runtime": "codex",
+        "auth.codex.device": device_auth.to_string(),
+        "auth.codex.api_key": if device_auth { "false" } else { "env" },
+        "auth.mode": auth_mode,
+    });
+    if let Some(lane) = lane {
+        value["lane"] = serde_json::Value::String(lane.to_string());
+    }
+    value.to_string()
+}
+
+fn claude_labels_json(runtime: &str, auth_mode: &str, device_auth: bool) -> String {
+    serde_json::json!({
+        "pool": "default",
+        "runtime": runtime,
+        "auth.claude.device": device_auth.to_string(),
+        "auth.claude.api_key": if device_auth { "false" } else { "env" },
+        "auth.mode": auth_mode,
+    })
+    .to_string()
 }
 
 fn replace_env_line(env_text: String, key: &str, value: &str) -> String {
@@ -5001,14 +5118,26 @@ fn print_local_auth_checks() {
     println!("environment:");
     for name in [
         "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_AUTH_MODE",
+        "CODEX_APP_SERVER_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_AUTH_MODE",
+        "STAFF_ENGINEER_AUTH_MODE",
         "AWS_PROFILE",
         "AWS_REGION",
         "AWS_DEFAULT_REGION",
+        "MODEL_PROVIDER_AUTH_MODE",
+        "MODEL_PROVIDER_API_KEY",
         "MODEL_PROVIDER_ENDPOINT",
+        "MODEL_PROVIDER_RESEARCH_AUTH_MODE",
+        "MODEL_PROVIDER_RESEARCH_API_KEY",
+        "HF_TOKEN",
+        "HUGGINGFACE_TOKEN",
         "LOCAL_MODEL_PROVIDER_ENDPOINT",
+        "LOCAL_MODEL_PROVIDER_AUTH_MODE",
         "COAT_CONTROL_CHAT_MODEL",
         "MEMORY_GATEWAY_EMBEDDING_TOKEN",
     ] {
@@ -5027,12 +5156,26 @@ fn print_local_auth_checks() {
 
 fn print_local_auth_commands() {
     println!("suggested local auth/setup commands:");
-    println!("  codex login");
-    println!("  claude login");
+    println!(
+        "  codex login   # runner-local device/browser auth; then set CODEX_AUTH_MODE=runner_local_device"
+    );
+    println!(
+        "  claude login  # runner-local Claude Code auth; then set CLAUDE_CODE_AUTH_MODE=runner_local_device"
+    );
     println!("  aws sso login --profile <profile>");
     println!("  ollama pull llama3.1");
     println!("  vllm serve <model> --host 0.0.0.0 --port 8000");
     println!("  hf auth login");
+    println!("auth modes accepted by preflight:");
+    println!(
+        "  Codex: env_api_key, runner_local_device, app_server, oauth_device_broker, external_broker"
+    );
+    println!(
+        "  Claude/staff-engineer: env_api_key, runner_local_device, oauth_device_broker, external_broker"
+    );
+    println!(
+        "  Model providers: api_key_or_none, provider_token, aws_profile, workload_identity, none, external_broker"
+    );
     println!("after auth, write an env file with:");
     println!("  coat setup local-auth --write-env --output infra/compose/local-providers.env");
     println!("  # or run `coat setup local-auth` interactively to flip selected lanes live");
@@ -5672,6 +5815,8 @@ fn compose_env_values(env_files: &[PathBuf]) -> anyhow::Result<BTreeMap<String, 
             || key.starts_with("LOCAL_MODEL_PROVIDER_")
             || key.starts_with("MEMORY_GATEWAY_")
             || key.starts_with("AWS_")
+            || key.starts_with("HF_")
+            || key.starts_with("HUGGINGFACE_")
         {
             values.insert(key, value);
         }
@@ -5805,27 +5950,25 @@ fn live_runner_setup_issues(
 ) -> Vec<String> {
     match key {
         "CODEX_RUNNER_MODE" | "CODEX_REVIEW_RUNNER_MODE" => {
-            if any_env_present(values, &["OPENAI_API_KEY", "CODEX_API_KEY"]) {
+            if codex_auth_configured(values) {
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but OPENAI_API_KEY or CODEX_API_KEY is not set"
+                    "{lane} is live but no Codex auth is configured; set OPENAI_API_KEY/CODEX_API_KEY, CODEX_AUTH_MODE=runner_local_device after `codex login`, or CODEX_APP_SERVER_URL with CODEX_AUTH_MODE=app_server"
                 )]
             }
         }
         "CLAUDE_CODE_RUNNER_MODE" | "STAFF_ENGINEER_RUNNER_MODE" => {
-            if any_env_present(
-                values,
-                &[
-                    "ANTHROPIC_API_KEY",
-                    "ANTHROPIC_AUTH_TOKEN",
-                    "CLAUDE_CODE_OAUTH_TOKEN",
-                ],
-            ) {
+            let auth_mode_key = if key == "STAFF_ENGINEER_RUNNER_MODE" {
+                "STAFF_ENGINEER_AUTH_MODE"
+            } else {
+                "CLAUDE_CODE_AUTH_MODE"
+            };
+            if claude_auth_configured(values, auth_mode_key) {
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but no Anthropic or Claude Code auth env is set"
+                    "{lane} is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `claude login`"
                 )]
             }
         }
@@ -5854,6 +5997,47 @@ fn live_runner_setup_issues(
     }
 }
 
+fn codex_auth_configured(values: &BTreeMap<String, String>) -> bool {
+    any_env_present(values, &["OPENAI_API_KEY", "CODEX_API_KEY"])
+        || auth_mode_allows_non_env_secret(values, "CODEX_AUTH_MODE")
+        || (auth_mode_is(values, "CODEX_AUTH_MODE", "app_server")
+            && env_present(values, "CODEX_APP_SERVER_URL"))
+}
+
+fn claude_auth_configured(values: &BTreeMap<String, String>, auth_mode_key: &str) -> bool {
+    any_env_present(
+        values,
+        &[
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ],
+    ) || auth_mode_allows_non_env_secret(values, auth_mode_key)
+        || auth_mode_allows_non_env_secret(values, "CLAUDE_CODE_AUTH_MODE")
+}
+
+fn auth_mode_allows_non_env_secret(values: &BTreeMap<String, String>, key: &str) -> bool {
+    env_value(values, key)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "runner_local_device"
+                    | "device"
+                    | "device_auth"
+                    | "browser"
+                    | "oauth_device_broker"
+                    | "external_broker"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn auth_mode_is(values: &BTreeMap<String, String>, key: &str, expected: &str) -> bool {
+    env_value(values, key)
+        .map(|value| value.trim().eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
+}
+
 fn model_provider_setup_issues(
     lane: &'static str,
     values: &BTreeMap<String, String>,
@@ -5866,21 +6050,63 @@ fn model_provider_setup_issues(
     if !env_present(values, model_key) {
         issues.push(format!("{lane} is live but {model_key} is not set"));
     }
+    let auth_mode_key = match kind_key {
+        "MODEL_PROVIDER_RESEARCH_KIND" => "MODEL_PROVIDER_RESEARCH_AUTH_MODE",
+        "LOCAL_MODEL_PROVIDER_KIND" => "LOCAL_MODEL_PROVIDER_AUTH_MODE",
+        _ => "MODEL_PROVIDER_AUTH_MODE",
+    };
+    let auth_mode = env_value(values, auth_mode_key).unwrap_or_else(|| {
+        if matches!(
+            kind.as_str(),
+            "ollama" | "vllm" | "llama_cpp" | "local_process"
+        ) {
+            "none".to_string()
+        } else {
+            "api_key_or_none".to_string()
+        }
+    });
     match kind.as_str() {
         "bedrock" => {
             if !any_env_present(values, &["AWS_REGION", "AWS_DEFAULT_REGION"]) {
                 issues.push(format!("{lane} is bedrock-backed but no AWS region is set"));
             }
-            if !any_env_present(values, &["AWS_PROFILE", "AWS_ACCESS_KEY_ID"]) {
+            if !any_env_present(values, &["AWS_PROFILE", "AWS_ACCESS_KEY_ID"])
+                && !matches!(
+                    auth_mode.as_str(),
+                    "workload_identity" | "aws_profile" | "external_broker"
+                )
+            {
                 issues.push(format!(
-                    "{lane} is bedrock-backed but no AWS profile or access key is set"
+                    "{lane} is bedrock-backed but no AWS profile/access key or workload identity auth mode is set"
                 ));
             }
         }
         "open_ai" => {
-            if !env_present(values, "OPENAI_API_KEY") {
+            if !env_present(values, "OPENAI_API_KEY")
+                && !auth_mode_allows_non_env_secret(values, auth_mode_key)
+            {
                 issues.push(format!(
-                    "{lane} is open_ai-backed but OPENAI_API_KEY is not set"
+                    "{lane} is open_ai-backed but OPENAI_API_KEY or a brokered auth mode is not set"
+                ));
+            }
+        }
+        "hugging_face" => {
+            if !env_present(values, endpoint_key) {
+                issues.push(format!("{lane} is live but {endpoint_key} is not set"));
+            }
+            if auth_mode == "provider_token"
+                && !any_env_present(
+                    values,
+                    &[
+                        "MODEL_PROVIDER_API_KEY",
+                        "MODEL_PROVIDER_RESEARCH_API_KEY",
+                        "HF_TOKEN",
+                        "HUGGINGFACE_TOKEN",
+                    ],
+                )
+            {
+                issues.push(format!(
+                    "{lane} uses provider_token auth but no Hugging Face/model-provider token is set"
                 ));
             }
         }
@@ -7174,6 +7400,90 @@ mod tests {
                 .iter()
                 .any(|failure| failure.contains("MODEL_PROVIDER_ENDPOINT")),
             "live OpenAI-compatible provider should require an endpoint: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_accepts_runner_local_device_auth() {
+        let values = BTreeMap::from([
+            ("CODEX_RUNNER_MODE".to_string(), "live".to_string()),
+            (
+                "CODEX_AUTH_MODE".to_string(),
+                "runner_local_device".to_string(),
+            ),
+            ("CLAUDE_CODE_RUNNER_MODE".to_string(), "live".to_string()),
+            (
+                "CLAUDE_CODE_AUTH_MODE".to_string(),
+                "runner_local_device".to_string(),
+            ),
+            ("STAFF_ENGINEER_RUNNER_MODE".to_string(), "live".to_string()),
+            (
+                "STAFF_ENGINEER_AUTH_MODE".to_string(),
+                "oauth_device_broker".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_LOCAL_RUNNER_MODE".to_string(),
+                "live".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_KIND".to_string(),
+                "ollama".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_AUTH_MODE".to_string(),
+                "none".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_MODEL".to_string(),
+                "llama3.1".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_ENDPOINT".to_string(),
+                "http://host.docker.internal:11434/v1".to_string(),
+            ),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "device/browser and brokered auth modes should unblock live runner lanes: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_requires_explicit_codex_app_server_auth() {
+        let values = BTreeMap::from([
+            ("CODEX_RUNNER_MODE".to_string(), "live".to_string()),
+            (
+                "CODEX_APP_SERVER_URL".to_string(),
+                "http://host.docker.internal:1455".to_string(),
+            ),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("no Codex auth is configured")),
+            "a bare app-server URL should not satisfy Codex auth without CODEX_AUTH_MODE=app_server: {failures:?}"
+        );
+
+        let values = BTreeMap::from([
+            ("CODEX_RUNNER_MODE".to_string(), "live".to_string()),
+            ("CODEX_AUTH_MODE".to_string(), "app_server".to_string()),
+            (
+                "CODEX_APP_SERVER_URL".to_string(),
+                "http://host.docker.internal:1455".to_string(),
+            ),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "explicit Codex App Server auth mode with a URL should satisfy preflight: {failures:?}"
         );
     }
 

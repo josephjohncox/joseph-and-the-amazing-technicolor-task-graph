@@ -854,6 +854,7 @@ async function verifyCodexIntegration(): Promise<Record<string, unknown>> {
   const cli = await checkCommand("codex", ["--version"], 1000);
   const mcp = process.env.CODEX_VERIFY_MCP === "1" ? await checkCodexMcp() : { attempted: false };
   const appServerUrl = process.env.CODEX_APP_SERVER_URL ?? "";
+  const authMode = process.env.CODEX_AUTH_MODE ?? "env_api_key";
   const appServer =
     appServerUrl && process.env.CODEX_VERIFY_APP_SERVER === "1"
       ? await checkHttp(`${appServerUrl.replace(/\/$/, "")}/healthz`, 1000)
@@ -866,9 +867,19 @@ async function verifyCodexIntegration(): Promise<Record<string, unknown>> {
     codex_cli: cli,
     codex_mcp_server: mcp,
     codex_app_server: appServer,
+    auth: {
+      mode: authMode,
+      has_openai_api_key: Boolean(process.env.OPENAI_API_KEY),
+      has_codex_api_key: Boolean(process.env.CODEX_API_KEY),
+      app_server_configured: Boolean(appServerUrl),
+      runner_local_device_allowed: authMode === "runner_local_device",
+      brokered_auth_allowed: authMode === "oauth_device_broker" || authMode === "external_broker",
+      auth_state_path_configured: Boolean(process.env.CODEX_AUTH_STATE_PATH),
+      secret_values_exposed: false,
+    },
     live_execution_requires: [
       "explicit CODEX_RUNNER_MODE",
-      "Codex CLI or Codex App Server",
+      "Codex CLI, Codex App Server, env API key, or explicit runner-local/brokered auth mode",
       "isolated workspace",
       "approved sandbox profile",
     ],

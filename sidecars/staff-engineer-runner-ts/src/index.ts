@@ -328,6 +328,7 @@ server.listen(port, () => {
 });
 
 async function verifyCtxrPackage(): Promise<Record<string, unknown>> {
+  const authMode = process.env.CLAUDE_CODE_AUTH_MODE ?? "env_api_key";
   try {
     const { stdout } = await execFileAsync("npm", [
       "view",
@@ -335,11 +336,31 @@ async function verifyCtxrPackage(): Promise<Record<string, unknown>> {
       "version",
       "--json",
     ]);
-    return { available: true, version: JSON.parse(stdout), package: "@ctxr/agent-staff-engineer" };
+    return {
+      available: true,
+      version: JSON.parse(stdout),
+      package: "@ctxr/agent-staff-engineer",
+      auth: {
+        mode: authMode,
+        has_api_key: Boolean(process.env.ANTHROPIC_API_KEY),
+        has_auth_token: Boolean(process.env.ANTHROPIC_AUTH_TOKEN),
+        has_oauth_token: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN),
+        runner_local_device_allowed: authMode === "runner_local_device",
+        brokered_auth_allowed: authMode === "oauth_device_broker" || authMode === "external_broker",
+        auth_state_path_configured: Boolean(process.env.CLAUDE_CODE_AUTH_STATE_PATH),
+        secret_values_exposed: false,
+      },
+    };
   } catch (error) {
     return {
       available: false,
       package: "@ctxr/agent-staff-engineer",
+      auth: {
+        mode: authMode,
+        runner_local_device_allowed: authMode === "runner_local_device",
+        brokered_auth_allowed: authMode === "oauth_device_broker" || authMode === "external_broker",
+        secret_values_exposed: false,
+      },
       error: error instanceof Error ? error.message : String(error),
     };
   }

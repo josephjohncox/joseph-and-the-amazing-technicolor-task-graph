@@ -57,7 +57,7 @@ if [ "$check" = true ]; then
       printf '  %-8s missing\n' "$tool"
     fi
   done
-  for name in OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION MODEL_PROVIDER_ENDPOINT LOCAL_MODEL_PROVIDER_ENDPOINT COAT_CONTROL_CHAT_MODEL MEMORY_GATEWAY_EMBEDDING_TOKEN; do
+  for name in OPENAI_API_KEY CODEX_API_KEY CODEX_AUTH_MODE CODEX_APP_SERVER_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_AUTH_MODE STAFF_ENGINEER_AUTH_MODE AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION MODEL_PROVIDER_AUTH_MODE MODEL_PROVIDER_API_KEY MODEL_PROVIDER_ENDPOINT HF_TOKEN HUGGINGFACE_TOKEN LOCAL_MODEL_PROVIDER_AUTH_MODE LOCAL_MODEL_PROVIDER_ENDPOINT COAT_CONTROL_CHAT_MODEL MEMORY_GATEWAY_EMBEDDING_TOKEN; do
     eval "value=\${$name:-}"
     if [ -n "$value" ]; then
       printf '  %-34s set\n' "$name"
@@ -70,12 +70,13 @@ fi
 
 if [ "$print_commands" = true ]; then
   printf 'suggested local auth/setup commands:\n'
-  printf '  codex login\n'
-  printf '  claude login\n'
+  printf '  codex login   # then set CODEX_AUTH_MODE=runner_local_device\n'
+  printf '  claude login  # then set CLAUDE_CODE_AUTH_MODE=runner_local_device\n'
   printf '  aws sso login --profile <profile>\n'
   printf '  ollama pull llama3.1\n'
   printf '  vllm serve <model> --host 0.0.0.0 --port 8000\n'
   printf '  hf auth login\n'
+  printf 'auth modes accepted by preflight: runner_local_device, app_server, oauth_device_broker, external_broker, workload_identity, none\n'
   printf 'run `coat setup local-auth` interactively to flip selected runner lanes live\n'
   printf 'then preflight Compose with:\n'
   printf '  coat deploy local preflight --env-file %s\n' "$output"

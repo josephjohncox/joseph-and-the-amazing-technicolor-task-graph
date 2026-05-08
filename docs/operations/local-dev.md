@@ -62,7 +62,7 @@ coat deploy local preflight --env-file infra/compose/local-providers.env
 coat deploy local up --env-file infra/compose/local-providers.env
 ```
 
-The setup wizard checks provider CLIs and environment variables without printing secret values, asks which provider surfaces to prepare, flips the selected runner lanes from `stub` to `live`, and can write `infra/compose/local-providers.env` from the single env template. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
+The setup wizard checks provider CLIs and environment variables without printing secret values, asks which provider surfaces to prepare, flips the selected runner lanes from `stub` to `live`, and can write `infra/compose/local-providers.env` from the single env template. For Codex and Claude Code lanes it asks whether auth comes from env API keys, runner-local device/browser login, Codex App Server, or a brokered lease, so local smoke work is not blocked just because a static token is unavailable. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
 
 `coat init` writes `.coat/project.json`, a non-secret project config with
 standard `cli`, `local`, `restate-cloud`, and `eks` profiles. Most project
@@ -316,6 +316,7 @@ The MCP `local_command` tool uses the same sandbox runner boundary for local bin
 For local Codex or Claude Code device/browser auth, prefer a runner-local setup:
 
 - log in on the node that runs the sidecar;
+- set `CODEX_AUTH_MODE=runner_local_device`, `CLAUDE_CODE_AUTH_MODE=runner_local_device`, or `STAFF_ENGINEER_AUTH_MODE=runner_local_device` in `infra/compose/local-providers.env`;
 - label that runner with values such as `auth.codex.device=true` or `auth.claude.device=true`;
 - set task `auth_distribution.mode` to `runner_local_only`;
 - keep `allow_secret_sync=false`.

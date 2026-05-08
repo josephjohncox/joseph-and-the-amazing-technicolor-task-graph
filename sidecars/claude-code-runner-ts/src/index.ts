@@ -318,15 +318,20 @@ function buildCapabilities(): Record<string, unknown> {
 
 async function verifyClaudeCode(): Promise<Record<string, unknown>> {
   const binary = process.env.CLAUDE_CODE_BINARY ?? "claude";
+  const authMode = process.env.CLAUDE_CODE_AUTH_MODE ?? "env_api_key";
   const probeCli = process.env.CLAUDE_CODE_VERIFY_CLI === "1";
   if (!probeCli) {
     return {
-      available: Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN),
+      available: Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN || authMode === "runner_local_device" || authMode === "oauth_device_broker" || authMode === "external_broker"),
       binary,
+      auth_mode: authMode,
       cli_probe_attempted: false,
       has_api_key: Boolean(process.env.ANTHROPIC_API_KEY),
       has_auth_token: Boolean(process.env.ANTHROPIC_AUTH_TOKEN),
       has_oauth_token: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN),
+      runner_local_device_allowed: authMode === "runner_local_device",
+      brokered_auth_allowed: authMode === "oauth_device_broker" || authMode === "external_broker",
+      auth_state_path_configured: Boolean(process.env.CLAUDE_CODE_AUTH_STATE_PATH),
       secret_values_exposed: false,
     };
   }

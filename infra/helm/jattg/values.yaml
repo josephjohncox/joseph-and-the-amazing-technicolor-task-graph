@@ -9,10 +9,15 @@ global:
 config:
   RUST_LOG: info
   CODEX_RUNNER_MODE: stub
+  CODEX_AUTH_MODE: env_api_key
+  CODEX_APP_SERVER_URL: ""
   CLAUDE_CODE_RUNNER_MODE: stub
+  CLAUDE_CODE_AUTH_MODE: env_api_key
   STAFF_ENGINEER_RUNNER_MODE: stub
+  STAFF_ENGINEER_AUTH_MODE: env_api_key
   MODEL_PROVIDER_RUNNER_MODE: stub
   MODEL_PROVIDER_KIND: open_ai_compatible
+  MODEL_PROVIDER_AUTH_MODE: api_key_or_none
   MODEL_PROVIDER_MODEL: openai-compatible-model
   MODEL_PROVIDER_ENDPOINT: ""
   COAT_GOAL_STORE_BACKEND: jsonl
@@ -29,9 +34,9 @@ config:
   MEMORY_GATEWAY_EMBEDDING_MODEL: text-embedding-3-large
   MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
   MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: "false"
-  CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret"}'
-  CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret"}'
-  STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret"}'
+  CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret","auth.mode":"env_api_key"}'
+  CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret","auth.mode":"env_api_key"}'
+  STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret","auth.mode":"env_api_key"}'
   MODEL_PROVIDER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","provider":"open_ai_compatible"}'
   COAT_AGENT_TOOLBOX_IMAGE: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:0.0.2
 
@@ -370,6 +375,8 @@ workloads:
       NODE_ID: spec.nodeName
     configEnv:
       CODEX_RUNNER_MODE: CODEX_RUNNER_MODE
+      CODEX_AUTH_MODE: CODEX_AUTH_MODE
+      CODEX_APP_SERVER_URL: CODEX_APP_SERVER_URL
       RUNNER_LABELS_JSON: CODEX_RUNNER_LABELS_JSON
       COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
       COAT_OBJECT_STORE_ENDPOINT: COAT_OBJECT_STORE_ENDPOINT
@@ -395,6 +402,7 @@ workloads:
       NODE_ID: spec.nodeName
     configEnv:
       CLAUDE_CODE_RUNNER_MODE: CLAUDE_CODE_RUNNER_MODE
+      CLAUDE_CODE_AUTH_MODE: CLAUDE_CODE_AUTH_MODE
       RUNNER_LABELS_JSON: CLAUDE_CODE_RUNNER_LABELS_JSON
       COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
       COAT_OBJECT_STORE_ENDPOINT: COAT_OBJECT_STORE_ENDPOINT
@@ -423,6 +431,7 @@ workloads:
     configEnv:
       MODEL_PROVIDER_RUNNER_MODE: MODEL_PROVIDER_RUNNER_MODE
       MODEL_PROVIDER_KIND: MODEL_PROVIDER_KIND
+      MODEL_PROVIDER_AUTH_MODE: MODEL_PROVIDER_AUTH_MODE
       MODEL_PROVIDER_MODEL: MODEL_PROVIDER_MODEL
       MODEL_PROVIDER_ENDPOINT: MODEL_PROVIDER_ENDPOINT
       RUNNER_LABELS_JSON: MODEL_PROVIDER_RUNNER_LABELS_JSON
@@ -452,6 +461,7 @@ workloads:
       NODE_ID: spec.nodeName
     configEnv:
       STAFF_ENGINEER_RUNNER_MODE: STAFF_ENGINEER_RUNNER_MODE
+      CLAUDE_CODE_AUTH_MODE: STAFF_ENGINEER_AUTH_MODE
       RUNNER_LABELS_JSON: STAFF_ENGINEER_RUNNER_LABELS_JSON
       COAT_MEMORY_MCP_URL: COAT_MEMORY_MCP_URL
     secretEnv:

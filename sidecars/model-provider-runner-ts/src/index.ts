@@ -332,11 +332,23 @@ function buildCapabilities(): Record<string, unknown> {
 async function verifyProvider(): Promise<Record<string, unknown>> {
   const endpoint = process.env.MODEL_PROVIDER_ENDPOINT ?? defaultEndpointFor(provider);
   const verifyEndpoint = process.env.MODEL_PROVIDER_VERIFY_ENDPOINT === "1";
+  const authMode = process.env.MODEL_PROVIDER_AUTH_MODE ?? (["ollama", "vllm", "llama_cpp", "local_process"].includes(provider) ? "none" : "api_key_or_none");
+  const auth = {
+    mode: authMode,
+    has_openai_api_key: Boolean(process.env.OPENAI_API_KEY),
+    has_model_provider_api_key: Boolean(process.env.MODEL_PROVIDER_API_KEY),
+    has_anthropic_api_key: Boolean(process.env.ANTHROPIC_API_KEY),
+    brokered_auth_allowed: authMode === "external_broker" || authMode === "oauth_device_broker",
+    workload_identity_allowed: authMode === "workload_identity",
+    unauthenticated_allowed: authMode === "none" || authMode === "api_key_or_none",
+    secret_values_exposed: false,
+  };
   if (provider === "bedrock") {
     return {
       provider,
       mode,
       available: Boolean(process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION),
+      auth,
       checks: {
         aws_region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? null,
         has_static_key: Boolean(process.env.AWS_ACCESS_KEY_ID),
@@ -347,16 +359,16 @@ async function verifyProvider(): Promise<Record<string, unknown>> {
   }
   if (provider === "local_process") {
     const command = process.env.MODEL_PROVIDER_COMMAND ?? "";
-    return { provider, mode, available: Boolean(command), command_configured: Boolean(command), secret_values_exposed: false };
+    return { provider, mode, auth, available: Boolean(command), command_configured: Boolean(command), secret_values_exposed: false };
   }
   if (!endpoint || !verifyEndpoint) {
-    return { provider, mode, available: Boolean(endpoint), endpoint, endpoint_probe_attempted: false, secret_values_exposed: false };
+    return { provider, mode, auth, available: Boolean(endpoint), endpoint, endpoint_probe_attempted: false, secret_values_exposed: false };
   }
   try {
     const response = await fetch(`${endpoint.replace(/\/$/, "")}/models`, { method: "GET" });
-    return { provider, mode, available: response.ok, endpoint, endpoint_probe_attempted: true, status: response.status, secret_values_exposed: false };
+    return { provider, mode, auth, available: response.ok, endpoint, endpoint_probe_attempted: true, status: response.status, secret_values_exposed: false };
   } catch (error) {
-    return { provider, mode, available: false, endpoint, endpoint_probe_attempted: true, error: error instanceof Error ? error.message : String(error), secret_values_exposed: false };
+    return { provider, mode, auth, available: false, endpoint, endpoint_probe_attempted: true, error: error instanceof Error ? error.message : String(error), secret_values_exposed: false };
   }
 }
 

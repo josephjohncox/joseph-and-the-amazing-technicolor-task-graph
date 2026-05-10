@@ -43,6 +43,63 @@ registration or Restate service registration, and then dispatches through the
 same registry path as persistent runners. `registered_runners_only` remains the
 default.
 
+## Capacity Decisions
+
+Do not size runner pools from prompt prose. Size them from durable queue state.
+
+The coordinator should group demand by execution lane:
+
+- worker role and purpose: actor, reviewer, tester, research, unification,
+  event processor, or SRE/data-engineering task;
+- required capabilities and local tools;
+- model route, sandbox backend, network profile, and locality;
+- labels such as `pool`, `lane`, `tenant`, `hardware`, or `auth` locality.
+
+For each group, compute:
+
+- queued runnable tasks;
+- unmatched runnable tasks that failed dispatch;
+- currently running tasks;
+- blocked tasks that need a specific scarce capability;
+- event backlog from webhooks, SQS, calendars, monitoring, IDE/LSP, PR/CI, or
+  scheduled processors;
+- pending provisions already requested.
+
+The runner registry exposes `POST /capacity/plan` for a bounded recommendation.
+It combines the demand above with runner heartbeats and
+`CapacityScalingPolicy`. The policy controls min/max runners, slots per runner,
+target backlog per runner, utilization target, event weighting, headroom,
+cooldowns, and max scale steps. A recommendation is not permission to provision;
+the coordinator still applies budget, approvals, template refs, and
+`ExecutionProfile.capacity.mode`.
+
+Operators can inspect the same recommendation without provisioning:
+
+```sh
+coat runner capacity-plan --file examples/runner-scaling-request.json
+```
+
+When the request file omits `policy`, `coat runner capacity-plan` fills it from
+the resolved COAT profile: `config.runner_capacity.lane_policies[pool_key]`
+first, then `config.runner_capacity.default_policy`. Use
+`coat setup config --show` to inspect the active policy and
+`examples/coat-user-config.json` for a user-level override template.
+
+Use these defaults:
+
+- local personal stack: `enabled=false` or `recommend_only`;
+- trusted development cluster: `recommend_only` plus manual approval;
+- production ephemeral burst lanes: `provision_ephemeral`, small
+  `max_scale_up_step`, finite `max_runners`, and human approval unless the lane
+  is low-risk and fully sandboxed;
+- event processors: scale from event backlog only for approved event-source
+  routes, with small headroom and dead-letter queues.
+
+Scale-down should normally mean "stop assigning new work and let Jobs expire by
+TTL." Persistent runner Deployments can still use HPA/KEDA from normal
+Kubernetes metrics, but the coordinator remains the source of truth for task
+demand and provisioning approvals.
+
 Use the standard Rust Kubernetes client stack for live control-plane operations:
 `kube` plus `k8s-openapi`. The current sandbox-runner exposes
 `POST /kubernetes/executor-jobs/provision`; plan-only mode returns the exact

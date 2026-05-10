@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoatWebSearchRoutingConfig",
+  "type": "object",
+  "properties": {
+    "auth_env": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "base_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "default_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "enabled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "max_limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WebSearchRoutingMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WebSearchProviderKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RunnerCapability"
+      }
+    },
+    "required_model_features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ModelFeature"
+      }
+    },
+    "route_via_runner_registry": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "secret_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SecretRef"
+      }
+    }
+  },
+  "$defs": {
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights",
+        "web_search"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "web_search",
+        "test",
+        "review",
+        "mcp_tools",
+        "durable_child_tasks",
+        "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
+        "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "ephemeral_provisioning",
+        "network_open",
+        "formal_verification"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "WebSearchProviderKind": {
+      "type": "string",
+      "enum": [
+        "agent_native",
+        "mcp_gateway",
+        "search_api",
+        "custom",
+        "other"
+      ]
+    },
+    "WebSearchRoutingMode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "coordinator_task",
+        "runner_registry"
+      ]
+    }
+  }
+}

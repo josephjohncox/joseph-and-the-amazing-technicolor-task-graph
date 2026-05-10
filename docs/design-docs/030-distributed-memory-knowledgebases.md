@@ -64,7 +64,7 @@ Zep/Graphiti stores episodes, facts, temporal relationships, and invalidations. 
 
 ### Vector Memory
 
-Qdrant stores embedded memory episodes and retrieval chunks. The gateway mirrors reviewed `memory_write` and `memory_join` records into Qdrant when `MEMORY_GATEWAY_QDRANT_URL` and an embedding endpoint are configured. Qdrant failures are returned in `adapter_reports` and do not roll back the local journal or Graphiti write.
+Qdrant stores embedded memory episodes and retrieval chunks. The gateway mirrors reviewed `memory_write` and `memory_join` records into Qdrant when `MEMORY_GATEWAY_QDRANT_URL`, `MEMORY_GATEWAY_EMBEDDING_URL`, and `MEMORY_GATEWAY_EMBEDDING_MODEL` are configured together. Qdrant failures are returned in `adapter_reports` and do not roll back the local journal or Graphiti write.
 
 Use Qdrant for cross-run RAG, semantic search over memories, source chunks, repository summaries, and branch context. Use filters for `goal_id`, scope, repo, persona, and provenance so distributed agents do not retrieve another goal's private context by accident.
 
@@ -80,15 +80,16 @@ Use a vector or full-text store for source documents, codebase snapshots, genera
 
 Use standard embedding providers. Do not invent embedding algorithms or custom vector formats.
 
-Default hosted path:
+Recommended hosted path:
 
 - OpenAI `text-embedding-3-large` for high-quality memory retrieval.
 - OpenAI `text-embedding-3-small` when lower cost and smaller vectors matter more than maximum recall.
 
-Default local/open source path:
+Recommended local/open source path:
 
 - Hugging Face Text Embeddings Inference for BGE, E5, GTE, Qwen embedding, or other supported open source embedding models.
 - Prefer TEI's OpenAI-compatible `/v1/embeddings` endpoint so the gateway, sidecars, and future workers can share one adapter shape.
+- Ollama, vLLM, llama.cpp, Hugging Face endpoints, and other OpenAI-compatible providers should be configured through `coat setup local-auth` so model IDs come from live endpoint discovery instead of compiled-in examples.
 
 Operational rules:
 

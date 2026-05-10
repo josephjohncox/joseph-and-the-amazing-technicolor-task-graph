@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebSearchRoutingPreference",
+  "type": "string",
+  "enum": [
+    "plan_only",
+    "coordinator_task",
+    "runner_registry"
+  ]
+}

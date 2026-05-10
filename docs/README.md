@@ -21,7 +21,7 @@ COAT builds a durable task-tree control plane for long-running agent work. The c
 2. `../README.md`: local commands and project overview.
 3. `../ARCHITECTURE.md`: durable coordinator, service boundaries, and authority model.
 4. `product-specs/coat-v1.md`: product intent, non-goals, and success criteria.
-5. `operations/cli.md`: command hierarchy, dialogue surfaces, and canonical command groups.
+5. `operations/cli.md`: command hierarchy, explicit subcommands, limited dialogue surfaces, and canonical command groups.
 6. `operations/configuration.md`: `.coat/project.json`, `~/.coat/config.json`, profile selection, and secret boundaries.
 7. `operations/local-dev.md`: local validation and smoke workflows.
 8. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
@@ -69,6 +69,6 @@ buf lint
 
 Update docs when behavior, service boundaries, public contracts, deployment knobs, or safety posture change.
 
-Active execution plans must include a `## Follow-Ups` section. Treat that section as the durable continuation surface for later sessions: append unresolved work there, remove items only when the acceptance evidence is recorded, and move completed plans to `docs/exec-plans/completed/` only after follow-ups are either closed or intentionally transferred.
+Active execution plans must include a `## Follow-Ups` section for developer doc gardening. Treat those bullets as repo-maintenance notes, not product workflow truth.
 
-Use `coat plan follow-ups` to list all active plan continuation items, and `coat plan follow-ups --json` when another tool or dashboard should consume the queue.
+User-facing continuation work belongs in durable plans, goal/task state, event projections, or human queue records. Use `coat plan follow-ups` when maintaining active execution-plan markdown; use the SPA, gateway APIs, or MCP tools for durable operator queues.

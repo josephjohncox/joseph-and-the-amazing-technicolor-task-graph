@@ -11,7 +11,8 @@
  * - docs/design-docs/120-durable-planning-mode.md
  */
 import http from "node:http";
-import { readFile, readdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 type JsonMap = Record<string, unknown>;
 
@@ -42,6 +43,52 @@ type ChatMessage = {
   content: string;
 };
 
+type ChatSessionEntry = {
+  session_id: string;
+  goal_id: string | null;
+  mode: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+  provider?: string;
+  model?: string | null;
+  payload_json?: JsonMap;
+};
+
+type ChatRunTrace = {
+  run_id: string;
+  session_id: string;
+  goal_id: string | null;
+  mode: string;
+  status: "running" | "done" | "error";
+  stage: string;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+  elapsed_ms?: number;
+  backend?: JsonMap;
+  model_params?: JsonMap;
+  chat_log?: JsonMap;
+  error?: string;
+  steps: Array<{ stage: string; at: string; detail?: JsonMap }>;
+};
+
+type ChatBackend = {
+  provider: string;
+  source: "env" | "runner_registry";
+  resolutionPurpose: "operator_chat";
+  durableTaskDispatch: false;
+  userRequest: true;
+  completionsUrl: string;
+  model: string;
+  apiKey: string;
+  runnerId?: string;
+  requestedModel?: string | null;
+  modelParams?: JsonMap;
+  runnerLabels?: JsonMap;
+  modelLabels?: JsonMap;
+};
+
 type FollowUpItem = {
   plan: string;
   path: string;
@@ -65,15 +112,38 @@ const runnerRegistryUrl = trimSlash(
 const memoryGatewayUrl = trimSlash(process.env.COAT_MEMORY_GATEWAY_URL ?? "http://localhost:9087");
 const memoryGatewayToken = process.env.COAT_MEMORY_GATEWAY_TOKEN ?? process.env.MEMORY_GATEWAY_TOKEN ?? "";
 const controlMcpToken = process.env.COAT_CONTROL_MCP_TOKEN ?? gatewayToken;
-const chatCompletionsUrl = process.env.COAT_CONTROL_CHAT_COMPLETIONS_URL
-  ?? (process.env.OPENAI_API_KEY && process.env.COAT_CONTROL_CHAT_MODEL ? "https://api.openai.com/v1/chat/completions" : "");
-const chatModel = process.env.COAT_CONTROL_CHAT_MODEL ?? "";
-const chatApiKey = process.env.COAT_CONTROL_CHAT_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
-const chatTemperature = Number(process.env.COAT_CONTROL_CHAT_TEMPERATURE ?? "0.2");
-const executionPlanDirs = process.env.COAT_EXEC_PLAN_DIR
-  ? [process.env.COAT_EXEC_PLAN_DIR]
-  : ["docs/exec-plans/active", "../../docs/exec-plans/active", "/app/docs/exec-plans/active"];
-
+const llmGatewayProvider = nonEmptyEnv("COAT_LLM_GATEWAY_PROVIDER") ?? "openai_compatible_gateway";
+const llmGatewayUrl = nonEmptyEnv("COAT_LLM_GATEWAY_URL") ?? "";
+const controlChatProvider = nonEmptyEnv("COAT_CONTROL_CHAT_PROVIDER") ?? "";
+const chatBackendMode = (nonEmptyEnv("COAT_CONTROL_CHAT_BACKEND") ?? "configured").toLowerCase();
+const chatModel =
+  nonEmptyEnv("COAT_CONTROL_CHAT_MODEL")
+  ?? nonEmptyEnv("COAT_LLM_GATEWAY_CHAT_MODEL")
+  ?? nonEmptyEnv("COAT_LLM_GATEWAY_DEFAULT_MODEL")
+  ?? "";
+const chatApiKey =
+  nonEmptyEnv("COAT_CONTROL_CHAT_API_KEY")
+  ?? nonEmptyEnv("COAT_LLM_GATEWAY_API_KEY")
+  ?? nonEmptyEnv("OPENAI_API_KEY")
+  ?? "";
+const llmGatewayChatCompletionsUrl =
+  nonEmptyEnv("COAT_LLM_GATEWAY_CHAT_COMPLETIONS_URL")
+  ?? (llmGatewayUrl ? chatCompletionsUrlFromEndpoint(llmGatewayUrl) : undefined);
+const chatCompletionsUrl =
+  nonEmptyEnv("COAT_CONTROL_CHAT_COMPLETIONS_URL")
+  ?? llmGatewayChatCompletionsUrl
+  ?? (directOpenAiChatConfigured()
+    ? "https://api.openai.com/v1/chat/completions"
+    : "");
+const chatLatencyClass = nonEmptyEnv("COAT_CONTROL_CHAT_LATENCY_CLASS") ?? "";
+const chatSpeedTier = nonEmptyEnv("COAT_CONTROL_CHAT_SPEED_TIER") ?? "";
+const chatTemperature = optionalNumberEnv("COAT_CONTROL_CHAT_TEMPERATURE") ?? 0.2;
+const chatTopP = optionalNumberEnv("COAT_CONTROL_CHAT_TOP_P");
+const chatMaxOutputTokens = optionalNumberEnv("COAT_CONTROL_CHAT_MAX_OUTPUT_TOKENS");
+const chatReasoningEffort = nonEmptyEnv("COAT_CONTROL_CHAT_REASONING_EFFORT") ?? "";
+const chatTimeoutSeconds = optionalNumberEnv("COAT_CONTROL_CHAT_TIMEOUT_SECONDS");
+const chatStoreBackend = nonEmptyEnv("COAT_CONTROL_CHAT_STORE_BACKEND") ?? "goal_store";
+const chatJournalPath = nonEmptyEnv("COAT_CONTROL_CHAT_JOURNAL_PATH") ?? "";
 const workflowHandlers = new Set([
   "status",
   "progress",
@@ -87,6 +157,8 @@ const workflowHandlers = new Set([
   "inject_feedback",
 ]);
 const workflowReadHandlers = new Set(["status", "progress", "tasks"]);
+const chatRuns = new Map<string, ChatRunTrace>();
+const chatRunTtlMs = 30 * 60 * 1000;
 
 const services: ServiceRef[] = [
   { name: "restate", baseUrl: restateAdminUrl, healthPath: "/health" },
@@ -101,6 +173,26 @@ const staticRootUrl = new URL("./public/", import.meta.url);
 
 function trimSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function nonEmptyEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+function optionalNumberEnv(name: string): number | null {
+  const raw = nonEmptyEnv(name);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function directOpenAiChatConfigured(): boolean {
+  const provider = controlChatProvider.toLowerCase();
+  if (provider !== "openai") {
+    return false;
+  }
+  return Boolean(chatModel && (nonEmptyEnv("OPENAI_API_KEY") || nonEmptyEnv("COAT_CONTROL_CHAT_API_KEY")));
 }
 
 function jsonHeaders(extra: Record<string, string> = {}): HeadersInit {
@@ -284,7 +376,7 @@ async function overview(): Promise<JsonMap> {
   const [plans, approvals, followUps] = await Promise.all([
     proxyJson(goalStoreUrl, "/goal-store/plans?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/approvals?limit=50", { method: "GET" }),
-    executionPlanFollowUps(executionPlanDirs, false),
+    durablePlanFollowUps(false),
   ]);
 
   return {
@@ -293,7 +385,7 @@ async function overview(): Promise<JsonMap> {
     authority_note:
       "This gateway reads projections and submits workflow signals; Restate and the Rust services remain authoritative.",
     services: health,
-    runner_status: runnerStatus,
+    runner_status: normalizeRunnerStatusResult(runnerStatus),
     human_threads: threads,
     event_sources: eventSources,
     recent_events: events,
@@ -306,106 +398,135 @@ async function overview(): Promise<JsonMap> {
   };
 }
 
-async function executionPlanFollowUps(planDirs: string[], includeEmpty: boolean): Promise<JsonMap> {
-  const errors: JsonMap[] = [];
-  for (const planDir of planDirs) {
-    const result = await readExecutionPlanFollowUps(planDir, includeEmpty);
-    if (!("error" in result)) {
-      return { ...result, checked_plan_dirs: planDirs };
-    }
-    errors.push({
-      plan_dir: result.plan_dir,
-      error: result.error,
-    });
-  }
+async function runnerStatus(): Promise<ProxyResult> {
+  return normalizeRunnerStatusResult(await proxyJson(runnerRegistryUrl, "/runners/status", { method: "GET" }));
+}
+
+function normalizeRunnerStatusResult(result: ProxyResult): ProxyResult {
   return {
-    plan_dir: planDirs[0] ?? "",
-    checked_plan_dirs: planDirs,
-    plan_count: 0,
-    follow_up_count: 0,
-    items: [],
-    plans: [],
-    error: errors.map((item) => `${item.plan_dir}: ${item.error}`).join("; "),
-    errors,
+    ...result,
+    data: normalizeRunnerStatusData(result.data),
   };
 }
 
-async function readExecutionPlanFollowUps(planDir: string, includeEmpty: boolean): Promise<JsonMap> {
-  const normalizedDir = planDir.replace(/\/+$/, "") || ".";
-  try {
-    const entries = await readdir(normalizedDir, { withFileTypes: true });
-    const files = entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .map((entry) => `${normalizedDir}/${entry.name}`)
-      .sort();
-    const plans: JsonMap[] = [];
-    const items: FollowUpItem[] = [];
-    let followUpCount = 0;
-    for (const file of files) {
-      const text = await readFile(file, "utf8");
-      const followUps = extractFollowUps(text);
-      const title = extractMarkdownTitle(text) ?? file;
-      followUpCount += followUps.length;
-      followUps.forEach((item, index) => {
-        items.push({ plan: title, path: file, index, text: item });
+function normalizeRunnerStatusData(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(normalizeRunnerRow);
+  }
+  const record = asRecord(value);
+  if (Array.isArray(record.data)) {
+    return {
+      ...record,
+      data: record.data.map(normalizeRunnerRow),
+    };
+  }
+  return value;
+}
+
+function normalizeRunnerRow(value: unknown): JsonMap {
+  const row = asRecord(value);
+  const registration = Object.keys(asRecord(row.registration)).length
+    ? asRecord(row.registration)
+    : row;
+  const labels = {
+    ...asRecord(registration.labels),
+    ...asRecord(row.labels),
+  };
+  const runnerId = stringField(row, "runner_id") || stringField(registration, "runner_id");
+  const nodeId = stringField(row, "node_id") || stringField(registration, "node_id");
+  const endpoint = stringField(row, "endpoint") || stringField(registration, "endpoint");
+  const runtime = stringField(labels, "runtime");
+  const lane = stringField(labels, "lane");
+  const pool = stringField(labels, "pool");
+  const displayName = stringField(row, "display_name")
+    || stringField(labels, "display_name")
+    || stringField(labels, "name")
+    || [runtime, lane].filter(Boolean).join(" / ")
+    || runnerId;
+  return {
+    ...row,
+    registration,
+    runner_id: runnerId,
+    node_id: nodeId,
+    endpoint,
+    display_name: displayName,
+    runtime: runtime || null,
+    lane: lane || null,
+    pool: pool || null,
+    labels,
+    roles: arrayField(registration, "roles"),
+    capabilities: arrayField(registration, "capabilities"),
+    models: arrayField(registration, "models"),
+    max_concurrency: row.max_concurrency ?? registration.max_concurrency ?? null,
+    lease_ttl_seconds: row.lease_ttl_seconds ?? registration.lease_ttl_seconds ?? null,
+    status: runnerState(row),
+  };
+}
+
+function runnerState(row: JsonMap): string {
+  if (row.stale === true) return "stale";
+  if (row.full === true) return "full";
+  if (row.dispatchable === false) return "unavailable";
+  return "active";
+}
+
+function stringField(record: JsonMap, key: string): string {
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+async function durablePlanFollowUps(includeEmpty: boolean): Promise<JsonMap> {
+  const planList = await proxyJson(goalStoreUrl, "/goal-store/plans?limit=100", { method: "GET" });
+  const planRows = rowsFromData(planList.data);
+  const plans: JsonMap[] = [];
+  const items: JsonMap[] = [];
+
+  for (const row of planRows) {
+    const planId = stringField(row, "plan_id") || stringField(row, "id");
+    if (!planId) {
+      continue;
+    }
+    const continuity = await planContinuity(planId);
+    const continuityBody = asRecord(continuity.continuity);
+    const nextActions = arrayField(continuityBody, "next_actions").map(String).filter((item) => item.trim());
+    const title = String(continuity.title ?? row.title ?? planId);
+    nextActions.forEach((text, index) => {
+      items.push({
+        source: "durable_plan_continuity",
+        plan: title,
+        plan_id: planId,
+        path: `goal-store/plans/${planId}`,
+        index,
+        text,
       });
-      if (includeEmpty || followUps.length > 0) {
-        plans.push({
-          path: file,
-          title,
-          follow_ups: followUps,
-        });
-      }
+    });
+    if (includeEmpty || nextActions.length > 0) {
+      plans.push({
+        source: "durable_plan_continuity",
+        plan_id: planId,
+        path: `goal-store/plans/${planId}`,
+        title,
+        status: continuity.status ?? row.status ?? "",
+        follow_ups: nextActions,
+        next_actions: nextActions,
+        continuity,
+      });
     }
-    return {
-      plan_dir: normalizedDir,
-      plan_count: plans.length,
-      follow_up_count: followUpCount,
-      items,
-      plans,
-    };
-  } catch (error) {
-    return {
-      plan_dir: normalizedDir,
-      plan_count: 0,
-      follow_up_count: 0,
-      items: [],
-      plans: [],
-      error: error instanceof Error ? error.message : String(error),
-    };
   }
-}
 
-function extractMarkdownTitle(text: string): string | null {
-  for (const line of text.split(/\r?\n/)) {
-    if (line.startsWith("# ")) {
-      const title = line.slice(2).trim();
-      return title || null;
-    }
-  }
-  return null;
-}
-
-function extractFollowUps(text: string): string[] {
-  const items: string[] = [];
-  let inSection = false;
-  for (const line of text.split(/\r?\n/)) {
-    if (line.startsWith("## ")) {
-      inSection = line.trim() === "## Follow-Ups";
-      continue;
-    }
-    if (!inSection) {
-      continue;
-    }
-    const trimmed = line.trim();
-    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      const item = trimmed.slice(2).trim();
-      if (item) {
-        items.push(item);
-      }
-    }
-  }
-  return items;
+  return {
+    source: "durable_plan_continuity",
+    source_status: {
+      ok: planList.ok,
+      status: planList.status,
+      url: planList.url,
+    },
+    plan_count: plans.length,
+    follow_up_count: items.length,
+    next_action_count: items.length,
+    items,
+    plans,
+  };
 }
 
 function followUpDraftPlan(payload: unknown): JsonMap {
@@ -436,7 +557,7 @@ function followUpItemFromPayload(payload: unknown): FollowUpItem {
 function followUpDraftPrompt(item: FollowUpItem): string {
   return `<task>
   <mode>draft_durable_plan</mode>
-  <instruction>MUST turn this execution-plan follow-up into a concrete durable plan draft for COAT. MUST preserve the source plan and path. MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates, and next implementation steps. MUST identify any questions that block execution.</instruction>
+  <instruction>MUST turn this durable continuation item into a concrete durable plan draft for COAT. MUST preserve the source plan and path. MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates, and next implementation steps. MUST identify any questions that block execution.</instruction>
   <source_plan>${escapeXml(item.plan)}</source_plan>
   <source_path>${escapeXml(item.path)}</source_path>
   <follow_up_index>${item.index}</follow_up_index>
@@ -703,6 +824,23 @@ function arrayField(record: JsonMap, key: string): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function rowsFromData(value: unknown): JsonMap[] {
+  if (Array.isArray(value)) {
+    return value.map(asRecord).filter((item) => Object.keys(item).length > 0);
+  }
+  const record = asRecord(value);
+  for (const key of ["plans", "items", "records", "rows", "data"]) {
+    const candidate = record[key];
+    if (candidate !== value) {
+      const rows = rowsFromData(candidate);
+      if (rows.length) {
+        return rows;
+      }
+    }
+  }
+  return [];
+}
+
 async function workflowPost(goalId: string, handler: string, body: unknown): Promise<ProxyResult> {
   const path = `/GoalWorkflow/${encodeURIComponent(goalId)}/${handler}`;
   return proxyJson(
@@ -813,15 +951,130 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
   const request = asRecord(payload);
   const mode = String(request.mode ?? "general");
   const goalId = String(request.goal_id ?? "");
+  const sessionId = String(request.session_id ?? (goalId ? `goal:${goalId}` : "operator:default"));
+  const runId = String(request.run_id ?? crypto.randomUUID());
   const messages = chatMessagesFrom(request.messages);
   if (!messages.length) {
     throw new Error("chat request requires at least one message");
   }
-  const context = await chatContext(goalId);
-  if (chatCompletionsUrl && chatModel) {
-    return callChatModel(mode, messages, context);
+  beginChatRun(runId, sessionId, goalId || null, mode);
+  try {
+    updateChatRun(runId, "loading_goal_context", goalId ? { goal_id: goalId } : { scope: "operator" });
+    const context = await chatContext(goalId);
+    updateChatRun(runId, "resolving_backend");
+    const backend = await resolveChatBackend();
+    const latestUserMessage = [...messages].reverse().find((message) => message.role === "user") ?? null;
+    let response: JsonMap;
+    if (backend) {
+      updateChatRun(runId, "calling_model", { backend: publicChatBackend(backend) });
+      response = await callChatModel(mode, messages, context, backend);
+    } else {
+      updateChatRun(runId, "using_stub", { reason: stubChatReason() });
+      response = stubChat(mode, messages, context);
+    }
+    updateChatRun(runId, "journaling_turns", {
+      provider: response.provider ?? null,
+      model: response.model ?? null,
+    });
+    const chatLog = await appendChatTurn(sessionId, goalId || null, mode, latestUserMessage, response);
+    const result = {
+      ...response,
+      session_id: sessionId,
+      run_id: runId,
+      chat_log: chatLog,
+    };
+    return {
+      ...result,
+      chat_run: finishChatRun(runId, result, null),
+    };
+  } catch (error) {
+    finishChatRun(runId, {}, error);
+    throw error;
   }
-  return stubChat(mode, messages, context);
+}
+
+function beginChatRun(runId: string, sessionId: string, goalId: string | null, mode: string): ChatRunTrace {
+  cleanupChatRuns();
+  const now = new Date().toISOString();
+  const trace: ChatRunTrace = {
+    run_id: runId,
+    session_id: sessionId,
+    goal_id: goalId,
+    mode,
+    status: "running",
+    stage: "received",
+    started_at: now,
+    updated_at: now,
+    steps: [{ stage: "received", at: now }],
+  };
+  chatRuns.set(runId, trace);
+  return trace;
+}
+
+function updateChatRun(runId: string, stage: string, detail?: JsonMap): ChatRunTrace | null {
+  const trace = chatRuns.get(runId);
+  if (!trace) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  trace.stage = stage;
+  trace.updated_at = now;
+  trace.steps.push({ stage, at: now, ...(detail ? { detail } : {}) });
+  if (detail?.backend && typeof detail.backend === "object" && !Array.isArray(detail.backend)) {
+    trace.backend = detail.backend as JsonMap;
+  }
+  return trace;
+}
+
+function finishChatRun(runId: string, response: JsonMap, error: unknown): ChatRunTrace | null {
+  const trace = chatRuns.get(runId);
+  if (!trace) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  trace.status = error ? "error" : "done";
+  trace.stage = error ? "error" : "done";
+  trace.updated_at = now;
+  trace.finished_at = now;
+  trace.elapsed_ms = Date.parse(now) - Date.parse(trace.started_at);
+  if (error) {
+    trace.error = error instanceof Error ? error.message : String(error);
+  }
+  trace.backend = asRecord(response.chat_backend) || trace.backend;
+  trace.model_params = asRecord(response.model_params);
+  trace.chat_log = asRecord(response.chat_log);
+  trace.steps.push({
+    stage: trace.stage,
+    at: now,
+    detail: error ? { error: trace.error ?? "unknown error" } : { provider: response.provider ?? null, model: response.model ?? null },
+  });
+  return trace;
+}
+
+function chatRunSnapshot(runId: string): JsonMap {
+  cleanupChatRuns();
+  const trace = chatRuns.get(runId);
+  if (!trace) {
+    return {
+      run_id: runId,
+      found: false,
+      status: "missing",
+      reason: "chat run trace was not found or has expired",
+    };
+  }
+  return {
+    found: true,
+    ...trace,
+  };
+}
+
+function cleanupChatRuns(): void {
+  const now = Date.now();
+  for (const [runId, trace] of chatRuns) {
+    if (now - Date.parse(trace.updated_at) > chatRunTtlMs) {
+      chatRuns.delete(runId);
+    }
+  }
 }
 
 function chatMessagesFrom(value: unknown): ChatMessage[] {
@@ -839,6 +1092,256 @@ function chatMessagesFrom(value: unknown): ChatMessage[] {
 
 function chatRole(value: string): ChatMessage["role"] {
   return value === "assistant" || value === "system" ? value : "user";
+}
+
+async function chatSession(sessionId: string): Promise<JsonMap> {
+  const { entries, chatLog } = await readChatSessionEntries(sessionId);
+  return {
+    session_id: sessionId,
+    durable: Boolean(chatLog.durable),
+    chat_log: chatLog,
+    messages: entries.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+    })),
+    entries,
+  };
+}
+
+async function appendChatTurn(
+  sessionId: string,
+  goalId: string | null,
+  mode: string,
+  userMessage: ChatMessage | null,
+  response: JsonMap,
+): Promise<JsonMap> {
+  const createdAt = new Date().toISOString();
+  const entries: ChatSessionEntry[] = [];
+  if (userMessage?.content) {
+    entries.push({
+      session_id: sessionId,
+      goal_id: goalId,
+      mode,
+      role: "user",
+      content: userMessage.content,
+      created_at: createdAt,
+      payload_json: { source: "control_gateway" },
+    });
+  }
+  const assistant = String(response.assistant ?? "").trim();
+  if (assistant) {
+    entries.push({
+      session_id: sessionId,
+      goal_id: goalId,
+      mode,
+      role: "assistant",
+      content: assistant,
+      created_at: new Date().toISOString(),
+      provider: typeof response.provider === "string" ? response.provider : undefined,
+      model: typeof response.model === "string" ? response.model : null,
+      payload_json: chatAssistantTurnPayload(response),
+    });
+  }
+  if (!entries.length) {
+    return chatLogStatus("none", false);
+  }
+
+  if (chatStoreBackend !== "jsonl" && chatStoreBackend !== "disabled") {
+    const goalStoreResult = await appendChatEntriesToGoalStore(entries);
+    if (goalStoreResult.durable) {
+      return goalStoreResult;
+    }
+    if (!chatJournalPath) {
+      return goalStoreResult;
+    }
+    const jsonlResult = await appendChatEntriesToJsonl(entries);
+    return {
+      ...jsonlResult,
+      fallback_from: "goal_store",
+      goal_store_error: goalStoreResult.error ?? null,
+    };
+  }
+
+  if (chatStoreBackend === "disabled" || !chatJournalPath) {
+    return chatLogStatus("none", false);
+  }
+  return appendChatEntriesToJsonl(entries);
+}
+
+function chatAssistantTurnPayload(response: JsonMap): JsonMap {
+  return {
+    source: "control_gateway",
+    drafts: asRecord(response.drafts),
+    chat_backend: asRecord(response.chat_backend),
+    model_params: asRecord(response.model_params),
+    mode: response.mode ?? null,
+  };
+}
+
+async function appendChatEntriesToGoalStore(entries: ChatSessionEntry[]): Promise<JsonMap> {
+  for (const entry of entries) {
+    const response = await proxyJson(
+      goalStoreUrl,
+      "/goal-store/chat/turns",
+      {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify(goalStoreChatTurnBody(entry)),
+      },
+    );
+    if (!response.ok) {
+      return chatLogStatus("goal_store", false, `goal-store chat append failed with ${response.status}`);
+    }
+  }
+  return chatLogStatus("goal_store", true);
+}
+
+function goalStoreChatTurnBody(entry: ChatSessionEntry): JsonMap {
+  return {
+    session_id: entry.session_id,
+    goal_id: uuidOrUndefined(entry.goal_id),
+    mode: entry.mode,
+    role: entry.role,
+    content: entry.content,
+    created_at: entry.created_at,
+    provider: entry.provider,
+    model: entry.model,
+    payload_json: entry.payload_json ?? {},
+  };
+}
+
+function uuidOrUndefined(value: string | null): string | undefined {
+  if (!value) return undefined;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : undefined;
+}
+
+async function appendChatEntriesToJsonl(entries: ChatSessionEntry[]): Promise<JsonMap> {
+  await mkdir(dirname(chatJournalPath), { recursive: true });
+  await appendFile(chatJournalPath, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  return {
+    ...chatLogStatus("jsonl", true),
+    journal_path: "configured",
+  };
+}
+
+async function readChatSessionEntries(sessionId: string): Promise<{ entries: ChatSessionEntry[]; chatLog: JsonMap }> {
+  if (chatStoreBackend !== "jsonl" && chatStoreBackend !== "disabled") {
+    const goalStoreResult = await readChatSessionEntriesFromGoalStore(sessionId);
+    if (goalStoreResult.entries.length || goalStoreResult.chatLog.durable || !chatJournalPath) {
+      return goalStoreResult;
+    }
+    const jsonlResult = await readChatSessionEntriesFromJsonl(sessionId);
+    return {
+      entries: jsonlResult.entries,
+      chatLog: {
+        ...jsonlResult.chatLog,
+        fallback_from: "goal_store",
+        goal_store_error: goalStoreResult.chatLog.error ?? null,
+      },
+    };
+  }
+  if (chatStoreBackend === "disabled" || !chatJournalPath) {
+    return { entries: [], chatLog: chatLogStatus("none", false) };
+  }
+  return readChatSessionEntriesFromJsonl(sessionId);
+}
+
+async function readChatSessionEntriesFromGoalStore(sessionId: string): Promise<{ entries: ChatSessionEntry[]; chatLog: JsonMap }> {
+  const response = await proxyJson(
+    goalStoreUrl,
+    `/goal-store/chat/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "GET" },
+  );
+  if (!response.ok) {
+    return {
+      entries: [],
+      chatLog: chatLogStatus("goal_store", false, `goal-store chat session read failed with ${response.status}`),
+    };
+  }
+  const body = asRecord(response.data);
+  return {
+    entries: arrayField(body, "turns").map(chatEntryFromGoalStoreTurn).filter((entry) => entry.content),
+    chatLog: chatLogStatus("goal_store", true),
+  };
+}
+
+function chatEntryFromGoalStoreTurn(value: unknown): ChatSessionEntry {
+  const record = asRecord(value);
+  const role = record.role === "assistant" ? "assistant" : "user";
+  return {
+    session_id: String(record.session_id ?? ""),
+    goal_id: typeof record.goal_id === "string" ? record.goal_id : null,
+    mode: String(record.mode ?? "general"),
+    role,
+    content: String(record.content ?? "").trim(),
+    created_at: String(record.created_at ?? ""),
+    provider: typeof record.provider === "string" ? record.provider : undefined,
+    model: typeof record.model === "string" ? record.model : null,
+    payload_json: asRecord(record.payload_json),
+  };
+}
+
+async function readChatSessionEntriesFromJsonl(sessionId: string): Promise<{ entries: ChatSessionEntry[]; chatLog: JsonMap }> {
+  let text = "";
+  try {
+    text = await readFile(chatJournalPath, "utf8");
+  } catch (error) {
+    if (asRecord(error).code === "ENOENT") {
+      return {
+        entries: [],
+        chatLog: {
+          ...chatLogStatus("jsonl", true),
+          journal_path: "configured",
+        },
+      };
+    }
+    throw error;
+  }
+  const entries: ChatSessionEntry[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    const parsed = safeJsonValue(line);
+    const record = asRecord(parsed);
+    if (record.session_id !== sessionId) {
+      continue;
+    }
+    const role = record.role === "assistant" ? "assistant" : record.role === "user" ? "user" : null;
+    const content = String(record.content ?? "").trim();
+    if (!role || !content) {
+      continue;
+    }
+    entries.push({
+      session_id: String(record.session_id),
+      goal_id: typeof record.goal_id === "string" ? record.goal_id : null,
+      mode: String(record.mode ?? "general"),
+      role,
+      content,
+      created_at: String(record.created_at ?? ""),
+      provider: typeof record.provider === "string" ? record.provider : undefined,
+      model: typeof record.model === "string" ? record.model : null,
+      payload_json: asRecord(record.payload_json),
+    });
+  }
+  return {
+    entries,
+    chatLog: {
+      ...chatLogStatus("jsonl", true),
+      journal_path: "configured",
+    },
+  };
+}
+
+function chatLogStatus(backend: string, durable: boolean, error?: string): JsonMap {
+  return {
+    durable,
+    backend,
+    store_backend: chatStoreBackend,
+    error: error ?? null,
+  };
 }
 
 async function chatContext(goalId: string): Promise<JsonMap> {
@@ -864,41 +1367,256 @@ async function chatContext(goalId: string): Promise<JsonMap> {
   return context;
 }
 
-async function callChatModel(mode: string, messages: ChatMessage[], context: JsonMap): Promise<JsonMap> {
-  const response = await fetch(chatCompletionsUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(chatApiKey ? { authorization: `Bearer ${chatApiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: chatModel,
-      temperature: chatTemperature,
-      messages: [
-        {
-          role: "system",
-          content: controlChatSystemPrompt(mode, context),
-        },
-        ...messages,
-      ],
-    }),
-  });
-  const text = await response.text();
-  const data = text ? safeJsonValue(text) : {};
-  if (!response.ok) {
-    throw new Error(`chat model request failed with ${response.status}: ${text}`);
+async function resolveChatBackend(): Promise<ChatBackend | null> {
+  if (chatBackendMode === "stub") {
+    return null;
   }
-  const content = String(atRecord(data, ["choices", "0", "message", "content"]) ?? "");
-  const parsed = parseChatAssistantPayload(content);
+  if (chatCompletionsUrl && chatModel) {
+    return {
+      provider: configuredChatProvider(chatCompletionsUrl),
+      source: "env",
+      resolutionPurpose: "operator_chat",
+      durableTaskDispatch: false,
+      userRequest: true,
+      completionsUrl: chatCompletionsUrl,
+      model: chatModel,
+      apiKey: chatApiKey,
+      requestedModel: chatModel,
+    };
+  }
+  if (chatCompletionsUrl || chatApiKey || chatModel) {
+    return null;
+  }
+  if (!chatRunnerDiscoveryEnabled()) {
+    return null;
+  }
+  return discoverChatBackendFromRunners();
+}
+
+function configuredChatProvider(completionsUrl: string): string {
+  if (controlChatProvider) {
+    return controlChatProvider;
+  }
+  if (llmGatewayChatCompletionsUrl && completionsUrl === llmGatewayChatCompletionsUrl) {
+    return `llm_gateway:${llmGatewayProvider}`;
+  }
+  return completionsUrl.includes("api.openai.com") ? "openai" : "openai_compatible";
+}
+
+function chatRunnerDiscoveryEnabled(): boolean {
+  const override = nonEmptyEnv("COAT_CONTROL_CHAT_RUNNER_DISCOVERY");
+  if (override) {
+    if (labelTruthy(override.toLowerCase())) return true;
+    if (labelFalsey(override.toLowerCase())) return false;
+  }
+  return chatBackendMode === "runner_registry" || chatBackendMode === "auto";
+}
+
+async function discoverChatBackendFromRunners(): Promise<ChatBackend | null> {
+  const result = await proxyJson(runnerRegistryUrl, "/runners/status", { method: "GET" });
+  const statuses = Array.isArray(result.data) ? result.data : [];
+  const candidates: ChatBackend[] = [];
+  for (const status of statuses) {
+    const statusRecord = asRecord(status);
+    if (statusRecord.dispatchable === false || statusRecord.stale === true) {
+      continue;
+    }
+    const registration = asRecord(statusRecord.registration);
+    const runnerId = String(registration.runner_id ?? "");
+    const runnerLabels = {
+      ...asRecord(statusRecord.labels),
+      ...asRecord(registration.labels),
+    };
+    for (const modelRecord of arrayField(registration, "models").map(asRecord)) {
+      const endpoint = String(modelRecord.endpoint ?? "").trim();
+      const model = String(modelRecord.model ?? "").trim();
+      const modelLabels = asRecord(modelRecord.labels);
+      if (!endpoint || !model || !/^https?:\/\//i.test(endpoint)) {
+        continue;
+      }
+      if (!modelAllowsOperatorChat(modelLabels, runnerLabels)) {
+        continue;
+      }
+      candidates.push({
+        provider: String(modelRecord.provider ?? "openai_compatible"),
+        source: "runner_registry",
+        resolutionPurpose: "operator_chat",
+        durableTaskDispatch: false,
+        userRequest: true,
+        completionsUrl: chatCompletionsUrlFromEndpoint(endpoint),
+        model,
+        apiKey: "",
+        runnerId,
+        requestedModel: chatModel || null,
+        modelParams: asRecord(modelRecord.params),
+        runnerLabels,
+        modelLabels,
+      });
+    }
+  }
+  if (!candidates.length) {
+    return null;
+  }
+  const exact = chatModel
+    ? candidates.find((candidate) => candidate.model === chatModel)
+    : null;
+  return exact ?? candidates[0];
+}
+
+function modelAllowsOperatorChat(modelLabels: JsonMap, runnerLabels: JsonMap): boolean {
+  if (chatRoutingLabelRejects(runnerLabels) || chatRoutingLabelRejects(modelLabels)) {
+    return false;
+  }
+  return chatRoutingLabelAllows(modelLabels) || chatRoutingLabelAllows(runnerLabels);
+}
+
+function chatRoutingLabelAllows(labels: JsonMap): boolean {
+  if (labelTruthy(labelValue(labels, "control_chat"))) return true;
+  if (labelTruthy(labelValue(labels, "chat.enabled"))) return true;
+  const intent = labelValue(labels, "chat.intent");
+  if (intent === "user_request" || intent === "operator_chat" || intent === "control_chat") return true;
+  const scope = labelValue(labels, "routing_scope");
+  if (scope === "operator_chat" || scope === "control_chat") return true;
+  const purpose = labelValue(labels, "purpose");
+  return purpose === "chat" || purpose === "operator_chat" || purpose === "control_chat";
+}
+
+function chatRoutingLabelRejects(labels: JsonMap): boolean {
+  if (labelFalsey(labelValue(labels, "control_chat"))) return true;
+  if (labelFalsey(labelValue(labels, "chat.enabled"))) return true;
+  const intent = labelValue(labels, "chat.intent");
+  if (intent === "durable_task" || intent === "task_dispatch" || intent === "agent_task") return true;
+  const scope = labelValue(labels, "routing_scope");
+  return scope === "durable_task" || scope === "task_dispatch" || scope === "agent_task" || scope === "work";
+}
+
+function labelValue(labels: JsonMap, key: string): string {
+  const value = labels[key];
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim().toLowerCase();
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value).trim().toLowerCase();
+  return JSON.stringify(value).trim().toLowerCase();
+}
+
+function labelTruthy(value: string): boolean {
+  return ["1", "true", "yes", "on", "enabled"].includes(value);
+}
+
+function labelFalsey(value: string): boolean {
+  return ["0", "false", "no", "off", "disabled"].includes(value);
+}
+
+function chatCompletionsUrlFromEndpoint(endpoint: string): string {
+  const base = trimSlash(endpoint.trim());
+  if (base.endsWith("/chat/completions")) {
+    return base;
+  }
+  if (base.endsWith("/v1")) {
+    return `${base}/chat/completions`;
+  }
+  return `${base}/v1/chat/completions`;
+}
+
+function publicChatBackend(backend: ChatBackend): JsonMap {
   return {
-    provider: "openai_compatible",
-    model: chatModel,
-    mode,
-    assistant: parsed.assistant,
-    drafts: parsed.drafts,
-    raw_model_response: parsed.raw_model_response,
-    context,
+    provider: backend.provider,
+    source: backend.source,
+    resolution_purpose: backend.resolutionPurpose,
+    durable_task_dispatch: backend.durableTaskDispatch,
+    user_request: backend.userRequest,
+    completions_url: backend.completionsUrl,
+    model: backend.model,
+    runner_id: backend.runnerId ?? null,
+    requested_model: backend.requestedModel ?? null,
+    runner_labels: backend.runnerLabels ?? null,
+    model_labels: backend.modelLabels ?? null,
   };
+}
+
+async function callChatModel(
+  mode: string,
+  messages: ChatMessage[],
+  context: JsonMap,
+  backend: ChatBackend,
+): Promise<JsonMap> {
+  const body: JsonMap = {
+    model: backend.model,
+    temperature: chatTemperature,
+    messages: [
+      {
+        role: "system",
+        content: controlChatSystemPrompt(mode, context),
+      },
+      ...messages,
+    ],
+  };
+  if (chatTopP !== null) body.top_p = chatTopP;
+  if (chatMaxOutputTokens !== null) body.max_tokens = chatMaxOutputTokens;
+  if (supportsHostedChatTuning(backend)) {
+    if (chatReasoningEffort) body.reasoning_effort = chatReasoningEffort;
+    if (chatSpeedTier) body.service_tier = chatSpeedTier;
+  }
+
+  const controller = chatTimeoutSeconds && chatTimeoutSeconds > 0 ? new AbortController() : null;
+  const timeoutHandle = controller
+    ? setTimeout(() => controller.abort(), chatTimeoutSeconds! * 1000)
+    : null;
+  try {
+    const response = await fetch(backend.completionsUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(backend.apiKey ? { authorization: `Bearer ${backend.apiKey}` } : {}),
+      },
+      signal: controller?.signal,
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    const data = text ? safeJsonValue(text) : {};
+    if (!response.ok) {
+      throw new Error(`chat model request failed with ${response.status}: ${text}`);
+    }
+    const content = String(atRecord(data, ["choices", "0", "message", "content"]) ?? "");
+    const parsed = parseChatAssistantPayload(content);
+    return {
+      provider: backend.provider,
+      model: backend.model,
+      chat_backend: {
+        source: backend.source,
+        backend_mode: chatBackendMode,
+        resolution_purpose: backend.resolutionPurpose,
+        durable_task_dispatch: backend.durableTaskDispatch,
+        user_request: backend.userRequest,
+        runner_id: backend.runnerId ?? null,
+        requested_model: backend.requestedModel ?? null,
+        completions_url: backend.completionsUrl,
+        runner_labels: backend.runnerLabels ?? null,
+        model_labels: backend.modelLabels ?? null,
+      },
+      model_params: {
+        latency_class: chatLatencyClass || null,
+        speed_tier: chatSpeedTier || null,
+        temperature: chatTemperature,
+        top_p: chatTopP,
+        max_output_tokens: chatMaxOutputTokens,
+        reasoning_effort: chatReasoningEffort || null,
+        timeout_seconds: chatTimeoutSeconds,
+        runner_params: backend.modelParams ?? null,
+      },
+      mode,
+      assistant: parsed.assistant,
+      drafts: parsed.drafts,
+      raw_model_response: parsed.raw_model_response,
+      context,
+    };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
+function supportsHostedChatTuning(backend: ChatBackend): boolean {
+  return backend.provider === "openai" || backend.completionsUrl.includes("api.openai.com");
 }
 
 function controlChatSystemPrompt(mode: string, context: JsonMap): string {
@@ -907,6 +1625,7 @@ function controlChatSystemPrompt(mode: string, context: JsonMap): string {
     "  <role>You are the COAT control-plane chat assistant.</role>",
     "  <mission>Help the operator author goals, durable plans, steering directives, memory notes, and review requests.</mission>",
     "  <authority>",
+    "    <rule>This request is operator chat assistance for a user request. You MUST NOT treat it as a durable task run or claim runner task dispatch.</rule>",
     "    <rule>You MUST NOT claim that durable state changed unless the caller provides a successful backend result.</rule>",
     "    <rule>You MUST treat all mutations as requiring explicit backend forms, API calls, or MCP tools.</rule>",
     "    <rule>You MUST treat any subagent request as a COAT durable child-task request, not native model delegation.</rule>",
@@ -921,6 +1640,7 @@ function controlChatSystemPrompt(mode: string, context: JsonMap): string {
     "    <rule>Goals MUST include objective, evidence, constraints, budget, done criteria, execution, memory, research, approval, and stop conditions when known.</rule>",
     "    <rule>Steering drafts MUST be explicit about goal_id, task_id when known, operator intent, directive kind, and approval risk.</rule>",
     "    <rule>Memory drafts MUST preserve provenance and MUST NOT write unreviewed branch conclusions as durable facts.</rule>",
+    "    <rule>Search drafts MUST return a structured search_request and, when live web/reference research is needed, a coordinator-owned research steering directive. You MUST NOT claim that memory, web, or reference search already ran unless a tool result is present.</rule>",
     "  </drafting_rules>",
     `  <requested_mode>${escapeXml(mode)}</requested_mode>`,
     `  <context_json>${escapeXml(JSON.stringify(context).slice(0, 12_000))}</context_json>`,
@@ -936,8 +1656,15 @@ function escapeXml(value: string): string {
 }
 
 function parseChatAssistantPayload(content: string): JsonMap {
+  const tagged = extractTaggedAssistantPayload(content);
+  if (tagged) {
+    return {
+      ...tagged,
+      raw_model_response: content,
+    };
+  }
   const parsed = extractJsonObject(content);
-  if (parsed) {
+  if (parsed && ("assistant" in parsed || "drafts" in parsed)) {
     return {
       assistant: String(parsed.assistant ?? content),
       drafts: asRecord(parsed.drafts),
@@ -951,36 +1678,133 @@ function parseChatAssistantPayload(content: string): JsonMap {
   };
 }
 
+function extractTaggedAssistantPayload(content: string): JsonMap | null {
+  const assistantMatch = content.match(/<assistant>\s*([\s\S]*?)\s*<\/assistant>/i);
+  const draftsMatch = content.match(/<drafts>\s*([\s\S]*?)\s*<\/drafts>/i);
+  if (!assistantMatch && !draftsMatch) {
+    return null;
+  }
+  const assistantRaw = assistantMatch?.[1]?.trim() ?? "";
+  const assistantParsed = assistantRaw ? safeJsonValue(assistantRaw) : "";
+  const draftsRaw = draftsMatch?.[1]?.trim() ?? "";
+  const draftsParsed = draftsRaw ? extractJsonObject(draftsRaw) ?? safeJsonValue(draftsRaw) : {};
+  return {
+    assistant: typeof assistantParsed === "string" ? assistantParsed : JSON.stringify(assistantParsed),
+    drafts: asRecord(draftsParsed),
+  };
+}
+
 function extractJsonObject(content: string): JsonMap | null {
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1] : content;
   const first = candidate.indexOf("{");
   const last = candidate.lastIndexOf("}");
-  if (first < 0 || last <= first) {
-    return null;
+  if (first >= 0 && last > first) {
+    const parsed = safeJsonValue(candidate.slice(first, last + 1));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as JsonMap;
+    }
   }
-  const parsed = safeJsonValue(candidate.slice(first, last + 1));
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as JsonMap : null;
+  const objects = extractBalancedJsonObjects(candidate);
+  return objects.find((object) => "assistant" in object || "drafts" in object) ?? objects.at(-1) ?? null;
+}
+
+function extractBalancedJsonObjects(content: string): JsonMap[] {
+  const objects: JsonMap[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+    if (char !== "}" || depth === 0) {
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0 && start >= 0) {
+      const parsed = safeJsonValue(content.slice(start, index + 1));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        objects.push(parsed as JsonMap);
+      }
+      start = -1;
+    }
+  }
+  return objects;
 }
 
 function stubChat(mode: string, messages: ChatMessage[], context: JsonMap): JsonMap {
   const latest = messages[messages.length - 1]?.content ?? "";
   const drafts = stubDrafts(mode, latest, context);
-  const assistant = [
-    "I can help draft the structured control-plane payloads from plain language.",
-    chatCompletionsUrl && !chatModel
-      ? "A chat completions URL is configured, but COAT_CONTROL_CHAT_MODEL is missing, so this response used the local stub."
-      : "No live chat model is configured, so this response used the local stub.",
-    "Review any draft, then use the existing form buttons to submit or steer durable work.",
-  ].join(" ");
+  const assistant = stubAssistantText(mode);
   return {
     provider: "stub",
     model: null,
     mode,
     assistant,
     drafts,
+    chat_backend: {
+      source: "stub",
+      backend_mode: chatBackendMode,
+      resolution_purpose: "operator_chat",
+      durable_task_dispatch: false,
+      user_request: true,
+      reason: stubChatReason(),
+    },
     context,
   };
+}
+
+function stubChatReason(): string {
+  if (chatBackendMode === "stub") {
+    return "control chat backend is set to stub";
+  }
+  if (chatCompletionsUrl && !chatModel) {
+    return "chat completions URL or LLM gateway configured without COAT_CONTROL_CHAT_MODEL, COAT_LLM_GATEWAY_CHAT_MODEL, or COAT_LLM_GATEWAY_DEFAULT_MODEL";
+  }
+  if (chatModel && !chatCompletionsUrl) {
+    return "chat model is configured but no matching gateway, OpenAI-compatible chat URL, or direct OpenAI provider is configured";
+  }
+  if (!chatRunnerDiscoveryEnabled()) {
+    return "no configured chat backend; runner-registry discovery is disabled by default for operator chat";
+  }
+  return "no live chat model configured";
+}
+
+function stubAssistantText(mode: string): string {
+  if (mode === "draft_goal") {
+    return "Drafted a goal payload with coordinator-owned initial work, evidence requirements, and validation gates.";
+  }
+  if (mode === "draft_steering") {
+    return "Drafted a steering directive that can be reviewed before it changes durable workflow state.";
+  }
+  if (mode === "draft_search") {
+    return "Drafted a backend-routed search request and a coordinator-owned research task proposal.";
+  }
+  if (mode === "explain_state") {
+    return "Prepared a state-oriented response from the available backend projection.";
+  }
+  return "Drafted a durable plan payload with subgoal structure, acceptance evidence, and review gates.";
 }
 
 function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
@@ -992,6 +1816,12 @@ function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
   }
   if (mode === "draft_steering") {
     return { steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")) };
+  }
+  if (mode === "draft_search") {
+    return {
+      search_request: searchRequestDraft(prompt, context),
+      steering_directive: researchSteeringDraft(prompt, String(context.goal_id ?? "")),
+    };
   }
   if (mode === "explain_state") {
     return {};
@@ -1075,6 +1905,87 @@ function steeringDraft(prompt: string, goalId: string): JsonMap {
   };
 }
 
+function searchRequestDraft(prompt: string, context: JsonMap): JsonMap {
+  const query = prompt || "Clarify the search question before running search.";
+  const goalId = String(context.goal_id ?? "");
+  return {
+    query,
+    intent: "operator_search",
+    scopes: [
+      { kind: "memory", goal_id: goalId || null, tool: "coat_memory_search" },
+      { kind: "reference", tool: "coat_web_search", requires_configured_gateway: true },
+    ],
+    limit: 10,
+    require_sources: true,
+    use: "Return sourced facts and an InformationUsePlan before changing durable state.",
+  };
+}
+
+function researchSteeringDraft(prompt: string, goalId: string): JsonMap {
+  const query = prompt || "Clarify the research question before spawning a research task.";
+  return {
+    id: crypto.randomUUID(),
+    goal_id: goalId || undefined,
+    task_id: null,
+    operator: "operator",
+    message: `Search and synthesize: ${query}`,
+    kind: {
+      kind: "inject_task",
+      role: "research",
+      reason: "operator requested search from control chat",
+      prompt: `<task>
+  <role>research</role>
+  <instruction>MUST search approved memory, MCP, documentation, reference, and web sources allowed by the goal research policy. MUST cite sources. MUST return ResearchOutput plus InformationUsePlan. MUST NOT mutate durable state directly.</instruction>
+  <question>${escapeXml(query)}</question>
+  <expected_output>ResearchOutput with sourced facts, confidence, gaps, and recommended coordinator-owned next actions.</expected_output>
+</task>`,
+    },
+  };
+}
+
+async function coatWebSearch(args: Record<string, unknown>): Promise<JsonMap> {
+  const query = String(args.query ?? "").trim();
+  if (!query) {
+    throw new Error("query is required");
+  }
+  const goalId = typeof args.goal_id === "string" ? args.goal_id.trim() : "";
+  const route = String(args.route ?? "coordinator_task");
+  const context = Array.isArray(args.context)
+    ? args.context.filter((item): item is string => typeof item === "string")
+    : [];
+  const searchRequest = {
+    query,
+    goal_id: goalId || null,
+    limit: typeof args.limit === "number" ? args.limit : undefined,
+    context,
+    route,
+    required_capabilities: ["research", "web_search"],
+    required_model_features: ["tool_use", "json_schema"],
+    result_contract: "ResearchOutput plus InformationUsePlan",
+  };
+
+  if (route === "coordinator_task" && goalId) {
+    const directive = researchSteeringDraft(query, goalId);
+    const steering = await workflowPost(goalId, "steer", directive);
+    return {
+      status: "planned",
+      route,
+      search_request: searchRequest,
+      steering_directive: directive,
+      steering,
+      note: "web/reference search was submitted as a coordinator-owned durable research task",
+    };
+  }
+
+  return {
+    status: "planned",
+    route,
+    search_request: searchRequest,
+    steering_directive: goalId ? researchSteeringDraft(query, goalId) : null,
+    note: "submit the steering_directive for durable execution or call the Rust tool-registry coat_web_search with runner_registry routing",
+  };
+}
+
 function defaultBudget(): JsonMap {
   return {
     max_tokens: 2_000_000,
@@ -1139,8 +2050,13 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
         runner_registry: runnerRegistryUrl,
         memory_gateway: memoryGatewayUrl,
         restate_admin: restateAdminUrl,
-        execution_plan_dir: executionPlanDirs[0],
-        execution_plan_dirs: executionPlanDirs,
+      },
+      chat_backend: {
+        mode: chatBackendMode,
+        provider: controlChatProvider || null,
+        model_configured: Boolean(chatModel),
+        completions_url_configured: Boolean(chatCompletionsUrl),
+        runner_registry_discovery: chatRunnerDiscoveryEnabled(),
       },
     });
     return;
@@ -1151,14 +2067,29 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/runners") {
+    sendJson(res, 200, await runnerStatus());
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/chat") {
     sendJson(res, 200, await controlChat(await readJson(req)));
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/chat/session") {
+    sendJson(res, 200, await chatSession(url.searchParams.get("session_id") || "operator:default"));
+    return;
+  }
+
+  if (req.method === "GET" && segments[0] === "api" && segments[1] === "chat" && segments[2] === "runs" && segments[3]) {
+    sendJson(res, 200, chatRunSnapshot(decodeURIComponent(segments[3])));
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/follow-ups") {
     const includeEmpty = url.searchParams.get("include_empty") === "true";
-    sendJson(res, 200, await executionPlanFollowUps(executionPlanDirs, includeEmpty));
+    sendJson(res, 200, await durablePlanFollowUps(includeEmpty));
     return;
   }
 
@@ -1525,7 +2456,7 @@ function mcpTools(): unknown[] {
     },
     {
       name: "coat_follow_ups",
-      description: "List active execution-plan follow-up items that should continue across sessions.",
+      description: "List durable plan-continuity next actions through the legacy follow-up response shape.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -1534,7 +2465,7 @@ function mcpTools(): unknown[] {
     },
     {
       name: "coat_follow_up_draft_plan",
-      description: "Turn one execution-plan follow-up item into the standard structured draft-plan prompt without mutating durable state.",
+      description: "Turn one durable continuation item into the standard structured draft-plan prompt without mutating durable state.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -1620,6 +2551,22 @@ function mcpTools(): unknown[] {
       name: "coat_memory_search",
       description: "Search the memory gateway using the standard MemorySearchRequest payload.",
       inputSchema: { type: "object", additionalProperties: true },
+    },
+    {
+      name: "coat_web_search",
+      description: "Route web/reference search as a coordinator-owned research task or typed WebSearchRequest; never claim live search ran unless a runner/tool result is returned.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["query"],
+        properties: {
+          query: { type: "string" },
+          goal_id: { type: "string" },
+          route: { type: "string", enum: ["plan_only", "coordinator_task", "runner_registry"] },
+          context: { type: "array", items: { type: "string" } },
+          limit: { type: "integer", minimum: 1 },
+        },
+      },
     },
     {
       name: "coat_memory_context",
@@ -1758,7 +2705,7 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
     return planContinuity(planId);
   }
   if (name === "coat_follow_ups") {
-    return executionPlanFollowUps(executionPlanDirs, args.include_empty === true);
+    return durablePlanFollowUps(args.include_empty === true);
   }
   if (name === "coat_follow_up_draft_plan") {
     return followUpDraftPlan(args);
@@ -1809,7 +2756,9 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
     return proxyJson(goalStoreUrl, `/goal-store/goals/${encodeURIComponent(goalId)}/checkpoints`, { method: "GET" });
   }
   if (name === "coat_runner_list") {
-    return proxyJson(runnerRegistryUrl, args.status === false ? "/runners" : "/runners/status", { method: "GET" });
+    return args.status === false
+      ? proxyJson(runnerRegistryUrl, "/runners", { method: "GET" })
+      : runnerStatus();
   }
   if (name === "coat_runner_register") {
     return proxyJson(runnerRegistryUrl, "/runners", {
@@ -1824,6 +2773,9 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       headers: jsonHeaders(),
       body: JSON.stringify(args),
     }, bearer(memoryGatewayToken));
+  }
+  if (name === "coat_web_search") {
+    return coatWebSearch(args);
   }
   if (name === "coat_memory_context") {
     return proxyJson(memoryGatewayUrl, "/memory/context", {

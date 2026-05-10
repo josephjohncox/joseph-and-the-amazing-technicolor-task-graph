@@ -13,23 +13,48 @@ data:
   CODEX_RUNNER_MODE: stub
   CLAUDE_CODE_RUNNER_MODE: stub
   STAFF_ENGINEER_RUNNER_MODE: stub
+  COAT_LLM_GATEWAY_PROVIDER: ""
+  COAT_LLM_GATEWAY_URL: ""
+  COAT_LLM_GATEWAY_CHAT_COMPLETIONS_URL: ""
+  COAT_LLM_GATEWAY_AUTH_MODE: api_key_or_none
+  COAT_LLM_GATEWAY_DEFAULT_MODEL: ""
+  COAT_LLM_GATEWAY_WORK_MODEL: ""
+  COAT_LLM_GATEWAY_RESEARCH_MODEL: ""
+  COAT_LLM_GATEWAY_CHAT_MODEL: ""
+  COAT_LLM_GATEWAY_EMBEDDING_MODEL: ""
   MODEL_PROVIDER_RUNNER_MODE: stub
   MODEL_PROVIDER_KIND: open_ai_compatible
-  MODEL_PROVIDER_MODEL: openai-compatible-model
+  MODEL_PROVIDER_MODEL: ""
   MODEL_PROVIDER_ENDPOINT: ""
+  MODEL_PROVIDER_LATENCY_CLASS: ""
+  MODEL_PROVIDER_SPEED_TIER: ""
+  MODEL_PROVIDER_TEMPERATURE: ""
+  MODEL_PROVIDER_TOP_P: ""
+  MODEL_PROVIDER_MAX_OUTPUT_TOKENS: ""
+  MODEL_PROVIDER_REASONING_EFFORT: ""
+  MODEL_PROVIDER_TIMEOUT_SECONDS: ""
+  COAT_CONTROL_CHAT_COMPLETIONS_URL: ""
+  COAT_CONTROL_CHAT_MODEL: ""
+  COAT_CONTROL_CHAT_LATENCY_CLASS: ""
+  COAT_CONTROL_CHAT_SPEED_TIER: ""
+  COAT_CONTROL_CHAT_TEMPERATURE: ""
+  COAT_CONTROL_CHAT_TOP_P: ""
+  COAT_CONTROL_CHAT_MAX_OUTPUT_TOKENS: ""
+  COAT_CONTROL_CHAT_REASONING_EFFORT: ""
+  COAT_CONTROL_CHAT_TIMEOUT_SECONDS: ""
   COAT_GOAL_STORE_BACKEND: jsonl
   COAT_EVENT_GATEWAY_BACKEND: jsonl
   COAT_REQUIRE_EVENT_SOURCE_APPROVAL: "true"
   COAT_MEMORY_MCP_URL: http://graphiti-mcp:8000/mcp/
   MEMORY_GATEWAY_GRAPHITI_MCP_URL: ""
   MEMORY_GATEWAY_GRAPHITI_GROUP_ID: jattg
-  MEMORY_GATEWAY_QDRANT_URL: http://qdrant:6333
+  MEMORY_GATEWAY_QDRANT_URL: ""
   MEMORY_GATEWAY_QDRANT_COLLECTION: jattg_memory
   COAT_OBJECT_STORE_ENDPOINT: http://object-store:9000
   COAT_OBJECT_STORE_BUCKET: jattg-artifacts
-  MEMORY_GATEWAY_EMBEDDING_URL: https://api.openai.com/v1/embeddings
-  MEMORY_GATEWAY_EMBEDDING_MODEL: text-embedding-3-large
-  MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: "3072"
+  MEMORY_GATEWAY_EMBEDDING_URL: ""
+  MEMORY_GATEWAY_EMBEDDING_MODEL: ""
+  MEMORY_GATEWAY_EMBEDDING_DIMENSIONS: ""
   MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS: "false"
   CODEX_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"secret"}'
   CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret"}'
@@ -59,6 +84,12 @@ stringData:
   EVENT_GATEWAY_TOKEN: ""
   COAT_CONTROL_GATEWAY_TOKEN: ""
   COAT_CONTROL_MCP_TOKEN: ""
+  COAT_CONTROL_CHAT_API_KEY: ""
+  COAT_LLM_GATEWAY_API_KEY: ""
+  MODEL_PROVIDER_API_KEY: ""
+  MODEL_PROVIDER_RESEARCH_API_KEY: ""
+  HF_TOKEN: ""
+  HUGGINGFACE_TOKEN: ""
   POSTGRES_PASSWORD: jattg-local-secret
   COAT_GOAL_STORE_DATABASE_URL: postgresql://jattg:jattg-local-secret@postgres:5432/jattg
 ---
@@ -758,8 +789,81 @@ spec:
               value: http://runner-registry:9085
             - name: COAT_MEMORY_GATEWAY_URL
               value: http://memory-gateway:9087
-            - name: COAT_EXEC_PLAN_DIR
-              value: /app/docs/exec-plans/active
+            - name: COAT_LLM_GATEWAY_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_PROVIDER
+            - name: COAT_LLM_GATEWAY_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_URL
+            - name: COAT_LLM_GATEWAY_CHAT_COMPLETIONS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_CHAT_COMPLETIONS_URL
+            - name: COAT_LLM_GATEWAY_AUTH_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_AUTH_MODE
+            - name: COAT_LLM_GATEWAY_DEFAULT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_DEFAULT_MODEL
+            - name: COAT_LLM_GATEWAY_CHAT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_CHAT_MODEL
+            - name: COAT_CONTROL_CHAT_COMPLETIONS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_COMPLETIONS_URL
+            - name: COAT_CONTROL_CHAT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_MODEL
+            - name: COAT_CONTROL_CHAT_LATENCY_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_LATENCY_CLASS
+            - name: COAT_CONTROL_CHAT_SPEED_TIER
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_SPEED_TIER
+            - name: COAT_CONTROL_CHAT_TEMPERATURE
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_TEMPERATURE
+            - name: COAT_CONTROL_CHAT_TOP_P
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_TOP_P
+            - name: COAT_CONTROL_CHAT_MAX_OUTPUT_TOKENS
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_MAX_OUTPUT_TOKENS
+            - name: COAT_CONTROL_CHAT_REASONING_EFFORT
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_REASONING_EFFORT
+            - name: COAT_CONTROL_CHAT_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_CONTROL_CHAT_TIMEOUT_SECONDS
             - name: COAT_MEMORY_GATEWAY_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -777,6 +881,24 @@ spec:
                 secretKeyRef:
                   name: jattg-agent-secrets
                   key: COAT_CONTROL_MCP_TOKEN
+                  optional: true
+            - name: COAT_CONTROL_CHAT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: COAT_CONTROL_CHAT_API_KEY
+                  optional: true
+            - name: COAT_LLM_GATEWAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: COAT_LLM_GATEWAY_API_KEY
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: OPENAI_API_KEY
                   optional: true
           ports:
             - containerPort: 9090
@@ -1191,6 +1313,71 @@ spec:
                 configMapKeyRef:
                   name: jattg-config
                   key: MODEL_PROVIDER_ENDPOINT
+            - name: MODEL_PROVIDER_LATENCY_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_LATENCY_CLASS
+            - name: MODEL_PROVIDER_SPEED_TIER
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_SPEED_TIER
+            - name: MODEL_PROVIDER_TEMPERATURE
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_TEMPERATURE
+            - name: MODEL_PROVIDER_TOP_P
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_TOP_P
+            - name: MODEL_PROVIDER_MAX_OUTPUT_TOKENS
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_MAX_OUTPUT_TOKENS
+            - name: MODEL_PROVIDER_REASONING_EFFORT
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_REASONING_EFFORT
+            - name: MODEL_PROVIDER_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: MODEL_PROVIDER_TIMEOUT_SECONDS
+            - name: COAT_LLM_GATEWAY_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_PROVIDER
+            - name: COAT_LLM_GATEWAY_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_URL
+            - name: COAT_LLM_GATEWAY_AUTH_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_AUTH_MODE
+            - name: COAT_LLM_GATEWAY_DEFAULT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_DEFAULT_MODEL
+            - name: COAT_LLM_GATEWAY_WORK_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_WORK_MODEL
+            - name: COAT_LLM_GATEWAY_RESEARCH_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: jattg-config
+                  key: COAT_LLM_GATEWAY_RESEARCH_MODEL
             - name: RUNNER_REGISTRY_URL
               value: http://runner-registry:9085
             - name: RUNNER_ENDPOINT
@@ -1219,6 +1406,36 @@ spec:
                 secretKeyRef:
                   name: jattg-agent-secrets
                   key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: COAT_LLM_GATEWAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: COAT_LLM_GATEWAY_API_KEY
+                  optional: true
+            - name: MODEL_PROVIDER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: MODEL_PROVIDER_API_KEY
+                  optional: true
+            - name: MODEL_PROVIDER_RESEARCH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: MODEL_PROVIDER_RESEARCH_API_KEY
+                  optional: true
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: HF_TOKEN
+                  optional: true
+            - name: HUGGINGFACE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: jattg-agent-secrets
+                  key: HUGGINGFACE_TOKEN
                   optional: true
             - name: AWS_REGION
               valueFrom:

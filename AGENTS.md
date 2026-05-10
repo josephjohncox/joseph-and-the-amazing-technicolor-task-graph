@@ -143,7 +143,12 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Steering directives are the human control surface for pausing, resuming, injecting tasks, and requesting research.
 - Runner selection uses role, capabilities, labels, locality, and optional runner ID.
 - Ephemeral capacity is requested through `ExecutionProfile.capacity`, provisioner policy, and approved template refs; workers must not hand-create Kubernetes Jobs from prompt text.
+- Dynamic runner scaling is policy-bounded. The coordinator derives demand from durable task frontier, unmatched dispatches, running tasks, event backlog, and processor queues; runner-registry heartbeats provide supply; `CapacityScalingPolicy` caps min/max runners, headroom, cooldown, event weighting, and scale steps.
+- Standard runner scaling defaults live in `config.runner_capacity` inside `.coat/project.json`, `~/.coat/config.json`, or the active profile. Task JSON and prompt text should not become the hidden source of runner capacity policy.
+- `POST /capacity/plan` on the runner registry is advisory. Only the coordinator or approved provisioner may turn a scaling recommendation into ephemeral Jobs or executor capacity, and scale-down should drain or TTL runners rather than kill active work.
 - Model routing can target Codex, OpenAI, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, or local processes.
+- Shared LLM gateways such as Bifrost, LiteLLM, OpenRouter, Docker Model Gateway, or private OpenAI-compatible proxies should use `COAT_LLM_GATEWAY_*` config/env refs so work, research, chat, and embedding lanes do not duplicate raw provider tokens.
+- Model routes and runner registrations can carry typed runtime params: latency class, temperature, top-p, max output tokens, reasoning effort, timeout, and provider-specific extras. Prefer these typed params over prompt-only hints when choosing fast, balanced, deep-review, deterministic, or custom model behavior.
 - Provider runners are wrappers, not coordinators. Codex, Claude Code, Bedrock, vLLM, Ollama, llama.cpp, Hugging Face, and local-process runners must register capabilities and return structured `AgentRunResult` values through the durable runner queue.
 - Dispatch decisions should preserve ranked candidates and rejected-runner reasons for operator debugging.
 - Local binary execution must be declared in `ExecutionProfile.local_tools`; prompts do not grant shell access.
@@ -170,6 +175,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Goal satisfaction is gated by actor output, critic reviews, optional review unification, and a satisfaction score.
 - Learning signals are reward-like validation/review scores for future actor/critic tuning; they are not permission to run unbounded retries.
 - Research tasks must return sourced `ResearchOutput` plus an `InformationUsePlan`.
+- Codex, Claude Code, and other runners may use native repo/docs/web search only when the runner advertises that capability and the task policy allows it; native search results still must be normalized into `ResearchOutput`, `SourceArtifact` evidence, provenance, and an `InformationUsePlan`.
+- Portable search should use standard COAT/MCP tools such as `coat_memory_search`, `coat_memory_context`, and the configured web/reference search gateway instead of relying on ambient CLI/TUI behavior.
 - Default durable semantic memory is Zep/Graphiti over MCP with Qdrant-backed embedded retrieval.
 - Use `coat-memory-gateway` as the stable local interface before wiring live Graphiti/Zep or Qdrant calls.
 - Use `memory_context` before substantial task work when a worker needs scoped durable context.
@@ -207,13 +214,16 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 
 ## Deployment
 
-- CLI dialogue and hierarchy: `coat guide --print`
+- CLI hierarchy: `coat --help` and `coat guide --print`
 - Config profiles: `coat setup config --list-profiles`
 - Config inspection: `coat setup config --show`
 - Local stub smoke stack: `coat deploy local up --allow-stub-runners`
 - Personal Restate Cloud env bootstrap: `coat deploy local up --restate-cloud --init-env`
 - Personal Restate Cloud stack and registration: `coat deploy local up --restate-cloud --register-cloud --allow-stub-runners`
+- Model index refresh: `coat setup model-index refresh`
 - Local provider auth setup wizard: `coat setup local-auth`
+- Provider device/browser login helper: `coat setup login --codex --claude --preflight`
+- AWS SSO helper: `coat setup sso --profile <profile> --write-env --bedrock-live --preflight`
 - Chat client MCP/skill setup wizard: `coat setup chat-client`
 - Restate Cloud registration only: `coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
 - Kubernetes render: `coat deploy cluster render --output infra/k8s/rendered.yaml`

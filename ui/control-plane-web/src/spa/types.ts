@@ -58,6 +58,9 @@ export type Overview = {
   runner_status?: unknown;
   human_threads?: unknown;
   follow_ups?: unknown;
+  event_sources?: unknown;
+  recent_events?: unknown;
+  triggers?: unknown;
 };
 
 export type GoalSnapshot = {
@@ -76,4 +79,31 @@ export type ChatResponse = {
   model?: string | null;
   assistant?: string;
   drafts?: JsonRecord;
+  session_id?: string;
+  run_id?: string;
+  chat_log?: JsonRecord;
+  chat_backend?: JsonRecord;
+  model_params?: JsonRecord;
+  context?: JsonRecord;
+  raw_model_response?: string;
+  chat_run?: ChatRunTrace;
+};
+
+export type ChatRunTrace = {
+  run_id?: string;
+  found?: boolean;
+  session_id?: string;
+  goal_id?: string | null;
+  mode?: string;
+  status?: string;
+  stage?: string;
+  started_at?: string;
+  updated_at?: string;
+  finished_at?: string;
+  elapsed_ms?: number;
+  backend?: JsonRecord;
+  model_params?: JsonRecord;
+  chat_log?: JsonRecord;
+  error?: string;
+  steps?: Array<{ stage?: string; at?: string; detail?: JsonRecord }>;
 };

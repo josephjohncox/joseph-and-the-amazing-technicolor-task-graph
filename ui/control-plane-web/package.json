@@ -12,6 +12,8 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@chatscope/chat-ui-kit-react": "^2.1.1",
+    "@chatscope/chat-ui-kit-styles": "^1.4.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@tanstack/react-query": "^5.90.7",
     "@xyflow/react": "^12.9.2",

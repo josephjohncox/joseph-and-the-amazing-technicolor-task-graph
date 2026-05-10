@@ -49,6 +49,7 @@ type WorkerKind =
 type RunnerCapability =
   | "code"
   | "research"
+  | "web_search"
   | "test"
   | "review"
   | "mcp_tools"
@@ -96,7 +97,22 @@ type ModelFeature =
   | "long_context"
   | "reasoning"
   | "embeddings"
-  | "local_weights";
+  | "local_weights"
+  | "web_search";
+
+type ModelLatencyClass = "fast" | "balanced" | "deep" | "batch";
+type ModelReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+type ModelRuntimeParameters = {
+  latency_class?: ModelLatencyClass;
+  speed_tier?: string;
+  temperature_milli?: number;
+  top_p_milli?: number;
+  max_output_tokens?: number;
+  reasoning_effort?: ModelReasoningEffort;
+  timeout_seconds?: number;
+  extra?: Record<string, string>;
+};
 
 type ModelCandidate = {
   provider: ModelProviderKind;
@@ -106,6 +122,7 @@ type ModelCandidate = {
   weight: number;
   context_window: number | null;
   features: ModelFeature[];
+  params?: ModelRuntimeParameters;
   labels: Record<string, string>;
 };
 
@@ -259,6 +276,7 @@ function buildRegistration(): RunnerRegistration {
     ] satisfies WorkerKind[]),
     capabilities: parseJsonEnv("RUNNER_CAPABILITIES_JSON", [
       "research",
+      ...(webSearchEnabled() ? ["web_search" as RunnerCapability, "network_open" as RunnerCapability] : []),
       "review",
       "test",
       "mcp_tools",
@@ -281,16 +299,85 @@ function buildRegistration(): RunnerRegistration {
 }
 
 function defaultModelCandidate(): ModelCandidate {
+  const configuredModel = configuredModelForLane();
   return {
     provider,
-    model: process.env.MODEL_PROVIDER_MODEL ?? defaultModelFor(provider),
-    endpoint: process.env.MODEL_PROVIDER_ENDPOINT ?? defaultEndpointFor(provider),
+    model: configuredModel,
+    endpoint: configuredEndpointForProvider(provider),
     priority: numberEnv("MODEL_PROVIDER_PRIORITY", 100),
     weight: numberEnv("MODEL_PROVIDER_WEIGHT", 1),
     context_window: optionalNumberEnv("MODEL_PROVIDER_CONTEXT_WINDOW"),
     features: parseJsonEnv("MODEL_PROVIDER_FEATURES_JSON", defaultFeaturesFor(provider)),
-    labels: parseJsonEnv("MODEL_PROVIDER_MODEL_LABELS_JSON", {}),
+    params: modelRuntimeParameters(),
+    labels: {
+      ...modelParameterLabels(),
+      model_configured: configuredModel ? "true" : "false",
+      llm_gateway_configured: nonEmptyEnv("COAT_LLM_GATEWAY_URL") ? "true" : "false",
+      llm_gateway_provider: nonEmptyEnv("COAT_LLM_GATEWAY_PROVIDER") ?? "",
+      ...parseJsonEnv("MODEL_PROVIDER_MODEL_LABELS_JSON", {}),
+    },
   };
+}
+
+function configuredModelForLane(): string {
+  const model = nonEmptyEnv("MODEL_PROVIDER_MODEL");
+  if (model) return model;
+  if (runnerLane() === "research") {
+    const researchModel = nonEmptyEnv("COAT_LLM_GATEWAY_RESEARCH_MODEL");
+    if (researchModel) return researchModel;
+  }
+  return nonEmptyEnv("COAT_LLM_GATEWAY_WORK_MODEL")
+    ?? nonEmptyEnv("COAT_LLM_GATEWAY_DEFAULT_MODEL")
+    ?? "";
+}
+
+function configuredEndpointForProvider(kind: ModelProviderKind): string | null {
+  return nonEmptyEnv("MODEL_PROVIDER_ENDPOINT")
+    ?? ((kind === "open_ai_compatible" || kind === "open_ai") ? nonEmptyEnv("COAT_LLM_GATEWAY_URL") : undefined)
+    ?? defaultEndpointFor(kind);
+}
+
+function runnerLane(): "research" | "work" {
+  const raw = `${runnerId} ${nodeId} ${process.env.RUNNER_LABELS_JSON ?? ""}`.toLowerCase();
+  return raw.includes("research") ? "research" : "work";
+}
+
+function modelRuntimeParameters(): ModelRuntimeParameters {
+  const params: ModelRuntimeParameters = {};
+  const latencyClass = enumEnv<ModelLatencyClass>("MODEL_PROVIDER_LATENCY_CLASS", ["fast", "balanced", "deep", "batch"]);
+  if (latencyClass) params.latency_class = latencyClass;
+  const speedTier = process.env.MODEL_PROVIDER_SPEED_TIER?.trim();
+  if (speedTier) params.speed_tier = speedTier;
+  const temperature = optionalMilliEnv("MODEL_PROVIDER_TEMPERATURE");
+  if (temperature !== null) params.temperature_milli = temperature;
+  const topP = optionalMilliEnv("MODEL_PROVIDER_TOP_P");
+  if (topP !== null) params.top_p_milli = topP;
+  const maxOutputTokens = optionalIntegerEnv("MODEL_PROVIDER_MAX_OUTPUT_TOKENS");
+  if (maxOutputTokens !== null) params.max_output_tokens = maxOutputTokens;
+  const reasoningEffort = enumEnv<ModelReasoningEffort>("MODEL_PROVIDER_REASONING_EFFORT", ["minimal", "low", "medium", "high", "xhigh"]);
+  if (reasoningEffort) params.reasoning_effort = reasoningEffort;
+  const timeoutSeconds = optionalIntegerEnv("MODEL_PROVIDER_TIMEOUT_SECONDS");
+  if (timeoutSeconds !== null) params.timeout_seconds = timeoutSeconds;
+  const extra = parseJsonEnv("MODEL_PROVIDER_PARAMS_EXTRA_JSON", {} as Record<string, string>);
+  if (Object.keys(extra).length > 0) params.extra = extra;
+  return params;
+}
+
+function modelParameterLabels(): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const [envName, labelName] of [
+    ["MODEL_PROVIDER_LATENCY_CLASS", "latency_class"],
+    ["MODEL_PROVIDER_SPEED_TIER", "speed_tier"],
+    ["MODEL_PROVIDER_TEMPERATURE", "temperature"],
+    ["MODEL_PROVIDER_TOP_P", "top_p"],
+    ["MODEL_PROVIDER_MAX_OUTPUT_TOKENS", "max_output_tokens"],
+    ["MODEL_PROVIDER_REASONING_EFFORT", "reasoning_effort"],
+    ["MODEL_PROVIDER_TIMEOUT_SECONDS", "timeout_seconds"],
+  ] as const) {
+    const value = process.env[envName];
+    if (value) labels[labelName] = value;
+  }
+  return labels;
 }
 
 function buildCapabilities(): Record<string, unknown> {
@@ -310,6 +397,7 @@ function buildCapabilities(): Record<string, unknown> {
     model_routing: {
       providers: [...new Set(registration.models.map((model) => model.provider))],
       models: registration.models,
+      default_params: modelRuntimeParameters(),
       supports_multiple_models: true,
       selection: "coordinator-routed candidate first, runner default fallback",
     },
@@ -330,25 +418,28 @@ function buildCapabilities(): Record<string, unknown> {
 }
 
 async function verifyProvider(): Promise<Record<string, unknown>> {
-  const endpoint = process.env.MODEL_PROVIDER_ENDPOINT ?? defaultEndpointFor(provider);
+  const endpoint = configuredEndpointForProvider(provider);
   const verifyEndpoint = process.env.MODEL_PROVIDER_VERIFY_ENDPOINT === "1";
   const authMode = process.env.MODEL_PROVIDER_AUTH_MODE ?? (["ollama", "vllm", "llama_cpp", "local_process"].includes(provider) ? "none" : "api_key_or_none");
   const auth = {
     mode: authMode,
     has_openai_api_key: Boolean(process.env.OPENAI_API_KEY),
     has_model_provider_api_key: Boolean(process.env.MODEL_PROVIDER_API_KEY),
+    has_llm_gateway_api_key: Boolean(process.env.COAT_LLM_GATEWAY_API_KEY),
     has_anthropic_api_key: Boolean(process.env.ANTHROPIC_API_KEY),
     brokered_auth_allowed: authMode === "external_broker" || authMode === "oauth_device_broker",
     workload_identity_allowed: authMode === "workload_identity",
     unauthenticated_allowed: authMode === "none" || authMode === "api_key_or_none",
     secret_values_exposed: false,
   };
+  const model_params = modelRuntimeParameters();
   if (provider === "bedrock") {
     return {
       provider,
       mode,
       available: Boolean(process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION),
       auth,
+      model_params,
       checks: {
         aws_region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? null,
         has_static_key: Boolean(process.env.AWS_ACCESS_KEY_ID),
@@ -359,16 +450,20 @@ async function verifyProvider(): Promise<Record<string, unknown>> {
   }
   if (provider === "local_process") {
     const command = process.env.MODEL_PROVIDER_COMMAND ?? "";
-    return { provider, mode, auth, available: Boolean(command), command_configured: Boolean(command), secret_values_exposed: false };
+    return { provider, mode, auth, model_params, available: Boolean(command), command_configured: Boolean(command), secret_values_exposed: false };
   }
   if (!endpoint || !verifyEndpoint) {
-    return { provider, mode, auth, available: Boolean(endpoint), endpoint, endpoint_probe_attempted: false, secret_values_exposed: false };
+    return { provider, mode, auth, model_params, available: Boolean(endpoint), endpoint, endpoint_probe_attempted: false, secret_values_exposed: false };
   }
   try {
-    const response = await fetch(`${endpoint.replace(/\/$/, "")}/models`, { method: "GET" });
-    return { provider, mode, auth, available: response.ok, endpoint, endpoint_probe_attempted: true, status: response.status, secret_values_exposed: false };
+    const apiKey = providerApiKey();
+    const response = await fetch(modelsUrlFromEndpoint(endpoint), {
+      method: "GET",
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+    });
+    return { provider, mode, auth, model_params, available: response.ok, endpoint, endpoint_probe_attempted: true, status: response.status, secret_values_exposed: false };
   } catch (error) {
-    return { provider, mode, auth, available: false, endpoint, endpoint_probe_attempted: true, error: error instanceof Error ? error.message : String(error), secret_values_exposed: false };
+    return { provider, mode, auth, model_params, available: false, endpoint, endpoint_probe_attempted: true, error: error instanceof Error ? error.message : String(error), secret_values_exposed: false };
   }
 }
 
@@ -524,33 +619,12 @@ function redactedMcpServer(server: McpServerRef): Record<string, unknown> {
   };
 }
 
-function defaultModelFor(kind: ModelProviderKind): string {
-  switch (kind) {
-    case "bedrock":
-      return "anthropic.claude-3-5-sonnet";
-    case "vllm":
-      return "local-vllm";
-    case "ollama":
-      return "llama3.1";
-    case "llama_cpp":
-      return "local-llama-cpp";
-    case "hugging_face":
-      return "hf-endpoint-model";
-    case "local_process":
-      return "local-process-model";
-    case "open_ai":
-      return "gpt-5.4";
-    default:
-      return "openai-compatible-model";
-  }
-}
-
 function defaultEndpointFor(kind: ModelProviderKind): string | null {
   switch (kind) {
     case "open_ai":
       return "https://api.openai.com/v1";
     case "open_ai_compatible":
-      return process.env.OPENAI_COMPATIBLE_BASE_URL ?? null;
+      return nonEmptyEnv("OPENAI_COMPATIBLE_BASE_URL") ?? null;
     case "vllm":
       return "http://vllm:8000/v1";
     case "ollama":
@@ -562,11 +636,34 @@ function defaultEndpointFor(kind: ModelProviderKind): string | null {
   }
 }
 
+function modelsUrlFromEndpoint(endpoint: string): string {
+  const base = endpoint.trim().replace(/\/+$/, "");
+  if (base.endsWith("/models")) return base;
+  if (base.endsWith("/v1")) return `${base}/models`;
+  if (base.endsWith("/v1/chat/completions")) return `${base.slice(0, -"/chat/completions".length)}/models`;
+  if (base.endsWith("/chat/completions")) return `${base.slice(0, -"/chat/completions".length)}/models`;
+  return `${base}/v1/models`;
+}
+
 function defaultFeaturesFor(kind: ModelProviderKind): ModelFeature[] {
   const base: ModelFeature[] = ["json_schema", "streaming"];
   if (kind === "vllm" || kind === "ollama" || kind === "llama_cpp" || kind === "local_process") base.push("local_weights");
   if (kind !== "local_process") base.push("tool_use");
+  if (webSearchEnabled()) base.push("web_search");
   return base;
+}
+
+function webSearchEnabled(): boolean {
+  return [
+    "MODEL_PROVIDER_WEB_SEARCH_ENABLED",
+    "MODEL_PROVIDER_RESEARCH_WEB_SEARCH_ENABLED",
+    "COAT_WEB_SEARCH_ENABLED",
+  ].some((key) => truthyEnv(key));
+}
+
+function truthyEnv(key: string): boolean {
+  const value = process.env[key]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 function providerRequirements(kind: ModelProviderKind): string[] {
@@ -583,6 +680,23 @@ function providerRequirements(kind: ModelProviderKind): string[] {
       return ["MODEL_PROVIDER_COMMAND", "sandboxed process execution"];
     default:
       return ["provider endpoint", "provider credentials when required"];
+  }
+}
+
+function providerApiKey(): string | null {
+  const laneKey = nonEmptyEnv("MODEL_PROVIDER_API_KEY");
+  if (laneKey) return laneKey;
+  const gatewayKey = nonEmptyEnv("COAT_LLM_GATEWAY_API_KEY");
+  if (gatewayKey) return gatewayKey;
+  switch (provider) {
+    case "open_ai":
+      return nonEmptyEnv("OPENAI_API_KEY") ?? null;
+    case "anthropic":
+      return nonEmptyEnv("ANTHROPIC_API_KEY") ?? nonEmptyEnv("ANTHROPIC_AUTH_TOKEN") ?? null;
+    case "hugging_face":
+      return nonEmptyEnv("HF_TOKEN") ?? nonEmptyEnv("HUGGINGFACE_TOKEN") ?? null;
+    default:
+      return null;
   }
 }
 
@@ -609,6 +723,11 @@ function parseJsonEnv<T>(name: string, fallback: T): T {
   }
 }
 
+function nonEmptyEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
 function numberEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -621,6 +740,22 @@ function optionalNumberEnv(name: string): number | null {
   if (!raw) return null;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function optionalIntegerEnv(name: string): number | null {
+  const parsed = optionalNumberEnv(name);
+  return parsed === null ? null : Math.max(0, Math.trunc(parsed));
+}
+
+function optionalMilliEnv(name: string): number | null {
+  const parsed = optionalNumberEnv(name);
+  return parsed === null ? null : Math.max(0, Math.round(parsed * 1000));
+}
+
+function enumEnv<T extends string>(name: string, allowed: readonly T[]): T | null {
+  const raw = process.env[name];
+  if (!raw) return null;
+  return allowed.includes(raw as T) ? (raw as T) : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

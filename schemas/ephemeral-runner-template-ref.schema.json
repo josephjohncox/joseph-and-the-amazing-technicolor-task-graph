@@ -64,6 +64,7 @@
       "enum": [
         "code",
         "research",
+        "web_search",
         "test",
         "review",
         "mcp_tools",

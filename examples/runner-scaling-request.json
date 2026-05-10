@@ -1,0 +1,20 @@
+{
+  "generated_at_unix_seconds": 0,
+  "demands": [
+    {
+      "pool_key": "research",
+      "worker": "research",
+      "required_capabilities": ["research", "mcp_tools"],
+      "required_labels": {
+        "pool": "research"
+      },
+      "queued_tasks": 7,
+      "running_tasks": 2,
+      "blocked_tasks": 0,
+      "unmatched_tasks": 1,
+      "event_backlog": 4,
+      "priority_boost": 1
+    }
+  ],
+  "supplies": []
+}

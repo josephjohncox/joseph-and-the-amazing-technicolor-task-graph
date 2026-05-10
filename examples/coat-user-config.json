@@ -5,6 +5,70 @@
     "paths": {
       "data_dir": "~/.coat/data",
       "cache_dir": "~/.coat/cache"
+    },
+    "model_routing": {
+      "mode": "hybrid",
+      "gateway": {
+        "provider": "bifrost",
+        "base_url": "http://localhost:8080/openai",
+        "auth_env": "COAT_LLM_GATEWAY_API_KEY",
+        "default_model": "provider/default-model",
+        "work_model": "provider/work-model",
+        "research_model": "provider/research-model",
+        "chat_model": "provider/chat-model"
+      },
+      "direct_provider_secret_refs": [
+        {
+          "provider": "env",
+          "name": "OPENAI_API_KEY",
+          "key": null,
+          "namespace": null,
+          "audience": "direct-openai-provider"
+        }
+      ]
+    },
+    "tool_routing": {
+      "web_search": {
+        "enabled": true,
+        "mode": "runner_registry",
+        "provider": "agent_native",
+        "auth_env": "COAT_WEB_SEARCH_API_KEY",
+        "default_limit": 10,
+        "max_limit": 25,
+        "route_via_runner_registry": true,
+        "required_capabilities": [
+          "research",
+          "web_search"
+        ],
+        "required_model_features": [
+          "tool_use",
+          "json_schema"
+        ]
+      }
+    },
+    "runner_capacity": {
+      "default_policy": {
+        "enabled": true,
+        "mode": "recommend_only",
+        "max_runners": 4,
+        "max_scale_up_step": 1,
+        "cooldown_seconds": 300
+      },
+      "lane_policies": {
+        "research": {
+          "enabled": true,
+          "mode": "recommend_only",
+          "max_runners": 3,
+          "scale_from_events": true,
+          "event_weight": 2
+        },
+        "review": {
+          "enabled": true,
+          "mode": "recommend_only",
+          "max_runners": 2,
+          "max_scale_up_step": 1
+        }
+      }
     }
   }
 }

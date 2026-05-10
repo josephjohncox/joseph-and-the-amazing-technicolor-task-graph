@@ -13,7 +13,7 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 - CLI supports `coat deploy cluster ephemeral-jobs render` and `coat deploy cluster ephemeral-jobs apply` as fixture and emergency manifest paths, while the backend provisioner is the normal capacity path.
 - CLI supports `coat deploy cluster executor-job render/apply` as an operator inspection path; `coat-sandbox-runner` owns the Rust Kubernetes API provisioning path for per-task executor Jobs.
 - CLI uses a canonical workflow hierarchy: `plan`, `goal`, `human`, `deploy`, `runner`, `memory`, `event`, `store`, `sandbox`, `release`, and `setup`.
-- `coat guide` provides a dialogue for common operator paths; explicit subcommands remain scriptable for automation.
+- Bare `coat` prints root help; `coat guide` is limited to setup, human queue, approval, chat-client, and follow-up workflows where dialogue is useful.
 - `coat human approve/notify` owns human feedback; `coat deploy local/cluster/chart/restate` owns Compose, Kubernetes, Helm, and Restate Cloud operations without duplicate top-level command groups.
 - The optional control gateway exposes SPA and MCP views for goals, agent progress, prompts, human queues, events, runners, and memory without owning durable state.
 - Add smoke examples under `examples/`.
@@ -28,9 +28,13 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 - `coat deploy cluster executor-job render` projects a `SandboxLaunchPlan` into a Job manifest without requiring live cluster access, and sandbox-runner provisioner tests cover the backend Job object projection.
 - `coat deploy chart lint` and `coat deploy chart template --output <file>` validate the chart when `helm` is available.
 - Stub goal can be submitted to a running local Restate stack.
-- `coat setup local-auth` starts an interactive provider setup wizard, while `--write-env`, `--check`, and `--print-commands` stay non-interactive for automation.
+- `coat setup local-auth` starts an interactive provider setup wizard with provider, model, and runtime-param selectors, while `--write-env`, `--check`, and `--print-commands` stay non-interactive for automation.
+- `coat setup local-auth` reads the existing provider env file before prompting and uses configured auth modes, endpoints, model IDs, runtime params, memory stores, embeddings, and Chat settings as overrideable interactive defaults.
+- `coat setup local-auth` auto-refreshes the external models.dev catalog before hosted selectors render, debounces refreshes for 60 minutes, preserves explicit `COAT_MODEL_INDEX` catalogs, and model/embedding selection tests prove hosted choices come from that catalog or live served-model discovery instead of compiled-in IDs.
+- `coat deploy local preflight` rejects embedding endpoints without model IDs and warns when Qdrant is configured without an active embedding pair.
+- `coat setup login` and `coat setup sso` run provider login/setup flows and optional Compose preflight without making operators copy raw provider commands from docs.
 - `coat setup chat-client` starts an interactive MCP/skill setup wizard, while explicit install/write/print flags stay non-interactive for automation.
-- `coat guide --print` shows the canonical command map.
+- Bare `coat` shows root help, and `coat guide --print` shows the canonical command map.
 - `coat deploy local preflight` blocks uninitialized or accidentally all-stub runs unless the operator passes the explicit allow flag.
 
 ## Follow-Ups

@@ -225,11 +225,11 @@ async fn main() -> anyhow::Result<()> {
     let embedding_model = std::env::var("MEMORY_GATEWAY_EMBEDDING_MODEL")
         .ok()
         .filter(|model| !model.is_empty())
-        .unwrap_or_else(|| "text-embedding-3-large".to_string());
+        .unwrap_or_default();
     let embedding_dimensions = std::env::var("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(3072);
+        .unwrap_or_default();
     let embedding_token = std::env::var("MEMORY_GATEWAY_EMBEDDING_TOKEN")
         .ok()
         .filter(|token| !token.is_empty())
@@ -1620,6 +1620,12 @@ async fn embed_text(state: &AppState, input: &str) -> Result<Vec<f32>, String> {
     let Some(url) = state.config.embedding_url.as_ref() else {
         return Err("embedding endpoint is not configured".to_string());
     };
+    if state.config.embedding_model.trim().is_empty() {
+        return Err("embedding model is not configured".to_string());
+    }
+    if state.config.embedding_send_dimensions && state.config.embedding_dimensions == 0 {
+        return Err("embedding dimensions are required when dimensions are sent".to_string());
+    }
     let mut payload = serde_json::json!({
         "model": state.config.embedding_model,
         "input": input,
@@ -2129,6 +2135,41 @@ mod tests {
             hits[0].source.source_type,
             coat_domain::MemoryEpisodeSourceType::Unifier
         );
+    }
+
+    #[tokio::test]
+    async fn embedding_endpoint_requires_model_and_valid_dimensions() {
+        let mut state = AppState {
+            memory: Arc::new(RwLock::new(MemoryStore::default())),
+            config: AppConfig {
+                bearer_token: None,
+                journal_path: None,
+                graphiti_mcp_url: None,
+                graphiti_group_id: "jattg".to_string(),
+                graphiti_token: None,
+                qdrant_url: None,
+                qdrant_collection: "jattg_memory".to_string(),
+                qdrant_token: None,
+                embedding_url: Some("http://localhost:8080/v1/embeddings".to_string()),
+                embedding_model: String::new(),
+                embedding_dimensions: 0,
+                embedding_token: None,
+                embedding_send_dimensions: false,
+            },
+            client: Client::new(),
+        };
+
+        let error = embed_text(&state, "test")
+            .await
+            .expect_err("missing embedding model should fail before network I/O");
+        assert!(error.contains("embedding model is not configured"));
+
+        state.config.embedding_model = "nomic-embed-text".to_string();
+        state.config.embedding_send_dimensions = true;
+        let error = embed_text(&state, "test")
+            .await
+            .expect_err("zero dimensions should fail before network I/O");
+        assert!(error.contains("embedding dimensions are required"));
     }
 
     #[tokio::test]

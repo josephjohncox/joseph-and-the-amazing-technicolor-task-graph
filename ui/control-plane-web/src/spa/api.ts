@@ -6,7 +6,7 @@
  *
  * Architecture reference: docs/design-docs/110-control-gateway-spa.md
  */
-import type { ChatMessage, ChatResponse, GoalSnapshot, JsonRecord, Overview } from "./types";
+import type { ChatMessage, ChatResponse, ChatRunTrace, GoalSnapshot, JsonRecord, Overview } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -67,7 +67,7 @@ export function approvals(): Promise<unknown> {
 }
 
 export function runners(): Promise<unknown> {
-  return api("/api/overview").then((value) => (value as Overview).runner_status);
+  return api("/api/runners");
 }
 
 export function threads(): Promise<unknown> {
@@ -94,8 +94,16 @@ export function memoryWrite(body: JsonRecord): Promise<unknown> {
   return api("/api/memory/write", jsonPost(body));
 }
 
-export function chat(mode: string, goalId: string, messages: ChatMessage[]): Promise<ChatResponse> {
-  return api<ChatResponse>("/api/chat", jsonPost({ mode, goal_id: goalId || undefined, messages }));
+export function chat(sessionId: string, mode: string, goalId: string, messages: ChatMessage[], runId?: string): Promise<ChatResponse> {
+  return api<ChatResponse>("/api/chat", jsonPost({ session_id: sessionId, run_id: runId, mode, goal_id: goalId || undefined, messages }));
+}
+
+export function chatSession(sessionId: string): Promise<{ session_id: string; messages: ChatMessage[] }> {
+  return api(`/api/chat/session?session_id=${encodeURIComponent(sessionId)}`);
+}
+
+export function chatRun(runId: string): Promise<ChatRunTrace> {
+  return api<ChatRunTrace>(`/api/chat/runs/${encodeURIComponent(runId)}`);
 }
 
 export function steer(goalId: string, body: JsonRecord): Promise<unknown> {

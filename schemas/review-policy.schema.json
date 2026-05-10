@@ -132,7 +132,8 @@
         "long_context",
         "reasoning",
         "embeddings",
-        "local_weights"
+        "local_weights",
+        "web_search"
       ]
     },
     "ReviewDoctrine": {
@@ -563,6 +564,7 @@
       "enum": [
         "code",
         "research",
+        "web_search",
         "test",
         "review",
         "mcp_tools",

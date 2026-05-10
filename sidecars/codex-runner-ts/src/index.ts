@@ -31,6 +31,7 @@ type WorkerKind =
 type RunnerCapability =
   | "code"
   | "research"
+  | "web_search"
   | "test"
   | "review"
   | "mcp_tools"
@@ -78,7 +79,8 @@ type ModelFeature =
   | "long_context"
   | "reasoning"
   | "embeddings"
-  | "local_weights";
+  | "local_weights"
+  | "web_search";
 
 type ModelCandidate = {
   provider: ModelProviderKind;
@@ -1031,6 +1033,7 @@ function buildRegistration(): RunnerRegistration {
       "code",
       "test",
       "review",
+      ...(webSearchEnabled() ? ["web_search" as RunnerCapability, "network_open" as RunnerCapability] : []),
       "mcp_tools",
       "durable_child_tasks",
       "workspace_sandbox",
@@ -1048,7 +1051,7 @@ function buildRegistration(): RunnerRegistration {
         priority: 100,
         weight: 1,
         context_window: null,
-        features: ["tool_use", "json_schema", "streaming"],
+        features: ["tool_use", "json_schema", "streaming", ...(webSearchEnabled() ? ["web_search" as ModelFeature] : [])],
         labels: {},
       },
     ] satisfies ModelCandidate[]),
@@ -1057,6 +1060,15 @@ function buildRegistration(): RunnerRegistration {
     max_concurrency: maxConcurrency,
     lease_ttl_seconds: leaseTtlSeconds,
   };
+}
+
+function webSearchEnabled(): boolean {
+  return ["CODEX_NATIVE_WEB_SEARCH", "COAT_WEB_SEARCH_ENABLED"].some((key) => truthyEnv(key));
+}
+
+function truthyEnv(key: string): boolean {
+  const value = process.env[key]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 function buildCapabilities(): Record<string, unknown> {

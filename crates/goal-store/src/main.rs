@@ -123,6 +123,7 @@ struct GoalStore {
     event_source_approvals: BTreeMap<Uuid, EventSourceApprovalRecord>,
     snapshots: BTreeMap<GoalId, GoalStoreSnapshot>,
     plans: BTreeMap<PlanId, DurablePlan>,
+    chat_turns: BTreeMap<String, Vec<ChatTurnRecord>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +134,47 @@ enum JournalEntry {
     Artifact(GoalStoreArtifactRecordRequest),
     Plan(DurablePlan),
     EventSourceApproval(EventSourceApprovalRecord),
+    ChatTurn(ChatTurnRecord),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct ChatTurnRecord {
+    id: Uuid,
+    session_id: String,
+    goal_id: Option<GoalId>,
+    mode: String,
+    role: String,
+    content: String,
+    created_at: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    payload_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatTurnAppendRequest {
+    id: Option<Uuid>,
+    session_id: String,
+    goal_id: Option<GoalId>,
+    mode: Option<String>,
+    role: String,
+    content: String,
+    created_at: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    payload_json: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatTurnAppendResponse {
+    accepted: bool,
+    turn: ChatTurnRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatSessionResponse {
+    session_id: String,
+    turns: Vec<ChatTurnRecord>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,6 +301,11 @@ async fn main() -> anyhow::Result<()> {
             "/goal-store/event-source-approvals",
             get(list_event_source_approvals).post(record_event_source_approval),
         )
+        .route("/goal-store/chat/turns", post(append_chat_turn))
+        .route(
+            "/goal-store/chat/sessions/{session_id}",
+            get(get_chat_session),
+        )
         .route("/goal-store/goals/{goal_id}", get(get_goal))
         .route("/goal-store/goals/{goal_id}/tasks", get(list_tasks))
         .route("/goal-store/goals/{goal_id}/events", get(list_events))
@@ -292,6 +339,7 @@ async fn policy(State(state): State<AppState>) -> Json<serde_json::Value> {
         "read_model_backend": state.backend.as_str(),
         "production_read_model": "postgres",
         "production_vector_extension": "pgvector",
+        "control_chat_log": "goal-store chat-turn projection with JSONL or Postgres backend",
         "protocol_package": "coat.v1",
         "proto_root": "proto/coat/v1",
     }))
@@ -638,6 +686,47 @@ async fn list_event_source_approvals(
     }))
 }
 
+async fn append_chat_turn(
+    State(state): State<AppState>,
+    Json(request): Json<ChatTurnAppendRequest>,
+) -> Result<Json<ChatTurnAppendResponse>, ApiError> {
+    let turn = chat_turn_from_request(request)?;
+    if let Some(pool) = &state.postgres {
+        append_chat_turn_postgres(pool, &turn)
+            .await
+            .map_err(ApiError::internal)?;
+    } else if let Err(error) = append_journal(&state, JournalEntry::ChatTurn(turn.clone())).await {
+        tracing::warn!(%error, "append chat-turn journal failed");
+    }
+
+    state.store.write().await.apply_chat_turn(turn.clone());
+    Ok(Json(ChatTurnAppendResponse {
+        accepted: true,
+        turn,
+    }))
+}
+
+async fn get_chat_session(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<ChatSessionResponse>, ApiError> {
+    let turns = if let Some(pool) = &state.postgres {
+        list_chat_session_postgres(pool, &session_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state
+            .store
+            .read()
+            .await
+            .chat_turns
+            .get(&session_id)
+            .cloned()
+            .unwrap_or_default()
+    };
+    Ok(Json(ChatSessionResponse { session_id, turns }))
+}
+
 async fn list_tasks(
     State(state): State<AppState>,
     Path(goal_id): Path<Uuid>,
@@ -926,6 +1015,55 @@ fn filter_events(mut events: Vec<GoalEventRecord>, filter: &EventFilter) -> Vec<
     events
 }
 
+fn chat_turn_from_request(request: ChatTurnAppendRequest) -> Result<ChatTurnRecord, ApiError> {
+    let session_id = request.session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "chat turn session_id is required"
+        )));
+    }
+    let role = request.role.trim().to_ascii_lowercase();
+    if role != "user" && role != "assistant" {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "chat turn role must be user or assistant"
+        )));
+    }
+    let content = request.content.trim().to_string();
+    if content.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "chat turn content is required"
+        )));
+    }
+
+    Ok(ChatTurnRecord {
+        id: request.id.unwrap_or_else(Uuid::new_v4),
+        session_id,
+        goal_id: request.goal_id,
+        mode: request
+            .mode
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "general".to_string()),
+        role,
+        content,
+        created_at: request
+            .created_at
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        provider: request
+            .provider
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        model: request
+            .model
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        payload_json: request
+            .payload_json
+            .unwrap_or_else(|| serde_json::json!({})),
+    })
+}
+
 async fn verify_postgres_schema(pool: &PgPool) -> anyhow::Result<()> {
     let table: Option<String> = sqlx::query_scalar("SELECT to_regclass('coat.goals')::text")
         .fetch_one(pool)
@@ -942,6 +1080,16 @@ async fn verify_postgres_schema(pool: &PgPool) -> anyhow::Result<()> {
     if event_source_approvals.is_none() {
         bail!(
             "coat.event_source_approvals table missing; run infra/db/migrations before starting goal-store"
+        );
+    }
+    let chat_turns: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('coat.control_chat_turns')::text")
+            .fetch_one(pool)
+            .await
+            .context("check coat.control_chat_turns table")?;
+    if chat_turns.is_none() {
+        bail!(
+            "coat.control_chat_turns table missing; run infra/db/migrations before starting goal-store"
         );
     }
     Ok(())
@@ -1581,6 +1729,70 @@ async fn list_artifacts_postgres(
         .collect()
 }
 
+async fn append_chat_turn_postgres(pool: &PgPool, turn: &ChatTurnRecord) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO coat.control_chat_turns (
+            id, session_id, goal_id, mode, role, content, provider, model,
+            created_at_text, payload_json, record_json
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (id) DO UPDATE SET
+            session_id = EXCLUDED.session_id,
+            goal_id = EXCLUDED.goal_id,
+            mode = EXCLUDED.mode,
+            role = EXCLUDED.role,
+            content = EXCLUDED.content,
+            provider = EXCLUDED.provider,
+            model = EXCLUDED.model,
+            created_at_text = EXCLUDED.created_at_text,
+            payload_json = EXCLUDED.payload_json,
+            record_json = EXCLUDED.record_json
+        "#,
+    )
+    .bind(turn.id)
+    .bind(&turn.session_id)
+    .bind(turn.goal_id)
+    .bind(&turn.mode)
+    .bind(&turn.role)
+    .bind(&turn.content)
+    .bind(&turn.provider)
+    .bind(&turn.model)
+    .bind(&turn.created_at)
+    .bind(turn.payload_json.clone())
+    .bind(serde_json::to_value(turn)?)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "append chat turn {} for session {}",
+            turn.id, turn.session_id
+        )
+    })?;
+    Ok(())
+}
+
+async fn list_chat_session_postgres(
+    pool: &PgPool,
+    session_id: &str,
+) -> anyhow::Result<Vec<ChatTurnRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT record_json
+        FROM coat.control_chat_turns
+        WHERE session_id = $1
+        ORDER BY recorded_at ASC, id ASC
+        "#,
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("query chat session {session_id}"))?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "chat turn"))
+        .collect()
+}
+
 fn decode_record<T: DeserializeOwned>(value: serde_json::Value, kind: &str) -> anyhow::Result<T> {
     serde_json::from_value(value).with_context(|| format!("decode {kind} record_json"))
 }
@@ -1651,6 +1863,15 @@ impl GoalStore {
     fn apply_event_source_approval(&mut self, record: EventSourceApprovalRecord) {
         self.event_source_approvals.insert(record.record_id, record);
     }
+
+    fn apply_chat_turn(&mut self, turn: ChatTurnRecord) {
+        let turns = self.chat_turns.entry(turn.session_id.clone()).or_default();
+        if let Some(existing) = turns.iter_mut().find(|existing| existing.id == turn.id) {
+            *existing = turn;
+        } else {
+            turns.push(turn);
+        }
+    }
 }
 
 fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<GoalStore> {
@@ -1677,6 +1898,7 @@ fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<GoalStore> {
             JournalEntry::EventSourceApproval(record) => {
                 store.apply_event_source_approval(record);
             }
+            JournalEntry::ChatTurn(turn) => store.apply_chat_turn(turn),
         }
     }
     Ok(store)
@@ -1721,8 +1943,9 @@ mod tests {
     use tokio::sync::RwLock;
 
     use super::{
-        AppState, GoalStore, GoalStoreBackend, checkpoints_from_artifacts, select_plan_candidate,
-        upsert_plan_record, vote_plan_candidate,
+        AppState, ChatTurnAppendRequest, GoalStore, GoalStoreBackend, append_chat_turn,
+        checkpoints_from_artifacts, get_chat_session, select_plan_candidate, upsert_plan_record,
+        vote_plan_candidate,
     };
 
     #[test]
@@ -1769,6 +1992,67 @@ mod tests {
         store.apply_plan(plan);
 
         assert!(store.plans.contains_key(&plan_id));
+    }
+
+    #[tokio::test]
+    async fn chat_turn_handlers_persist_session_history() {
+        let state = AppState {
+            store: Arc::new(RwLock::new(GoalStore::default())),
+            journal_path: None,
+            backend: GoalStoreBackend::Memory,
+            postgres: None,
+        };
+        let session_id = "operator:smoke".to_string();
+
+        let user_turn = append_chat_turn(
+            State(state.clone()),
+            Json(ChatTurnAppendRequest {
+                id: None,
+                session_id: session_id.clone(),
+                goal_id: None,
+                mode: Some("draft_plan".to_string()),
+                role: "user".to_string(),
+                content: "Draft a durable plan.".to_string(),
+                created_at: Some("2026-05-08T00:00:00Z".to_string()),
+                provider: None,
+                model: None,
+                payload_json: Some(serde_json::json!({"source": "test"})),
+            }),
+        )
+        .await
+        .expect("user turn accepted");
+        assert!(user_turn.0.accepted);
+
+        let assistant_turn = append_chat_turn(
+            State(state.clone()),
+            Json(ChatTurnAppendRequest {
+                id: None,
+                session_id: session_id.clone(),
+                goal_id: None,
+                mode: Some("draft_plan".to_string()),
+                role: "assistant".to_string(),
+                content: "Use the plan editor and compile to a GoalSpec.".to_string(),
+                created_at: Some("2026-05-08T00:00:01Z".to_string()),
+                provider: Some("stub".to_string()),
+                model: None,
+                payload_json: None,
+            }),
+        )
+        .await
+        .expect("assistant turn accepted");
+        assert!(assistant_turn.0.accepted);
+
+        let session = get_chat_session(State(state), Path(session_id.clone()))
+            .await
+            .expect("session returned")
+            .0;
+
+        assert_eq!(session.session_id, session_id);
+        assert_eq!(session.turns.len(), 2);
+        assert_eq!(session.turns[0].role, "user");
+        assert_eq!(session.turns[0].content, "Draft a durable plan.");
+        assert_eq!(session.turns[1].role, "assistant");
+        assert_eq!(session.turns[1].provider.as_deref(), Some("stub"));
     }
 
     #[tokio::test]

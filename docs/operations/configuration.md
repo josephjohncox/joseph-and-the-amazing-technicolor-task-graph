@@ -11,6 +11,7 @@ Primary schemas:
 - `schemas/configuration-profile.schema.json`
 - `schemas/cloud-configuration.schema.json`
 - `schemas/kubernetes-configuration.schema.json`
+- `schemas/runner-capacity-configuration.schema.json`
 
 ## Config Layers
 
@@ -33,6 +34,42 @@ should stay out of both JSON files. Use environment variables, `SecretRef`,
 Kubernetes Secrets, Vault, cloud secret managers, keychains, workload identity,
 or MCP auth brokers for secret material.
 
+Model catalogs are also config-adjacent but not secrets. `coat setup
+local-auth` refreshes the default models.dev catalog cache at
+`~/.coat/cache/models.dev.api.json` before it renders hosted model choices,
+unless a catalog was refreshed in the last 60 minutes. `coat setup model-index
+refresh` is still available for explicit cache warm-up. The setup wizard reads
+model indexes in this order: `COAT_MODEL_INDEX`, `.coat/model-index.json`, then
+the user cache; `COAT_MODEL_INDEX` is treated as an explicit operator-managed
+catalog and is not overwritten by automatic refresh. This keeps hosted model
+choices current without compiling provider model IDs into `coat`.
+
+Model routing is config-adjacent too. Use `config.model_routing` for non-secret
+defaults such as `direct_providers`, `shared_gateway`, or `hybrid`, gateway base
+URLs, lane model names, and secret reference names. For local Compose,
+`coat setup local-auth` writes the equivalent runtime env keys:
+`COAT_LLM_GATEWAY_URL`, `COAT_LLM_GATEWAY_API_KEY`,
+`COAT_LLM_GATEWAY_{WORK,RESEARCH,CHAT,DEFAULT}_MODEL`, and direct provider
+keys when selected. Raw API keys still belong only in env files ignored by git,
+Kubernetes Secrets, cloud secret stores, or auth brokers.
+
+Keep gateway defaults separate from runner defaults. `COAT_CONTROL_CHAT_*`
+selects the operator Chat tab backend. `MEMORY_GATEWAY_EMBEDDING_*` selects the
+memory embedding provider. `MODEL_PROVIDER_*`, `MODEL_PROVIDER_RESEARCH_*`, and
+`LOCAL_MODEL_PROVIDER_*` select durable runner capacity for task roles and
+personas. The default `COAT_CONTROL_CHAT_BACKEND=configured` uses explicit
+gateway chat settings or the stub; it does not infer that a registered local
+runner should answer `/api/chat`. Use
+`COAT_CONTROL_CHAT_BACKEND=runner_registry` only for an intentional
+chat-labeled runner fallback.
+
+Runner capacity scaling is standard COAT config, not a special env-file-only
+surface. Use `config.runner_capacity.default_policy` for the default bounded
+policy and `config.runner_capacity.lane_policies` for pool-specific overrides
+such as `research`, `review`, `codex`, or `sre`. The policy is advisory until
+the coordinator or an approved provisioner applies it; the runner registry
+still only reports recommendations.
+
 ## Project Config
 
 `.coat/project.json` is safe to commit. It defines shared non-secret profiles:
@@ -40,10 +77,11 @@ or MCP auth brokers for secret material.
 - project and package slugs;
 - `cli`: operator output and local service endpoint defaults;
 - `local`: Docker Compose service URLs, env-file locations, and local data/cache
-  paths;
+  paths, plus recommend-only runner capacity defaults;
 - `restate-cloud`: local services pointed at the Restate Cloud tunnel ingress;
 - `eks`: Kubernetes namespace, manifest, Helm chart, image registry, workload
-  identity, secret provider, and S3 object-store defaults.
+  identity, secret provider, S3 object-store defaults, and larger recommend-only
+  runner capacity defaults for cluster pools.
 
 Refresh it with:
 
@@ -158,6 +196,46 @@ Useful fields:
 
 Keep `allow_stub_runners=false` in committed project config unless the repo is
 only meant for stub smoke tests. A user config can opt into stubs locally.
+
+## Runner Capacity Defaults
+
+`config.runner_capacity` holds the default scaling envelope used by
+coordinator/provisioner code and by `coat runner capacity-plan` when the request
+file omits a policy or carries the disabled default. This keeps local setup,
+Kubernetes profiles, and operator diagnostics on the same policy.
+
+Example user override:
+
+```json
+{
+  "config": {
+    "runner_capacity": {
+      "default_policy": {
+        "enabled": true,
+        "mode": "recommend_only",
+        "max_runners": 4,
+        "max_scale_up_step": 1,
+        "cooldown_seconds": 300
+      },
+      "lane_policies": {
+        "research": {
+          "enabled": true,
+          "mode": "recommend_only",
+          "max_runners": 3,
+          "scale_from_events": true,
+          "event_weight": 2
+        }
+      }
+    }
+  }
+}
+```
+
+Fields omitted from a `CapacityScalingPolicy` inherit safe defaults. Use
+`mode=recommend_only` for local and development profiles. Use
+`mode=provision_ephemeral` only for sandboxed lanes with template refs, approval
+policy, cooldowns, and finite `max_runners`. Per-lane policies override the
+default by runner pool key; otherwise the default policy applies.
 
 ## Restate Cloud Defaults
 

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebSearchRoutingMode",
+  "type": "string",
+  "enum": [
+    "disabled",
+    "coordinator_task",
+    "runner_registry"
+  ]
+}

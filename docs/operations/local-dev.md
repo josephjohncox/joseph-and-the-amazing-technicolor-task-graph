@@ -2,23 +2,29 @@
 
 ## Build
 
-The repo includes a committed `.envrc` for direnv. It adds `target/release`,
-`target/debug`, `scripts/`, and local Node package bins to `PATH`, then watches
-COAT config files for reloads. It does not export service endpoint env vars.
-Endpoint defaults come from `.coat/project.json` and `~/.coat/config.json`.
+The repo includes a committed `.envrc` for direnv. It adds the configured
+checkout-local `coat` binary, `scripts/`, and local Node package bins to `PATH`,
+then watches COAT config files for reloads. It does not export service endpoint
+env vars. Endpoint defaults come from `.coat/project.json` and
+`~/.coat/config.json`.
+
+By default, `.envrc` matches `cargo build` and puts `target/debug` ahead of
+`target/release` and any globally installed `coat`. Set
+`COAT_BUILD_PROFILE=release` in `.envrc.local` only when this checkout should
+prefer `target/release/coat`.
 
 ```sh
 direnv allow
-cargo build -p coat-cli
+make build
 coat guide --print
 coat setup config --list-profiles
 coat setup config --show
 ```
 
-After the build, `coat` resolves from the checkout-local `target` directory.
-Copy `.envrc.local.example` to `.envrc.local` only when a workstation should
-load provider env files, tokens, or a rare machine-local config override
-automatically.
+After the build, `coat` resolves from `COAT_BIN_DIR`. Copy
+`.envrc.local.example` to `.envrc.local` only when a workstation should load
+provider env files, tokens, release-profile build preference, or a rare
+machine-local config override automatically.
 
 ```sh
 make ci
@@ -57,12 +63,12 @@ Create a local provider env file when you want live hosted or local model creden
 
 ```sh
 coat setup local-auth
-coat setup local-auth --write-env --output infra/compose/local-providers.env
-coat deploy local preflight --env-file infra/compose/local-providers.env
+coat setup login --codex --claude --preflight
+coat setup sso --profile my-aws-sso-profile --write-env --bedrock-live --preflight
 coat deploy local up --env-file infra/compose/local-providers.env
 ```
 
-The setup wizard checks provider CLIs and environment variables without printing secret values, asks which provider surfaces to prepare, flips the selected runner lanes from `stub` to `live`, and can write `infra/compose/local-providers.env` from the single env template. For Codex and Claude Code lanes it asks whether auth comes from env API keys, runner-local device/browser login, Codex App Server, or a brokered lease, so local smoke work is not blocked just because a static token is unavailable. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
+The setup wizard checks provider CLIs and environment variables without printing secret values, starts from the existing output env file when it exists, refreshes the models.dev catalog before rendering hosted model choices unless a cache is newer than 60 minutes, asks which provider surfaces to prepare, flips selected runner lanes from `stub` to `live`, and can write `infra/compose/local-providers.env` back with only the interactive changes applied. Existing auth modes, endpoints, model IDs, model params, memory-store URLs, and chat settings are used as prompt defaults instead of forcing operators to retype them. Codex runner setup is separate from OpenAI hosted model-provider setup. For Codex and Claude Code lanes it asks whether auth comes from env API keys, runner-local device/browser login, Codex App Server, or a brokered lease, so local smoke work is not blocked just because a static token is unavailable. For hosted model lanes it reads the external models.dev catalog from `COAT_MODEL_INDEX`, `.coat/model-index.json`, or `~/.coat/cache/models.dev.api.json`; `COAT_MODEL_INDEX` is treated as an explicit operator-managed catalog and `coat setup model-index refresh` remains available for manual cache warm-up. Selecting the OpenAI hosted surface writes `MODEL_PROVIDER_RUNNER_MODE=live` and can also write `MODEL_PROVIDER_RESEARCH_RUNNER_MODE=live`; if `OPENAI_API_KEY` is not set and no brokered auth mode is selected, preflight fails instead of silently leaving those lanes stubbed. Memory stores and embeddings stay disabled by default unless the wizard explicitly writes Qdrant, Graphiti/Zep MCP, embedding endpoint, and embedding model settings. For local model lanes and local embeddings it queries the configured OpenAI-compatible/Ollama endpoint for currently served models instead of using compiled-in defaults, then asks whether that same local model should also back the primary and research model-provider lanes. Runtime parameter choices remain indexed, including fast, speed-tier, fast-completions, balanced, deep-review, xhigh reasoning, deterministic JSON/tool-output, hosted chat, and custom escape hatches. Endpoint URLs remain editable text because they are deployment-specific. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. When it writes the env file, it can immediately run selected `coat setup login` or `coat setup sso` actions and then run Compose preflight with that file. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
 
 `coat init` writes `.coat/project.json`, a non-secret project config with
 standard `cli`, `local`, `restate-cloud`, and `eks` profiles. Most project
@@ -275,9 +281,13 @@ Use `docs/operations/goal-authoring.md` before submitting non-trivial goals. It 
 - `RUNNER_MCP_SERVERS_JSON`
 - `OPENAI_API_KEY` for Codex API-key mode
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` for non-interactive Claude Code modes
-- `MODEL_PROVIDER_KIND`, `MODEL_PROVIDER_MODEL`, and `MODEL_PROVIDER_ENDPOINT` for the generic provider runner
-- `MODEL_PROVIDER_RESEARCH_KIND`, `MODEL_PROVIDER_RESEARCH_MODEL`, and `MODEL_PROVIDER_RESEARCH_ENDPOINT` for the research-lane provider runner
-- `LOCAL_MODEL_PROVIDER_KIND`, `LOCAL_MODEL_PROVIDER_MODEL`, and `LOCAL_MODEL_PROVIDER_ENDPOINT` for the host-local model runner
+- `COAT_LLM_GATEWAY_URL`, `COAT_LLM_GATEWAY_API_KEY`, and
+  `COAT_LLM_GATEWAY_{WORK,RESEARCH,CHAT,DEFAULT}_MODEL` for a shared
+  OpenAI-compatible gateway such as Bifrost, LiteLLM, OpenRouter, Docker Model
+  Gateway, or a private proxy
+- `MODEL_PROVIDER_KIND`, `MODEL_PROVIDER_MODEL`, `MODEL_PROVIDER_ENDPOINT`, and `MODEL_PROVIDER_{LATENCY_CLASS,SPEED_TIER,TEMPERATURE,TOP_P,MAX_OUTPUT_TOKENS,REASONING_EFFORT,TIMEOUT_SECONDS}` for the generic provider runner
+- `MODEL_PROVIDER_RESEARCH_KIND`, `MODEL_PROVIDER_RESEARCH_MODEL`, `MODEL_PROVIDER_RESEARCH_ENDPOINT`, and matching `MODEL_PROVIDER_RESEARCH_*` runtime params for the research-lane provider runner
+- `LOCAL_MODEL_PROVIDER_KIND`, `LOCAL_MODEL_PROVIDER_MODEL`, `LOCAL_MODEL_PROVIDER_ENDPOINT`, and matching `LOCAL_MODEL_PROVIDER_*` runtime params for the host-local model runner
 - `AWS_PROFILE`, `AWS_REGION`/`AWS_DEFAULT_REGION`, workload identity, or AWS credentials for Bedrock provider smoke tests
 
 Sidecars also expose `GET /capabilities`, which is the quickest way to verify model candidates, review support, MCP propagation support, and remaining capacity without reading environment variables.
@@ -315,7 +325,7 @@ The MCP `local_command` tool uses the same sandbox runner boundary for local bin
 
 For local Codex or Claude Code device/browser auth, prefer a runner-local setup:
 
-- log in on the node that runs the sidecar;
+- log in on the node that runs the sidecar with `coat setup login --codex --claude`; for Claude Code organization SSO or Console billing, use `--claude-sso`, `--claude-console`, and optionally `--claude-email`;
 - set `CODEX_AUTH_MODE=runner_local_device`, `CLAUDE_CODE_AUTH_MODE=runner_local_device`, or `STAFF_ENGINEER_AUTH_MODE=runner_local_device` in `infra/compose/local-providers.env`;
 - label that runner with values such as `auth.codex.device=true` or `auth.claude.device=true`;
 - set task `auth_distribution.mode` to `runner_local_only`;
@@ -389,15 +399,57 @@ curl -sS -X POST http://localhost:9090/mcp \
 
 Set `COAT_CONTROL_GATEWAY_TOKEN` and `COAT_CONTROL_MCP_TOKEN` when exposing the gateway beyond local trusted development.
 
-The Chat tab defaults to a local stub so smoke tests do not need model credentials. To use a live OpenAI-compatible model provider, set:
+The Chat tab is always routed through the control gateway backend. The browser calls `/api/chat`; it does not call Ollama, vLLM, OpenAI, or other model providers directly.
+
+Use the chat mode switcher for the three standard authoring paths: Plan, Goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
+
+While a chat request is running, open **Chat activity** in the SPA to inspect the operational trace: request mode, session, selected goal, backend resolution, model/stub stage, journaling status, and errors. This is an execution trace, not hidden model reasoning.
+
+Chat history is durable server-side state. The gateway writes turns to
+`coat-goal-store` by default (`COAT_CONTROL_CHAT_STORE_BACKEND=goal_store`), so
+the same UI works with the goal-store JSONL journal in local Compose or the
+Postgres read model in production. `COAT_CONTROL_CHAT_JOURNAL_PATH` is only a
+gateway-local fallback for smoke tests or a temporarily unavailable goal-store.
+The browser reads chat history through `/api/chat/session`; it does not own the
+conversation log.
+
+The gateway defaults to configured chat or the local stub so smoke tests do not need model credentials. It does not borrow local Ollama/vLLM runners just because they are registered. Runner lanes are selected by the coordinator from `MODEL_PROVIDER_*` and `LOCAL_MODEL_PROVIDER_*` based on task role, persona, labels, sandbox, and model route; the gateway Chat tab is selected separately from `COAT_CONTROL_CHAT_*`, `COAT_LLM_GATEWAY_*`, or direct OpenAI settings.
+
+To force a specific live OpenAI-compatible chat backend, set:
 
 ```sh
+COAT_CONTROL_CHAT_BACKEND=configured
+COAT_CONTROL_CHAT_PROVIDER=openai_compatible
 COAT_CONTROL_CHAT_COMPLETIONS_URL=http://localhost:8000/v1/chat/completions
-COAT_CONTROL_CHAT_MODEL=local-chat-model
+COAT_CONTROL_CHAT_MODEL=<served-model>
 COAT_CONTROL_CHAT_API_KEY=optional-provider-token
+COAT_CONTROL_CHAT_SPEED_TIER=speed
+COAT_CONTROL_CHAT_TEMPERATURE=0.2
+COAT_CONTROL_CHAT_TOP_P=0.9
+COAT_CONTROL_CHAT_MAX_OUTPUT_TOKENS=2048
+COAT_CONTROL_CHAT_REASONING_EFFORT=low
+COAT_CONTROL_CHAT_TIMEOUT_SECONDS=60
 ```
 
-For OpenAI-hosted chat completions, set `COAT_CONTROL_CHAT_MODEL` and `OPENAI_API_KEY`; the gateway will use `https://api.openai.com/v1/chat/completions`. Chat drafts still require explicit operator submission through the existing forms.
+For OpenAI-hosted chat completions, set `COAT_CONTROL_CHAT_PROVIDER=openai`,
+`COAT_CONTROL_CHAT_MODEL`, and `OPENAI_API_KEY` or
+`COAT_CONTROL_CHAT_API_KEY`; the gateway will use
+`https://api.openai.com/v1/chat/completions`. Runtime params are optional and
+map to the OpenAI-compatible chat-completions request body. Chat drafts still
+require explicit operator submission through the existing forms.
+
+Runner-registry chat discovery is an advanced opt-in path:
+
+```sh
+COAT_CONTROL_CHAT_BACKEND=runner_registry
+```
+
+When enabled, discovery still requires an explicit runner or model label such as
+`control_chat=true`, `chat.intent=user_request`, or
+`routing_scope=operator_chat`. This is only operator-chat backend resolution for
+a user request; it is not durable task dispatch.
+
+Hosted-only request fields such as `reasoning_effort` and speed tier are only sent to hosted OpenAI chat endpoints. Local runner-discovered endpoints such as Ollama, vLLM, and llama.cpp receive portable sampling and token-limit parameters so they do not reject the request.
 
 The service also has a real Postgres backend. Start the local database and goal store with:
 
@@ -433,7 +485,7 @@ Set `MEMORY_GATEWAY_JOURNAL_PATH` to enable the local append-only JSONL journal.
 
 Set `MEMORY_GATEWAY_GRAPHITI_MCP_URL=http://localhost:8000/mcp/` when a Graphiti MCP server is running and the gateway should mirror local memory operations into the graph. `MEMORY_GATEWAY_GRAPHITI_GROUP_ID` defaults to `jattg`; per-goal `MemoryStoreRef.namespace` overrides it. Use `MEMORY_GATEWAY_GRAPHITI_TOKEN` only when the remote MCP endpoint requires bearer auth.
 
-Compose runs Qdrant on `http://localhost:6333` and configures `MEMORY_GATEWAY_QDRANT_URL=http://qdrant:6333`. The gateway mirrors memory writes and joins into Qdrant when an embedding endpoint is available, then merges vector hits into `memory_search`.
+Compose runs Qdrant on `http://localhost:6333`, but `MEMORY_GATEWAY_QDRANT_URL` is blank until an operator enables the vector store. This keeps local smoke stacks on the JSONL journal unless the `coat setup local-auth` memory-store flow selects Qdrant. When Qdrant and an embedding endpoint/model are both configured, the gateway mirrors memory writes and joins into Qdrant, then merges vector hits into `memory_search`.
 
 Build a bounded worker context pack with:
 
@@ -443,17 +495,12 @@ coat memory context --file examples/memory-context.json
 
 The response includes ranked memory hits, adapter reports, and an `InformationUsePlan` that tells the worker which facts are usable, which assumptions to avoid, and which validation checks to carry forward.
 
-Default hosted embeddings:
+Embedding models are explicit:
 
-- `MEMORY_GATEWAY_EMBEDDING_URL=https://api.openai.com/v1/embeddings`
-- `MEMORY_GATEWAY_EMBEDDING_MODEL=text-embedding-3-large`
-- `OPENAI_API_KEY` or `MEMORY_GATEWAY_EMBEDDING_TOKEN`
-
-Local embeddings:
-
-- Run Hugging Face Text Embeddings Inference or another OpenAI-compatible embedding server.
-- Set `MEMORY_GATEWAY_EMBEDDING_URL=http://host.docker.internal:8080/v1/embeddings` for a host-local TEI server, or `http://tei:80/v1/embeddings` if you add TEI to the Compose network.
-- Set `MEMORY_GATEWAY_EMBEDDING_MODEL=text-embeddings-inference` for TEI's OpenAI-compatible endpoint unless the local server requires a different model name.
+- `coat setup local-auth` refreshes the models.dev cache before selecting hosted OpenAI embeddings unless the cache is newer than 60 minutes, so the wizard can read current embedding model IDs and dimensions. Run `coat setup model-index refresh` only when you want to warm or pin the cache separately.
+- For Ollama, vLLM, llama.cpp, Hugging Face endpoints, TEI, or another OpenAI-compatible server, the wizard asks for the base endpoint, queries `/models` or Ollama tags, and writes the derived `/v1/embeddings` URL plus the selected served model ID.
+- `MEMORY_GATEWAY_EMBEDDING_DIMENSIONS` is optional. Set `MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS=true` only when the selected provider expects a dimensions field.
+- `OPENAI_API_KEY` or `MEMORY_GATEWAY_EMBEDDING_TOKEN` is required only for hosted or token-protected embedding endpoints.
 
 Qdrant and embedding adapter failures are returned in `adapter_reports`. They do not block the local JSONL journal, so smoke tests can run without external credentials while production deployments can use standard vector/RAG services.
 

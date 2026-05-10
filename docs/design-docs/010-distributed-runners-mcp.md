@@ -10,7 +10,7 @@ Every `TaskNode` has an `ExecutionProfile`:
 
 - `RunnerSelector`: worker role, capabilities, labels, locality, and optional runner ID.
 - `CapacityProvisioningPolicy`: registered-runner-only vs approved ephemeral capacity templates.
-- `ModelRoute`: model candidates, provider kinds, routing strategy, required features, and fallback policy.
+- `ModelRoute`: model candidates, provider kinds, routing strategy, required features, runtime parameters, and fallback policy.
 - `PersonaSpec`: task-local persona and instruction references.
 - `SubagentDelegationPolicy`: runner-context rule for durable child tasks vs native runner-local delegation.
 - `McpContextRef`: MCP servers, allowed tools, secret refs, and propagation mode.
@@ -30,6 +30,40 @@ registration, and then dispatches normally. In Kubernetes deployments the live
 provisioner should use the Rust `kube`/`k8s-openapi` client path; rendered
 manifests are fixtures and operator escape hatches. Workers do not create their
 own Jobs from prompt text.
+
+Dynamic capacity is a policy layer on top of this explicit provisioning model.
+`ExecutionProfile.capacity.scaling` tells the coordinator and provisioner how to
+turn durable demand into bounded supply. It is disabled by default. When enabled,
+it uses:
+
+- durable demand: runnable task frontier, unmatched tasks, running tasks,
+  blocked tasks, event backlog, trigger pressure, and explicit priority boosts;
+- current supply: runner-registry heartbeats, dispatchable runners,
+  `capacity_remaining`, `max_concurrency`, stale/full flags, and pending
+  provisions;
+- policy limits: min/max runners, slots per runner, target backlog per runner,
+  utilization target, headroom, cooldowns, max scale-up/down steps, and whether
+  events can contribute to scaling.
+
+The calculation answers "how many execution slots are needed for this lane?"
+rather than "how many agents should an LLM spawn?" The coordinator groups demand
+by role, pool, capability, labels, sandbox, model route, and locality. The
+runner registry can produce a stateless recommendation through
+`POST /capacity/plan`, but Restate/coordinator state remains authoritative.
+
+Scale-up may create ephemeral runner or executor capacity only when all of these
+are true:
+
+- `CapacityScalingPolicy.enabled = true`;
+- the mode is `provision_ephemeral`, not `manual` or `recommend_only`;
+- `ExecutionProfile.capacity.mode` allows ephemeral provisioning;
+- the template ref is approved and inside max runner/pending-provision limits;
+- budget and approval policy allow the provision.
+
+Scale-down is conservative. Persistent Deployments should use HPA/KEDA or
+operator policy. Ephemeral runner Jobs should drain or expire through TTL,
+`activeDeadlineSeconds`, and no-new-task assignment. The coordinator should not
+kill active task runners just because the recommendation dropped.
 
 ## Subagent Delegation
 
@@ -55,6 +89,46 @@ redacted diagnostics in every `/run-task` result. The Rust tool registry exposes
 `subagent_policy` over MCP, and the control gateway exposes
 `coat_subagent_policy`, so external chat/agent surfaces can initialize their
 skill or system context with the same rule.
+
+## Model Runtime Parameters
+
+`ModelCandidate.params` is the typed place for model behavior that should be
+visible to routing and review:
+
+- `latency_class`: `fast`, `balanced`, `deep`, or `batch`;
+- `speed_tier`: optional provider tier such as `speed`, `priority`, `flex`,
+  `auto`, or `default` when the provider exposes speed or service-tier routing;
+- `temperature_milli` and `top_p_milli`;
+- `max_output_tokens`;
+- `reasoning_effort`: `minimal`, `low`, `medium`, `high`, or `xhigh`;
+- `timeout_seconds`;
+- `extra` for provider-specific string values.
+
+The generic model-provider runner reads these from `MODEL_PROVIDER_*` env vars
+and exposes them through `/registration`, `/capabilities`, `/verify`, and
+`AgentRunResult.model_used`. If a deployment uses a shared OpenAI-compatible
+gateway such as Bifrost, LiteLLM, OpenRouter, or Docker Model Gateway, runners
+can instead inherit `COAT_LLM_GATEWAY_URL`,
+`COAT_LLM_GATEWAY_{WORK,RESEARCH,DEFAULT}_MODEL`, and
+`COAT_LLM_GATEWAY_API_KEY`. That keeps provider keys centralized while still
+letting the coordinator route durable work, research, review, and chat lanes
+independently. `RUNNER_MODELS_JSON` can still override the whole candidate list
+when a node serves multiple models. Labels remain for measured or operator
+metadata such as `quality_tier`, `latency_ms`, GPU type, price, or pool. The
+lowest-latency route uses measured latency labels first and falls back to typed
+`latency_class` and optional `speed_tier`, so a fast local model can be
+selected even before the runner has live latency observations.
+
+The control gateway's `/api/chat` path is not a durable dispatch route and does
+not use the runner fleet by default. Gateway chat is selected through
+`COAT_CONTROL_CHAT_*`, `COAT_LLM_GATEWAY_*`, or direct OpenAI config, while
+durable task runners are selected through `TaskNode.execution`, roles, personas,
+labels, sandbox, and model route. If `COAT_CONTROL_CHAT_BACKEND=runner_registry`
+is explicitly enabled, the gateway resolves only an operator-chat backend for a
+user request and ignores unlabeled durable-work runners. A runner or model
+candidate must opt in with labels such as `control_chat=true`,
+`chat.intent=user_request`, or `routing_scope=operator_chat`; durable task
+execution still goes through coordinator dispatch and runner task APIs.
 
 ## Runner Wrappers
 
@@ -88,6 +162,16 @@ Runners POST `RunnerRegistration` to `/runners`, send `/runners/heartbeat`, and 
 The registry is in-memory in this scaffold. It filters dispatch candidates by heartbeat lease and remaining capacity, but production should move runner state into Restate virtual objects or an indexed backing store.
 
 The coordinator's Restate `AgentRunner` calls `/dispatch` as a journaled side effect, then invokes the matched runner's `/run-task` endpoint with `AgentRunRequest`. `AgentRunRequest.timeout_seconds` is derived from `GoalSpec.timeout_policy` and task budget, so slow or wedged runners produce a structured timeout result instead of blocking the control loop indefinitely. In local development, `COAT_ALLOW_LOCAL_STUB_FALLBACK=true` lets unmatched or unavailable runners fall back to a local stub. Production deployments should set this to `false` so unmatched tasks block and notify humans instead of pretending work ran.
+
+`POST /capacity/plan` accepts `RunnerScalingRequest`. If the request omits
+current supply, the registry derives pool supply from registered runner
+heartbeats. Operator-facing CLI calls should fill an omitted/default policy from
+`config.runner_capacity`, with per-lane policy selected by pool key and the
+default policy as fallback. The response is a `RunnerScalingDecision` with
+per-pool desired runners, current runners, desired slots, provision count,
+retirement suggestion, and reasons. This endpoint is advisory; the coordinator
+or provisioner still owns approval, template resolution, cooldown enforcement,
+and execution.
 
 Dispatch decisions include:
 

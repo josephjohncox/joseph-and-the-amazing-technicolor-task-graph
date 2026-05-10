@@ -25,7 +25,15 @@ ephemeralJobs:
       PORT: "9093"
       MODEL_PROVIDER_RUNNER_MODE: stub
       MODEL_PROVIDER_KIND: vllm
+      MODEL_PROVIDER_MODEL: Qwen/Qwen2.5-Coder-7B-Instruct
       MODEL_PROVIDER_ENDPOINT: http://vllm:8000/v1
+      MODEL_PROVIDER_LATENCY_CLASS: fast
+      MODEL_PROVIDER_SPEED_TIER: speed
+      MODEL_PROVIDER_TEMPERATURE: "0.2"
+      MODEL_PROVIDER_TOP_P: "0.9"
+      MODEL_PROVIDER_MAX_OUTPUT_TOKENS: "2048"
+      MODEL_PROVIDER_REASONING_EFFORT: low
+      MODEL_PROVIDER_TIMEOUT_SECONDS: "60"
       RUNNER_REGISTRY_URL: http://runner-registry:9085
       RUNNER_ENDPOINT: http://model-provider-burst:9093
     fieldEnv:

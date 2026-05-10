@@ -19,10 +19,14 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Add inbound SQS event-source polling through the event gateway so durable queues can fan events into goals without bypassing coordinator routing.
 - Rank dispatch candidates by model-route strategy and return rejected runners with mismatch reasons.
 - Persist runner registrations and heartbeats through `COAT_RUNNER_REGISTRY_JOURNAL_PATH` for local multi-node restarts while still honoring heartbeat TTL and capacity.
+- Add typed `CapacityScalingPolicy`, `RunnerScalingRequest`, and `RunnerScalingDecision` contracts so the coordinator can derive runner demand from durable task/event queues and ask the registry/provisioner for bounded capacity recommendations.
+- Add `config.runner_capacity` as the standard project/user/profile surface for capacity scaling defaults; `coat runner capacity-plan` should fill omitted/default request policy from resolved config before calling the advisory registry endpoint.
+- Add runner-registry `POST /capacity/plan` as an advisory endpoint that combines supplied or heartbeat-derived pool supply with policy limits.
 - Add sidecar `/capabilities` endpoints for model, MCP, capacity, and review-contract inspection.
 - Add generic Claude Code and model-provider sidecars beside Codex and staff-engineer wrappers.
 - Run a multi-agent default Compose pool with distinct runner IDs for coding, review/test, research, local-model, Claude Code, model-provider, and staff-engineer lanes.
-- Add interactive local provider auth setup through `coat setup local-auth` and `scripts/coat-local-provider-setup.sh` so hosted keys, Bedrock routing, Ollama/vLLM endpoints, and Chat tab model settings are configured without printing secrets.
+- Add interactive local provider auth setup through `coat setup local-auth` and `scripts/coat-local-provider-setup.sh` so hosted keys, Bedrock routing, Ollama/vLLM endpoints, fast/speed-tier/balanced/deep model params, and Chat tab model settings are configured without printing secrets.
+- Extend local provider setup to cover memory-store adapters and embedding models, with hosted choices from models.dev and local choices from Ollama/OpenAI-compatible endpoint discovery.
 - Add interactive `coat setup chat-client` so Codex and Claude Code can register the remote control gateway as an HTTP MCP server and install the single-source `coat-control-plane` skill, while explicit flags keep automation non-interactive.
 - Wire services into Compose, Kubernetes, CLI, examples, and schemas.
 
@@ -34,7 +38,11 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Multi-user OIDC tasks require `oidc_user_delegation` runner capability, required tenant labels, and brokered-user approval.
 - Dispatch explains locality and MCP mismatches and ranks multiple compatible model providers.
 - HTTP-level registry tests cover registration, heartbeat, stale/full filtering, status inspection, and dispatch through the service routes.
+- Capacity-scaling tests cover disabled/manual no-op behavior, event-weighted demand, policy-bounded scale-up, and heartbeat-derived pool supply through `/capacity/plan`.
 - Local auth setup offers an interactive wizard, prints secret-safe checks, writes `infra/compose/local-providers.env`, keeps non-interactive output stubbed by default, and flips selected interactive runner lanes to live mode.
+- Login and SSO setup run as COAT commands, not documentation-only provider commands, and can immediately preflight the resulting env file.
+- Model routing tests cover indexed fast model choices and typed runtime params for latency class, temperature, top-p, max output tokens, reasoning effort, and timeout.
+- Memory setup tests cover hosted embedding model indexing, local OpenAI-compatible embedding URL derivation, Qdrant/embedding preflight pairing, and gateway failures before network I/O when model or dimensions are missing.
 - Chat-client setup offers an interactive wizard, writes MCP config from command arguments or prompt choices, installs skill Markdown from `skills/coat-control-plane/SKILL.md`, and uses structured MUST-level instructions for steering.
 - SQS notification targets serialize a stable queue envelope and use standard AWS SDK credential, region, and endpoint resolution.
 - SQS event sources use the same SDK credential chain, normalize message bodies through `GenericEventSource`, and delete messages only after successful ingest when configured.

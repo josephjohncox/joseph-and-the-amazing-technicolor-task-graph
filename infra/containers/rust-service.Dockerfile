@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.95.0-slim AS builder
+# Keep the Rust builder on the same Debian suite as the service and toolbox
+# runtime images. The unqualified `rust:*‑slim` tag can move to a newer Debian
+# release and produce binaries that require a newer glibc than bookworm has.
+FROM rust:1.95.0-slim-bookworm AS builder
 
 ARG CARGO_BUILD_JOBS=8
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
@@ -15,7 +18,7 @@ RUN apt-get update \
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
+    --mount=type=cache,id=coat-target-bookworm,target=/app/target,sharing=locked \
     cargo build --release --locked -j "${CARGO_BUILD_JOBS}" \
         -p coat-cli \
         -p coat-coordinator \

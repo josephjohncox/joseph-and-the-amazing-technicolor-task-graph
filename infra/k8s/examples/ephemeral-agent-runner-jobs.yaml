@@ -224,8 +224,24 @@ spec:
               value: stub
             - name: MODEL_PROVIDER_KIND
               value: vllm
+            - name: MODEL_PROVIDER_MODEL
+              value: Qwen/Qwen2.5-Coder-7B-Instruct
             - name: MODEL_PROVIDER_ENDPOINT
               value: http://vllm:8000/v1
+            - name: MODEL_PROVIDER_LATENCY_CLASS
+              value: fast
+            - name: MODEL_PROVIDER_SPEED_TIER
+              value: speed
+            - name: MODEL_PROVIDER_TEMPERATURE
+              value: "0.2"
+            - name: MODEL_PROVIDER_TOP_P
+              value: "0.9"
+            - name: MODEL_PROVIDER_MAX_OUTPUT_TOKENS
+              value: "2048"
+            - name: MODEL_PROVIDER_REASONING_EFFORT
+              value: low
+            - name: MODEL_PROVIDER_TIMEOUT_SECONDS
+              value: "60"
             - name: RUNNER_REGISTRY_URL
               value: http://runner-registry.jattg.svc.cluster.local:9085
             - name: RUNNER_ENDPOINT

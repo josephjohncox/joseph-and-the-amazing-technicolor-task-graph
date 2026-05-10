@@ -107,8 +107,14 @@ pub struct CoatConfig {
     pub paths: CoatConfigPaths,
     #[serde(default, skip_serializing_if = "CoatServiceEndpoints::is_default")]
     pub service_endpoints: CoatServiceEndpoints,
+    #[serde(default, skip_serializing_if = "CoatModelRoutingConfig::is_default")]
+    pub model_routing: CoatModelRoutingConfig,
+    #[serde(default, skip_serializing_if = "CoatToolRoutingConfig::is_default")]
+    pub tool_routing: CoatToolRoutingConfig,
     #[serde(default, skip_serializing_if = "CoatLocalDeployConfig::is_default")]
     pub local_deploy: CoatLocalDeployConfig,
+    #[serde(default, skip_serializing_if = "CoatRunnerCapacityConfig::is_default")]
+    pub runner_capacity: CoatRunnerCapacityConfig,
     #[serde(default, skip_serializing_if = "CoatCloudConfig::is_default")]
     pub cloud: CoatCloudConfig,
     #[serde(default, skip_serializing_if = "CoatKubernetesConfig::is_default")]
@@ -126,7 +132,10 @@ impl CoatConfig {
             profiles: standard_coat_profiles(),
             paths: CoatConfigPaths::default(),
             service_endpoints: CoatServiceEndpoints::default(),
+            model_routing: CoatModelRoutingConfig::default(),
+            tool_routing: CoatToolRoutingConfig::default(),
             local_deploy: CoatLocalDeployConfig::default(),
+            runner_capacity: CoatRunnerCapacityConfig::default(),
             cloud: CoatCloudConfig::default(),
             kubernetes: CoatKubernetesConfig::default(),
             cli: CoatCliConfig::default(),
@@ -144,7 +153,10 @@ impl CoatConfig {
                 ..CoatConfigPaths::default()
             },
             service_endpoints: CoatServiceEndpoints::default(),
+            model_routing: CoatModelRoutingConfig::default(),
+            tool_routing: CoatToolRoutingConfig::default(),
             local_deploy: CoatLocalDeployConfig::default(),
+            runner_capacity: CoatRunnerCapacityConfig::default(),
             cloud: CoatCloudConfig::default(),
             kubernetes: CoatKubernetesConfig::default(),
             cli: CoatCliConfig::default(),
@@ -164,8 +176,14 @@ pub struct CoatProfileConfig {
     pub paths: CoatConfigPaths,
     #[serde(default, skip_serializing_if = "CoatServiceEndpoints::is_default")]
     pub service_endpoints: CoatServiceEndpoints,
+    #[serde(default, skip_serializing_if = "CoatModelRoutingConfig::is_default")]
+    pub model_routing: CoatModelRoutingConfig,
+    #[serde(default, skip_serializing_if = "CoatToolRoutingConfig::is_default")]
+    pub tool_routing: CoatToolRoutingConfig,
     #[serde(default, skip_serializing_if = "CoatLocalDeployConfig::is_default")]
     pub local_deploy: CoatLocalDeployConfig,
+    #[serde(default, skip_serializing_if = "CoatRunnerCapacityConfig::is_default")]
+    pub runner_capacity: CoatRunnerCapacityConfig,
     #[serde(default, skip_serializing_if = "CoatCloudConfig::is_default")]
     pub cloud: CoatCloudConfig,
     #[serde(default, skip_serializing_if = "CoatKubernetesConfig::is_default")]
@@ -225,6 +243,10 @@ fn standard_coat_profiles() -> Vec<CoatProfileConfig> {
                 allow_uninitialized: Some(false),
                 profiles: Vec::new(),
             },
+            runner_capacity: CoatRunnerCapacityConfig {
+                default_policy: Some(CapacityScalingPolicy::recommend_only(4)),
+                lane_policies: BTreeMap::new(),
+            },
             cloud: CoatCloudConfig::project_defaults(),
             defaults: CoatOperatorDefaults {
                 goal_store_url: Some("http://localhost:9088".to_string()),
@@ -249,6 +271,10 @@ fn standard_coat_profiles() -> Vec<CoatProfileConfig> {
                 allow_uninitialized: Some(false),
                 profiles: vec!["restate-cloud".to_string()],
             },
+            runner_capacity: CoatRunnerCapacityConfig {
+                default_policy: Some(CapacityScalingPolicy::recommend_only(4)),
+                lane_policies: BTreeMap::new(),
+            },
             cloud: CoatCloudConfig::project_defaults(),
             defaults: CoatOperatorDefaults {
                 goal_store_url: Some("http://localhost:9088".to_string()),
@@ -270,6 +296,14 @@ fn standard_coat_profiles() -> Vec<CoatProfileConfig> {
                 object_store: Some("s3".to_string()),
                 ..CoatCloudConfig::project_defaults()
             },
+            runner_capacity: CoatRunnerCapacityConfig {
+                default_policy: Some(CapacityScalingPolicy {
+                    headroom_runners: 1,
+                    max_scale_up_step: 4,
+                    ..CapacityScalingPolicy::recommend_only(24)
+                }),
+                lane_policies: BTreeMap::new(),
+            },
             ..default_profile("eks", CoatProfileKind::Eks)
         },
     ]
@@ -282,7 +316,10 @@ fn default_profile(name: &str, kind: CoatProfileKind) -> CoatProfileConfig {
         description: String::new(),
         paths: CoatConfigPaths::default(),
         service_endpoints: CoatServiceEndpoints::default(),
+        model_routing: CoatModelRoutingConfig::default(),
+        tool_routing: CoatToolRoutingConfig::default(),
         local_deploy: CoatLocalDeployConfig::default(),
+        runner_capacity: CoatRunnerCapacityConfig::default(),
         cloud: CoatCloudConfig::default(),
         kubernetes: CoatKubernetesConfig::default(),
         cli: CoatCliConfig::default(),
@@ -359,6 +396,169 @@ impl CoatServiceEndpoints {
     }
 }
 
+/// Non-secret model routing defaults shared by CLI setup, runners, and UI.
+///
+/// Store raw provider tokens in env vars, Kubernetes Secrets, external secret
+/// stores, or brokered leases. This config only records which env/secret refs
+/// should be resolved at runtime and which model lanes should prefer a shared
+/// gateway versus direct provider credentials.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatModelRoutingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<CoatModelRoutingMode>,
+    #[serde(default, skip_serializing_if = "CoatLlmGatewayConfig::is_default")]
+    pub gateway: CoatLlmGatewayConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub direct_provider_secret_refs: Vec<SecretRef>,
+}
+
+impl CoatModelRoutingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoatModelRoutingMode {
+    DirectProviders,
+    SharedGateway,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatLlmGatewayConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<CoatLlmGatewayProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_completions_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_refs: Vec<SecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+}
+
+impl CoatLlmGatewayConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// Non-secret tool routing defaults shared by MCP servers, setup flows, and runners.
+///
+/// This config decides which durable route is allowed for tool-shaped work such
+/// as web/reference search. It does not store provider tokens; use `auth_env`,
+/// `secret_refs`, or an external broker.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatToolRoutingConfig {
+    #[serde(
+        default,
+        skip_serializing_if = "CoatWebSearchRoutingConfig::is_default"
+    )]
+    pub web_search: CoatWebSearchRoutingConfig,
+}
+
+impl CoatToolRoutingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatWebSearchRoutingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<WebSearchRoutingMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<WebSearchProviderKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_refs: Vec<SecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_via_runner_registry: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_capabilities: Vec<RunnerCapability>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_model_features: Vec<ModelFeature>,
+}
+
+impl Default for CoatWebSearchRoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(false),
+            mode: Some(WebSearchRoutingMode::CoordinatorTask),
+            provider: Some(WebSearchProviderKind::AgentNative),
+            base_url: None,
+            auth_env: Some("COAT_WEB_SEARCH_API_KEY".to_string()),
+            secret_refs: Vec::new(),
+            default_limit: Some(10),
+            max_limit: Some(25),
+            route_via_runner_registry: Some(false),
+            required_capabilities: vec![RunnerCapability::Research, RunnerCapability::WebSearch],
+            required_model_features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
+        }
+    }
+}
+
+impl CoatWebSearchRoutingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchRoutingMode {
+    Disabled,
+    CoordinatorTask,
+    RunnerRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchProviderKind {
+    AgentNative,
+    McpGateway,
+    SearchApi,
+    Custom,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoatLlmGatewayProvider {
+    Bifrost,
+    LiteLlm,
+    OpenRouter,
+    DockerModelGateway,
+    OpenAiCompatible,
+    Custom,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct CoatLocalDeployConfig {
@@ -377,6 +577,33 @@ pub struct CoatLocalDeployConfig {
 impl CoatLocalDeployConfig {
     pub fn is_default(&self) -> bool {
         self == &Self::default()
+    }
+}
+
+/// Non-secret capacity scaling defaults for runner pools.
+///
+/// This is operator policy, not live task state. The coordinator derives actual
+/// demand from durable tasks and event queues, then applies these caps before
+/// asking a provisioner to add ephemeral runners or drain idle capacity.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct CoatRunnerCapacityConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_policy: Option<CapacityScalingPolicy>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lane_policies: BTreeMap<String, CapacityScalingPolicy>,
+}
+
+impl CoatRunnerCapacityConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn policy_for(&self, pool_key: &str) -> Option<CapacityScalingPolicy> {
+        self.lane_policies
+            .get(pool_key)
+            .cloned()
+            .or_else(|| self.default_policy.clone())
     }
 }
 
@@ -6968,6 +7195,168 @@ pub struct SourceArtifact {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
+/// MCP/API request for a routed web or reference search.
+///
+/// `coat_web_search` is a routing contract, not an ambient network scraper. It
+/// can be compiled into a durable research task, or when explicitly configured,
+/// dispatched to a registered research runner that advertises web-search
+/// capability. Results must still normalize to `ResearchOutput`.
+pub struct WebSearchRequest {
+    pub query: String,
+    #[serde(default)]
+    pub goal_id: Option<GoalId>,
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub max_search_depth: Option<u32>,
+    #[serde(default)]
+    pub allowed_providers: Vec<SearchProviderKind>,
+    #[serde(default)]
+    pub source_quality_order: Vec<SourceQuality>,
+    #[serde(default)]
+    pub context: Vec<String>,
+    #[serde(default)]
+    pub execution: Option<ExecutionProfile>,
+    #[serde(default)]
+    pub model: Option<ModelRoute>,
+    #[serde(default)]
+    pub route: WebSearchRoutingPreference,
+    #[serde(default)]
+    pub require_sources: Option<bool>,
+    #[serde(default)]
+    pub require_use_plan: Option<bool>,
+}
+
+impl WebSearchRequest {
+    pub fn child_task_request(&self) -> ChildTaskRequest {
+        let mut execution = self.execution.clone().unwrap_or_default();
+        if execution.runner.worker.is_none() {
+            execution = execution.with_role(WorkerKind::Research);
+        }
+        let role = execution
+            .runner
+            .worker
+            .clone()
+            .unwrap_or(WorkerKind::Research);
+        if let Some(model) = self.model.clone() {
+            execution.model = model;
+        }
+        push_unique(
+            &mut execution.runner.required_capabilities,
+            RunnerCapability::Research,
+        );
+        push_unique(
+            &mut execution.runner.required_capabilities,
+            RunnerCapability::WebSearch,
+        );
+        push_unique(
+            &mut execution.model.required_features,
+            ModelFeature::ToolUse,
+        );
+        push_unique(
+            &mut execution.model.required_features,
+            ModelFeature::JsonSchema,
+        );
+
+        ChildTaskRequest {
+            role,
+            purpose: Some(TaskPurpose::Research {
+                question: self.query.clone(),
+            }),
+            title: Some("Routed web/reference search".to_string()),
+            subgoal_id: None,
+            color: None,
+            prompt: self.structured_prompt(),
+            reason: "coat_web_search requested routed research evidence".to_string(),
+            dependencies: self.task_id.iter().copied().collect(),
+            budget: None,
+            sandbox: None,
+            done_criteria: Some(DoneCriteria {
+                tests_pass: false,
+                artifact_exists: true,
+                validator_score_min: Some(0.75),
+            }),
+            review_doctrine: None,
+            execution: Some(execution),
+            priority: TaskPriority::High,
+            tags: vec![
+                "coat_web_search".to_string(),
+                "research".to_string(),
+                "web_search".to_string(),
+            ],
+        }
+    }
+
+    pub fn structured_prompt(&self) -> String {
+        let context = if self.context.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n<context>\n{}\n</context>",
+                self.context
+                    .iter()
+                    .map(|item| format!("  <item>{item}</item>"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+        format!(
+            "<task>\n  <role>research</role>\n  <query>{}</query>{context}\n  <instruction>MUST use only search, MCP, documentation, memory, or runner-native web tools allowed by the task ResearchPolicy and ExecutionProfile.</instruction>\n  <instruction>MUST cite sources and return ResearchOutput plus InformationUsePlan.</instruction>\n  <instruction>MUST NOT mutate durable state directly and MUST NOT spawn native subagents.</instruction>\n</task>",
+            self.query
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchRoutingPreference {
+    PlanOnly,
+    CoordinatorTask,
+    RunnerRegistry,
+}
+
+impl Default for WebSearchRoutingPreference {
+    fn default() -> Self {
+        Self::CoordinatorTask
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct WebSearchResponse {
+    pub status: WebSearchStatus,
+    pub request: WebSearchRequest,
+    #[serde(default)]
+    pub child_task: Option<ChildTaskRequest>,
+    #[serde(default)]
+    pub dispatch: Option<RunnerDispatchDecision>,
+    #[serde(default)]
+    pub result: Option<AgentRunResult>,
+    #[serde(default)]
+    pub research: Option<ResearchOutput>,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchStatus {
+    Planned,
+    Routed,
+    Blocked,
+    Failed,
+}
+
+fn push_unique<T: Eq>(values: &mut Vec<T>, value: T) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub struct GoalUpdateHint {
     pub target: GoalUpdateTarget,
     pub path: String,
@@ -8151,6 +8540,8 @@ pub struct CapacityProvisioningPolicy {
     #[serde(default)]
     pub provisioner: CapacityProvisionerPolicy,
     #[serde(default)]
+    pub scaling: CapacityScalingPolicy,
+    #[serde(default)]
     pub template_refs: Vec<EphemeralRunnerTemplateRef>,
     pub request_timeout_seconds: u64,
     pub max_pending_provisions: u32,
@@ -8184,12 +8575,356 @@ impl Default for CapacityProvisioningPolicy {
         Self {
             mode: CapacityProvisioningMode::RegisteredRunnersOnly,
             provisioner: CapacityProvisionerPolicy::default(),
+            scaling: CapacityScalingPolicy::default(),
             template_refs: Vec::new(),
             request_timeout_seconds: 600,
             max_pending_provisions: 1,
             require_human_approval: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(default, rename_all = "snake_case")]
+/// Bounded policy for dynamically adding or retiring runner capacity.
+///
+/// The coordinator computes durable demand from runnable tasks, events, and
+/// queue processors. A provisioner may realize the resulting recommendations,
+/// but only within these limits and the surrounding approval policy.
+pub struct CapacityScalingPolicy {
+    pub enabled: bool,
+    pub mode: CapacityScalingMode,
+    pub min_runners: u32,
+    pub max_runners: u32,
+    pub slots_per_runner: u32,
+    pub target_backlog_per_runner: u32,
+    pub target_utilization_percent: u32,
+    pub headroom_runners: u32,
+    pub max_scale_up_step: u32,
+    pub max_scale_down_step: u32,
+    pub cooldown_seconds: u64,
+    pub scale_from_events: bool,
+    pub event_weight: u32,
+}
+
+impl CapacityScalingPolicy {
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    pub fn recommend_only(max_runners: u32) -> Self {
+        Self {
+            enabled: true,
+            mode: CapacityScalingMode::RecommendOnly,
+            max_runners,
+            ..Self::default()
+        }
+    }
+
+    pub fn bounded_ephemeral(max_runners: u32) -> Self {
+        Self {
+            enabled: true,
+            mode: CapacityScalingMode::ProvisionEphemeral,
+            max_runners,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for CapacityScalingPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: CapacityScalingMode::RecommendOnly,
+            min_runners: 0,
+            max_runners: 8,
+            slots_per_runner: 1,
+            target_backlog_per_runner: 2,
+            target_utilization_percent: 75,
+            headroom_runners: 0,
+            max_scale_up_step: 2,
+            max_scale_down_step: 1,
+            cooldown_seconds: 300,
+            scale_from_events: true,
+            event_weight: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacityScalingMode {
+    Manual,
+    RecommendOnly,
+    ProvisionEphemeral,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RunnerPoolDemand {
+    pub pool_key: String,
+    #[serde(default)]
+    pub worker: Option<WorkerKind>,
+    #[serde(default)]
+    pub required_capabilities: Vec<RunnerCapability>,
+    #[serde(default)]
+    pub required_labels: BTreeMap<String, String>,
+    pub queued_tasks: u32,
+    pub running_tasks: u32,
+    pub blocked_tasks: u32,
+    pub unmatched_tasks: u32,
+    pub event_backlog: u32,
+    pub priority_boost: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RunnerPoolSupply {
+    pub pool_key: String,
+    pub registered_runners: u32,
+    pub dispatchable_runners: u32,
+    pub running_tasks: u32,
+    pub capacity_remaining: u32,
+    pub max_concurrency: u32,
+    pub pending_provisions: u32,
+    pub stale_runners: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RunnerScalingRequest {
+    pub generated_at_unix_seconds: u64,
+    #[serde(default)]
+    pub policy: CapacityScalingPolicy,
+    #[serde(default)]
+    pub demands: Vec<RunnerPoolDemand>,
+    #[serde(default)]
+    pub supplies: Vec<RunnerPoolSupply>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RunnerScalingDecision {
+    pub status: RunnerScalingStatus,
+    pub mode: CapacityScalingMode,
+    #[serde(default)]
+    pub pool_decisions: Vec<RunnerPoolScalingDecision>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+impl RunnerScalingDecision {
+    pub fn recommend(request: RunnerScalingRequest) -> Self {
+        let policy = request.policy;
+        if !policy.enabled || matches!(policy.mode, CapacityScalingMode::Manual) {
+            return Self {
+                status: RunnerScalingStatus::Noop,
+                mode: policy.mode,
+                pool_decisions: Vec::new(),
+                reasons: vec![
+                    "capacity scaling is disabled or manual; coordinator should not provision automatically"
+                        .to_string(),
+                ],
+            };
+        }
+
+        let mut pool_decisions = Vec::new();
+        for demand in request.demands {
+            let supply = request
+                .supplies
+                .iter()
+                .find(|supply| supply.pool_key == demand.pool_key)
+                .cloned()
+                .unwrap_or_else(|| RunnerPoolSupply {
+                    pool_key: demand.pool_key.clone(),
+                    registered_runners: 0,
+                    dispatchable_runners: 0,
+                    running_tasks: 0,
+                    capacity_remaining: 0,
+                    max_concurrency: 0,
+                    pending_provisions: 0,
+                    stale_runners: 0,
+                });
+            pool_decisions.push(recommend_pool_scaling(&policy, demand, supply));
+        }
+
+        let status = if pool_decisions.iter().any(|decision| {
+            matches!(decision.action, RunnerScalingAction::ScaleUp)
+                && decision.provision_runners > 0
+        }) {
+            RunnerScalingStatus::ProvisionRecommended
+        } else if pool_decisions
+            .iter()
+            .any(|decision| matches!(decision.action, RunnerScalingAction::ScaleDown))
+        {
+            RunnerScalingStatus::RetirementRecommended
+        } else {
+            RunnerScalingStatus::Steady
+        };
+
+        Self {
+            status,
+            mode: policy.mode,
+            pool_decisions,
+            reasons: vec![
+                "capacity decision uses durable task/event demand, runner heartbeat supply, and bounded scaling policy"
+                    .to_string(),
+            ],
+        }
+    }
+}
+
+fn recommend_pool_scaling(
+    policy: &CapacityScalingPolicy,
+    demand: RunnerPoolDemand,
+    supply: RunnerPoolSupply,
+) -> RunnerPoolScalingDecision {
+    let slots_per_runner = policy.slots_per_runner.max(1);
+    let target_backlog = policy.target_backlog_per_runner.max(1);
+    let weighted_event_backlog = if policy.scale_from_events {
+        demand
+            .event_backlog
+            .saturating_mul(policy.event_weight.max(1))
+    } else {
+        0
+    };
+    let demand_units = demand
+        .queued_tasks
+        .saturating_add(demand.unmatched_tasks)
+        .saturating_add(weighted_event_backlog)
+        .saturating_add(demand.priority_boost);
+    let backlog_runners = ceil_div(demand_units, target_backlog);
+    let running_slots = demand.running_tasks.max(supply.running_tasks);
+    let utilization_target = policy.target_utilization_percent.clamp(1, 100);
+    let utilization_runners = ceil_div(
+        running_slots.saturating_mul(100),
+        slots_per_runner.saturating_mul(utilization_target),
+    );
+    let desired_runners = policy
+        .min_runners
+        .max(backlog_runners.saturating_add(policy.headroom_runners))
+        .max(utilization_runners)
+        .min(policy.max_runners);
+    let current_effective_runners = supply
+        .dispatchable_runners
+        .saturating_add(supply.pending_provisions);
+    let desired_slots = desired_runners.saturating_mul(slots_per_runner);
+    let current_slots = supply
+        .max_concurrency
+        .max(current_effective_runners.saturating_mul(slots_per_runner));
+
+    let mut reasons = vec![
+        format!(
+            "demand_units={demand_units}, backlog_runners={backlog_runners}, utilization_runners={utilization_runners}"
+        ),
+        format!(
+            "current_effective_runners={current_effective_runners}, desired_runners={desired_runners}, pending_provisions={}",
+            supply.pending_provisions
+        ),
+    ];
+
+    if desired_runners > current_effective_runners {
+        let provision_runners = desired_runners
+            .saturating_sub(current_effective_runners)
+            .min(policy.max_scale_up_step);
+        reasons.push(format!(
+            "scale-up bounded to {provision_runners} runner(s) by max_scale_up_step"
+        ));
+        RunnerPoolScalingDecision {
+            pool_key: demand.pool_key,
+            action: RunnerScalingAction::ScaleUp,
+            desired_runners,
+            current_runners: supply.dispatchable_runners,
+            desired_slots,
+            current_slots,
+            provision_runners,
+            retire_runners: 0,
+            demand_units,
+            queue_depth: demand.queued_tasks,
+            event_backlog: demand.event_backlog,
+            reasons,
+        }
+    } else if current_effective_runners > desired_runners {
+        let retire_runners = current_effective_runners
+            .saturating_sub(desired_runners)
+            .min(policy.max_scale_down_step);
+        reasons.push(
+            "scale-down is a recommendation; active task runners should retire by TTL or drain policy"
+                .to_string(),
+        );
+        RunnerPoolScalingDecision {
+            pool_key: demand.pool_key,
+            action: RunnerScalingAction::ScaleDown,
+            desired_runners,
+            current_runners: supply.dispatchable_runners,
+            desired_slots,
+            current_slots,
+            provision_runners: 0,
+            retire_runners,
+            demand_units,
+            queue_depth: demand.queued_tasks,
+            event_backlog: demand.event_backlog,
+            reasons,
+        }
+    } else {
+        RunnerPoolScalingDecision {
+            pool_key: demand.pool_key,
+            action: RunnerScalingAction::Steady,
+            desired_runners,
+            current_runners: supply.dispatchable_runners,
+            desired_slots,
+            current_slots,
+            provision_runners: 0,
+            retire_runners: 0,
+            demand_units,
+            queue_depth: demand.queued_tasks,
+            event_backlog: demand.event_backlog,
+            reasons,
+        }
+    }
+}
+
+fn ceil_div(numerator: u32, denominator: u32) -> u32 {
+    if numerator == 0 {
+        0
+    } else {
+        1 + (numerator - 1) / denominator.max(1)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerScalingStatus {
+    Noop,
+    Steady,
+    ProvisionRecommended,
+    RetirementRecommended,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RunnerPoolScalingDecision {
+    pub pool_key: String,
+    pub action: RunnerScalingAction,
+    pub desired_runners: u32,
+    pub current_runners: u32,
+    pub desired_slots: u32,
+    pub current_slots: u32,
+    pub provision_runners: u32,
+    pub retire_runners: u32,
+    pub demand_units: u32,
+    pub queue_depth: u32,
+    pub event_backlog: u32,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerScalingAction {
+    ScaleUp,
+    ScaleDown,
+    Steady,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -8416,6 +9151,7 @@ impl RunnerLocality {
 pub enum RunnerCapability {
     Code,
     Research,
+    WebSearch,
     Test,
     Review,
     McpTools,
@@ -8501,12 +9237,8 @@ impl ModelRoute {
             }
             ModelRoutingStrategy::LowestLatency => {
                 candidates.sort_by(|left, right| {
-                    label_i64(left, &["latency_ms", "p50_latency_ms", "p95_latency_ms"])
-                        .unwrap_or(i64::MAX)
-                        .cmp(
-                            &label_i64(right, &["latency_ms", "p50_latency_ms", "p95_latency_ms"])
-                                .unwrap_or(i64::MAX),
-                        )
+                    model_latency_score(left)
+                        .cmp(&model_latency_score(right))
                         .then_with(|| candidate_priority_order(left, right))
                 });
                 candidates.first().copied()
@@ -8593,12 +9325,7 @@ impl ModelRoute {
         match self.strategy {
             ModelRoutingStrategy::FirstAvailable => 1_000_000 - candidate.priority as i64,
             ModelRoutingStrategy::LowestLatency => {
-                1_000_000
-                    - label_i64(
-                        candidate,
-                        &["latency_ms", "p50_latency_ms", "p95_latency_ms"],
-                    )
-                    .unwrap_or(999_999)
+                1_000_000 - model_latency_score(candidate).min(999_999)
             }
             ModelRoutingStrategy::LowestCost => {
                 1_000_000
@@ -8636,6 +9363,7 @@ impl Default for ModelRoute {
                 weight: 1,
                 context_window: None,
                 features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
+                params: ModelRuntimeParameters::default(),
                 labels: BTreeMap::new(),
             }],
             fallback: ModelFallbackPolicy::AllowFallback,
@@ -8673,6 +9401,8 @@ pub struct ModelCandidate {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub features: Vec<ModelFeature>,
+    #[serde(default, skip_serializing_if = "ModelRuntimeParameters::is_empty")]
+    pub params: ModelRuntimeParameters,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
@@ -8685,11 +9415,107 @@ impl ModelCandidate {
                 .features
                 .iter()
                 .all(|feature| self.features.contains(feature))
+            && self.params.matches_request(&requested.params)
             && requested
                 .labels
                 .iter()
                 .all(|(key, value)| self.labels.get(key).is_some_and(|actual| actual == value))
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ModelRuntimeParameters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_class: Option<ModelLatencyClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_milli: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p_milli: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ModelReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, String>,
+}
+
+impl ModelRuntimeParameters {
+    pub fn is_empty(&self) -> bool {
+        self.latency_class.is_none()
+            && self.speed_tier.is_none()
+            && self.temperature_milli.is_none()
+            && self.top_p_milli.is_none()
+            && self.max_output_tokens.is_none()
+            && self.reasoning_effort.is_none()
+            && self.timeout_seconds.is_none()
+            && self.extra.is_empty()
+    }
+
+    fn matches_request(&self, requested: &Self) -> bool {
+        requested
+            .latency_class
+            .as_ref()
+            .is_none_or(|value| self.latency_class.as_ref() == Some(value))
+            && requested
+                .speed_tier
+                .as_ref()
+                .is_none_or(|value| self.speed_tier.as_ref() == Some(value))
+            && requested
+                .temperature_milli
+                .is_none_or(|value| self.temperature_milli == Some(value))
+            && requested
+                .top_p_milli
+                .is_none_or(|value| self.top_p_milli == Some(value))
+            && requested
+                .max_output_tokens
+                .is_none_or(|value| self.max_output_tokens == Some(value))
+            && requested
+                .reasoning_effort
+                .as_ref()
+                .is_none_or(|value| self.reasoning_effort.as_ref() == Some(value))
+            && requested
+                .timeout_seconds
+                .is_none_or(|value| self.timeout_seconds == Some(value))
+            && requested
+                .extra
+                .iter()
+                .all(|(key, value)| self.extra.get(key).is_some_and(|actual| actual == value))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelLatencyClass {
+    Fast,
+    Balanced,
+    Deep,
+    Batch,
+}
+
+impl ModelLatencyClass {
+    fn latency_score(&self) -> i64 {
+        match self {
+            Self::Fast => 50,
+            Self::Balanced => 500,
+            Self::Deep => 2_000,
+            Self::Batch => 10_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelReasoningEffort {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
 }
 
 fn candidate_priority_order(left: &&ModelCandidate, right: &&ModelCandidate) -> std::cmp::Ordering {
@@ -8703,6 +9529,21 @@ fn label_i64(candidate: &ModelCandidate, keys: &[&str]) -> Option<i64> {
     keys.iter()
         .find_map(|key| candidate.labels.get(*key))
         .and_then(|value| value.parse::<i64>().ok())
+}
+
+fn model_latency_score(candidate: &ModelCandidate) -> i64 {
+    label_i64(
+        candidate,
+        &["latency_ms", "p50_latency_ms", "p95_latency_ms"],
+    )
+    .or_else(|| {
+        candidate
+            .params
+            .latency_class
+            .as_ref()
+            .map(ModelLatencyClass::latency_score)
+    })
+    .unwrap_or(i64::MAX)
 }
 
 fn model_quality_score(candidate: &ModelCandidate) -> i64 {
@@ -8844,6 +9685,7 @@ pub enum ModelFeature {
     Reasoning,
     Embeddings,
     LocalWeights,
+    WebSearch,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -12462,6 +13304,7 @@ mod tests {
                 weight: 1,
                 context_window: Some(131_072),
                 features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
+                params: ModelRuntimeParameters::default(),
                 labels: BTreeMap::from([("gpu".to_string(), "a100".to_string())]),
             }],
             fallback: ModelFallbackPolicy::AllowFallback,
@@ -12667,6 +13510,7 @@ mod tests {
                 weight: 1,
                 context_window: None,
                 features: vec![ModelFeature::ToolUse],
+                params: ModelRuntimeParameters::default(),
                 labels: BTreeMap::new(),
             }],
             fallback: ModelFallbackPolicy::DisallowFallback,
@@ -12686,6 +13530,7 @@ mod tests {
                 weight: 1,
                 context_window: None,
                 features: vec![ModelFeature::ToolUse],
+                params: ModelRuntimeParameters::default(),
                 labels: BTreeMap::new(),
             }],
             labels: BTreeMap::new(),
@@ -12718,6 +13563,7 @@ mod tests {
                     weight: 1,
                     context_window: Some(32_768),
                     features: vec![ModelFeature::ToolUse, ModelFeature::JsonSchema],
+                    params: ModelRuntimeParameters::default(),
                     labels: BTreeMap::from([("quality_tier".to_string(), "medium".to_string())]),
                 },
                 ModelCandidate {
@@ -12732,6 +13578,7 @@ mod tests {
                         ModelFeature::JsonSchema,
                         ModelFeature::LongContext,
                     ],
+                    params: ModelRuntimeParameters::default(),
                     labels: BTreeMap::from([("quality_tier".to_string(), "high".to_string())]),
                 },
             ],
@@ -12777,6 +13624,90 @@ mod tests {
             decision.model.expect("selected model").model,
             "qwen3-coder-30b"
         );
+    }
+
+    #[test]
+    fn model_route_lowest_latency_can_use_typed_fast_model_params() {
+        let route = ModelRoute {
+            strategy: ModelRoutingStrategy::LowestLatency,
+            required_features: vec![ModelFeature::JsonSchema],
+            candidates: Vec::new(),
+            fallback: ModelFallbackPolicy::AllowFallback,
+        };
+        let registration = RunnerRegistration {
+            runner_id: "models".to_string(),
+            node_id: "node-1".to_string(),
+            endpoint: "http://models:9093".to_string(),
+            roles: vec![WorkerKind::Planner],
+            capabilities: vec![RunnerCapability::OpenAiCompatible],
+            models: vec![
+                ModelCandidate {
+                    provider: ModelProviderKind::OpenAiCompatible,
+                    model: "review-deep".to_string(),
+                    endpoint: Some("http://router:8000/v1".to_string()),
+                    priority: 10,
+                    weight: 1,
+                    context_window: Some(131_072),
+                    features: vec![ModelFeature::JsonSchema],
+                    params: ModelRuntimeParameters {
+                        latency_class: Some(ModelLatencyClass::Deep),
+                        reasoning_effort: Some(ModelReasoningEffort::High),
+                        ..ModelRuntimeParameters::default()
+                    },
+                    labels: BTreeMap::new(),
+                },
+                ModelCandidate {
+                    provider: ModelProviderKind::OpenAiCompatible,
+                    model: "chat-fast".to_string(),
+                    endpoint: Some("http://router:8000/v1".to_string()),
+                    priority: 20,
+                    weight: 1,
+                    context_window: Some(32_768),
+                    features: vec![ModelFeature::JsonSchema],
+                    params: ModelRuntimeParameters {
+                        latency_class: Some(ModelLatencyClass::Fast),
+                        reasoning_effort: Some(ModelReasoningEffort::Low),
+                        ..ModelRuntimeParameters::default()
+                    },
+                    labels: BTreeMap::new(),
+                },
+            ],
+            labels: BTreeMap::new(),
+            mcp_servers: Vec::new(),
+            max_concurrency: 1,
+            lease_ttl_seconds: 300,
+        };
+
+        let selected = route
+            .preferred_candidate(&registration)
+            .expect("typed latency class should rank a fast model");
+
+        assert_eq!(selected.model, "chat-fast");
+        assert_eq!(
+            route.dispatch_score(selected, nil_goal_id(), Uuid::nil()),
+            999_950
+        );
+    }
+
+    #[test]
+    fn model_runtime_params_match_provider_speed_tier_when_requested() {
+        let candidate = ModelRuntimeParameters {
+            latency_class: Some(ModelLatencyClass::Fast),
+            speed_tier: Some("speed".to_string()),
+            reasoning_effort: Some(ModelReasoningEffort::Low),
+            ..ModelRuntimeParameters::default()
+        };
+        let requested = ModelRuntimeParameters {
+            speed_tier: Some("speed".to_string()),
+            ..ModelRuntimeParameters::default()
+        };
+        let other_tier = ModelRuntimeParameters {
+            speed_tier: Some("flex".to_string()),
+            ..ModelRuntimeParameters::default()
+        };
+
+        assert!(candidate.matches_request(&requested));
+        assert!(!candidate.matches_request(&other_tier));
     }
 
     #[test]
@@ -13411,6 +14342,75 @@ mod tests {
     }
 
     #[test]
+    fn web_search_request_compiles_to_routed_research_child_task() {
+        let request = WebSearchRequest {
+            query: "Which current SDK should route agent web research?".to_string(),
+            context: vec!["Prefer durable COAT child tasks over native subagents.".to_string()],
+            route: WebSearchRoutingPreference::RunnerRegistry,
+            ..serde_json::from_value(serde_json::json!({
+                "query": "placeholder"
+            }))
+            .expect("defaults")
+        };
+
+        let child = request.child_task_request();
+        assert_eq!(child.role, WorkerKind::Research);
+        assert_eq!(
+            child.purpose,
+            Some(TaskPurpose::Research {
+                question: request.query.clone()
+            })
+        );
+        assert!(child.prompt.contains("<instruction>MUST cite sources"));
+        assert!(child.tags.iter().any(|tag| tag == "coat_web_search"));
+        let execution = child.execution.expect("execution");
+        assert!(
+            execution
+                .runner
+                .required_capabilities
+                .contains(&RunnerCapability::Research)
+        );
+        assert!(
+            execution
+                .runner
+                .required_capabilities
+                .contains(&RunnerCapability::WebSearch)
+        );
+        assert!(
+            execution
+                .model
+                .required_features
+                .contains(&ModelFeature::JsonSchema)
+        );
+    }
+
+    #[test]
+    fn web_search_request_can_target_codex_or_claude_runner_roles() {
+        let mut execution = ExecutionProfile::default();
+        execution.runner.worker = Some(WorkerKind::Codex);
+        let request = WebSearchRequest {
+            query: "Use Codex native research if the runner advertises it.".to_string(),
+            execution: Some(execution),
+            route: WebSearchRoutingPreference::RunnerRegistry,
+            ..serde_json::from_value(serde_json::json!({
+                "query": "placeholder"
+            }))
+            .expect("defaults")
+        };
+
+        let child = request.child_task_request();
+        assert_eq!(child.role, WorkerKind::Codex);
+        let execution = child.execution.expect("execution");
+        assert_eq!(execution.runner.worker, Some(WorkerKind::Codex));
+        assert!(
+            execution
+                .runner
+                .required_capabilities
+                .contains(&RunnerCapability::WebSearch)
+        );
+    }
+
+    #[test]
     fn steering_can_evaluate_goal_completion() {
         let mut goal = GoalSpec::new(
             "evaluate completion",
@@ -13883,6 +14883,7 @@ mod tests {
         let task_id = state.runnable_tasks().remove(0).id;
         let task = state.task_mut(task_id).expect("task");
         task.execution.capacity.mode = CapacityProvisioningMode::PreferRegisteredThenEphemeral;
+        task.execution.capacity.scaling = CapacityScalingPolicy::bounded_ephemeral(4);
         task.execution
             .capacity
             .template_refs
@@ -13912,6 +14913,98 @@ mod tests {
                 .reason_codes
                 .contains(&ApprovalReasonCode::EphemeralCapacityProvisioning)
         );
+    }
+
+    #[test]
+    fn capacity_scaling_recommends_bounded_ephemeral_scale_up() {
+        let decision = RunnerScalingDecision::recommend(RunnerScalingRequest {
+            generated_at_unix_seconds: 1,
+            policy: CapacityScalingPolicy {
+                enabled: true,
+                mode: CapacityScalingMode::ProvisionEphemeral,
+                min_runners: 0,
+                max_runners: 5,
+                slots_per_runner: 2,
+                target_backlog_per_runner: 2,
+                target_utilization_percent: 75,
+                headroom_runners: 1,
+                max_scale_up_step: 2,
+                max_scale_down_step: 1,
+                cooldown_seconds: 300,
+                scale_from_events: true,
+                event_weight: 2,
+            },
+            demands: vec![RunnerPoolDemand {
+                pool_key: "research".to_string(),
+                worker: Some(WorkerKind::Research),
+                required_capabilities: vec![RunnerCapability::McpTools],
+                required_labels: BTreeMap::from([("lane".to_string(), "research".to_string())]),
+                queued_tasks: 3,
+                running_tasks: 2,
+                blocked_tasks: 0,
+                unmatched_tasks: 1,
+                event_backlog: 2,
+                priority_boost: 0,
+            }],
+            supplies: vec![RunnerPoolSupply {
+                pool_key: "research".to_string(),
+                registered_runners: 1,
+                dispatchable_runners: 1,
+                running_tasks: 2,
+                capacity_remaining: 0,
+                max_concurrency: 2,
+                pending_provisions: 0,
+                stale_runners: 0,
+            }],
+        });
+
+        assert_eq!(decision.status, RunnerScalingStatus::ProvisionRecommended);
+        let pool = decision.pool_decisions.first().expect("pool decision");
+        assert_eq!(pool.pool_key, "research");
+        assert_eq!(pool.action, RunnerScalingAction::ScaleUp);
+        assert_eq!(pool.desired_runners, 5);
+        assert_eq!(pool.provision_runners, 2);
+        assert_eq!(pool.event_backlog, 2);
+    }
+
+    #[test]
+    fn capacity_scaling_disabled_is_noop() {
+        let decision = RunnerScalingDecision::recommend(RunnerScalingRequest {
+            generated_at_unix_seconds: 1,
+            policy: CapacityScalingPolicy::default(),
+            demands: vec![RunnerPoolDemand {
+                pool_key: "default".to_string(),
+                worker: None,
+                required_capabilities: Vec::new(),
+                required_labels: BTreeMap::new(),
+                queued_tasks: 100,
+                running_tasks: 0,
+                blocked_tasks: 0,
+                unmatched_tasks: 100,
+                event_backlog: 100,
+                priority_boost: 0,
+            }],
+            supplies: Vec::new(),
+        });
+
+        assert_eq!(decision.status, RunnerScalingStatus::Noop);
+        assert!(decision.pool_decisions.is_empty());
+    }
+
+    #[test]
+    fn capacity_scaling_policy_deserializes_partial_config_with_defaults() {
+        let policy: CapacityScalingPolicy = serde_json::from_str(
+            r#"{
+              "enabled": true,
+              "mode": "recommend_only",
+              "max_runners": 3
+            }"#,
+        )
+        .expect("partial config policy should parse");
+
+        assert_eq!(policy, CapacityScalingPolicy::recommend_only(3));
+        assert_eq!(policy.target_utilization_percent, 75);
+        assert_eq!(policy.cooldown_seconds, 300);
     }
 
     #[test]

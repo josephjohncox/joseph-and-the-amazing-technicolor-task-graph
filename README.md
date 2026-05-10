@@ -18,9 +18,14 @@ For checkout-local development, direnv can put the built CLI on `PATH`:
 
 ```sh
 direnv allow
-cargo build -p coat-cli
+make build
 coat guide --print
 ```
+
+The checkout-local direnv setup defaults to `target/debug/coat`, which matches
+`cargo build`. Use `COAT_BUILD_PROFILE=release` in `.envrc.local` and
+`make build COAT_BUILD_PROFILE=release` when you want `target/release/coat` to
+be the command on `PATH`.
 
 ```sh
 make ci
@@ -31,14 +36,20 @@ coat init
 coat plan follow-ups
 ```
 
-Print the command hierarchy or open a guided operator dialogue:
+Print root help, print the command map, or explicitly open the limited guide:
 
 ```sh
+coat
+coat --help
 coat guide --print
 coat guide
 coat setup config --list-profiles
 coat setup config --show
 ```
+
+The bare `coat` command prints root help. Interactive dialogue is explicit and
+kept to setup, auth, chat-client installation, human queues, approvals, and
+similar operator flows where a picker is useful.
 
 Run the local stub smoke stack:
 
@@ -47,16 +58,45 @@ coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
 ```
 
-The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model lanes. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, and model route instead of assuming one local agent.
+The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model lanes. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, model route, and typed model params instead of assuming one local agent.
 
 Set up local provider credentials and model endpoints when you want live hosted or local models. The no-flag command starts an interactive wizard; explicit flags keep setup scriptable:
 
 ```sh
 coat setup local-auth
-coat setup local-auth --write-env --output infra/compose/local-providers.env
-coat deploy local preflight --env-file infra/compose/local-providers.env
+coat setup login --codex --claude --preflight
+coat setup sso --profile my-aws-sso-profile --write-env --bedrock-live --preflight
 coat deploy local up --env-file infra/compose/local-providers.env
 ```
+
+When `infra/compose/local-providers.env` already exists, `coat setup local-auth`
+loads it first and uses those values as the interactive defaults for auth modes,
+endpoints, model IDs, runtime params, memory stores, embeddings, and Chat tab
+settings.
+
+`coat setup local-auth` refreshes the models.dev catalog before showing hosted
+model or embedding choices, unless a cached catalog is newer than 60 minutes or
+`COAT_MODEL_INDEX` points at an explicit operator-managed catalog. The explicit
+`coat setup model-index refresh` command remains available for cache warm-up and
+CI images. Hosted model and embedding selectors read that catalog instead of
+compiled-in model IDs. Local model and embedding selectors query the configured
+OpenAI-compatible/Ollama endpoint for currently served models and fall back to a
+custom model-id prompt when the endpoint is offline.
+Inspect hosted embedding choices with `coat setup model-index show --provider
+openai --embeddings`.
+
+`coat setup login --claude` runs Claude Code's documented `claude auth login`
+flow, not the interactive chat entrypoint. Add `--claude-sso`,
+`--claude-console`, or `--claude-email you@example.com` when the runner node
+needs those Claude Code auth options.
+
+The interactive setup flow includes indexed fast, speed-tier, fast-completions,
+balanced, deep-review, xhigh reasoning, deterministic JSON/tool-output, and
+custom runtime parameter choices for local and hosted model lanes. Codex setup is separate from OpenAI hosted model-provider
+setup: selecting the OpenAI hosted surface writes the generic model-provider
+lane and can also write the research lane. It can also run selected
+device/browser login, AWS SSO, Ollama pull, and preflight steps directly after
+writing the env file.
 
 `coat init` writes `.coat/project.json`, a non-secret project config used by
 CLI preflight checks and profile defaults for `cli`, `local`, `restate-cloud`,
@@ -468,7 +508,7 @@ Sandbox workspaces include `checkpoints/checkpoint-manifest.json`, and launch pl
 
 Set `MEMORY_GATEWAY_JOURNAL_PATH` to make the local gateway replay an append-only JSONL journal on startup. Compose enables this with the `memory-gateway-data` volume.
 
-Compose also runs Qdrant and configures the gateway to use it as the vector memory service. Set `OPENAI_API_KEY` or `MEMORY_GATEWAY_EMBEDDING_TOKEN` to enable the default OpenAI embedding path, or point `MEMORY_GATEWAY_EMBEDDING_URL` at an OpenAI-compatible local embedding server such as Hugging Face TEI. Set `MEMORY_GATEWAY_GRAPHITI_MCP_URL=http://localhost:8000/mcp/` to mirror gateway writes/searches/joins into Graphiti through best-effort MCP calls. Adapter success or failure is returned in `adapter_reports` without blocking local durability.
+Compose runs Qdrant, but the gateway only uses vector or graph memory stores after they are selected in config. Use `coat setup local-auth` and choose **Memory stores and embedding models** to enable Qdrant, Graphiti/Zep MCP, OpenAI hosted embeddings, Ollama, vLLM, llama.cpp, Hugging Face, or another OpenAI-compatible embedding endpoint. The wizard discovers hosted embedding choices from the models.dev cache and local choices from the live `/models` or Ollama tags endpoint, then writes `MEMORY_GATEWAY_*` settings into `infra/compose/local-providers.env`. Adapter success or failure is returned in `adapter_reports` without blocking local JSONL durability.
 
 ## Documentation
 

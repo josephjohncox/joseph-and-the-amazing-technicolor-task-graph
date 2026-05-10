@@ -289,6 +289,24 @@
         "require_human_approval": {
           "type": "boolean"
         },
+        "scaling": {
+          "$ref": "#/$defs/CapacityScalingPolicy",
+          "default": {
+            "cooldown_seconds": 300,
+            "enabled": false,
+            "event_weight": 1,
+            "headroom_runners": 0,
+            "max_runners": 8,
+            "max_scale_down_step": 1,
+            "max_scale_up_step": 2,
+            "min_runners": 0,
+            "mode": "recommend_only",
+            "scale_from_events": true,
+            "slots_per_runner": 1,
+            "target_backlog_per_runner": 2,
+            "target_utilization_percent": 75
+          }
+        },
         "template_refs": {
           "type": "array",
           "default": [],
@@ -303,6 +321,92 @@
         "max_pending_provisions",
         "require_human_approval"
       ]
+    },
+    "CapacityScalingMode": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "recommend_only",
+        "provision_ephemeral"
+      ]
+    },
+    "CapacityScalingPolicy": {
+      "description": "Bounded policy for dynamically adding or retiring runner capacity.\n\nThe coordinator computes durable demand from runnable tasks, events, and\nqueue processors. A provisioner may realize the resulting recommendations,\nbut only within these limits and the surrounding approval policy.",
+      "type": "object",
+      "properties": {
+        "cooldown_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 300,
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "event_weight": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "headroom_runners": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "max_runners": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 8,
+          "minimum": 0
+        },
+        "max_scale_down_step": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "max_scale_up_step": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 2,
+          "minimum": 0
+        },
+        "min_runners": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/CapacityScalingMode",
+          "default": "recommend_only"
+        },
+        "scale_from_events": {
+          "type": "boolean",
+          "default": true
+        },
+        "slots_per_runner": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "target_backlog_per_runner": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 2,
+          "minimum": 0
+        },
+        "target_utilization_percent": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 75,
+          "minimum": 0
+        }
+      }
     },
     "CheckpointMode": {
       "type": "string",
@@ -704,6 +808,21 @@
             },
             "request_timeout_seconds": 600,
             "require_human_approval": true,
+            "scaling": {
+              "cooldown_seconds": 300,
+              "enabled": false,
+              "event_weight": 1,
+              "headroom_runners": 0,
+              "max_runners": 8,
+              "max_scale_down_step": 1,
+              "max_scale_up_step": 2,
+              "min_runners": 0,
+              "mode": "recommend_only",
+              "scale_from_events": true,
+              "slots_per_runner": 1,
+              "target_backlog_per_runner": 2,
+              "target_utilization_percent": 75
+            },
             "template_refs": []
           }
         },
@@ -1546,6 +1665,9 @@
         "model": {
           "type": "string"
         },
+        "params": {
+          "$ref": "#/$defs/ModelRuntimeParameters"
+        },
         "priority": {
           "type": "integer",
           "format": "uint32",
@@ -1585,7 +1707,17 @@
         "long_context",
         "reasoning",
         "embeddings",
-        "local_weights"
+        "local_weights",
+        "web_search"
+      ]
+    },
+    "ModelLatencyClass": {
+      "type": "string",
+      "enum": [
+        "fast",
+        "balanced",
+        "deep",
+        "batch"
       ]
     },
     "ModelProviderKind": {
@@ -1602,6 +1734,16 @@
         "hugging_face",
         "local_process",
         "other"
+      ]
+    },
+    "ModelReasoningEffort": {
+      "type": "string",
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
       ]
     },
     "ModelRoute": {
@@ -1643,6 +1785,77 @@
         "weighted",
         "sticky_per_goal"
       ]
+    },
+    "ModelRuntimeParameters": {
+      "type": "object",
+      "properties": {
+        "extra": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "latency_class": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelLatencyClass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "speed_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temperature_milli": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "top_p_milli": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      }
     },
     "NativeSubagentSpawnPolicy": {
       "type": "string",
@@ -2650,6 +2863,7 @@
       "enum": [
         "code",
         "research",
+        "web_search",
         "test",
         "review",
         "mcp_tools",

@@ -16,6 +16,8 @@
 # export COAT_CONFIG="$HOME/.coat/config.json"
 
 # Optional local debugging knobs.
+# export COAT_BUILD_PROFILE=debug
+# export COAT_BUILD_PROFILE=release
 # export RUST_LOG=info
 # export RUST_BACKTRACE=1
 

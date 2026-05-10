@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebSearchProviderKind",
+  "type": "string",
+  "enum": [
+    "agent_native",
+    "mcp_gateway",
+    "search_api",
+    "custom",
+    "other"
+  ]
+}

@@ -21,14 +21,23 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
+use coat_domain::{
+    AgentRunRequest, AgentRunResult, Budget, DoneCriteria, ReviewDoctrine, RunnerDispatchDecision,
+    RunnerDispatchRequest, SandboxProfile, TaskNode, TaskPurpose, TaskStatus, WebSearchRequest,
+    WebSearchResponse, WebSearchRoutingPreference, WebSearchStatus,
+};
 use serde::{Deserialize, Serialize};
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 struct AppState {
     workspace_root: PathBuf,
     sandbox_workspace_root: Option<PathBuf>,
     sandbox_runner_url: Option<String>,
+    runner_registry_url: Option<String>,
+    web_search_enabled: bool,
+    web_search_route: WebSearchRoutingPreference,
     auth_token: Option<String>,
 }
 
@@ -78,10 +87,34 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string());
+    let runner_registry_url = env_first(&[
+        "TOOL_REGISTRY_RUNNER_REGISTRY_URL",
+        "COAT_RUNNER_REGISTRY_URL",
+        "COAT_RUNNER_REGISTRY",
+        "RUNNER_REGISTRY_URL",
+    ])
+    .map(|value| value.trim_end_matches('/').to_string());
+    let web_search_enabled = env_truthy(&[
+        "TOOL_REGISTRY_WEB_SEARCH_ENABLED",
+        "COAT_WEB_SEARCH_ENABLED",
+    ]);
+    let web_search_route =
+        match env_first(&["TOOL_REGISTRY_WEB_SEARCH_ROUTE", "COAT_WEB_SEARCH_ROUTE"])
+            .unwrap_or_else(|| "coordinator_task".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "runner_registry" | "runner" | "dispatch" => WebSearchRoutingPreference::RunnerRegistry,
+            "plan_only" | "plan" => WebSearchRoutingPreference::PlanOnly,
+            _ => WebSearchRoutingPreference::CoordinatorTask,
+        };
     let state = Arc::new(AppState {
         workspace_root,
         sandbox_workspace_root,
         sandbox_runner_url,
+        runner_registry_url,
+        web_search_enabled,
+        web_search_route,
         auth_token: std::env::var("MCP_TOOL_TOKEN")
             .ok()
             .filter(|token| !token.is_empty() && token != "replace-me"),
@@ -97,6 +130,26 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%bind, "tool registry listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn env_first(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn env_truthy(names: &[&str]) -> bool {
+    env_first(names)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn tool_descriptors() -> Vec<ToolDescriptor> {
@@ -120,6 +173,10 @@ fn tool_descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "checkpoint_history",
             description: "List checkpoint manifests and git/object refs for a task workspace.",
+        },
+        ToolDescriptor {
+            name: "coat_web_search",
+            description: "Route web/reference search through COAT research runners or durable child-task planning.",
         },
         ToolDescriptor {
             name: "subagent_policy",
@@ -288,6 +345,26 @@ fn mcp_tools() -> Vec<serde_json::Value> {
             }
         }),
         serde_json::json!({
+            "name": "coat_web_search",
+            "description": "Route web/reference search through configured COAT research agents. This tool does not perform ambient in-process web scraping.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "goal_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1},
+                    "max_search_depth": {"type": "integer", "minimum": 1},
+                    "context": {"type": "array", "items": {"type": "string"}},
+                    "route": {"type": "string", "enum": ["plan_only", "coordinator_task", "runner_registry"]},
+                    "execution": {"type": "object"},
+                    "model": {"type": "object"}
+                }
+            }
+        }),
+        serde_json::json!({
             "name": "subagent_policy",
             "description": "Explain that subagents are coordinator-owned durable child tasks and native runner subagent spawning is disabled.",
             "inputSchema": {
@@ -306,6 +383,7 @@ async fn call_tool(state: &AppState, params: ToolCallParams) -> anyhow::Result<s
         "local_command" => local_command(state, &params.arguments).await,
         "artifact_manifest" => artifact_manifest(state, &params.arguments).await,
         "checkpoint_history" => checkpoint_history(state, &params.arguments).await,
+        "coat_web_search" => coat_web_search(state, &params.arguments).await,
         "subagent_policy" => Ok(subagent_policy()),
         other => anyhow::bail!("unknown tool: {other}"),
     }
@@ -331,6 +409,193 @@ fn subagent_policy() -> serde_json::Value {
             ]
         },
         "isError": false
+    })
+}
+
+async fn coat_web_search(
+    state: &AppState,
+    arguments: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let mut request: WebSearchRequest = serde_json::from_value(arguments.clone())?;
+    let requested_route = arguments.get("route").is_some();
+    if !requested_route {
+        request.route = state.web_search_route.clone();
+    }
+    let child_task = request.child_task_request();
+    let goal_id = request.goal_id.unwrap_or_else(Uuid::new_v4);
+
+    if !state.web_search_enabled {
+        return Ok(web_search_tool_response(WebSearchResponse {
+            status: WebSearchStatus::Blocked,
+            request,
+            child_task: Some(child_task),
+            dispatch: None,
+            result: None,
+            research: None,
+            diagnostics: vec![
+                "COAT_WEB_SEARCH_ENABLED/TOOL_REGISTRY_WEB_SEARCH_ENABLED is not enabled"
+                    .to_string(),
+                "return the child_task to the coordinator or enable runner-routed search in setup/config"
+                    .to_string(),
+            ],
+        }));
+    }
+
+    if matches!(
+        request.route,
+        WebSearchRoutingPreference::PlanOnly | WebSearchRoutingPreference::CoordinatorTask
+    ) {
+        return Ok(web_search_tool_response(WebSearchResponse {
+            status: WebSearchStatus::Planned,
+            request,
+            child_task: Some(child_task),
+            dispatch: None,
+            result: None,
+            research: None,
+            diagnostics: vec![
+                "coat_web_search compiled to a coordinator-owned durable research child task"
+                    .to_string(),
+            ],
+        }));
+    }
+
+    let Some(runner_registry_url) = state.runner_registry_url.as_ref() else {
+        return Ok(web_search_tool_response(WebSearchResponse {
+            status: WebSearchStatus::Blocked,
+            request,
+            child_task: Some(child_task),
+            dispatch: None,
+            result: None,
+            research: None,
+            diagnostics: vec![
+                "runner-registry routing was requested but TOOL_REGISTRY_RUNNER_REGISTRY_URL/COAT_RUNNER_REGISTRY_URL is not configured"
+                    .to_string(),
+            ],
+        }));
+    };
+
+    let task = task_from_web_search_child(goal_id, child_task.clone());
+    let client = reqwest::Client::new();
+    let dispatch = client
+        .post(format!("{runner_registry_url}/dispatch"))
+        .json(&RunnerDispatchRequest {
+            goal_id,
+            task: task.clone(),
+            coordinator_node_id: None,
+            registered_runners: Vec::new(),
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<RunnerDispatchDecision>()
+        .await?;
+
+    let Some(endpoint) = dispatch.runner_endpoint.as_ref() else {
+        return Ok(web_search_tool_response(WebSearchResponse {
+            status: WebSearchStatus::Blocked,
+            request,
+            child_task: Some(child_task),
+            dispatch: Some(dispatch),
+            result: None,
+            research: None,
+            diagnostics: vec![
+                "runner registry found no research runner with web_search capability".to_string(),
+            ],
+        }));
+    };
+
+    let result = client
+        .post(runner_run_task_url(endpoint))
+        .json(&AgentRunRequest {
+            goal_id,
+            task,
+            context_artifacts: Vec::new(),
+            coordinator_trace_id: Some("coat_web_search".to_string()),
+            timeout_seconds: None,
+        })
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<AgentRunResult>()
+        .await?;
+
+    Ok(web_search_tool_response(WebSearchResponse {
+        status: WebSearchStatus::Routed,
+        request,
+        child_task: Some(child_task),
+        dispatch: Some(dispatch),
+        research: result.research.clone(),
+        result: Some(result),
+        diagnostics: vec![
+            "web search delegated through runner registry and AgentRunRequest".to_string(),
+        ],
+    }))
+}
+
+fn task_from_web_search_child(goal_id: Uuid, child: coat_domain::ChildTaskRequest) -> TaskNode {
+    let task_id = Uuid::new_v4();
+    let role = child.role.clone();
+    let purpose = child.purpose.unwrap_or_else(|| TaskPurpose::Research {
+        question: child.prompt.clone(),
+    });
+    let execution = child.execution.unwrap_or_default().with_role(role.clone());
+    TaskNode {
+        id: task_id,
+        parent_id: None,
+        goal_id,
+        depth: 0,
+        status: TaskStatus::Runnable,
+        role,
+        purpose,
+        title: child
+            .title
+            .unwrap_or_else(|| "Routed web/reference search".to_string()),
+        subgoal_id: child.subgoal_id,
+        execution,
+        prompt: child.prompt,
+        dependencies: child.dependencies,
+        children: Vec::new(),
+        budget: child
+            .budget
+            .unwrap_or_else(|| Budget::default_goal().child_budget()),
+        sandbox: child.sandbox.unwrap_or_else(SandboxProfile::default),
+        done_criteria: child.done_criteria.unwrap_or_else(DoneCriteria::default),
+        review_doctrine: child
+            .review_doctrine
+            .unwrap_or_else(ReviewDoctrine::default),
+        priority: child.priority,
+        tags: child.tags,
+        color: child.color,
+        result: None,
+        attempts: 0,
+    }
+}
+
+fn runner_run_task_url(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/run-task") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/run-task")
+    }
+}
+
+fn web_search_tool_response(response: WebSearchResponse) -> serde_json::Value {
+    let status = response.status.clone();
+    serde_json::json!({
+        "content": [
+            {
+                "type": "text",
+                "text": match status {
+                    WebSearchStatus::Routed => "coat_web_search routed through a configured research runner",
+                    WebSearchStatus::Planned => "coat_web_search compiled to a coordinator-owned research task",
+                    WebSearchStatus::Blocked => "coat_web_search is blocked until search routing is configured",
+                    WebSearchStatus::Failed => "coat_web_search failed",
+                }
+            }
+        ],
+        "structuredContent": serde_json::to_value(response).unwrap_or(serde_json::Value::Null),
+        "isError": matches!(status, WebSearchStatus::Failed)
     })
 }
 
@@ -859,17 +1124,28 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 
     use super::{
-        AppState, artifact_manifest, authorize, checkpoint_history, local_command,
-        resolve_repo_path, subagent_policy, test_command,
+        AppState, artifact_manifest, authorize, checkpoint_history, coat_web_search, local_command,
+        resolve_repo_path, runner_run_task_url, subagent_policy, test_command,
     };
+    use coat_domain::{ExecutionProfile, WebSearchRoutingPreference, WorkerKind};
+
+    fn test_state() -> AppState {
+        AppState {
+            workspace_root: std::env::current_dir().expect("cwd"),
+            sandbox_workspace_root: None,
+            sandbox_runner_url: None,
+            runner_registry_url: None,
+            web_search_enabled: false,
+            web_search_route: WebSearchRoutingPreference::CoordinatorTask,
+            auth_token: None,
+        }
+    }
 
     #[test]
     fn bearer_auth_is_required_when_token_is_configured() {
         let state = AppState {
-            workspace_root: std::env::current_dir().expect("cwd"),
-            sandbox_workspace_root: None,
-            sandbox_runner_url: None,
             auth_token: Some("secret".to_string()),
+            ..test_state()
         };
         let headers = HeaderMap::new();
         assert!(authorize(&state, &headers).is_err());
@@ -886,9 +1162,7 @@ mod tests {
                 .expect("cwd")
                 .canonicalize()
                 .expect("canonical cwd"),
-            sandbox_workspace_root: None,
-            sandbox_runner_url: None,
-            auth_token: None,
+            ..test_state()
         };
         let inside = resolve_repo_path(&state, &serde_json::json!({})).expect("inside path");
         assert!(inside.starts_with(&state.workspace_root));
@@ -899,12 +1173,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_reports_sandbox_delegation() {
-        let state = AppState {
-            workspace_root: std::env::current_dir().expect("cwd"),
-            sandbox_workspace_root: None,
-            sandbox_runner_url: None,
-            auth_token: None,
-        };
+        let state = test_state();
         let result = test_command(&state, &serde_json::json!({ "command": "cargo test" }))
             .await
             .expect("test command response");
@@ -918,12 +1187,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_command_reports_sandbox_delegation() {
-        let state = AppState {
-            workspace_root: std::env::current_dir().expect("cwd"),
-            sandbox_workspace_root: None,
-            sandbox_runner_url: None,
-            auth_token: None,
-        };
+        let state = test_state();
         let result = local_command(
             &state,
             &serde_json::json!({ "command": ["git", "status"], "execute": true }),
@@ -953,6 +1217,70 @@ mod tests {
         assert_eq!(
             result["structuredContent"]["child_request_channel"],
             "AgentRunResult.child_requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn coat_web_search_returns_child_task_when_not_enabled() {
+        let state = test_state();
+        let result = coat_web_search(
+            &state,
+            &serde_json::json!({
+                "query": "current web search contract",
+                "route": "runner_registry"
+            }),
+        )
+        .await
+        .expect("web search response");
+
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["status"], "blocked");
+        assert_eq!(
+            result["structuredContent"]["child_task"]["role"],
+            "research"
+        );
+        assert_eq!(
+            result["structuredContent"]["child_task"]["purpose"]["kind"],
+            "research"
+        );
+        assert_eq!(
+            result["structuredContent"]["child_task"]["execution"]["runner"]["required_capabilities"]
+                [1],
+            "web_search"
+        );
+    }
+
+    #[tokio::test]
+    async fn coat_web_search_preserves_configured_codex_runner_route() {
+        let state = test_state();
+        let execution = ExecutionProfile::default().with_role(WorkerKind::Codex);
+        let result = coat_web_search(
+            &state,
+            &serde_json::json!({
+                "query": "current Codex-native search contract",
+                "route": "runner_registry",
+                "execution": execution
+            }),
+        )
+        .await
+        .expect("web search response");
+
+        assert_eq!(result["structuredContent"]["child_task"]["role"], "codex");
+        assert_eq!(
+            result["structuredContent"]["child_task"]["execution"]["runner"]["worker"],
+            "codex"
+        );
+    }
+
+    #[test]
+    fn runner_run_task_url_does_not_append_twice() {
+        assert_eq!(
+            runner_run_task_url("http://runner:9091"),
+            "http://runner:9091/run-task"
+        );
+        assert_eq!(
+            runner_run_task_url("http://runner:9091/run-task"),
+            "http://runner:9091/run-task"
         );
     }
 
@@ -992,10 +1320,8 @@ mod tests {
         .expect("checkpoint manifest");
 
         let state = AppState {
-            workspace_root: std::env::current_dir().expect("cwd"),
             sandbox_workspace_root: Some(temp.path().to_path_buf()),
-            sandbox_runner_url: None,
-            auth_token: None,
+            ..test_state()
         };
         let result = artifact_manifest(
             &state,
@@ -1035,10 +1361,8 @@ mod tests {
         )
         .expect("checkpoint manifest");
         let state = AppState {
-            workspace_root: std::env::current_dir().expect("cwd"),
             sandbox_workspace_root: Some(temp.path().to_path_buf()),
-            sandbox_runner_url: None,
-            auth_token: None,
+            ..test_state()
         };
         let result = checkpoint_history(
             &state,

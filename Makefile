@@ -1,65 +1,129 @@
-.PHONY: ci fmt fmt-check test check schemas proto-lint proto-format docs-check sidecars-build control-web-build ts-build helm-lint helm-package compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down k8s-render
+SHELL := /bin/sh
+
+CARGO ?= cargo
+NPM ?= npm
+NODE ?= node
+BUF ?= buf
+COAT ?= coat
+
+COAT_BUILD_PROFILE ?= debug
+ifeq ($(COAT_BUILD_PROFILE),release)
+COAT_BUILD_ARGS := --release
+COAT_BIN_DIR := target/release
+else ifeq ($(COAT_BUILD_PROFILE),debug)
+COAT_BUILD_ARGS :=
+COAT_BIN_DIR := target/debug
+else
+$(error COAT_BUILD_PROFILE must be debug or release)
+endif
+
+SIDECAR_DIRS := \
+	sidecars/codex-runner-ts \
+	sidecars/claude-code-runner-ts \
+	sidecars/staff-engineer-runner-ts \
+	sidecars/model-provider-runner-ts
+
+.DEFAULT_GOAL := build
+
+.PHONY: \
+	build coat-cli coat-cli-release coat-path \
+	ci fmt fmt-check test check schemas proto-lint proto-format docs-check \
+	sidecars-build control-web-build ts-build \
+	helm-lint helm-package \
+	compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down \
+	k8s-render
+
+build: coat-cli
+
+coat-cli:
+	$(CARGO) build -p coat-cli $(COAT_BUILD_ARGS)
+
+coat-cli-release:
+	$(MAKE) coat-cli COAT_BUILD_PROFILE=release
+
+coat-path:
+	@printf '%s/coat\n' '$(COAT_BIN_DIR)'
 
 fmt:
-	cargo fmt --all
+	$(CARGO) fmt --all
 
 fmt-check:
-	cargo fmt --all --check
+	$(CARGO) fmt --all --check
 
 test:
-	cargo test --workspace
+	$(CARGO) test --workspace
 
 check:
-	cargo check --workspace
+	$(CARGO) check --workspace
 
 schemas:
-	cargo run -p coat-domain --bin generate-schemas -- schemas
+	$(CARGO) run -p coat-domain --bin generate-schemas -- schemas
 
 proto-lint:
-	buf lint
+	$(BUF) lint
 
 proto-format:
-	buf format -w
+	$(BUF) format -w
 
 docs-check:
 	sh scripts/coat-doc-gardener.sh
 
 sidecars-build:
-	if [ -f sidecars/codex-runner-ts/node_modules/typescript/bin/tsc ]; then node sidecars/codex-runner-ts/node_modules/typescript/bin/tsc -p sidecars/codex-runner-ts/tsconfig.json; else npm ci --prefix sidecars/codex-runner-ts && npm run --prefix sidecars/codex-runner-ts build; fi
-	if [ -f sidecars/staff-engineer-runner-ts/node_modules/typescript/bin/tsc ]; then node sidecars/staff-engineer-runner-ts/node_modules/typescript/bin/tsc -p sidecars/staff-engineer-runner-ts/tsconfig.json; else npm ci --prefix sidecars/staff-engineer-runner-ts && npm run --prefix sidecars/staff-engineer-runner-ts build; fi
+	@set -eu; \
+	for dir in $(SIDECAR_DIRS); do \
+		echo "building $$dir"; \
+		if [ -x "$$dir/node_modules/.bin/tsc" ]; then \
+			"$$dir/node_modules/.bin/tsc" -p "$$dir/tsconfig.json"; \
+		elif [ -f "$$dir/node_modules/typescript/bin/tsc" ]; then \
+			$(NODE) "$$dir/node_modules/typescript/bin/tsc" -p "$$dir/tsconfig.json"; \
+		else \
+			$(NPM) ci --prefix "$$dir"; \
+			$(NPM) run --prefix "$$dir" build; \
+		fi; \
+	done
 
 control-web-build:
-	if [ -x ui/control-plane-web/node_modules/.bin/tsc ]; then ui/control-plane-web/node_modules/.bin/tsc -p ui/control-plane-web/tsconfig.json; elif [ -f sidecars/codex-runner-ts/node_modules/typescript/bin/tsc ]; then node sidecars/codex-runner-ts/node_modules/typescript/bin/tsc -p ui/control-plane-web/tsconfig.json; else npm install --prefix ui/control-plane-web && npm run --prefix ui/control-plane-web build; fi
+	@set -eu; \
+	dir=ui/control-plane-web; \
+	echo "building $$dir"; \
+	if [ -x "$$dir/node_modules/.bin/tsc" ]; then \
+		"$$dir/node_modules/.bin/tsc" -p "$$dir/tsconfig.json"; \
+	elif [ -f sidecars/codex-runner-ts/node_modules/typescript/bin/tsc ]; then \
+		$(NODE) sidecars/codex-runner-ts/node_modules/typescript/bin/tsc -p "$$dir/tsconfig.json"; \
+	else \
+		$(NPM) install --prefix "$$dir"; \
+		$(NPM) run --prefix "$$dir" build; \
+	fi
 
 ts-build: sidecars-build control-web-build
 
 helm-lint:
-	coat deploy chart lint
+	$(COAT) deploy chart lint
 
 helm-package:
-	coat deploy chart package
+	$(COAT) deploy chart package
 
 ci: fmt-check check test schemas proto-lint docs-check ts-build
 	git diff --check
 	git diff --exit-code schemas
 
 compose-config:
-	coat deploy local config
+	$(COAT) deploy local config
 
 compose-cloud-config:
-	coat deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
+	$(COAT) deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
 
 compose-up:
-	coat deploy local up --allow-stub-runners
+	$(COAT) deploy local up --allow-stub-runners
 
 compose-cloud-up:
-	coat deploy local up --restate-cloud --allow-stub-runners
+	$(COAT) deploy local up --restate-cloud --allow-stub-runners
 
 compose-down:
-	coat deploy local down
+	$(COAT) deploy local down
 
 compose-cloud-down:
-	coat deploy local down --restate-cloud
+	$(COAT) deploy local down --restate-cloud
 
 k8s-render:
-	coat deploy cluster render --output infra/k8s/rendered.yaml
+	$(COAT) deploy cluster render --output infra/k8s/rendered.yaml

@@ -16,21 +16,22 @@ use coat_domain::{
     ApprovalRequest, AuthDistributionPolicy, BranchGroup, BranchRequest, BranchSelectionRequest,
     BranchVoteOutput, BranchVoteRecord, BranchingPolicy, CalendarEventSource, CalendarProvider,
     CapacityProvisionerBackend, CapacityProvisionerPolicy, CapacityProvisioningPolicy,
-    CheckpointKind, CheckpointMode, CheckpointPolicy, CheckpointRef, ChildTaskRequest,
-    ChildTaskRequestChannel, CoatCliConfig, CoatCloudConfig, CoatCloudProvider, CoatConfig,
-    CoatConfigPaths, CoatKubernetesConfig, CoatKubernetesDistribution, CoatLocalDeployConfig,
-    CoatOperatorDefaults, CoatProfileConfig, CoatProfileKind, CoatProjectConfig,
-    CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopPolicy,
-    DeviceAuthProvider, DurablePlan, DurablePlanListResponse, DurablePlanResponse,
-    DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind, EphemeralRunnerTemplateRef,
-    EventGoalRoute, EventRouteMode, EventSource, EventSourceApprovalListResponse,
-    EventSourceApprovalRecord, EventSourceApprovalRecordRequest, EventSourceApprovalRecordResponse,
-    EventSourceApprovalStatus, EventSourceKind, ExecutionProfile, ExecutorGuardrailPolicy,
-    ExternalEvent, GenericEventSource, GitResultPolicy, GitResultRef, GoalArtifactRecord,
-    GoalAuthoringGuidance, GoalEventBackend, GoalEventKind, GoalEventRecord, GoalPlan,
-    GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord, GoalSpec, GoalState,
-    GoalStateAuthority, GoalStoreApprovalListResponse, GoalStoreArtifactListResponse,
-    GoalStoreArtifactRecordRequest, GoalStoreArtifactRecordResponse,
+    CapacityScalingMode, CapacityScalingPolicy, CheckpointKind, CheckpointMode, CheckpointPolicy,
+    CheckpointRef, ChildTaskRequest, ChildTaskRequestChannel, CoatCliConfig, CoatCloudConfig,
+    CoatCloudProvider, CoatConfig, CoatConfigPaths, CoatKubernetesConfig,
+    CoatKubernetesDistribution, CoatLocalDeployConfig, CoatOperatorDefaults, CoatProfileConfig,
+    CoatProfileKind, CoatProjectConfig, CoatRestateCloudConfig, CoatRunnerCapacityConfig,
+    CoatServiceEndpoints, CoatToolRoutingConfig, CoatUserConfig, CoatWebSearchRoutingConfig,
+    ControlLoopPolicy, DeviceAuthProvider, DurablePlan, DurablePlanListResponse,
+    DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind,
+    EphemeralRunnerTemplateRef, EventGoalRoute, EventRouteMode, EventSource,
+    EventSourceApprovalListResponse, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
+    EventSourceApprovalRecordResponse, EventSourceApprovalStatus, EventSourceKind,
+    ExecutionProfile, ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy,
+    GitResultRef, GoalArtifactRecord, GoalAuthoringGuidance, GoalEventBackend, GoalEventKind,
+    GoalEventRecord, GoalPlan, GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord,
+    GoalSpec, GoalState, GoalStateAuthority, GoalStoreApprovalListResponse,
+    GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest, GoalStoreArtifactRecordResponse,
     GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest, GoalStoreEventAppendResponse,
     GoalStoreEventListResponse, GoalStoreGoalResponse, GoalStorePolicy, GoalStoreProjectionMode,
     GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
@@ -55,7 +56,8 @@ use coat_domain::{
     ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding, ReviewObjective,
     ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound, ReviewSubagentProfile,
     RunnerDispatchCandidate, RunnerDispatchDecision, RunnerDispatchRejection,
-    RunnerDispatchRequest, RunnerRegistration, RunnerStatus, SandboxAttestation, SandboxBackend,
+    RunnerDispatchRequest, RunnerPoolDemand, RunnerPoolSupply, RunnerRegistration,
+    RunnerScalingDecision, RunnerScalingRequest, RunnerStatus, SandboxAttestation, SandboxBackend,
     SandboxIsolationProfile, SandboxLaunchPlan, SandboxNetworkPlan, SandboxProfile,
     SandboxResourcePlan, SandboxSecurityPlan, SandboxSnapshotStrategy, SatisfactionReport,
     ScheduleKind, ScheduleSpec, SecretRef, SourceArtifact, SqsEventSource, StandardReviewCheck,
@@ -64,7 +66,9 @@ use coat_domain::{
     TaskPurposeKind, TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy,
     TriggeredGoalRequest, TriggeredGoalResponse, TriggeredGoalStatus, UserPrincipalRef,
     ValidationGate, ValidationGateResult, ValidationReport, ValidationRequest, VectorMemoryPolicy,
-    WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
+    WebSearchProviderKind, WebSearchRequest, WebSearchResponse, WebSearchRoutingMode,
+    WebSearchRoutingPreference, WebSearchStatus, WebhookAuthKind, WebhookAuthPolicy,
+    WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -112,8 +116,33 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "tool-routing-configuration.schema.json",
+        schema_for!(CoatToolRoutingConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "web-search-routing-configuration.schema.json",
+        schema_for!(CoatWebSearchRoutingConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "web-search-routing-mode.schema.json",
+        schema_for!(WebSearchRoutingMode),
+    )?;
+    write_schema(
+        &out_dir,
+        "web-search-provider-kind.schema.json",
+        schema_for!(WebSearchProviderKind),
+    )?;
+    write_schema(
+        &out_dir,
         "local-deploy-configuration.schema.json",
         schema_for!(CoatLocalDeployConfig),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-capacity-configuration.schema.json",
+        schema_for!(CoatRunnerCapacityConfig),
     )?;
     write_schema(
         &out_dir,
@@ -756,6 +785,26 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "web-search-request.schema.json",
+        schema_for!(WebSearchRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "web-search-response.schema.json",
+        schema_for!(WebSearchResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "web-search-routing-preference.schema.json",
+        schema_for!(WebSearchRoutingPreference),
+    )?;
+    write_schema(
+        &out_dir,
+        "web-search-status.schema.json",
+        schema_for!(WebSearchStatus),
+    )?;
+    write_schema(
+        &out_dir,
         "source-artifact.schema.json",
         schema_for!(SourceArtifact),
     )?;
@@ -958,6 +1007,36 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "capacity-provisioner-backend.schema.json",
         schema_for!(CapacityProvisionerBackend),
+    )?;
+    write_schema(
+        &out_dir,
+        "capacity-scaling-policy.schema.json",
+        schema_for!(CapacityScalingPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "capacity-scaling-mode.schema.json",
+        schema_for!(CapacityScalingMode),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-scaling-request.schema.json",
+        schema_for!(RunnerScalingRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-scaling-decision.schema.json",
+        schema_for!(RunnerScalingDecision),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-pool-demand.schema.json",
+        schema_for!(RunnerPoolDemand),
+    )?;
+    write_schema(
+        &out_dir,
+        "runner-pool-supply.schema.json",
+        schema_for!(RunnerPoolSupply),
     )?;
     write_schema(
         &out_dir,

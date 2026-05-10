@@ -8,6 +8,14 @@
  * Architecture reference: docs/design-docs/110-control-gateway-spa.md
  */
 import * as Dialog from "@radix-ui/react-dialog";
+import {
+  ChatContainer,
+  MainContainer,
+  Message,
+  MessageInput,
+  MessageList,
+  TypingIndicator,
+} from "@chatscope/chat-ui-kit-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Background, Controls, MarkerType, MiniMap, ReactFlow, type Edge, type Node } from "@xyflow/react";
 import clsx from "clsx";
@@ -16,7 +24,6 @@ import {
   Brain,
   CheckCircle2,
   CircleAlert,
-  ClipboardList,
   GitBranch,
   ListChecks,
   MessageSquareText,
@@ -26,9 +33,7 @@ import {
   RefreshCw,
   Route,
   Search,
-  Send,
   Server,
-  Settings2,
   Sparkles,
   Sun,
 } from "lucide-react";
@@ -39,8 +44,8 @@ import {
   at,
   authToken,
   chat,
-  draftFollowUpPlan,
-  followUps,
+  chatRun,
+  chatSession,
   goalSnapshot,
   goals,
   isRecord,
@@ -54,13 +59,13 @@ import {
   steer,
   threads,
 } from "./api";
-import type { ChatMessage, ColorRef, GoalRow, GoalSnapshot, JsonRecord, Overview, TaskRow } from "./types";
+import type { ChatMessage, ChatResponse, ChatRunTrace, ColorRef, GoalRow, GoalSnapshot, JsonRecord, Overview, TaskRow } from "./types";
 
-type ViewKey = "dashboard" | "goals" | "graph" | "memory" | "plans" | "followups" | "human" | "runners";
+type ViewKey = "dashboard" | "goals" | "graph" | "memory" | "plans" | "human" | "runners";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type GraphFilter = "all" | "attention" | "active" | "completed";
-type FollowUpItem = { plan: string; path: string; index: number; text: string };
+type DraftKind = "plan" | "goal" | "search";
 
 const themeStorageKey = "coat.theme";
 const themeColors: Record<ResolvedTheme, string> = {
@@ -103,7 +108,6 @@ const views: Array<{ key: ViewKey; label: string; icon: typeof Route }> = [
   { key: "graph", label: "Task Graph", icon: Network },
   { key: "memory", label: "Memory", icon: Brain },
   { key: "plans", label: "Plans", icon: GitBranch },
-  { key: "followups", label: "Follow-Ups", icon: ClipboardList },
   { key: "human", label: "Human Queue", icon: Bell },
   { key: "runners", label: "Runners", icon: Server },
 ];
@@ -112,7 +116,7 @@ const starterMessages: ChatMessage[] = [
   {
     role: "assistant",
     content:
-      "Tell me the outcome you want. I can draft a goal, durable plan, steering directive, or memory search without changing durable state.",
+      "Tell me the outcome you want. I can draft a durable plan, a GoalSpec, or a backend-routed search request without changing durable state.",
   },
 ];
 
@@ -123,12 +127,18 @@ export function App() {
   const [token, setToken] = useState(authToken());
   const [messages, setMessages] = useState<ChatMessage[]>(starterMessages);
   const [chatInput, setChatInput] = useState("");
-  const [chatMode, setChatMode] = useState("draft_plan");
+  const [draftKind, setDraftKind] = useState<DraftKind>("plan");
+  const [activeChatRunId, setActiveChatRunId] = useState<string | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => initialThemePreference());
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(initialThemePreference()));
 
   const overviewQuery = useQuery({ queryKey: ["overview"], queryFn: overview });
   const goalsQuery = useQuery({ queryKey: ["goals"], queryFn: goals });
+  const chatSessionId = selectedGoalId ? `goal:${selectedGoalId}` : "operator:default";
+  const chatSessionQuery = useQuery({
+    queryKey: ["chat-session", chatSessionId],
+    queryFn: () => chatSession(chatSessionId),
+  });
   const selectedGoalQuery = useQuery({
     queryKey: ["goal", selectedGoalId],
     queryFn: () => goalSnapshot(selectedGoalId),
@@ -136,34 +146,32 @@ export function App() {
   });
 
   const sendChat = useMutation({
-    mutationFn: async () => {
-      const content = chatInput.trim();
+    mutationFn: async (overrideContent?: string) => {
+      const content = (overrideContent ?? chatInput).trim();
       if (!content) {
         throw new Error("Write a request first.");
       }
       const nextMessages = [...messages, { role: "user" as const, content }];
       setMessages(nextMessages);
       setChatInput("");
-      const response = await chat(chatMode, selectedGoalId, nextMessages);
+      const runId = createRunId();
+      setActiveChatRunId(runId);
+      const response = await chat(chatSessionId, modeForDraftKind(draftKind), selectedGoalId, nextMessages, runId);
+      setActiveChatRunId(response.run_id ?? runId);
       setMessages([...nextMessages, { role: "assistant", content: response.assistant ?? "No response." }]);
+      void queryClient.invalidateQueries({ queryKey: ["chat-session", chatSessionId] });
       return response;
     },
+  });
+  const chatRunQuery = useQuery({
+    queryKey: ["chat-run", activeChatRunId],
+    queryFn: () => chatRun(activeChatRunId ?? ""),
+    enabled: Boolean(activeChatRunId && sendChat.isPending),
+    refetchInterval: sendChat.isPending ? 750 : false,
   });
 
   const refreshAll = () => {
     void queryClient.invalidateQueries();
-  };
-
-  const draftFollowUp = (item: FollowUpItem) => {
-    setChatMode("draft_plan");
-    sendChat.reset();
-    void draftFollowUpPlan({ ...item }).then((draft) => {
-      setChatMode(draft.mode ?? "draft_plan");
-      setChatInput(String(draft.prompt ?? ""));
-    }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      setChatInput(`Gateway failed to draft this follow-up prompt through /api/follow-ups/draft-plan: ${message}`);
-    });
   };
 
   useEffect(() => {
@@ -189,6 +197,13 @@ export function App() {
     query.addEventListener("change", applyTheme);
     return () => query.removeEventListener("change", applyTheme);
   }, [themePreference]);
+
+  useEffect(() => {
+    const persistedMessages = chatSessionQuery.data?.messages ?? [];
+    setMessages(persistedMessages.length ? persistedMessages : starterMessages);
+    setActiveChatRunId(null);
+    sendChat.reset();
+  }, [chatSessionId, chatSessionQuery.dataUpdatedAt]);
 
   const saveToken = (value: string) => {
     setToken(value);
@@ -264,14 +279,17 @@ export function App() {
           <CommandPanel
             messages={messages}
             input={chatInput}
-            mode={chatMode}
+            draftKind={draftKind}
             busy={sendChat.isPending}
             error={sendChat.error}
-            latestDrafts={sendChat.data?.drafts}
+            latestResponse={sendChat.data}
+            chatRun={(chatRunQuery.data ?? sendChat.data?.chat_run) as ChatRunTrace | undefined}
             selectedGoalId={selectedGoalId}
-            onModeChange={setChatMode}
+            sessionId={chatSessionId}
+            mode={modeForDraftKind(draftKind)}
+            onDraftKindChange={setDraftKind}
             onInputChange={setChatInput}
-            onSend={() => sendChat.mutate()}
+            onSend={(content?: string) => sendChat.mutate(content)}
             onClear={() => {
               setMessages(starterMessages);
               setChatInput("");
@@ -305,13 +323,22 @@ export function App() {
           )}
           {activeView === "memory" && <MemoryView selectedGoalId={selectedGoalId} />}
           {activeView === "plans" && <PlansView />}
-          {activeView === "followups" && <FollowUpsView onDraftPlan={draftFollowUp} />}
           {activeView === "human" && <HumanQueueView selectedGoalId={selectedGoalId} />}
           {activeView === "runners" && <RunnersView overview={overviewData} />}
         </section>
       </main>
     </div>
   );
+}
+
+function modeForDraftKind(kind: DraftKind): string {
+  if (kind === "goal") return "draft_goal";
+  if (kind === "search") return "draft_search";
+  return "draft_plan";
+}
+
+function createRunId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function initialThemePreference(): ThemePreference {
@@ -372,7 +399,6 @@ function titleFor(view: ViewKey): string {
     graph: "Technicolor Task Graph",
     memory: "Shared Memory",
     plans: "Durable Plans",
-    followups: "Follow-Ups",
     human: "Human Queue",
     runners: "Runner Fleet",
   }[view];
@@ -397,97 +423,198 @@ function ServiceStrip({ services }: { services: Overview["services"] }) {
 function CommandPanel(props: {
   messages: ChatMessage[];
   input: string;
-  mode: string;
+  draftKind: DraftKind;
   busy: boolean;
   error: Error | null;
-  latestDrafts?: JsonRecord;
+  latestResponse?: ChatResponse;
+  chatRun?: ChatRunTrace;
   selectedGoalId: string;
-  onModeChange: (value: string) => void;
+  sessionId: string;
+  mode: string;
+  onDraftKindChange: (value: DraftKind) => void;
   onInputChange: (value: string) => void;
-  onSend: () => void;
+  onSend: (content?: string) => void;
   onClear: () => void;
 }) {
+  const draftKeys = Object.keys(props.latestResponse?.drafts ?? {});
+  const activityPayload = chatActivityPayload(props);
+  const activityLabel = props.busy ? "Activity" : "Run details";
   return (
     <section className="command-panel">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Ask COAT</p>
-          <h2>Plan, steer, search, or summarize</h2>
+          <p className="eyebrow">Start work</p>
+          <h2>{commandTitle(props.draftKind)}</h2>
         </div>
-        <select value={props.mode} onChange={(event) => props.onModeChange(event.target.value)} aria-label="Assistant mode">
-          <option value="draft_plan">Draft durable plan</option>
-          <option value="draft_goal">Draft goal</option>
-          <option value="draft_steering">Draft steering</option>
-          <option value="explain_state">Explain state</option>
-          <option value="general">General</option>
-        </select>
-      </div>
-      <div className="chat-row">
-        <div className="chat-log">
-          {props.messages.map((message, index) => (
-            <div key={`${message.role}-${index}`} className={clsx("chat-bubble", message.role)}>
-              {message.content}
-            </div>
-          ))}
-        </div>
-        <div className="draft-card">
-          <Sparkles size={18} />
-          <strong>Drafts are review-only</strong>
-          <span>Goal ID context: {props.selectedGoalId || "none"}</span>
-          {props.latestDrafts && Object.keys(props.latestDrafts).length > 0 && (
-            <InspectButton title="Latest assistant draft" payload={props.latestDrafts} />
-          )}
-        </div>
-      </div>
-      <div className="composer">
-        <textarea
-          value={props.input}
-          onChange={(event) => props.onInputChange(event.target.value)}
-          placeholder="Example: Find the safest way to add ephemeral runner templates and update the goal plan before implementation."
-        />
-        <div className="composer-actions">
-          {props.error && <span className="error-text">{props.error.message}</span>}
-          <button type="button" className="secondary-button" onClick={props.onClear}>
-            Clear
+        <div className="mode-toggle" role="group" aria-label="Draft target">
+          <button
+            type="button"
+            className={clsx("mode-option", props.draftKind === "plan" && "active")}
+            aria-pressed={props.draftKind === "plan"}
+            onClick={() => props.onDraftKindChange("plan")}
+          >
+            <GitBranch size={15} />
+            Plan
           </button>
-          <button type="button" className="primary-button" onClick={props.onSend} disabled={props.busy}>
-            <Send size={16} />
-            {props.busy ? "Sending" : "Send"}
+          <button
+            type="button"
+            className={clsx("mode-option", props.draftKind === "goal" && "active")}
+            aria-pressed={props.draftKind === "goal"}
+            onClick={() => props.onDraftKindChange("goal")}
+          >
+            <ListChecks size={15} />
+            Goal
+          </button>
+          <button
+            type="button"
+            className={clsx("mode-option", props.draftKind === "search" && "active")}
+            aria-pressed={props.draftKind === "search"}
+            onClick={() => props.onDraftKindChange("search")}
+          >
+            <Search size={15} />
+            Search
           </button>
         </div>
+      </div>
+      <div className="outcome-meta">
+        <span className="status-pill">{props.selectedGoalId ? `Goal ${props.selectedGoalId.slice(0, 8)}` : "No goal selected"}</span>
+        <span className={clsx("status-pill", props.busy ? "status-running" : "status-pending")}>
+          {props.busy ? commandBusyLabel(props.draftKind) : `${props.mode} · ${props.sessionId}`}
+        </span>
+        {(props.busy || props.chatRun || props.latestResponse || draftKeys.length > 0) && (
+          <InspectButton title="Chat activity" payload={activityPayload} buttonLabel={activityLabel} />
+        )}
+      </div>
+      <div className="chat-shell">
+        <MainContainer className="coat-chat-container" responsive>
+          <ChatContainer>
+            <MessageList
+              autoScrollToBottom
+              autoScrollToBottomOnMount
+              scrollBehavior="smooth"
+              typingIndicator={props.busy ? <TypingIndicator content={commandBusyLabel(props.draftKind)} /> : undefined}
+            >
+              {props.messages.map((message, index) => (
+                <Message
+                  key={`${message.role}-${index}`}
+                  model={{
+                    message: message.content,
+                    sender: message.role === "assistant" ? "COAT" : "Operator",
+                    direction: message.role === "user" ? "outgoing" : "incoming",
+                    position: "single",
+                  }}
+                />
+              ))}
+            </MessageList>
+            <MessageInput
+              value={props.input}
+              attachButton={false}
+              autoFocus={false}
+              disabled={props.busy}
+              sendDisabled={props.busy || !props.input.trim()}
+              placeholder={commandPlaceholder(props.draftKind)}
+              onChange={(_html, textContent) => props.onInputChange(textContent)}
+              onSend={(_html, textContent) => props.onSend(textContent)}
+            />
+          </ChatContainer>
+        </MainContainer>
+      </div>
+      <div className="composer-actions">
+        {props.error && <span className="error-text">{props.error.message}</span>}
+        <button type="button" className="secondary-button" onClick={props.onClear}>
+          Clear
+        </button>
       </div>
     </section>
   );
 }
 
+function commandTitle(kind: DraftKind): string {
+  if (kind === "goal") return "Goal draft";
+  if (kind === "search") return "Search request";
+  return "Plan first";
+}
+
+function commandPlaceholder(kind: DraftKind): string {
+  if (kind === "goal") return "Describe the goal, evidence, constraints, and stop conditions";
+  if (kind === "search") return "Ask what to search across memory, references, docs, or web";
+  return "Describe the outcome, constraints, and review gates";
+}
+
+function commandBusyLabel(kind: DraftKind): string {
+  if (kind === "search") return "Preparing search request";
+  if (kind === "goal") return "Generating goal draft";
+  return "Generating plan draft";
+}
+
+function chatActivityPayload(props: {
+  busy: boolean;
+  draftKind: DraftKind;
+  selectedGoalId: string;
+  sessionId: string;
+  mode: string;
+  latestResponse?: ChatResponse;
+  chatRun?: ChatRunTrace;
+}): JsonRecord {
+  return {
+    label: "operational trace",
+    note: "This shows gateway and backend stages, not hidden model reasoning.",
+    status: props.busy ? "running" : "idle",
+    draft_kind: props.draftKind,
+    mode: props.mode,
+    selected_goal_id: props.selectedGoalId || null,
+    session_id: props.sessionId,
+    run: props.chatRun ?? props.latestResponse?.chat_run ?? null,
+    backend: props.latestResponse?.chat_backend ?? props.chatRun?.backend ?? null,
+    model_params: props.latestResponse?.model_params ?? props.chatRun?.model_params ?? null,
+    chat_log: props.latestResponse?.chat_log ?? props.chatRun?.chat_log ?? null,
+    drafts: props.latestResponse?.drafts ?? null,
+  };
+}
+
 function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalId: string; onSelectGoal: (goalId: string) => void }) {
   const runnerRows = rowsFrom(at(props.overview, ["runner_status", "data"]) ?? props.overview?.runner_status);
   const approvalRows = rowsFrom(at(props.overview, ["approvals", "data"]) ?? props.overview?.approvals);
-  const followUps = rowsFrom(props.overview?.follow_ups);
+  const eventRows = rowsFrom(at(props.overview, ["recent_events", "data"]) ?? props.overview?.recent_events);
+  const attentionGoals = props.goals.filter((goal) => {
+    const status = String(goal.status ?? "").toLowerCase();
+    return status.includes("blocked") || status.includes("failed") || Number(goal.blocked_tasks ?? 0) > 0 || Number(goal.failed_tasks ?? 0) > 0;
+  }).length;
   return (
     <div className="dashboard-grid">
-      <MetricCard label="Active goals" value={String(props.goals.length)} detail="projected by goal-store" />
-      <MetricCard label="Runner lanes" value={String(runnerRows.length)} detail="registered or recently seen" />
-      <MetricCard label="Human queue" value={String(approvalRows.length)} detail="approvals and feedback" />
-      <MetricCard label="Plan follow-ups" value={String(followUps.length || Number(at(props.overview?.follow_ups, ["follow_up_count"]) ?? 0))} detail="open planning work" />
+      <MetricCard label="Active goals" value={String(props.goals.length)} detail="in progress" />
+      <MetricCard label="Runner lanes" value={String(runnerRows.length)} detail="available capacity" />
+      <MetricCard label="Human queue" value={String(approvalRows.length)} detail="waiting decisions" />
+      <MetricCard label="Events" value={String(eventRows.length)} detail="recent signals" />
       <section className="panel span-2">
         <div className="section-heading">
           <h2>Recent goals</h2>
-          <span className="muted-small">Click a goal to open its task graph</span>
+          <span className="muted-small">Task graph</span>
         </div>
         <GoalList goals={props.goals.slice(0, 6)} selectedGoalId={props.selectedGoalId} onSelect={props.onSelectGoal} />
       </section>
       <section className="panel">
         <div className="section-heading">
-          <h2>Operating boundary</h2>
-          <Settings2 size={18} />
+          <h2>Next outcomes</h2>
+          <Sparkles size={18} />
         </div>
-        <p className="body-copy">
-          This manager submits signals and reads projections. Restate owns time, the coordinator owns task truth, and
-          runners only provide bounded execution capacity.
-        </p>
+        <ul className="outcome-list">
+          <OutcomeRow label="Approvals" value={approvalRows.length} tone={approvalRows.length ? "waiting-approval" : "done"} />
+          <OutcomeRow label="Events" value={eventRows.length} tone={eventRows.length ? "runnable" : "done"} />
+          <OutcomeRow label="Goal attention" value={attentionGoals} tone={attentionGoals ? "blocked" : "done"} />
+          <OutcomeRow label="Runner lanes" value={runnerRows.length} tone={runnerRows.length ? "running" : "pending"} />
+        </ul>
       </section>
     </div>
+  );
+}
+
+function OutcomeRow({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <li>
+      <span>{label}</span>
+      <strong className={clsx("status-pill", statusTone(tone))}>{value}</strong>
+    </li>
   );
 }
 
@@ -818,9 +945,7 @@ function MemoryView({ selectedGoalId }: { selectedGoalId: string }) {
 
 function PlansView() {
   const planQuery = useQuery({ queryKey: ["plans"], queryFn: plans });
-  const followUpQuery = useQuery({ queryKey: ["follow-ups"], queryFn: followUps });
   const rows = rowsFrom(at(planQuery.data, ["data"]) ?? planQuery.data);
-  const followUpRows = followUpList(followUpQuery.data);
   return (
     <section className="dashboard-grid">
       <div className="panel span-2">
@@ -841,78 +966,13 @@ function PlansView() {
       </div>
       <div className="panel">
         <div className="section-heading">
-          <h2>Follow-ups</h2>
-          <GitBranch size={18} />
-        </div>
-        <ul className="compact-list">
-          {followUpRows.length ? followUpRows.slice(0, 12).map((item) => <li key={`${item.plan}-${item.text}`}><strong>{item.plan}</strong><span>{item.text}</span></li>) : <li>No active follow-ups.</li>}
-        </ul>
-      </div>
-    </section>
-  );
-}
-
-function FollowUpsView({ onDraftPlan }: { onDraftPlan: (item: FollowUpItem) => void }) {
-  const [query, setQuery] = useState("");
-  const followUpQuery = useQuery({ queryKey: ["follow-ups"], queryFn: followUps });
-  const followUpRows = followUpList(followUpQuery.data);
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredRows = normalizedQuery
-    ? followUpRows.filter((item) => `${item.plan} ${item.path} ${item.text}`.toLowerCase().includes(normalizedQuery))
-    : followUpRows;
-  const planCount = Number(at(followUpQuery.data, ["plan_count"]) ?? 0);
-  const checkedDirs = at(followUpQuery.data, ["checked_plan_dirs"]);
-  const checkedDirText = Array.isArray(checkedDirs) ? checkedDirs.map(String).join(", ") : String(at(followUpQuery.data, ["plan_dir"]) ?? "");
-  return (
-    <section className="dashboard-grid">
-      <MetricCard label="Follow-ups" value={String(followUpRows.length)} detail="open continuation items" />
-      <MetricCard label="Plans with queue" value={String(planCount)} detail="active exec plans scanned" />
-      <MetricCard label="Visible now" value={String(filteredRows.length)} detail={query ? "matching current filter" : "all active items"} />
-      <div className="panel span-2">
-        <div className="section-heading">
-          <div>
-            <h2>Continuation queue</h2>
-            <span className="muted-small">Execution-plan follow-ups that should continue across sessions</span>
-          </div>
-          <InspectButton title="Follow-up projection" payload={followUpQuery.data} />
-        </div>
-        <label>
-          Filter follow-ups
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by plan, path, or follow-up text" />
-        </label>
-        <div className="followup-list">
-          {filteredRows.length ? (
-            filteredRows.map((item) => (
-              <article key={`${item.path}-${item.index}-${item.text}`} className="followup-card">
-                <div>
-                  <strong>{item.plan}</strong>
-                  <span className="status-pill status-runnable">open</span>
-                </div>
-                <p>{item.text}</p>
-                <div className="followup-meta">
-                  <small>{item.path}</small>
-                  <button type="button" className="secondary-button" onClick={() => onDraftPlan(item)}>
-                    <MessageSquareText size={15} />
-                    Draft plan from follow-up
-                  </button>
-                </div>
-              </article>
-            ))
-          ) : (
-            <EmptyState title={followUpRows.length ? "No follow-ups match" : "No active follow-ups"} detail="Adjust the filter or add a follow-up under an active execution plan." />
-          )}
-        </div>
-      </div>
-      <div className="panel">
-        <div className="section-heading">
-          <h2>Source</h2>
+          <h2>Planning queue</h2>
           <GitBranch size={18} />
         </div>
         <p className="body-copy">
-          Follow-ups are parsed from active execution plans. They are not durable workflow truth, but they are the
-          operator continuity queue for carrying work across turns.
+          Continuation work belongs to durable plans, goals, events, or human queue items. Repo markdown follow-ups are kept for developer doc gardening, not as the product queue.
         </p>
-        <div className="source-path">{checkedDirText || "No execution-plan directory projected."}</div>
+        <InspectButton title="Plan projection" payload={planQuery.data ?? {}} buttonLabel="Inspect plans" />
       </div>
     </section>
   );
@@ -924,9 +984,9 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
   const approvalRows = rowsFrom(at(approvalQuery.data, ["data"]) ?? approvalQuery.data);
   const threadRows = rowsFrom(at(threadQuery.data, ["data"]) ?? threadQuery.data);
   const approvalMutation = useMutation({
-    mutationFn: (approvalId: string) => {
-      if (!selectedGoalId) throw new Error("Select a goal before approving.");
-      return api(`/api/goals/${encodeURIComponent(selectedGoalId)}/approve`, {
+    mutationFn: ({ approvalId, goalId }: { approvalId: string; goalId: string }) => {
+      if (!goalId) throw new Error("Approval row is missing a goal id.");
+      return api(`/api/goals/${encodeURIComponent(goalId)}/approve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ approval_id: approvalId, approved: true, comment: "Approved from Task Graph Manager" }),
@@ -943,13 +1003,19 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
         <div className="approval-list">
           {approvalRows.length ? approvalRows.map((row) => {
             const id = String(row.approval_id ?? row.id ?? "");
+            const goalId = String(row.goal_id ?? selectedGoalId ?? "");
             return (
               <div key={id || JSON.stringify(row)} className="approval-card">
                 <div>
                   <strong>{String(row.risk ?? row.title ?? "Approval")}</strong>
                   <span>{String(row.status ?? "pending")} · {String(row.goal_id ?? "")}</span>
                 </div>
-                <button type="button" className="secondary-button" disabled={!id || approvalMutation.isPending} onClick={() => approvalMutation.mutate(id)}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!id || !goalId || approvalMutation.isPending}
+                  onClick={() => approvalMutation.mutate({ approvalId: id, goalId })}
+                >
                   Approve
                 </button>
               </div>
@@ -972,6 +1038,7 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
 
 function RunnersView({ overview }: { overview?: Overview }) {
   const rows = rowsFrom(at(overview, ["runner_status", "data"]) ?? overview?.runner_status);
+  const tableRows = rows.map(runnerTableRow);
   return (
     <section className="panel">
       <div className="section-heading">
@@ -984,16 +1051,53 @@ function RunnersView({ overview }: { overview?: Overview }) {
       <SimpleTable
         empty="No runners registered."
         headers={["Runner", "Node", "Status", "Capacity", "Endpoint"]}
-        rows={rows.map((row) => [
-          String(row.runner_id ?? row.id ?? ""),
-          String(row.node_id ?? ""),
-          String(row.status ?? (row.stale ? "stale" : "active")),
-          String(row.capacity_remaining ?? row.running_tasks ?? ""),
-          String(row.endpoint ?? ""),
-        ])}
+        rows={tableRows}
       />
     </section>
   );
+}
+
+function runnerTableRow(row: JsonRecord): string[] {
+  const registration = isRecord(row.registration) ? row.registration : row;
+  const labels = {
+    ...(isRecord(registration.labels) ? registration.labels : {}),
+    ...(isRecord(row.labels) ? row.labels : {}),
+  };
+  const runnerId = stringValue(row.runner_id) || stringValue(registration.runner_id) || "unknown-runner";
+  const displayName = stringValue(row.display_name)
+    || stringValue(labels.display_name)
+    || stringValue(labels.name)
+    || [stringValue(labels.runtime), stringValue(labels.lane)].filter(Boolean).join(" / ")
+    || runnerId;
+  const nodeId = stringValue(row.node_id) || stringValue(registration.node_id) || "unknown node";
+  const endpoint = stringValue(row.endpoint) || stringValue(registration.endpoint) || "no endpoint advertised";
+  const status = stringValue(row.status) || (row.stale ? "stale" : row.full ? "full" : row.dispatchable === false ? "unavailable" : "active");
+  const maxConcurrency = numberValue(row.max_concurrency ?? registration.max_concurrency);
+  const remaining = numberValue(row.capacity_remaining);
+  const running = numberValue(row.running_tasks);
+  const capacity = maxConcurrency !== null && remaining !== null
+    ? `${remaining}/${maxConcurrency} free${running !== null ? `, ${running} running` : ""}`
+    : remaining !== null
+      ? `${remaining} free${running !== null ? `, ${running} running` : ""}`
+      : running !== null
+        ? `${running} running`
+        : "unknown";
+  return [
+    displayName === runnerId ? runnerId : `${displayName} (${runnerId})`,
+    nodeId,
+    status,
+    capacity,
+    endpoint,
+  ];
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberValue(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function ResultList({ value }: { value: unknown }) {
@@ -1064,26 +1168,6 @@ function InspectButton({ title, payload, buttonLabel = "Inspect" }: { title: str
       </Dialog.Portal>
     </Dialog.Root>
   );
-}
-
-function followUpList(value: unknown): FollowUpItem[] {
-  const items = at(value, ["items"]);
-  if (Array.isArray(items)) {
-    return items.filter(isRecord).map((item, index) => ({
-      plan: String(item.plan ?? item.title ?? item.source_plan ?? "Execution plan"),
-      path: String(item.path ?? item.source_path ?? ""),
-      index: Number.isFinite(Number(item.index)) ? Number(item.index) : index,
-      text: String(item.text ?? item.follow_up ?? item.followup ?? ""),
-    })).filter((item) => item.text.trim());
-  }
-  const plansValue = at(value, ["plans"]);
-  const records = Array.isArray(plansValue) ? plansValue.filter(isRecord) : [];
-  return records.flatMap((record) => {
-    const title = String(record.title ?? record.path ?? "Plan");
-    const path = String(record.path ?? "");
-    const followUps = Array.isArray(record.follow_ups) ? record.follow_ups : [];
-    return followUps.map((item, index) => ({ plan: title, path, index, text: String(item) }));
-  });
 }
 
 function taskId(task: TaskRow): string {

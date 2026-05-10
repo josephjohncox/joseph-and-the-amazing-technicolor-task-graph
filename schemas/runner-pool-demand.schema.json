@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunnerPoolDemand",
+  "type": "object",
+  "properties": {
+    "blocked_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "event_backlog": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "pool_key": {
+      "type": "string"
+    },
+    "priority_boost": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "queued_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "required_capabilities": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RunnerCapability"
+      }
+    },
+    "required_labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    },
+    "running_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "unmatched_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "worker": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "pool_key",
+    "queued_tasks",
+    "running_tasks",
+    "blocked_tasks",
+    "unmatched_tasks",
+    "event_backlog",
+    "priority_boost"
+  ],
+  "$defs": {
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "web_search",
+        "test",
+        "review",
+        "mcp_tools",
+        "durable_child_tasks",
+        "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
+        "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "ephemeral_provisioning",
+        "network_open",
+        "formal_verification"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "claude_code",
+        "staff_engineer_claude",
+        "model_provider",
+        "research",
+        "reviewer",
+        "tester",
+        "formal_methods",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapacityScalingPolicy",
+  "description": "Bounded policy for dynamically adding or retiring runner capacity.\n\nThe coordinator computes durable demand from runnable tasks, events, and\nqueue processors. A provisioner may realize the resulting recommendations,\nbut only within these limits and the surrounding approval policy.",
+  "type": "object",
+  "properties": {
+    "cooldown_seconds": {
+      "type": "integer",
+      "format": "uint64",
+      "default": 300,
+      "minimum": 0
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "event_weight": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 1,
+      "minimum": 0
+    },
+    "headroom_runners": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 0,
+      "minimum": 0
+    },
+    "max_runners": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 8,
+      "minimum": 0
+    },
+    "max_scale_down_step": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 1,
+      "minimum": 0
+    },
+    "max_scale_up_step": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 2,
+      "minimum": 0
+    },
+    "min_runners": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 0,
+      "minimum": 0
+    },
+    "mode": {
+      "$ref": "#/$defs/CapacityScalingMode",
+      "default": "recommend_only"
+    },
+    "scale_from_events": {
+      "type": "boolean",
+      "default": true
+    },
+    "slots_per_runner": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 1,
+      "minimum": 0
+    },
+    "target_backlog_per_runner": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 2,
+      "minimum": 0
+    },
+    "target_utilization_percent": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 75,
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "CapacityScalingMode": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "recommend_only",
+        "provision_ephemeral"
+      ]
+    }
+  }
+}

@@ -7,7 +7,7 @@
   "models": [
     {
       "provider": "bedrock",
-      "model": "anthropic.claude-3-5-sonnet",
+      "model": "replace-with-indexed-bedrock-model-id",
       "endpoint": null,
       "priority": 30,
       "weight": 1,

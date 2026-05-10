@@ -8,7 +8,7 @@ Use Buf-managed protobuf contracts under `proto/coat/v1` for service boundaries 
 
 Use Postgres as the standard production goal read model:
 
-- goals, tasks, approvals, events, runner decisions, validation scores, and artifact refs live in relational tables;
+- goals, tasks, approvals, events, control-gateway chat turns, runner decisions, validation scores, and artifact refs live in relational tables;
 - JSONB stores the full `GoalState`, `TaskNode`, or worker result payload when an operator needs exact contract replay;
 - pgvector can be added for semantic search over operational records, but Qdrant remains the default dedicated vector memory service;
 - S3-compatible object storage holds large artifacts;
@@ -33,6 +33,13 @@ The local scaffold uses `coat-goal-store` with an append-only JSONL journal. Tha
 - snapshot upsert, durable plan upsert/list/get/compile, event append, goal/task/event/checkpoint query, event-source approval record/list, and artifact record RPCs.
 
 HTTP local development mirrors the artifact and event-source approval RPCs with `POST /goal-store/artifacts` and `POST /goal-store/event-source-approvals`, allowing workers or smoke tests to append artifact, git-result, object-artifact, checkpoint, and ingress approval refs without rewriting a full snapshot.
+
+Control-gateway chat is also a projection record. `POST /goal-store/chat/turns`
+records a user or assistant turn and `GET /goal-store/chat/sessions/{session_id}`
+returns the ordered session history. These rows are not workflow authority; they
+are operator audit and UI continuity state. In Postgres mode they use
+`coat.control_chat_turns`; in JSONL mode they replay from the same goal-store
+journal as other projection records.
 
 `proto/coat/v1/runner.proto` defines:
 
@@ -73,6 +80,7 @@ Recommended Postgres tables:
 - `approvals(approval_id primary key, goal_id, task_id, status, risk, requested_action, payload jsonb)`
 - `event_source_approvals(approval_ref, source_id, source_kind, status, risky, operator, payload jsonb)`
 - `artifacts(goal_id, task_id, kind, uri, sha256, git_ref jsonb, object_ref jsonb, checkpoint_id, checkpoint_kind, checkpoint_label, payload jsonb)`
+- `control_chat_turns(session_id, goal_id, mode, role, content, provider, model, payload jsonb)`
 
 Indexes should cover `goal_id`, `status`, `role`, `subgoal_id`, `runnable`, `kind`, and `updated_at`. Add pgvector only for operational semantic search; do not put long-lived agent memory exclusively in the goal store.
 

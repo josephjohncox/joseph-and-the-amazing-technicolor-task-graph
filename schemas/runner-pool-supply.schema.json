@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunnerPoolSupply",
+  "type": "object",
+  "properties": {
+    "capacity_remaining": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "dispatchable_runners": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "pending_provisions": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "pool_key": {
+      "type": "string"
+    },
+    "registered_runners": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "running_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "stale_runners": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "pool_key",
+    "registered_runners",
+    "dispatchable_runners",
+    "running_tasks",
+    "capacity_remaining",
+    "max_concurrency",
+    "pending_provisions",
+    "stale_runners"
+  ]
+}

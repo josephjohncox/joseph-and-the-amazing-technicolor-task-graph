@@ -508,6 +508,9 @@
         "model": {
           "type": "string"
         },
+        "params": {
+          "$ref": "#/$defs/ModelRuntimeParameters"
+        },
         "priority": {
           "type": "integer",
           "format": "uint32",
@@ -539,7 +542,17 @@
         "long_context",
         "reasoning",
         "embeddings",
-        "local_weights"
+        "local_weights",
+        "web_search"
+      ]
+    },
+    "ModelLatencyClass": {
+      "type": "string",
+      "enum": [
+        "fast",
+        "balanced",
+        "deep",
+        "batch"
       ]
     },
     "ModelProviderKind": {
@@ -557,6 +570,87 @@
         "local_process",
         "other"
       ]
+    },
+    "ModelReasoningEffort": {
+      "type": "string",
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "ModelRuntimeParameters": {
+      "type": "object",
+      "properties": {
+        "extra": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "latency_class": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelLatencyClass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "speed_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temperature_milli": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "top_p_milli": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      }
     },
     "OidcDelegationPolicy": {
       "type": "object",

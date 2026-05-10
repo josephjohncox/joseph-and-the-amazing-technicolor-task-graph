@@ -21,8 +21,8 @@ use axum::{
     routing::{get, post},
 };
 use coat_domain::{
-    RunnerDispatchDecision, RunnerDispatchRequest, RunnerHeartbeat, RunnerRegistration,
-    RunnerStatus,
+    RunnerDispatchDecision, RunnerDispatchRequest, RunnerHeartbeat, RunnerPoolSupply,
+    RunnerRegistration, RunnerScalingDecision, RunnerScalingRequest, RunnerStatus,
 };
 use serde::{Deserialize, Serialize};
 use tokio::{fs::OpenOptions, io::AsyncWriteExt, sync::RwLock};
@@ -131,6 +131,7 @@ fn registry_app(state: AppState) -> Router {
         .route("/runners/status", get(list_runner_status))
         .route("/runners/heartbeat", post(heartbeat))
         .route("/dispatch", post(dispatch))
+        .route("/capacity/plan", post(capacity_plan))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -225,6 +226,65 @@ async fn dispatch(
     Json(RunnerDispatchDecision::choose(request))
 }
 
+async fn capacity_plan(
+    State(state): State<AppState>,
+    Json(mut request): Json<RunnerScalingRequest>,
+) -> Json<RunnerScalingDecision> {
+    if request.supplies.is_empty() {
+        request.supplies = runner_pool_supplies(&state).await;
+    }
+    Json(RunnerScalingDecision::recommend(request))
+}
+
+async fn runner_pool_supplies(state: &AppState) -> Vec<RunnerPoolSupply> {
+    let now = Instant::now();
+    let mut pools = BTreeMap::<String, RunnerPoolSupply>::new();
+    for record in state.runners.read().await.values() {
+        let pool_key = runner_pool_key(&record.registration);
+        let entry = pools.entry(pool_key.clone()).or_insert(RunnerPoolSupply {
+            pool_key,
+            registered_runners: 0,
+            dispatchable_runners: 0,
+            running_tasks: 0,
+            capacity_remaining: 0,
+            max_concurrency: 0,
+            pending_provisions: 0,
+            stale_runners: 0,
+        });
+        let status = record.status(now);
+        entry.registered_runners = entry.registered_runners.saturating_add(1);
+        if status.dispatchable {
+            entry.dispatchable_runners = entry.dispatchable_runners.saturating_add(1);
+        }
+        if status.stale {
+            entry.stale_runners = entry.stale_runners.saturating_add(1);
+        }
+        entry.running_tasks = entry.running_tasks.saturating_add(status.running_tasks);
+        entry.capacity_remaining = entry
+            .capacity_remaining
+            .saturating_add(status.capacity_remaining);
+        entry.max_concurrency = entry
+            .max_concurrency
+            .saturating_add(record.registration.max_concurrency);
+    }
+    pools.into_values().collect()
+}
+
+fn runner_pool_key(registration: &RunnerRegistration) -> String {
+    registration
+        .labels
+        .get("pool")
+        .or_else(|| registration.labels.get("lane"))
+        .cloned()
+        .or_else(|| {
+            registration
+                .roles
+                .first()
+                .map(|role| role.as_str().to_string())
+        })
+        .unwrap_or_else(|| "default".to_string())
+}
+
 async fn append_journal(state: &AppState, entry: RunnerJournalEntry) {
     let Some(path) = &state.journal_path else {
         return;
@@ -238,9 +298,8 @@ async fn append_journal(state: &AppState, entry: RunnerJournalEntry) {
             .append(true)
             .open(path)
             .await?;
-        let line = serde_json::to_string(&entry)?;
+        let line = format!("{}\n", serde_json::to_string(&entry)?);
         file.write_all(line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
         anyhow::Ok(())
     }
     .await;
@@ -258,14 +317,30 @@ fn replay_journal(path: Option<&Path>) -> anyhow::Result<BTreeMap<String, Runner
         return Ok(runners);
     }
     let contents = std::fs::read_to_string(path)?;
+    let mut skipped_lines = 0usize;
+    let mut first_skipped_line = None::<usize>;
+    let mut first_error = None::<String>;
     for (index, line) in contents.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let entry: RunnerJournalEntry = serde_json::from_str(line).map_err(|error| {
-            anyhow::anyhow!("invalid runner journal line {}: {error}", index + 1)
-        })?;
-        apply_journal_entry(&mut runners, entry);
+        match serde_json::from_str::<RunnerJournalEntry>(line) {
+            Ok(entry) => apply_journal_entry(&mut runners, entry),
+            Err(error) => {
+                skipped_lines += 1;
+                first_skipped_line.get_or_insert(index + 1);
+                first_error.get_or_insert_with(|| error.to_string());
+            }
+        }
+    }
+    if skipped_lines > 0 {
+        tracing::warn!(
+            path = %path.display(),
+            skipped_lines,
+            first_skipped_line,
+            first_error,
+            "skipping invalid runner registry journal entries"
+        );
     }
     Ok(runners)
 }
@@ -324,9 +399,10 @@ mod tests {
         http::{Method, Request, StatusCode},
     };
     use coat_domain::{
-        GoalSpec, GoalState, RunnerCapability, RunnerDispatchDecision, RunnerDispatchRequest,
-        RunnerDispatchStatus, RunnerHeartbeat, RunnerLocality, RunnerRegistration, RunnerStatus,
-        WorkerKind,
+        CapacityScalingMode, CapacityScalingPolicy, GoalSpec, GoalState, RunnerCapability,
+        RunnerDispatchDecision, RunnerDispatchRequest, RunnerDispatchStatus, RunnerHeartbeat,
+        RunnerLocality, RunnerPoolDemand, RunnerRegistration, RunnerScalingDecision,
+        RunnerScalingRequest, RunnerScalingStatus, RunnerStatus, WorkerKind,
     };
     use serde::{Serialize, de::DeserializeOwned};
     use tokio::sync::RwLock;
@@ -439,6 +515,23 @@ mod tests {
         assert_eq!(record.registration.endpoint, registration.endpoint);
         assert_eq!(record.running_tasks, 1);
         assert_eq!(record.capacity_remaining, 1);
+    }
+
+    #[test]
+    fn runner_journal_skips_corrupt_lines_and_replays_valid_entries() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("runner-registry-corrupt.jsonl");
+        let registration = registration();
+        let line = serde_json::to_string(&RunnerJournalEntry::Registered {
+            registration: registration.clone(),
+            recorded_at_unix_seconds: unix_now(),
+        })
+        .expect("registration json");
+        std::fs::write(&path, format!("not-json\n{line}\n{{}}\n")).expect("write journal");
+
+        let runners = replay_journal(Some(&path)).expect("corrupt lines should not block replay");
+        let record = runners.get("runner-a").expect("valid runner replayed");
+        assert_eq!(record.registration.endpoint, registration.endpoint);
     }
 
     #[test]
@@ -680,5 +773,73 @@ mod tests {
         assert_eq!(decision.status, RunnerDispatchStatus::Matched);
         assert_eq!(decision.runner_id.as_deref(), Some("active-remote-http"));
         assert_eq!(decision.candidates.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_capacity_plan_uses_runner_heartbeats_and_policy_limits() {
+        let state = AppState {
+            runners: Arc::new(RwLock::new(BTreeMap::new())),
+            journal_path: None,
+        };
+        let app = registry_app(state);
+
+        let mut registration = registration();
+        registration.runner_id = "research-runner".to_string();
+        registration.roles = vec![WorkerKind::Research];
+        registration
+            .labels
+            .insert("pool".to_string(), "research".to_string());
+        registration.max_concurrency = 2;
+        let response: RunnerRegistration = post_json(app.clone(), "/runners", &registration).await;
+        assert_eq!(response.runner_id, "research-runner");
+
+        let _: serde_json::Value = post_json(
+            app.clone(),
+            "/runners/heartbeat",
+            &RunnerHeartbeat {
+                runner_id: registration.runner_id.clone(),
+                node_id: registration.node_id.clone(),
+                running_tasks: 2,
+                capacity_remaining: 0,
+            },
+        )
+        .await;
+
+        let decision: RunnerScalingDecision = post_json(
+            app,
+            "/capacity/plan",
+            &RunnerScalingRequest {
+                generated_at_unix_seconds: 1,
+                policy: CapacityScalingPolicy {
+                    enabled: true,
+                    mode: CapacityScalingMode::ProvisionEphemeral,
+                    max_runners: 4,
+                    max_scale_up_step: 1,
+                    slots_per_runner: 2,
+                    target_backlog_per_runner: 2,
+                    ..CapacityScalingPolicy::default()
+                },
+                demands: vec![RunnerPoolDemand {
+                    pool_key: "research".to_string(),
+                    worker: Some(WorkerKind::Research),
+                    required_capabilities: Vec::new(),
+                    required_labels: BTreeMap::new(),
+                    queued_tasks: 5,
+                    running_tasks: 2,
+                    blocked_tasks: 0,
+                    unmatched_tasks: 0,
+                    event_backlog: 1,
+                    priority_boost: 0,
+                }],
+                supplies: Vec::new(),
+            },
+        )
+        .await;
+
+        assert_eq!(decision.status, RunnerScalingStatus::ProvisionRecommended);
+        let pool = decision.pool_decisions.first().expect("pool decision");
+        assert_eq!(pool.pool_key, "research");
+        assert_eq!(pool.current_runners, 0);
+        assert_eq!(pool.provision_runners, 1);
     }
 }

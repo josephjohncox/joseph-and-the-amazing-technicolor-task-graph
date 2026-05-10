@@ -26,6 +26,9 @@
     "local_deploy": {
       "$ref": "#/$defs/CoatLocalDeployConfig"
     },
+    "model_routing": {
+      "$ref": "#/$defs/CoatModelRoutingConfig"
+    },
     "paths": {
       "$ref": "#/$defs/CoatConfigPaths"
     },
@@ -35,11 +38,103 @@
         "$ref": "#/$defs/CoatProfileConfig"
       }
     },
+    "runner_capacity": {
+      "$ref": "#/$defs/CoatRunnerCapacityConfig"
+    },
     "service_endpoints": {
       "$ref": "#/$defs/CoatServiceEndpoints"
+    },
+    "tool_routing": {
+      "$ref": "#/$defs/CoatToolRoutingConfig"
     }
   },
   "$defs": {
+    "CapacityScalingMode": {
+      "type": "string",
+      "enum": [
+        "manual",
+        "recommend_only",
+        "provision_ephemeral"
+      ]
+    },
+    "CapacityScalingPolicy": {
+      "description": "Bounded policy for dynamically adding or retiring runner capacity.\n\nThe coordinator computes durable demand from runnable tasks, events, and\nqueue processors. A provisioner may realize the resulting recommendations,\nbut only within these limits and the surrounding approval policy.",
+      "type": "object",
+      "properties": {
+        "cooldown_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 300,
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "event_weight": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "headroom_runners": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "max_runners": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 8,
+          "minimum": 0
+        },
+        "max_scale_down_step": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "max_scale_up_step": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 2,
+          "minimum": 0
+        },
+        "min_runners": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/CapacityScalingMode",
+          "default": "recommend_only"
+        },
+        "scale_from_events": {
+          "type": "boolean",
+          "default": true
+        },
+        "slots_per_runner": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
+        "target_backlog_per_runner": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 2,
+          "minimum": 0
+        },
+        "target_utilization_percent": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 75,
+          "minimum": 0
+        }
+      }
+    },
     "CoatCliConfig": {
       "type": "object",
       "properties": {
@@ -259,6 +354,86 @@
         "aks"
       ]
     },
+    "CoatLlmGatewayConfig": {
+      "type": "object",
+      "properties": {
+        "auth_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "chat_completions_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "chat_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "embedding_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoatLlmGatewayProvider"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "research_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        },
+        "work_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CoatLlmGatewayProvider": {
+      "type": "string",
+      "enum": [
+        "bifrost",
+        "lite_llm",
+        "open_router",
+        "docker_model_gateway",
+        "open_ai_compatible",
+        "custom"
+      ]
+    },
     "CoatLocalDeployConfig": {
       "type": "object",
       "properties": {
@@ -293,6 +468,39 @@
           ]
         }
       }
+    },
+    "CoatModelRoutingConfig": {
+      "description": "Non-secret model routing defaults shared by CLI setup, runners, and UI.\n\nStore raw provider tokens in env vars, Kubernetes Secrets, external secret\nstores, or brokered leases. This config only records which env/secret refs\nshould be resolved at runtime and which model lanes should prefer a shared\ngateway versus direct provider credentials.",
+      "type": "object",
+      "properties": {
+        "direct_provider_secret_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        },
+        "gateway": {
+          "$ref": "#/$defs/CoatLlmGatewayConfig"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoatModelRoutingMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "CoatModelRoutingMode": {
+      "type": "string",
+      "enum": [
+        "direct_providers",
+        "shared_gateway",
+        "hybrid"
+      ]
     },
     "CoatOperatorDefaults": {
       "type": "object",
@@ -341,14 +549,23 @@
         "local_deploy": {
           "$ref": "#/$defs/CoatLocalDeployConfig"
         },
+        "model_routing": {
+          "$ref": "#/$defs/CoatModelRoutingConfig"
+        },
         "name": {
           "type": "string"
         },
         "paths": {
           "$ref": "#/$defs/CoatConfigPaths"
         },
+        "runner_capacity": {
+          "$ref": "#/$defs/CoatRunnerCapacityConfig"
+        },
         "service_endpoints": {
           "$ref": "#/$defs/CoatServiceEndpoints"
+        },
+        "tool_routing": {
+          "$ref": "#/$defs/CoatToolRoutingConfig"
         }
       },
       "required": [
@@ -410,6 +627,28 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "CoatRunnerCapacityConfig": {
+      "description": "Non-secret capacity scaling defaults for runner pools.\n\nThis is operator policy, not live task state. The coordinator derives actual\ndemand from durable tasks and event queues, then applies these caps before\nasking a provisioner to add ephemeral runners or drain idle capacity.",
+      "type": "object",
+      "properties": {
+        "default_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapacityScalingPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lane_policies": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/CapacityScalingPolicy"
+          }
         }
       }
     },
@@ -477,6 +716,221 @@
           ]
         }
       }
+    },
+    "CoatToolRoutingConfig": {
+      "description": "Non-secret tool routing defaults shared by MCP servers, setup flows, and runners.\n\nThis config decides which durable route is allowed for tool-shaped work such\nas web/reference search. It does not store provider tokens; use `auth_env`,\n`secret_refs`, or an external broker.",
+      "type": "object",
+      "properties": {
+        "web_search": {
+          "$ref": "#/$defs/CoatWebSearchRoutingConfig"
+        }
+      }
+    },
+    "CoatWebSearchRoutingConfig": {
+      "type": "object",
+      "properties": {
+        "auth_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearchRoutingMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebSearchProviderKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RunnerCapability"
+          }
+        },
+        "required_model_features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelFeature"
+          }
+        },
+        "route_via_runner_registry": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "secret_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SecretRef"
+          }
+        }
+      }
+    },
+    "ModelFeature": {
+      "type": "string",
+      "enum": [
+        "tool_use",
+        "json_schema",
+        "streaming",
+        "vision",
+        "long_context",
+        "reasoning",
+        "embeddings",
+        "local_weights",
+        "web_search"
+      ]
+    },
+    "RunnerCapability": {
+      "type": "string",
+      "enum": [
+        "code",
+        "research",
+        "web_search",
+        "test",
+        "review",
+        "mcp_tools",
+        "durable_child_tasks",
+        "oidc_user_delegation",
+        "local_commands",
+        "git_cli",
+        "docker_cli",
+        "helm_cli",
+        "kubernetes_cli",
+        "build_tooling",
+        "package_manager_cli",
+        "workspace_sandbox",
+        "container_sandbox",
+        "gvisor_sandbox",
+        "firecracker_sandbox",
+        "kata_sandbox",
+        "kubernetes_job_sandbox",
+        "namespace_jail_sandbox",
+        "provider_sandbox",
+        "git_worktree",
+        "git",
+        "object_storage",
+        "s3_compatible",
+        "browser",
+        "notifications",
+        "local_models",
+        "vllm",
+        "open_ai_compatible",
+        "gpu",
+        "ephemeral_provisioning",
+        "network_open",
+        "formal_verification"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "WebSearchProviderKind": {
+      "type": "string",
+      "enum": [
+        "agent_native",
+        "mcp_gateway",
+        "search_api",
+        "custom",
+        "other"
+      ]
+    },
+    "WebSearchRoutingMode": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "coordinator_task",
+        "runner_registry"
+      ]
     }
   }
 }

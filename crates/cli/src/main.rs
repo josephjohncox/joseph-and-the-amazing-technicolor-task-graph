@@ -16,24 +16,26 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
+    time::Duration,
 };
 
 use anyhow::{Context, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use coat_domain::{
     BranchRequest, BranchSelectionRequest, ChildTaskRequest, CoatCliConfig, CoatCloudConfig,
-    CoatConfig, CoatConfigPaths, CoatKubernetesConfig, CoatLocalDeployConfig, CoatOperatorDefaults,
-    CoatProfileConfig, CoatProjectConfig, CoatRestateCloudConfig, CoatServiceEndpoints,
-    CoatUserConfig, ControlLoopMode, EventSource, ExternalEvent, GoalAuthoringGuidance, GoalPlan,
-    GoalRecord, GoalSpec, GraphColorRef, HumanApproval, MemoryContextRequest,
-    MemoryEditPreviewRequest, MemoryEditRequest, MemoryJoinRequest, MemoryRepairRequest,
-    MemoryRetractRequest, MemorySearchRequest, MemoryWriteRequest, NetworkAccess,
-    NotificationRequest, PlanCandidateSelectionRequest, PlanCandidateVoteRequest,
-    PlanCompileRequest, PlanDraftRequest, PlanQuestion, PlanQuestionStatus, PlanRevisionRequest,
-    PlanningMode, RestartRequest, ReviewDoctrine, ReviewDoctrinePreset, RunnerDispatchRequest,
-    RunnerRegistration, SandboxLaunchPlan, SandboxResourcePlan, SandboxSecurityPlan,
-    StandardReviewCheck, SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority,
-    TaskPurpose, TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
+    CoatConfig, CoatConfigPaths, CoatKubernetesConfig, CoatLlmGatewayConfig, CoatLocalDeployConfig,
+    CoatModelRoutingConfig, CoatOperatorDefaults, CoatProfileConfig, CoatProjectConfig,
+    CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopMode, EventSource,
+    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalRecord, GoalSpec, GraphColorRef,
+    HumanApproval, MemoryContextRequest, MemoryEditPreviewRequest, MemoryEditRequest,
+    MemoryJoinRequest, MemoryRepairRequest, MemoryRetractRequest, MemorySearchRequest,
+    MemoryWriteRequest, NetworkAccess, NotificationRequest, PlanCandidateSelectionRequest,
+    PlanCandidateVoteRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion,
+    PlanQuestionStatus, PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine,
+    ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration, RunnerScalingRequest,
+    SandboxLaunchPlan, SandboxResourcePlan, SandboxSecurityPlan, StandardReviewCheck,
+    SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose,
+    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
 };
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use uuid::Uuid;
@@ -59,6 +61,11 @@ const DEFAULT_MEMORY_GATEWAY_URL: &str = "http://localhost:9087";
 const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
 const DEFAULT_EVENT_GATEWAY_URL: &str = "http://localhost:9089";
 const DEFAULT_CONTROL_MCP_URL: &str = "http://localhost:9090/mcp";
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+const DEFAULT_PROJECT_MODEL_INDEX: &str = ".coat/model-index.json";
+const DEFAULT_USER_MODEL_INDEX: &str = "~/.coat/cache/models.dev.api.json";
+const MAX_INDEXED_MODEL_CHOICES: usize = 40;
+const MODEL_INDEX_REFRESH_DEBOUNCE_SECONDS: u64 = 60 * 60;
 
 static CONFIG_PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
 
@@ -82,7 +89,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    #[command(about = "Open a guided dialogue for common operator workflows")]
+    #[command(about = "Open guided setup and human-queue workflows")]
     Guide(GuideArgs),
     #[command(about = "Plan, inspect, and compile durable planning artifacts")]
     Plan(PlanCommand),
@@ -430,6 +437,8 @@ enum RunnerSubcommand {
     Status(RunnerListArgs),
     Register(RunnerRegisterArgs),
     Dispatch(RunnerDispatchArgs),
+    #[command(about = "Ask the runner registry for a bounded capacity recommendation")]
+    CapacityPlan(RunnerCapacityPlanArgs),
 }
 
 #[derive(Debug, Args)]
@@ -609,6 +618,26 @@ struct RunnerDispatchArgs {
     registry_url: String,
     #[arg(long)]
     file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct RunnerCapacityPlanArgs {
+    #[arg(
+        long,
+        env = "COAT_RUNNER_REGISTRY",
+        default_value = "http://localhost:9085"
+    )]
+    registry_url: String,
+    #[arg(
+        long,
+        help = "Demand/supply request JSON; policy may be omitted to use config.runner_capacity"
+    )]
+    file: PathBuf,
+    #[arg(
+        long,
+        help = "Do not fill an omitted/default request policy from COAT config"
+    )]
+    ignore_config_policy: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1056,6 +1085,10 @@ struct ReleaseCutArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Lint, render, install, rollback, and package the jattg Helm chart",
+    after_help = "Examples:\n  coat deploy chart lint\n  coat deploy chart template --output /tmp/jattg.yaml\n  coat deploy chart upgrade --values path/to/operator-values.yaml --wait\n  coat deploy chart package --chart-version 0.0.2 --app-version 0.0.2"
+)]
 struct HelmCommand {
     #[command(subcommand)]
     command: HelmSubcommand,
@@ -1063,10 +1096,15 @@ struct HelmCommand {
 
 #[derive(Debug, Subcommand)]
 enum HelmSubcommand {
+    #[command(about = "Run helm lint against the jattg chart")]
     Lint(HelmLintArgs),
+    #[command(about = "Render the jattg Helm chart with optional values and set overrides")]
     Template(HelmTemplateArgs),
+    #[command(about = "Install or upgrade the jattg Helm release")]
     Upgrade(HelmUpgradeArgs),
+    #[command(about = "Rollback the jattg Helm release")]
     Rollback(HelmRollbackArgs),
+    #[command(about = "Package the jattg Helm chart into dist artifacts")]
     Package(HelmPackageArgs),
 }
 
@@ -1174,9 +1212,133 @@ struct SetupCommand {
 
 #[derive(Debug, Subcommand)]
 enum SetupSubcommand {
+    #[command(about = "Run provider device/browser login flows and optional local preflight")]
+    Login(LoginArgs),
+    #[command(about = "Run AWS SSO login, update local env, and optionally preflight")]
+    Sso(SsoArgs),
+    #[command(about = "Refresh or inspect the external model index used by setup wizards")]
+    ModelIndex(ModelIndexCommand),
+    #[command(about = "Write or inspect COAT project and user config")]
     Config(ConfigSetupArgs),
+    #[command(about = "Create local provider env files and guided auth setup")]
     LocalAuth(LocalAuthArgs),
+    #[command(about = "Install control gateway MCP and skill integration")]
     ChatClient(ChatClientArgs),
+}
+
+#[derive(Debug, Args)]
+struct LoginArgs {
+    #[arg(long, help = "Run Codex device/browser login on this runner node")]
+    codex: bool,
+    #[arg(long, help = "Run Claude Code auth login on this runner node")]
+    claude: bool,
+    #[arg(
+        long,
+        value_name = "EMAIL",
+        help = "Pass an email prefill to Claude Code auth login"
+    )]
+    claude_email: Option<String>,
+    #[arg(long, help = "Force Claude Code organization SSO during auth login")]
+    claude_sso: bool,
+    #[arg(
+        long,
+        help = "Use Claude Console auth for API usage billing instead of subscription auth"
+    )]
+    claude_console: bool,
+    #[arg(long, help = "Run Hugging Face CLI login on this runner node")]
+    hf: bool,
+    #[arg(
+        long,
+        value_name = "MODEL",
+        help = "Pull an Ollama model needed by local model-provider runners"
+    )]
+    ollama_model: Vec<String>,
+    #[arg(
+        long,
+        default_value = "infra/compose/local-providers.env",
+        help = "Provider env file to use when --preflight is enabled"
+    )]
+    env_file: PathBuf,
+    #[arg(long, help = "Run local Compose preflight after login/setup actions")]
+    preflight: bool,
+    #[arg(long, help = "Allow intentionally stubbed runners during preflight")]
+    allow_stub_runners: bool,
+    #[arg(long, help = "Print provider commands without running them")]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct SsoArgs {
+    #[arg(long, help = "AWS profile to pass to `aws sso login --profile`")]
+    profile: Option<String>,
+    #[arg(
+        long,
+        default_value = "infra/compose/local-providers.env",
+        help = "Provider env file to update or preflight"
+    )]
+    env_file: PathBuf,
+    #[arg(long, help = "Write AWS_PROFILE and auth-mode values to the env file")]
+    write_env: bool,
+    #[arg(
+        long,
+        help = "Also configure the model-provider lane for live Bedrock routing"
+    )]
+    bedrock_live: bool,
+    #[arg(long, help = "Run local Compose preflight after AWS SSO login")]
+    preflight: bool,
+    #[arg(long, help = "Allow intentionally stubbed runners during preflight")]
+    allow_stub_runners: bool,
+    #[arg(
+        long,
+        help = "Print AWS SSO and env/preflight actions without running them"
+    )]
+    dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+struct ModelIndexCommand {
+    #[command(subcommand)]
+    command: ModelIndexSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelIndexSubcommand {
+    #[command(about = "Download the models.dev model catalog into the local COAT cache")]
+    Refresh(ModelIndexRefreshArgs),
+    #[command(about = "Show indexed model choices for a provider")]
+    Show(ModelIndexShowArgs),
+}
+
+#[derive(Debug, Args)]
+struct ModelIndexRefreshArgs {
+    #[arg(
+        long,
+        default_value = MODELS_DEV_API_URL,
+        help = "Model catalog URL; defaults to the public models.dev API"
+    )]
+    url: String,
+    #[arg(
+        long,
+        default_value = DEFAULT_USER_MODEL_INDEX,
+        help = "Where to write the downloaded model index"
+    )]
+    output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct ModelIndexShowArgs {
+    #[arg(
+        long,
+        help = "Provider id from models.dev, such as openai or amazon-bedrock"
+    )]
+    provider: Option<String>,
+    #[arg(long, default_value_t = 20, help = "Maximum models to print")]
+    limit: usize,
+    #[arg(
+        long,
+        help = "Show embedding model choices instead of general work-model choices"
+    )]
+    embeddings: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1212,6 +1374,10 @@ enum HumanSubcommand {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Manage local, Kubernetes, Helm, and Restate deployment workflows",
+    after_help = "Examples:\n  coat deploy local preflight --allow-stub-runners\n  coat deploy local up --env-file infra/compose/local-providers.env\n  coat deploy cluster render --output infra/k8s/rendered.yaml\n  coat deploy chart template --output /tmp/jattg.yaml\n  coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080"
+)]
 struct DeployCommand {
     #[command(subcommand)]
     command: DeploySubcommand,
@@ -1219,9 +1385,13 @@ struct DeployCommand {
 
 #[derive(Debug, Subcommand)]
 enum DeploySubcommand {
+    #[command(about = "Run and inspect the local Docker Compose stack")]
     Local(ComposeCommand),
+    #[command(about = "Render, apply, and inspect Kubernetes manifests and executor Jobs")]
     Cluster(K8sCommand),
+    #[command(about = "Lint, render, install, rollback, and package the jattg Helm chart")]
     Chart(HelmCommand),
+    #[command(about = "Prepare Restate Cloud env, tunnel, and service registration commands")]
     Restate(RestateCommand),
 }
 
@@ -1295,6 +1465,10 @@ impl Default for ChatClientArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Run and inspect the local Docker Compose stack",
+    after_help = "Examples:\n  coat deploy local preflight --allow-stub-runners\n  coat deploy local up --allow-stub-runners\n  coat deploy local config --env-file infra/compose/local-providers.env\n  coat deploy local down"
+)]
 struct ComposeCommand {
     #[command(subcommand)]
     command: ComposeSubcommand,
@@ -1302,9 +1476,13 @@ struct ComposeCommand {
 
 #[derive(Debug, Subcommand)]
 enum ComposeSubcommand {
+    #[command(about = "Check initialization, Docker, env files, runner modes, and model setup")]
     Preflight(ComposePreflightArgs),
+    #[command(about = "Run docker compose up after preflight unless --skip-preflight is set")]
     Up(ComposeUpArgs),
+    #[command(about = "Print the resolved docker compose config")]
     Config(ComposeConfigArgs),
+    #[command(about = "Stop the local Compose stack")]
     Down(ComposeDownArgs),
 }
 
@@ -1409,6 +1587,10 @@ struct ComposeDownArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Render, apply, and inspect Kubernetes manifests and executor Jobs",
+    after_help = "Examples:\n  coat deploy cluster render --output infra/k8s/rendered.yaml\n  coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client\n  coat deploy cluster status --timeout 120s\n  coat deploy cluster executor-job render --launch-plan examples/sandbox-launch-plan-kubernetes-job.json --output /tmp/executor-job.json"
+)]
 struct K8sCommand {
     #[command(subcommand)]
     command: K8sSubcommand,
@@ -1416,14 +1598,20 @@ struct K8sCommand {
 
 #[derive(Debug, Subcommand)]
 enum K8sSubcommand {
+    #[command(about = "Render the base Kubernetes fixture manifest")]
     Render(RenderArgs),
+    #[command(about = "Apply or dry-run a Kubernetes manifest with kubectl")]
     Apply(K8sApplyArgs),
+    #[command(about = "Show rollout status for COAT Kubernetes deployments")]
     Status(K8sStatusArgs),
+    #[command(about = "Render or apply operator fixture Jobs for ephemeral runners")]
     EphemeralJobs(EphemeralJobsCommand),
+    #[command(about = "Render or apply one sandbox executor Job from a launch plan")]
     ExecutorJob(ExecutorJobCommand),
 }
 
 #[derive(Debug, Args)]
+#[command(about = "Render or apply operator fixture Jobs for ephemeral runners")]
 struct EphemeralJobsCommand {
     #[command(subcommand)]
     command: EphemeralJobsSubcommand,
@@ -1431,11 +1619,14 @@ struct EphemeralJobsCommand {
 
 #[derive(Debug, Subcommand)]
 enum EphemeralJobsSubcommand {
+    #[command(about = "Render ephemeral runner Job fixtures")]
     Render(EphemeralJobsRenderArgs),
+    #[command(about = "Apply or dry-run ephemeral runner Job fixtures")]
     Apply(EphemeralJobsApplyArgs),
 }
 
 #[derive(Debug, Args)]
+#[command(about = "Render or apply one sandbox executor Job from a launch plan")]
 struct ExecutorJobCommand {
     #[command(subcommand)]
     command: ExecutorJobSubcommand,
@@ -1443,11 +1634,17 @@ struct ExecutorJobCommand {
 
 #[derive(Debug, Subcommand)]
 enum ExecutorJobSubcommand {
+    #[command(about = "Render a bounded Kubernetes Job from sandbox-launch-plan.json")]
     Render(ExecutorJobRenderArgs),
+    #[command(about = "Render, then apply or dry-run a sandbox executor Job")]
     Apply(ExecutorJobApplyArgs),
 }
 
 #[derive(Debug, Args)]
+#[command(
+    about = "Prepare Restate Cloud env, tunnel, and service registration commands",
+    after_help = "Examples:\n  coat deploy restate cloud-env --tunnel-name jattg-personal\n  coat deploy restate tunnel-docker --environment-id env_... --signing-public-key publickeyv1_...\n  coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080"
+)]
 struct RestateCommand {
     #[command(subcommand)]
     command: RestateSubcommand,
@@ -1455,8 +1652,11 @@ struct RestateCommand {
 
 #[derive(Debug, Subcommand)]
 enum RestateSubcommand {
+    #[command(about = "Print a Restate Cloud env file template")]
     CloudEnv(RestateCloudEnvArgs),
+    #[command(about = "Print a docker command for the Restate Cloud tunnel client")]
     TunnelDocker(RestateTunnelDockerArgs),
+    #[command(about = "Register the coordinator service with Restate Cloud through the tunnel")]
     RegisterCloud(RestateRegisterCloudArgs),
 }
 
@@ -1636,32 +1836,279 @@ struct RestateRegisterCloudArgs {
     dry_run: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LocalModelProviderPreset {
+    label: &'static str,
+    kind: &'static str,
+    default_endpoint: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModelPreset {
+    label: String,
+    model: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModelParamPreset {
+    label: &'static str,
+    latency_class: Option<&'static str>,
+    speed_tier: Option<&'static str>,
+    temperature: Option<&'static str>,
+    top_p: Option<&'static str>,
+    max_output_tokens: Option<&'static str>,
+    reasoning_effort: Option<&'static str>,
+    timeout_seconds: Option<&'static str>,
+    custom: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModelParamValues {
+    latency_class: Option<String>,
+    speed_tier: Option<String>,
+    temperature: Option<String>,
+    top_p: Option<String>,
+    max_output_tokens: Option<String>,
+    reasoning_effort: Option<String>,
+    timeout_seconds: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ModelsDevIndex {
+    #[serde(flatten)]
+    providers: BTreeMap<String, ModelsDevProvider>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ModelsDevProvider {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    models: BTreeMap<String, ModelsDevModel>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ModelsDevModel {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    family: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    tool_call: Option<bool>,
+    #[serde(default)]
+    reasoning: Option<bool>,
+    #[serde(default)]
+    structured_output: Option<bool>,
+    #[serde(default)]
+    open_weights: Option<bool>,
+    #[serde(default)]
+    last_updated: Option<String>,
+    #[serde(default)]
+    release_date: Option<String>,
+    #[serde(default)]
+    modalities: Option<ModelsDevModelModalities>,
+    #[serde(default)]
+    limit: Option<ModelsDevModelLimit>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ModelsDevModelModalities {
+    #[serde(default)]
+    input: Vec<String>,
+    #[serde(default)]
+    output: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ModelsDevModelLimit {
+    #[serde(default)]
+    context: Option<u64>,
+    #[serde(default)]
+    output: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenAiModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiModelItem>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenAiModelItem {
+    id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OllamaTagsResponse {
+    #[serde(default)]
+    models: Vec<OllamaTagItem>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OllamaTagItem {
+    name: String,
+}
+
+const CUSTOM_MODEL_ID: &str = "__coat_custom_model_id__";
+
+const LOCAL_MODEL_PROVIDER_PRESETS: [LocalModelProviderPreset; 4] = [
+    LocalModelProviderPreset {
+        label: "Ollama on host.docker.internal:11434",
+        kind: "ollama",
+        default_endpoint: "http://host.docker.internal:11434/v1",
+    },
+    LocalModelProviderPreset {
+        label: "vLLM OpenAI-compatible server on host.docker.internal:8000",
+        kind: "vllm",
+        default_endpoint: "http://host.docker.internal:8000/v1",
+    },
+    LocalModelProviderPreset {
+        label: "llama.cpp OpenAI-compatible server on host.docker.internal:8080",
+        kind: "llama_cpp",
+        default_endpoint: "http://host.docker.internal:8080/v1",
+    },
+    LocalModelProviderPreset {
+        label: "Custom OpenAI-compatible server",
+        kind: "open_ai_compatible",
+        default_endpoint: "http://host.docker.internal:8000/v1",
+    },
+];
+
+const MODEL_PARAM_PRESETS: [ModelParamPreset; 9] = [
+    ModelParamPreset {
+        label: "Fast / low latency",
+        latency_class: Some("fast"),
+        speed_tier: None,
+        temperature: Some("0.2"),
+        top_p: Some("0.9"),
+        max_output_tokens: Some("2048"),
+        reasoning_effort: Some("low"),
+        timeout_seconds: Some("60"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Fast completions / chat",
+        latency_class: Some("fast"),
+        speed_tier: None,
+        temperature: Some("0.3"),
+        top_p: Some("0.9"),
+        max_output_tokens: Some("2048"),
+        reasoning_effort: None,
+        timeout_seconds: Some("45"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Speed tier / fastest provider lane",
+        latency_class: Some("fast"),
+        speed_tier: Some("speed"),
+        temperature: Some("0.2"),
+        top_p: Some("0.9"),
+        max_output_tokens: Some("2048"),
+        reasoning_effort: Some("low"),
+        timeout_seconds: Some("60"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Balanced general work",
+        latency_class: Some("balanced"),
+        speed_tier: None,
+        temperature: Some("0.3"),
+        top_p: Some("0.95"),
+        max_output_tokens: Some("4096"),
+        reasoning_effort: Some("medium"),
+        timeout_seconds: Some("120"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Deep review / reasoning",
+        latency_class: Some("deep"),
+        speed_tier: None,
+        temperature: Some("0.2"),
+        top_p: Some("0.95"),
+        max_output_tokens: Some("8192"),
+        reasoning_effort: Some("high"),
+        timeout_seconds: Some("300"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "XHigh reasoning / formal review",
+        latency_class: Some("deep"),
+        speed_tier: None,
+        temperature: Some("0.1"),
+        top_p: Some("0.95"),
+        max_output_tokens: Some("16384"),
+        reasoning_effort: Some("xhigh"),
+        timeout_seconds: Some("600"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Deterministic JSON / tool output",
+        latency_class: Some("balanced"),
+        speed_tier: None,
+        temperature: Some("0"),
+        top_p: Some("1"),
+        max_output_tokens: Some("4096"),
+        reasoning_effort: Some("low"),
+        timeout_seconds: Some("120"),
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Leave provider defaults unset",
+        latency_class: None,
+        speed_tier: None,
+        temperature: None,
+        top_p: None,
+        max_output_tokens: None,
+        reasoning_effort: None,
+        timeout_seconds: None,
+        custom: false,
+    },
+    ModelParamPreset {
+        label: "Custom runtime params",
+        latency_class: None,
+        speed_tier: None,
+        temperature: None,
+        top_p: None,
+        max_output_tokens: None,
+        reasoning_effort: None,
+        timeout_seconds: None,
+        custom: true,
+    },
+];
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let _ = CONFIG_PROFILE_OVERRIDE.set(cli.config_profile.clone());
-    match cli
-        .command
-        .unwrap_or(Commands::Guide(GuideArgs { print: false }))
-    {
-        command => {
-            warn_if_project_not_initialized(&command)?;
-            match command {
-                Commands::Guide(args) => guide(args).await,
-                Commands::Init(args) => init(args),
-                Commands::Plan(args) => plan(args).await,
-                Commands::Goal(args) => goal(args).await,
-                Commands::Human(args) => human(args).await,
-                Commands::Deploy(args) => deploy(args),
-                Commands::Event(args) => event(args).await,
-                Commands::Runner(args) => runner(args).await,
-                Commands::Memory(args) => memory(args).await,
-                Commands::Store(args) => store(args).await,
-                Commands::Sandbox(args) => sandbox(args).await,
-                Commands::Release(args) => release(args),
-                Commands::Setup(args) => setup(args),
-            }
-        }
+
+    let Some(command) = cli.command else {
+        let mut command = Cli::command();
+        command.print_long_help()?;
+        println!();
+        return Ok(());
+    };
+
+    warn_if_project_not_initialized(&command)?;
+    match command {
+        Commands::Guide(args) => guide(args).await,
+        Commands::Init(args) => init(args),
+        Commands::Plan(args) => plan(args).await,
+        Commands::Goal(args) => goal(args).await,
+        Commands::Human(args) => human(args).await,
+        Commands::Deploy(args) => deploy(args),
+        Commands::Event(args) => event(args).await,
+        Commands::Runner(args) => runner(args).await,
+        Commands::Memory(args) => memory(args).await,
+        Commands::Store(args) => store(args).await,
+        Commands::Sandbox(args) => sandbox(args).await,
+        Commands::Release(args) => release(args),
+        Commands::Setup(args) => setup(args).await,
     }
 }
 
@@ -1672,15 +2119,12 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
     }
 
     let theme = ColorfulTheme::default();
-    println!("COAT guided operator dialogue");
+    println!("COAT guided setup and human-queue dialogue");
     let choices = [
-        "Draft a durable plan JSON",
-        "Draft a durable goal JSON",
-        "Inspect latest goal progress",
         "Show the human queue",
         "Approve or reject a request",
-        "Start the local Compose stack",
         "Configure COAT project/user config",
+        "Run provider login/SSO setup",
         "Configure local provider auth",
         "Install chat-client MCP/skill integration",
         "Show active plan follow-ups",
@@ -1693,22 +2137,7 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
         .interact()?;
 
     match choice {
-        0 => guided_plan_draft(&theme).await,
-        1 => guided_goal_draft(&theme),
-        2 => {
-            goal(GoalCommand {
-                command: GoalSubcommand::Progress(GoalIdArgs {
-                    restate_ingress: "http://localhost:8080".to_string(),
-                    selector: GoalSelectorArgs {
-                        goal_id: None,
-                        latest: true,
-                        goal_store_url: "http://localhost:9088".to_string(),
-                    },
-                }),
-            })
-            .await
-        }
-        3 => {
+        0 => {
             human(HumanCommand {
                 command: HumanSubcommand::Notify(NotifyArgs {
                     notifier_url: "http://localhost:9086".to_string(),
@@ -1720,50 +2149,58 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
             })
             .await
         }
-        4 => guided_approval(&theme).await,
-        5 => {
-            if Confirm::with_theme(&theme)
-                .with_prompt("Run `coat deploy local up --allow-stub-runners` now?")
-                .default(true)
-                .interact()?
-            {
-                let mut args = ComposeUpArgs::default();
-                args.allow_stub_runners = true;
-                deploy(DeployCommand {
-                    command: DeploySubcommand::Local(ComposeCommand {
-                        command: ComposeSubcommand::Up(args),
-                    }),
-                })
-            } else {
-                println!("Run later with: coat deploy local preflight");
-                println!("Then run: coat deploy local up --allow-stub-runners");
-                Ok(())
-            }
+        1 => guided_approval(&theme).await,
+        2 => {
+            setup(SetupCommand {
+                command: SetupSubcommand::Config(ConfigSetupArgs {
+                    write_project: false,
+                    write_user: false,
+                    show: false,
+                    list_profiles: false,
+                    profile: None,
+                    force: false,
+                    project_root: PathBuf::from("."),
+                    user_config: PathBuf::from(DEFAULT_USER_CONFIG),
+                }),
+            })
+            .await
         }
-        6 => setup(SetupCommand {
-            command: SetupSubcommand::Config(ConfigSetupArgs {
-                write_project: false,
-                write_user: false,
-                show: false,
-                list_profiles: false,
-                profile: None,
-                force: false,
-                project_root: PathBuf::from("."),
-                user_config: PathBuf::from(DEFAULT_USER_CONFIG),
-            }),
-        }),
-        7 => setup(SetupCommand {
-            command: SetupSubcommand::LocalAuth(LocalAuthArgs {
-                output: PathBuf::from("infra/compose/local-providers.env"),
-                write_env: false,
-                check: false,
-                print_commands: false,
-            }),
-        }),
-        8 => setup(SetupCommand {
-            command: SetupSubcommand::ChatClient(ChatClientArgs::default()),
-        }),
-        9 => {
+        3 => {
+            setup(SetupCommand {
+                command: SetupSubcommand::Login(LoginArgs {
+                    codex: false,
+                    claude: false,
+                    claude_email: None,
+                    claude_sso: false,
+                    claude_console: false,
+                    hf: false,
+                    ollama_model: Vec::new(),
+                    env_file: PathBuf::from("infra/compose/local-providers.env"),
+                    preflight: false,
+                    allow_stub_runners: false,
+                    dry_run: false,
+                }),
+            })
+            .await
+        }
+        4 => {
+            setup(SetupCommand {
+                command: SetupSubcommand::LocalAuth(LocalAuthArgs {
+                    output: PathBuf::from("infra/compose/local-providers.env"),
+                    write_env: false,
+                    check: false,
+                    print_commands: false,
+                }),
+            })
+            .await
+        }
+        5 => {
+            setup(SetupCommand {
+                command: SetupSubcommand::ChatClient(ChatClientArgs::default()),
+            })
+            .await
+        }
+        6 => {
             plan(PlanCommand {
                 command: PlanSubcommand::FollowUps(FollowUpsArgs {
                     dir: PathBuf::from("docs/exec-plans/active"),
@@ -1772,6 +2209,10 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
                 }),
             })
             .await
+        }
+        7 => {
+            print_command_map();
+            Ok(())
         }
         _ => {
             print_command_map();
@@ -1782,7 +2223,7 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
 
 fn print_command_map() {
     println!("COAT command map");
-    println!("  coat guide                         interactive workflow picker");
+    println!("  coat guide                         guided setup and human-queue picker");
     println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
     println!("  coat goal <draft|lint|submit|list|progress|tasks|steer|branch|restart|cancel>");
     println!("  coat human <approve|notify>");
@@ -1790,81 +2231,11 @@ fn print_command_map() {
     println!("  coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>");
     println!("  coat deploy chart <lint|template|upgrade|rollback|package>");
     println!("  coat deploy restate <cloud-env|tunnel-docker|register-cloud>");
-    println!("  coat runner <list|status|register|dispatch>");
+    println!("  coat runner <list|status|register|dispatch|capacity-plan>");
     println!("  coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>");
     println!("  coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>");
     println!("  coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>");
-    println!("  coat setup <config|local-auth|chat-client>");
-}
-
-async fn guided_plan_draft(theme: &ColorfulTheme) -> anyhow::Result<()> {
-    let title: String = Input::with_theme(theme)
-        .with_prompt("Plan title")
-        .interact_text()?;
-    let objective: String = Input::with_theme(theme)
-        .with_prompt("Objective")
-        .interact_text()?;
-    let output: String = Input::with_theme(theme)
-        .with_prompt("Output JSON path")
-        .default("examples/plan-draft-from-guide.json".to_string())
-        .interact_text()?;
-    plan(PlanCommand {
-        command: PlanSubcommand::Draft(PlanDraftArgs {
-            store: PlanStoreArgs {
-                goal_store_url: "http://localhost:9088".to_string(),
-            },
-            file: None,
-            source_plan_id: None,
-            title: Some(title),
-            objective: Some(objective.clone()),
-            prompt: Some(objective),
-            repo: None,
-            mode: "interactive".to_string(),
-            author: Some("operator".to_string()),
-            summary: None,
-            out: Some(PathBuf::from(output)),
-            emit_only: true,
-            acceptance_evidence: Vec::new(),
-            constraint: Vec::new(),
-            out_of_scope: Vec::new(),
-            assumption: Vec::new(),
-            open_question: Vec::new(),
-            subgoal: Vec::new(),
-            initial_task: Vec::new(),
-        }),
-    })
-    .await
-}
-
-fn guided_goal_draft(theme: &ColorfulTheme) -> anyhow::Result<()> {
-    let title: String = Input::with_theme(theme)
-        .with_prompt("Goal title")
-        .interact_text()?;
-    let objective: String = Input::with_theme(theme)
-        .with_prompt("Objective")
-        .interact_text()?;
-    let output: String = Input::with_theme(theme)
-        .with_prompt("Output JSON path")
-        .default("examples/goal-draft-from-guide.json".to_string())
-        .interact_text()?;
-    draft_goal(DraftGoalArgs {
-        title,
-        objective,
-        repo: None,
-        out: Some(PathBuf::from(output)),
-        strict_review: true,
-        human_steered: false,
-        enable_branching: false,
-        plan_summary: None,
-        acceptance_evidence: Vec::new(),
-        constraint: Vec::new(),
-        out_of_scope: Vec::new(),
-        assumption: Vec::new(),
-        open_question: Vec::new(),
-        review_preset: Vec::new(),
-        subgoal: Vec::new(),
-        initial_task: Vec::new(),
-    })
+    println!("  coat setup <login|sso|model-index|config|local-auth|chat-client>");
 }
 
 async fn guided_approval(theme: &ColorfulTheme) -> anyhow::Result<()> {
@@ -3298,6 +3669,45 @@ async fn runner(args: RunnerCommand) -> anyhow::Result<()> {
             )
             .await
         }
+        RunnerSubcommand::CapacityPlan(mut args) => {
+            args.registry_url = effective_runner_registry_url(&args.registry_url)?;
+            let mut request: RunnerScalingRequest = read_json_file(&args.file)?;
+            apply_capacity_plan_config_policy(&mut request, args.ignore_config_policy)?;
+            post_json_to_url(
+                &format!("{}/capacity/plan", args.registry_url.trim_end_matches('/')),
+                &request,
+                None,
+                None,
+            )
+            .await
+        }
+    }
+}
+
+fn apply_capacity_plan_config_policy(
+    request: &mut RunnerScalingRequest,
+    ignore_config_policy: bool,
+) -> anyhow::Result<()> {
+    let config = load_resolved_coat_config()?.config;
+    apply_capacity_plan_policy_from_config(request, ignore_config_policy, &config);
+    Ok(())
+}
+
+fn apply_capacity_plan_policy_from_config(
+    request: &mut RunnerScalingRequest,
+    ignore_config_policy: bool,
+    config: &CoatConfig,
+) {
+    if ignore_config_policy || request.policy != coat_domain::CapacityScalingPolicy::default() {
+        return;
+    }
+    let pool_key = request
+        .demands
+        .first()
+        .map(|demand| demand.pool_key.as_str())
+        .unwrap_or("default");
+    if let Some(policy) = config.runner_capacity.policy_for(pool_key) {
+        request.policy = policy;
     }
 }
 
@@ -3578,7 +3988,10 @@ fn merge_coat_config(base: &mut CoatConfig, overlay: CoatConfig) {
     merge_profile_configs(&mut base.profiles, overlay.profiles);
     merge_config_paths(&mut base.paths, overlay.paths);
     merge_service_endpoints(&mut base.service_endpoints, overlay.service_endpoints);
+    merge_model_routing_config(&mut base.model_routing, overlay.model_routing);
+    merge_tool_routing_config(&mut base.tool_routing, overlay.tool_routing);
     merge_local_deploy_config(&mut base.local_deploy, overlay.local_deploy);
+    merge_runner_capacity_config(&mut base.runner_capacity, overlay.runner_capacity);
     merge_cloud_config(&mut base.cloud, overlay.cloud);
     merge_kubernetes_config(&mut base.kubernetes, overlay.kubernetes);
     merge_cli_config(&mut base.cli, overlay.cli);
@@ -3599,7 +4012,9 @@ fn apply_config_profile(config: &mut CoatConfig, profile_name: &str) -> anyhow::
     config.active_profile = Some(profile.name.clone());
     merge_config_paths(&mut config.paths, profile.paths);
     merge_service_endpoints(&mut config.service_endpoints, profile.service_endpoints);
+    merge_model_routing_config(&mut config.model_routing, profile.model_routing);
     merge_local_deploy_config(&mut config.local_deploy, profile.local_deploy);
+    merge_runner_capacity_config(&mut config.runner_capacity, profile.runner_capacity);
     merge_cloud_config(&mut config.cloud, profile.cloud);
     merge_kubernetes_config(&mut config.kubernetes, profile.kubernetes);
     merge_cli_config(&mut config.cli, profile.cli);
@@ -3627,7 +4042,9 @@ fn merge_profile_config(base: &mut CoatProfileConfig, overlay: CoatProfileConfig
     }
     merge_config_paths(&mut base.paths, overlay.paths);
     merge_service_endpoints(&mut base.service_endpoints, overlay.service_endpoints);
+    merge_model_routing_config(&mut base.model_routing, overlay.model_routing);
     merge_local_deploy_config(&mut base.local_deploy, overlay.local_deploy);
+    merge_runner_capacity_config(&mut base.runner_capacity, overlay.runner_capacity);
     merge_cloud_config(&mut base.cloud, overlay.cloud);
     merge_kubernetes_config(&mut base.kubernetes, overlay.kubernetes);
     merge_cli_config(&mut base.cli, overlay.cli);
@@ -3655,6 +4072,61 @@ fn merge_service_endpoints(base: &mut CoatServiceEndpoints, overlay: CoatService
     replace_if_some(&mut base.control_mcp_url, overlay.control_mcp_url);
 }
 
+fn merge_model_routing_config(base: &mut CoatModelRoutingConfig, overlay: CoatModelRoutingConfig) {
+    replace_if_some(&mut base.mode, overlay.mode);
+    merge_llm_gateway_config(&mut base.gateway, overlay.gateway);
+    append_unique(
+        &mut base.direct_provider_secret_refs,
+        overlay.direct_provider_secret_refs,
+    );
+}
+
+fn merge_llm_gateway_config(base: &mut CoatLlmGatewayConfig, overlay: CoatLlmGatewayConfig) {
+    replace_if_some(&mut base.provider, overlay.provider);
+    replace_if_some(&mut base.base_url, overlay.base_url);
+    replace_if_some(&mut base.chat_completions_url, overlay.chat_completions_url);
+    replace_if_some(&mut base.auth_env, overlay.auth_env);
+    append_unique(&mut base.secret_refs, overlay.secret_refs);
+    replace_if_some(&mut base.default_model, overlay.default_model);
+    replace_if_some(&mut base.work_model, overlay.work_model);
+    replace_if_some(&mut base.research_model, overlay.research_model);
+    replace_if_some(&mut base.chat_model, overlay.chat_model);
+    replace_if_some(&mut base.embedding_model, overlay.embedding_model);
+}
+
+fn merge_tool_routing_config(
+    base: &mut coat_domain::CoatToolRoutingConfig,
+    overlay: coat_domain::CoatToolRoutingConfig,
+) {
+    merge_web_search_routing_config(&mut base.web_search, overlay.web_search);
+}
+
+fn merge_web_search_routing_config(
+    base: &mut coat_domain::CoatWebSearchRoutingConfig,
+    overlay: coat_domain::CoatWebSearchRoutingConfig,
+) {
+    replace_if_some(&mut base.enabled, overlay.enabled);
+    replace_if_some(&mut base.mode, overlay.mode);
+    replace_if_some(&mut base.provider, overlay.provider);
+    replace_if_some(&mut base.base_url, overlay.base_url);
+    replace_if_some(&mut base.auth_env, overlay.auth_env);
+    append_unique(&mut base.secret_refs, overlay.secret_refs);
+    replace_if_some(&mut base.default_limit, overlay.default_limit);
+    replace_if_some(&mut base.max_limit, overlay.max_limit);
+    replace_if_some(
+        &mut base.route_via_runner_registry,
+        overlay.route_via_runner_registry,
+    );
+    append_unique(
+        &mut base.required_capabilities,
+        overlay.required_capabilities,
+    );
+    append_unique(
+        &mut base.required_model_features,
+        overlay.required_model_features,
+    );
+}
+
 fn merge_local_deploy_config(base: &mut CoatLocalDeployConfig, overlay: CoatLocalDeployConfig) {
     append_unique(&mut base.env_files, overlay.env_files);
     replace_if_some(
@@ -3664,6 +4136,16 @@ fn merge_local_deploy_config(base: &mut CoatLocalDeployConfig, overlay: CoatLoca
     replace_if_some(&mut base.allow_stub_runners, overlay.allow_stub_runners);
     replace_if_some(&mut base.allow_uninitialized, overlay.allow_uninitialized);
     append_unique(&mut base.profiles, overlay.profiles);
+}
+
+fn merge_runner_capacity_config(
+    base: &mut coat_domain::CoatRunnerCapacityConfig,
+    overlay: coat_domain::CoatRunnerCapacityConfig,
+) {
+    replace_if_some(&mut base.default_policy, overlay.default_policy);
+    for (lane, policy) in overlay.lane_policies {
+        base.lane_policies.insert(lane, policy);
+    }
 }
 
 fn merge_cloud_config(base: &mut CoatCloudConfig, overlay: CoatCloudConfig) {
@@ -3724,7 +4206,7 @@ fn replace_if_some<T>(slot: &mut Option<T>, value: Option<T>) {
     }
 }
 
-fn append_unique(values: &mut Vec<String>, additions: Vec<String>) {
+fn append_unique<T: PartialEq>(values: &mut Vec<T>, additions: Vec<T>) {
     for value in additions {
         if !values.iter().any(|existing| existing == &value) {
             values.push(value);
@@ -4699,12 +5181,196 @@ fn latest_goal_id_from_value(value: &serde_json::Value) -> anyhow::Result<Uuid> 
         .context("goal store returned no goals")
 }
 
-fn setup(args: SetupCommand) -> anyhow::Result<()> {
+async fn setup(args: SetupCommand) -> anyhow::Result<()> {
     match args.command {
+        SetupSubcommand::Login(args) => setup_login(args),
+        SetupSubcommand::Sso(args) => setup_sso(args),
+        SetupSubcommand::ModelIndex(args) => model_index_setup(args).await,
         SetupSubcommand::Config(args) => config_setup(args),
-        SetupSubcommand::LocalAuth(args) => local_auth_setup(args),
+        SetupSubcommand::LocalAuth(args) => local_auth_setup(args).await,
         SetupSubcommand::ChatClient(args) => chat_client_setup(args),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalAuthAction {
+    CodexLogin,
+    ClaudeLogin {
+        email: Option<String>,
+        sso: bool,
+        console: bool,
+    },
+    AwsSso {
+        profile: String,
+    },
+    HuggingFaceLogin,
+    OllamaPull {
+        model: String,
+    },
+}
+
+fn setup_login(args: LoginArgs) -> anyhow::Result<()> {
+    let mut actions = login_actions_from_args(&args);
+    if actions.is_empty() {
+        actions = interactive_login_actions()?;
+    }
+    run_local_auth_actions(&actions, args.dry_run)?;
+    if args.preflight {
+        if args.dry_run {
+            print_local_auth_preflight_command(&args.env_file, args.allow_stub_runners);
+        } else {
+            run_local_auth_preflight(&args.env_file, args.allow_stub_runners)?;
+        }
+    }
+    Ok(())
+}
+
+fn setup_sso(args: SsoArgs) -> anyhow::Result<()> {
+    let profile = resolve_aws_sso_profile(args.profile)?;
+    let action = LocalAuthAction::AwsSso {
+        profile: profile.clone(),
+    };
+    run_local_auth_actions(&[action], args.dry_run)?;
+
+    if args.write_env || args.bedrock_live {
+        let mut env_text = read_or_template_env_file(&args.env_file)?;
+        env_text = replace_env_line(env_text, "AWS_PROFILE", &profile);
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", "aws_profile");
+        if args.bedrock_live {
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "bedrock");
+            if !env_present(&parse_env_file_content(&env_text), "MODEL_PROVIDER_MODEL") {
+                if let Some(model) = load_model_index()?
+                    .as_ref()
+                    .and_then(|index| first_models_dev_model(index, "amazon-bedrock"))
+                {
+                    env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &model);
+                } else {
+                    println!(
+                        "no Bedrock model index found; leaving MODEL_PROVIDER_MODEL for the operator to set"
+                    );
+                }
+            }
+        }
+        if args.dry_run {
+            println!("would write {}", args.env_file.display());
+        } else {
+            write_local_provider_env(&args.env_file, &env_text)?;
+        }
+    }
+
+    if args.preflight {
+        if args.dry_run {
+            print_local_auth_preflight_command(&args.env_file, args.allow_stub_runners);
+        } else {
+            run_local_auth_preflight(&args.env_file, args.allow_stub_runners)?;
+        }
+    }
+    Ok(())
+}
+
+fn login_actions_from_args(args: &LoginArgs) -> Vec<LocalAuthAction> {
+    let mut actions = Vec::new();
+    if args.codex {
+        actions.push(LocalAuthAction::CodexLogin);
+    }
+    if args.claude || args.claude_email.is_some() || args.claude_sso || args.claude_console {
+        actions.push(LocalAuthAction::ClaudeLogin {
+            email: args
+                .claude_email
+                .as_ref()
+                .map(|email| email.trim().to_string()),
+            sso: args.claude_sso,
+            console: args.claude_console,
+        });
+    }
+    if args.hf {
+        actions.push(LocalAuthAction::HuggingFaceLogin);
+    }
+    actions.extend(
+        args.ollama_model
+            .iter()
+            .filter(|model| !model.trim().is_empty())
+            .map(|model| LocalAuthAction::OllamaPull {
+                model: model.trim().to_string(),
+            }),
+    );
+    actions
+}
+
+fn interactive_login_actions() -> anyhow::Result<Vec<LocalAuthAction>> {
+    let theme = ColorfulTheme::default();
+    let choices = [
+        "Codex device/browser login",
+        "Claude Code device/browser login",
+        "Hugging Face CLI login",
+        "Ollama pull a model",
+    ];
+    let selections = MultiSelect::with_theme(&theme)
+        .with_prompt("Select login/setup actions to run")
+        .items(&choices)
+        .defaults(&[true, true, false, false])
+        .interact()?;
+    let mut actions = Vec::new();
+    if selections.contains(&0) {
+        actions.push(LocalAuthAction::CodexLogin);
+    }
+    if selections.contains(&1) {
+        actions.push(prompt_claude_login_action(&theme)?);
+    }
+    if selections.contains(&2) {
+        actions.push(LocalAuthAction::HuggingFaceLogin);
+    }
+    if selections.contains(&3) {
+        let model: String = Input::with_theme(&theme)
+            .with_prompt("Ollama model to pull")
+            .interact_text()?;
+        actions.push(LocalAuthAction::OllamaPull { model });
+    }
+    Ok(actions)
+}
+
+fn prompt_claude_login_action(theme: &ColorfulTheme) -> anyhow::Result<LocalAuthAction> {
+    let auth_modes = [
+        "Claude.ai subscription / default OAuth",
+        "Force organization SSO",
+        "Claude Console API billing",
+    ];
+    let mode = Select::with_theme(theme)
+        .with_prompt("Claude Code login mode")
+        .items(&auth_modes)
+        .default(0)
+        .interact()?;
+    let email = Input::<String>::with_theme(theme)
+        .with_prompt("Optional Claude email prefill")
+        .allow_empty(true)
+        .interact_text()?;
+    Ok(LocalAuthAction::ClaudeLogin {
+        email: if email.trim().is_empty() {
+            None
+        } else {
+            Some(email.trim().to_string())
+        },
+        sso: mode == 1,
+        console: mode == 2,
+    })
+}
+
+fn resolve_aws_sso_profile(profile: Option<String>) -> anyhow::Result<String> {
+    if let Some(profile) = profile.filter(|profile| !profile.trim().is_empty()) {
+        return Ok(profile.trim().to_string());
+    }
+    if let Ok(profile) = env::var("AWS_PROFILE") {
+        if !profile.trim().is_empty() {
+            return Ok(profile.trim().to_string());
+        }
+    }
+    let theme = ColorfulTheme::default();
+    Input::with_theme(&theme)
+        .with_prompt("AWS SSO profile")
+        .default("default".to_string())
+        .interact_text()
+        .map_err(Into::into)
 }
 
 fn config_setup(args: ConfigSetupArgs) -> anyhow::Result<()> {
@@ -4755,10 +5421,10 @@ fn interactive_config_setup(args: ConfigSetupArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
+async fn local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     let default_action = !args.write_env && !args.check && !args.print_commands;
     if default_action {
-        return interactive_local_auth_setup(args);
+        return interactive_local_auth_setup(args).await;
     }
     if args.write_env {
         write_local_provider_env(&args.output, local_provider_env_template())?;
@@ -4772,9 +5438,24 @@ fn local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
+async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     let theme = ColorfulTheme::default();
     println!("COAT local provider setup");
+    let mut login_actions = Vec::new();
+    let existing_env_file = args.output.exists();
+    let mut env_text = read_or_template_env_file(&args.output)?;
+    if existing_env_file {
+        println!(
+            "using existing local provider env {}",
+            args.output.display()
+        );
+    } else {
+        println!(
+            "starting from local provider template; {} does not exist yet",
+            args.output.display()
+        );
+    }
+    let initial_values = parse_env_file_content(&env_text);
     if Confirm::with_theme(&theme)
         .with_prompt("Check installed provider CLIs and relevant environment variables?")
         .default(true)
@@ -4782,23 +5463,28 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     {
         print_local_auth_checks();
     }
+    let model_index = ensure_setup_model_index().await?;
 
     let profiles = [
-        "OpenAI hosted models/embeddings",
-        "Anthropic or Claude Code",
+        "Codex runners",
+        "Claude Code and staff-engineer runners",
+        "Shared LLM gateway for work, research, chat, and embeddings",
+        "OpenAI hosted model, research, and embedding lanes",
         "AWS Bedrock",
         "Host-local Ollama",
         "Host-local vLLM/OpenAI-compatible server",
-        "Hugging Face tooling",
+        "Hugging Face endpoint",
         "Control gateway Chat tab",
+        "Memory stores and embedding models",
+        "Routed web/reference search",
     ];
+    let profile_defaults = local_auth_profile_defaults(existing_env_file, &initial_values);
     let selections = MultiSelect::with_theme(&theme)
         .with_prompt("Select provider surfaces to prepare")
         .items(&profiles)
-        .defaults(&[true, true, false, true, false, false, true])
+        .defaults(&profile_defaults)
         .interact()?;
 
-    let mut env_text = local_provider_env_template().to_string();
     let populate_from_env = Confirm::with_theme(&theme)
         .with_prompt("Copy currently exported secret env values into the local env file?")
         .default(false)
@@ -4806,8 +5492,12 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     if populate_from_env {
         env_text = populate_secret_env_values(env_text);
     }
+    let mut primary_model_provider_configured = false;
+    let mut research_model_provider_configured = false;
+    let mut memory_gateway_configured = false;
 
     if selections.contains(&0) {
+        let current_values = parse_env_file_content(&env_text);
         let auth_choices = [
             "API key from env file or shell",
             "Runner-local Codex device/browser login",
@@ -4816,7 +5506,11 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
         let auth_choice = Select::with_theme(&theme)
             .with_prompt("Codex runner auth mode")
             .items(&auth_choices)
-            .default(1)
+            .default(auth_choice_default(
+                env_value(&current_values, "CODEX_AUTH_MODE").as_deref(),
+                &["env_api_key", "runner_local_device", "app_server"],
+                1,
+            ))
             .interact()?;
         env_text = replace_env_line(env_text, "CODEX_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "CODEX_REVIEW_RUNNER_MODE", "live");
@@ -4836,6 +5530,7 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
             }
             1 => {
                 env_text = replace_env_line(env_text, "CODEX_AUTH_MODE", "runner_local_device");
+                login_actions.push(LocalAuthAction::CodexLogin);
                 env_text = replace_env_line(
                     env_text,
                     "CODEX_RUNNER_LABELS_JSON",
@@ -4850,7 +5545,11 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
             _ => {
                 let app_server_url: String = Input::with_theme(&theme)
                     .with_prompt("Codex App Server URL")
-                    .default("http://host.docker.internal:1455".to_string())
+                    .default(env_or_default(
+                        &current_values,
+                        "CODEX_APP_SERVER_URL",
+                        "http://host.docker.internal:1455",
+                    ))
                     .interact_text()?;
                 env_text = replace_env_line(env_text, "CODEX_AUTH_MODE", "app_server");
                 env_text = replace_env_line(env_text, "CODEX_APP_SERVER_URL", &app_server_url);
@@ -4869,6 +5568,7 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     }
 
     if selections.contains(&1) {
+        let current_values = parse_env_file_content(&env_text);
         let auth_choices = [
             "API key/token from env file or shell",
             "Runner-local Claude Code device/browser login",
@@ -4877,13 +5577,26 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
         let auth_choice = Select::with_theme(&theme)
             .with_prompt("Claude Code and staff-engineer auth mode")
             .items(&auth_choices)
-            .default(1)
+            .default(auth_choice_default(
+                env_value(&current_values, "CLAUDE_CODE_AUTH_MODE")
+                    .or_else(|| env_value(&current_values, "STAFF_ENGINEER_AUTH_MODE"))
+                    .as_deref(),
+                &["env_api_key", "runner_local_device", "oauth_device_broker"],
+                1,
+            ))
             .interact()?;
         let (auth_mode, device_label) = match auth_choice {
             0 => ("env_api_key", false),
             1 => ("runner_local_device", true),
             _ => ("oauth_device_broker", false),
         };
+        if auth_mode == "runner_local_device" {
+            login_actions.push(LocalAuthAction::ClaudeLogin {
+                email: None,
+                sso: false,
+                console: false,
+            });
+        }
         env_text = replace_env_line(env_text, "CLAUDE_CODE_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "STAFF_ENGINEER_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "CLAUDE_CODE_AUTH_MODE", auth_mode);
@@ -4901,66 +5614,602 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
     }
 
     if selections.contains(&2) {
-        let bedrock_model: String = Input::with_theme(&theme)
-            .with_prompt("Bedrock model id")
-            .default("anthropic.claude-3-5-sonnet-20241022-v2:0".to_string())
+        let current_values = parse_env_file_content(&env_text);
+        let gateway_choices = [
+            ("bifrost", "Bifrost OpenAI-compatible gateway"),
+            ("litellm", "LiteLLM OpenAI-compatible gateway"),
+            ("openrouter", "OpenRouter gateway"),
+            ("docker_model_gateway", "Docker Model Gateway"),
+            ("custom", "Custom OpenAI-compatible gateway"),
+        ];
+        let gateway_labels = gateway_choices
+            .iter()
+            .map(|(_, label)| *label)
+            .collect::<Vec<_>>();
+        let configured_gateway = env_value(&current_values, "COAT_LLM_GATEWAY_PROVIDER")
+            .unwrap_or_else(|| "bifrost".to_string());
+        let gateway_default = gateway_choices
+            .iter()
+            .position(|(key, _)| configured_gateway.eq_ignore_ascii_case(key))
+            .unwrap_or(0);
+        let gateway_choice = Select::with_theme(&theme)
+            .with_prompt("Shared LLM gateway kind")
+            .items(&gateway_labels)
+            .default(gateway_default)
+            .interact()?;
+        let gateway_provider = gateway_choices[gateway_choice].0;
+        let gateway_url: String = Input::with_theme(&theme)
+            .with_prompt("Gateway OpenAI-compatible base URL")
+            .default(env_or_default(
+                &current_values,
+                "COAT_LLM_GATEWAY_URL",
+                if gateway_provider == "bifrost" {
+                    "http://host.docker.internal:8080/openai"
+                } else {
+                    "http://host.docker.internal:4000/v1"
+                },
+            ))
             .interact_text()?;
+        let auth_modes = [
+            "Gateway bearer/API key from env file or shell",
+            "No gateway bearer key",
+            "Brokered/external gateway auth",
+        ];
+        let auth_choice = Select::with_theme(&theme)
+            .with_prompt("Shared LLM gateway auth mode")
+            .items(&auth_modes)
+            .default(auth_choice_default(
+                env_value(&current_values, "COAT_LLM_GATEWAY_AUTH_MODE").as_deref(),
+                &["api_key_or_none", "none", "external_broker"],
+                0,
+            ))
+            .interact()?;
+        let gateway_auth_mode = match auth_choice {
+            1 => "none",
+            2 => "external_broker",
+            _ => "api_key_or_none",
+        };
+        let live_models = discover_openai_compatible_models(&gateway_url).await;
+        if live_models.is_empty() {
+            println!(
+                "no live models discovered from {}; choose or type provider-prefixed gateway model ids",
+                gateway_url
+            );
+        }
+        let gateway_presets = model_presets_with_configured(
+            live_model_presets(live_models, "Custom gateway model id"),
+            env_value(&current_values, "COAT_LLM_GATEWAY_DEFAULT_MODEL").as_deref(),
+            "Configured gateway model",
+        );
+        let default_model = select_model_preset(
+            &theme,
+            "Default gateway model",
+            &gateway_presets,
+            env_value(&current_values, "COAT_LLM_GATEWAY_DEFAULT_MODEL")
+                .as_deref()
+                .unwrap_or_default(),
+            "Custom gateway model id",
+        )?;
+        let work_model = if Confirm::with_theme(&theme)
+            .with_prompt("Use default gateway model for work lane?")
+            .default(
+                !env_present(&current_values, "COAT_LLM_GATEWAY_WORK_MODEL")
+                    || env_value_is_value(
+                        &current_values,
+                        "COAT_LLM_GATEWAY_WORK_MODEL",
+                        &default_model,
+                    ),
+            )
+            .interact()?
+        {
+            default_model.clone()
+        } else {
+            select_model_preset(
+                &theme,
+                "Gateway work model",
+                &gateway_presets,
+                env_value(&current_values, "COAT_LLM_GATEWAY_WORK_MODEL")
+                    .as_deref()
+                    .unwrap_or(&default_model),
+                "Custom gateway work model id",
+            )?
+        };
+        let research_model = if Confirm::with_theme(&theme)
+            .with_prompt("Use default gateway model for research/review lane?")
+            .default(
+                !env_present(&current_values, "COAT_LLM_GATEWAY_RESEARCH_MODEL")
+                    || env_value_is_value(
+                        &current_values,
+                        "COAT_LLM_GATEWAY_RESEARCH_MODEL",
+                        &default_model,
+                    ),
+            )
+            .interact()?
+        {
+            default_model.clone()
+        } else {
+            select_model_preset(
+                &theme,
+                "Gateway research/review model",
+                &gateway_presets,
+                env_value(&current_values, "COAT_LLM_GATEWAY_RESEARCH_MODEL")
+                    .as_deref()
+                    .unwrap_or(&default_model),
+                "Custom gateway research model id",
+            )?
+        };
+        let chat_model_value = if Confirm::with_theme(&theme)
+            .with_prompt("Use default gateway model for the Control Chat tab?")
+            .default(
+                !env_present(&current_values, "COAT_LLM_GATEWAY_CHAT_MODEL")
+                    || env_value_is_value(
+                        &current_values,
+                        "COAT_LLM_GATEWAY_CHAT_MODEL",
+                        &default_model,
+                    ),
+            )
+            .interact()?
+        {
+            default_model.clone()
+        } else {
+            select_model_preset(
+                &theme,
+                "Gateway chat model",
+                &gateway_presets,
+                env_value(&current_values, "COAT_LLM_GATEWAY_CHAT_MODEL")
+                    .as_deref()
+                    .unwrap_or(&default_model),
+                "Custom gateway chat model id",
+            )?
+        };
+        let gateway_params = select_model_param_values_with_env(
+            &theme,
+            "Gateway runtime params",
+            "balanced",
+            &current_values,
+            "MODEL_PROVIDER",
+        )?;
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_PROVIDER", gateway_provider);
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_URL", &gateway_url);
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_AUTH_MODE", gateway_auth_mode);
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_DEFAULT_MODEL", &default_model);
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_WORK_MODEL", &work_model);
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_RESEARCH_MODEL", &research_model);
+        env_text = replace_env_line(env_text, "COAT_LLM_GATEWAY_CHAT_MODEL", &chat_model_value);
+        env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_BACKEND", "configured");
+        env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_PROVIDER", "llm_gateway");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "open_ai_compatible");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", gateway_auth_mode);
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", "");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_ENDPOINT", "");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_RUNNER_MODE", "live");
+        env_text = replace_env_line(
+            env_text,
+            "MODEL_PROVIDER_RESEARCH_KIND",
+            "open_ai_compatible",
+        );
+        env_text = replace_env_line(
+            env_text,
+            "MODEL_PROVIDER_RESEARCH_AUTH_MODE",
+            gateway_auth_mode,
+        );
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_MODEL", "");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_ENDPOINT", "");
+        env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_COMPLETIONS_URL", "");
+        env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_MODEL", "");
+        env_text = apply_model_param_values(env_text, "MODEL_PROVIDER", &gateway_params);
+        env_text = apply_model_param_values(env_text, "MODEL_PROVIDER_RESEARCH", &gateway_params);
+        env_text = apply_model_param_values(env_text, "COAT_CONTROL_CHAT", &gateway_params);
+        primary_model_provider_configured = true;
+        research_model_provider_configured = true;
+    }
+
+    if selections.contains(&3) {
+        let current_values = parse_env_file_content(&env_text);
+        let openai_presets = model_presets_with_configured(
+            model_index
+                .as_ref()
+                .map(|index| {
+                    models_dev_provider_presets(
+                        index,
+                        "openai",
+                        "Custom OpenAI model id",
+                        MAX_INDEXED_MODEL_CHOICES,
+                    )
+                })
+                .unwrap_or_else(|| custom_only_model_presets("Custom OpenAI model id")),
+            env_value(&current_values, "MODEL_PROVIDER_MODEL")
+                .filter(|_| env_value_is(&current_values, "MODEL_PROVIDER_KIND", "open_ai"))
+                .as_deref(),
+            "Configured OpenAI model",
+        );
+        let openai_model = select_model_preset(
+            &theme,
+            "OpenAI hosted work model type",
+            &openai_presets,
+            env_value(&current_values, "MODEL_PROVIDER_MODEL")
+                .filter(|_| env_value_is(&current_values, "MODEL_PROVIDER_KIND", "open_ai"))
+                .as_deref()
+                .unwrap_or_default(),
+            "Custom OpenAI model id",
+        )?;
+        let openai_params = select_model_param_values_with_env(
+            &theme,
+            "OpenAI hosted runtime params",
+            "balanced",
+            &current_values,
+            "MODEL_PROVIDER",
+        )?;
+        let auth_modes = [
+            "API key from env file or shell",
+            "Brokered/external auth resolved by runner",
+        ];
+        let auth_choice = Select::with_theme(&theme)
+            .with_prompt("OpenAI hosted model auth mode")
+            .items(&auth_modes)
+            .default(auth_choice_default(
+                env_value(&current_values, "MODEL_PROVIDER_AUTH_MODE").as_deref(),
+                &["api_key_or_none", "external_broker"],
+                0,
+            ))
+            .interact()?;
+        let openai_auth_mode = if auth_choice == 0 {
+            "api_key_or_none"
+        } else {
+            "external_broker"
+        };
+
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "open_ai");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", openai_auth_mode);
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &openai_model);
+        env_text = replace_env_line(
+            env_text,
+            "MODEL_PROVIDER_ENDPOINT",
+            "https://api.openai.com/v1",
+        );
+        env_text = apply_model_param_values(env_text, "MODEL_PROVIDER", &openai_params);
+        primary_model_provider_configured = true;
+
+        let enable_research = Confirm::with_theme(&theme)
+            .with_prompt("Use OpenAI hosted model provider for the research lane too?")
+            .default(if existing_env_file {
+                env_value_is(&current_values, "MODEL_PROVIDER_RESEARCH_KIND", "open_ai")
+                    || env_value_is(
+                        &current_values,
+                        "MODEL_PROVIDER_RESEARCH_RUNNER_MODE",
+                        "live",
+                    )
+            } else {
+                true
+            })
+            .interact()?;
+        if enable_research {
+            let research_model = if Confirm::with_theme(&theme)
+                .with_prompt("Use the same OpenAI model for research?")
+                .default(
+                    !env_present(&current_values, "MODEL_PROVIDER_RESEARCH_MODEL")
+                        || env_value_is_value(
+                            &current_values,
+                            "MODEL_PROVIDER_RESEARCH_MODEL",
+                            &openai_model,
+                        ),
+                )
+                .interact()?
+            {
+                openai_model.clone()
+            } else {
+                select_model_preset(
+                    &theme,
+                    "OpenAI hosted research model type",
+                    &openai_presets,
+                    env_value(&current_values, "MODEL_PROVIDER_RESEARCH_MODEL")
+                        .as_deref()
+                        .unwrap_or(&openai_model),
+                    "Custom OpenAI research model id",
+                )?
+            };
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_RUNNER_MODE", "live");
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_KIND", "open_ai");
+            env_text = replace_env_line(
+                env_text,
+                "MODEL_PROVIDER_RESEARCH_AUTH_MODE",
+                openai_auth_mode,
+            );
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_MODEL", &research_model);
+            env_text = replace_env_line(
+                env_text,
+                "MODEL_PROVIDER_RESEARCH_ENDPOINT",
+                "https://api.openai.com/v1",
+            );
+            env_text =
+                apply_model_param_values(env_text, "MODEL_PROVIDER_RESEARCH", &openai_params);
+            research_model_provider_configured = true;
+        }
+
+        if !selections.contains(&8)
+            && Confirm::with_theme(&theme)
+                .with_prompt("Use OpenAI hosted model as the Control Chat default?")
+                .default(
+                    !existing_env_file
+                        || env_value_is(&current_values, "COAT_CONTROL_CHAT_PROVIDER", "openai")
+                        || !env_present(&current_values, "COAT_CONTROL_CHAT_MODEL"),
+                )
+                .interact()?
+        {
+            env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_BACKEND", "configured");
+            env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_PROVIDER", "openai");
+            env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_COMPLETIONS_URL", "");
+            env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_MODEL", &openai_model);
+            env_text = apply_model_param_values(env_text, "COAT_CONTROL_CHAT", &openai_params);
+        }
+
+        if Confirm::with_theme(&theme)
+            .with_prompt("Use OpenAI embeddings for memory gateway?")
+            .default(if existing_env_file {
+                env_value(&current_values, "MEMORY_GATEWAY_EMBEDDING_URL")
+                    .is_some_and(|url| url.contains("api.openai.com"))
+            } else {
+                env_var_present("OPENAI_API_KEY")
+            })
+            .interact()?
+        {
+            env_text = configure_memory_stores_and_embeddings(
+                &theme,
+                env_text,
+                model_index.as_ref(),
+                Some((
+                    "OpenAI hosted embeddings",
+                    "open_ai",
+                    "https://api.openai.com/v1",
+                )),
+                &mut login_actions,
+            )
+            .await?;
+            memory_gateway_configured = true;
+        }
+    }
+
+    if selections.contains(&4) {
+        let current_values = parse_env_file_content(&env_text);
+        let bedrock_presets = model_presets_with_configured(
+            model_index
+                .as_ref()
+                .map(|index| {
+                    models_dev_provider_presets(
+                        index,
+                        "amazon-bedrock",
+                        "Custom Bedrock model id",
+                        MAX_INDEXED_MODEL_CHOICES,
+                    )
+                })
+                .unwrap_or_else(|| custom_only_model_presets("Custom Bedrock model id")),
+            env_value(&current_values, "MODEL_PROVIDER_MODEL")
+                .filter(|_| env_value_is(&current_values, "MODEL_PROVIDER_KIND", "bedrock"))
+                .as_deref(),
+            "Configured Bedrock model",
+        );
+        let bedrock_model = select_model_preset(
+            &theme,
+            "Bedrock model type",
+            &bedrock_presets,
+            env_value(&current_values, "MODEL_PROVIDER_MODEL")
+                .filter(|_| env_value_is(&current_values, "MODEL_PROVIDER_KIND", "bedrock"))
+                .as_deref()
+                .unwrap_or_default(),
+            "Custom Bedrock model id",
+        )?;
+        let bedrock_params = select_model_param_values_with_env(
+            &theme,
+            "Bedrock runtime params",
+            "balanced",
+            &current_values,
+            "MODEL_PROVIDER",
+        )?;
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "bedrock");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", "aws_profile");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &bedrock_model);
+        env_text = apply_model_param_values(env_text, "MODEL_PROVIDER", &bedrock_params);
+        primary_model_provider_configured = true;
+        if Confirm::with_theme(&theme)
+            .with_prompt("Run AWS SSO for this Bedrock profile during setup?")
+            .default(!existing_env_file || env_present(&current_values, "AWS_PROFILE"))
+            .interact()?
+        {
+            let profile = resolve_aws_sso_profile(env_value(&current_values, "AWS_PROFILE"))?;
+            env_text = replace_env_line(env_text, "AWS_PROFILE", &profile);
+            login_actions.push(LocalAuthAction::AwsSso { profile });
+        }
     }
 
-    if selections.contains(&3) || selections.contains(&4) {
-        let local_kind_default = if selections.contains(&4) {
-            "vllm"
-        } else {
-            "ollama"
-        };
-        let local_kind: String = Input::with_theme(&theme)
+    if selections.contains(&5) || selections.contains(&6) {
+        let current_values = parse_env_file_content(&env_text);
+        let labels = local_model_provider_preset_labels();
+        let default_index = env_value(&current_values, "LOCAL_MODEL_PROVIDER_KIND")
+            .or_else(|| env_value(&current_values, "MODEL_PROVIDER_KIND"))
+            .and_then(|kind| local_model_provider_index_for_kind(&kind))
+            .unwrap_or_else(|| default_local_model_provider_index(selections.contains(&6)));
+        let local_choice = Select::with_theme(&theme)
             .with_prompt("Local model provider kind")
-            .default(local_kind_default.to_string())
-            .interact_text()?;
-        let local_model: String = Input::with_theme(&theme)
-            .with_prompt("Local model name")
-            .default(if local_kind == "vllm" {
-                "local-vllm".to_string()
-            } else {
-                "llama3.1".to_string()
-            })
-            .interact_text()?;
+            .items(&labels)
+            .default(default_index)
+            .interact()?;
+        let preset = local_model_provider_preset(local_choice);
         let local_endpoint: String = Input::with_theme(&theme)
             .with_prompt("Local OpenAI-compatible endpoint from Compose containers")
-            .default(if local_kind == "vllm" {
-                "http://host.docker.internal:8000/v1".to_string()
-            } else {
-                "http://host.docker.internal:11434/v1".to_string()
-            })
+            .default(env_or_default(
+                &current_values,
+                "LOCAL_MODEL_PROVIDER_ENDPOINT",
+                preset.default_endpoint,
+            ))
             .interact_text()?;
+        let live_models = discover_local_provider_models(preset.kind, &local_endpoint).await;
+        if live_models.is_empty() {
+            println!(
+                "no live models discovered from {}; choose a custom served model id",
+                local_endpoint
+            );
+        }
+        let local_presets = model_presets_with_configured(
+            live_model_presets(live_models, "Custom local model id"),
+            env_value(&current_values, "LOCAL_MODEL_PROVIDER_MODEL").as_deref(),
+            "Configured local model",
+        );
+        let local_model = select_model_preset(
+            &theme,
+            "Local model type",
+            &local_presets,
+            env_value(&current_values, "LOCAL_MODEL_PROVIDER_MODEL")
+                .as_deref()
+                .unwrap_or_default(),
+            "Custom local model id",
+        )?;
+        let local_params = select_model_param_values_with_env(
+            &theme,
+            "Local model runtime params",
+            "fast",
+            &current_values,
+            "LOCAL_MODEL_PROVIDER",
+        )?;
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_LOCAL_RUNNER_MODE", "live");
-        env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_KIND", &local_kind);
+        env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_KIND", preset.kind);
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_AUTH_MODE", "none");
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_MODEL", &local_model);
         env_text = replace_env_line(env_text, "LOCAL_MODEL_PROVIDER_ENDPOINT", &local_endpoint);
+        env_text = apply_model_param_values(env_text, "LOCAL_MODEL_PROVIDER", &local_params);
+        if preset.kind == "ollama" {
+            login_actions.push(LocalAuthAction::OllamaPull {
+                model: local_model.clone(),
+            });
+        }
+        if !primary_model_provider_configured
+            && Confirm::with_theme(&theme)
+                .with_prompt("Use this local model for the primary model-provider lane too?")
+                .default(
+                    !existing_env_file
+                        || env_value_is(&current_values, "MODEL_PROVIDER_KIND", preset.kind),
+                )
+                .interact()?
+        {
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", preset.kind);
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", "none");
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &local_model);
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_ENDPOINT", &local_endpoint);
+            env_text = apply_model_param_values(env_text, "MODEL_PROVIDER", &local_params);
+        }
+        if !research_model_provider_configured
+            && Confirm::with_theme(&theme)
+                .with_prompt("Use this local model for the research model-provider lane too?")
+                .default(
+                    !existing_env_file
+                        || env_value_is(
+                            &current_values,
+                            "MODEL_PROVIDER_RESEARCH_KIND",
+                            preset.kind,
+                        ),
+                )
+                .interact()?
+        {
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_RUNNER_MODE", "live");
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_KIND", preset.kind);
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_AUTH_MODE", "none");
+            env_text = replace_env_line(env_text, "MODEL_PROVIDER_RESEARCH_MODEL", &local_model);
+            env_text = replace_env_line(
+                env_text,
+                "MODEL_PROVIDER_RESEARCH_ENDPOINT",
+                &local_endpoint,
+            );
+            env_text = apply_model_param_values(env_text, "MODEL_PROVIDER_RESEARCH", &local_params);
+        }
+        if Confirm::with_theme(&theme)
+            .with_prompt("Configure memory stores and embeddings from this local endpoint too?")
+            .default(memory_surface_configured(&current_values))
+            .interact()?
+        {
+            env_text = configure_memory_stores_and_embeddings(
+                &theme,
+                env_text,
+                model_index.as_ref(),
+                Some((preset.label, preset.kind, &local_endpoint)),
+                &mut login_actions,
+            )
+            .await?;
+            memory_gateway_configured = true;
+        }
     }
 
-    if selections.contains(&5) {
-        let hf_model: String = Input::with_theme(&theme)
-            .with_prompt("Hugging Face endpoint model")
-            .default("hf-endpoint-model".to_string())
-            .interact_text()?;
+    if selections.contains(&7) {
+        let current_values = parse_env_file_content(&env_text);
         let hf_endpoint: String = Input::with_theme(&theme)
             .with_prompt("Hugging Face OpenAI-compatible endpoint")
-            .default("https://api.endpoints.huggingface.cloud/v1".to_string())
+            .default(env_or_default(
+                &current_values,
+                "MODEL_PROVIDER_ENDPOINT",
+                "https://api.endpoints.huggingface.cloud/v1",
+            ))
             .interact_text()?;
+        let live_models = discover_openai_compatible_models(&hf_endpoint).await;
+        if live_models.is_empty() {
+            println!(
+                "no live models discovered from {}; choose a custom Hugging Face endpoint model id",
+                hf_endpoint
+            );
+        }
+        let hf_presets = model_presets_with_configured(
+            live_model_presets(live_models, "Custom Hugging Face endpoint model id"),
+            env_value(&current_values, "MODEL_PROVIDER_MODEL")
+                .filter(|_| env_value_is(&current_values, "MODEL_PROVIDER_KIND", "hugging_face"))
+                .as_deref(),
+            "Configured Hugging Face endpoint model",
+        );
+        let hf_model = select_model_preset(
+            &theme,
+            "Hugging Face endpoint model type",
+            &hf_presets,
+            env_value(&current_values, "MODEL_PROVIDER_MODEL")
+                .filter(|_| env_value_is(&current_values, "MODEL_PROVIDER_KIND", "hugging_face"))
+                .as_deref()
+                .unwrap_or_default(),
+            "Custom Hugging Face endpoint model id",
+        )?;
+        let hf_params = select_model_param_values_with_env(
+            &theme,
+            "Hugging Face runtime params",
+            "balanced",
+            &current_values,
+            "MODEL_PROVIDER",
+        )?;
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_RUNNER_MODE", "live");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_KIND", "hugging_face");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_AUTH_MODE", "provider_token");
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_MODEL", &hf_model);
         env_text = replace_env_line(env_text, "MODEL_PROVIDER_ENDPOINT", &hf_endpoint);
+        env_text = apply_model_param_values(env_text, "MODEL_PROVIDER", &hf_params);
+        if Confirm::with_theme(&theme)
+            .with_prompt(
+                "Configure memory stores and embeddings from this Hugging Face endpoint too?",
+            )
+            .default(memory_surface_configured(&current_values))
+            .interact()?
+        {
+            env_text = configure_memory_stores_and_embeddings(
+                &theme,
+                env_text,
+                model_index.as_ref(),
+                Some(("Hugging Face endpoint", "hugging_face", &hf_endpoint)),
+                &mut login_actions,
+            )
+            .await?;
+            memory_gateway_configured = true;
+        }
+        login_actions.push(LocalAuthAction::HuggingFaceLogin);
     }
 
-    if selections.contains(&6) {
+    if selections.contains(&8) {
+        let current_values = parse_env_file_content(&env_text);
         let chat_choices = [
             "Use local model endpoint",
             "Use OpenAI hosted chat completions",
@@ -4969,52 +6218,526 @@ fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()> {
         let choice = Select::with_theme(&theme)
             .with_prompt("Control gateway Chat tab backend")
             .items(&chat_choices)
-            .default(2)
+            .default(control_chat_default_choice(&current_values))
             .interact()?;
         match choice {
             0 => {
                 let url: String = Input::with_theme(&theme)
                     .with_prompt("Chat completions URL")
-                    .default("http://host.docker.internal:8000/v1/chat/completions".to_string())
+                    .default(env_or_default(
+                        &current_values,
+                        "COAT_CONTROL_CHAT_COMPLETIONS_URL",
+                        "http://host.docker.internal:8000/v1/chat/completions",
+                    ))
                     .interact_text()?;
-                let model: String = Input::with_theme(&theme)
-                    .with_prompt("Chat model")
-                    .default("local-chat-model".to_string())
-                    .interact_text()?;
+                let live_models = discover_openai_compatible_models(&url).await;
+                if live_models.is_empty() {
+                    println!(
+                        "no live chat models discovered from {}; choose a custom chat model id",
+                        url
+                    );
+                }
+                let chat_model_presets = model_presets_with_configured(
+                    live_model_presets(live_models, "Custom local chat model id"),
+                    env_value(&current_values, "COAT_CONTROL_CHAT_MODEL").as_deref(),
+                    "Configured chat model",
+                );
+                let model = select_model_preset(
+                    &theme,
+                    "Local chat model type",
+                    &chat_model_presets,
+                    env_value(&current_values, "COAT_CONTROL_CHAT_MODEL")
+                        .as_deref()
+                        .unwrap_or_default(),
+                    "Custom local chat model id",
+                )?;
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_BACKEND", "configured");
+                env_text =
+                    replace_env_line(env_text, "COAT_CONTROL_CHAT_PROVIDER", "openai_compatible");
                 env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_COMPLETIONS_URL", &url);
                 env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_MODEL", &model);
+                let chat_params = select_model_param_values_with_env(
+                    &theme,
+                    "Control Chat runtime params",
+                    "fast",
+                    &current_values,
+                    "COAT_CONTROL_CHAT",
+                )?;
+                env_text = apply_model_param_values(env_text, "COAT_CONTROL_CHAT", &chat_params);
             }
             1 => {
-                let model: String = Input::with_theme(&theme)
-                    .with_prompt("OpenAI chat model")
-                    .default("gpt-5.4".to_string())
-                    .interact_text()?;
+                let openai_presets = model_presets_with_configured(
+                    model_index
+                        .as_ref()
+                        .map(|index| {
+                            models_dev_provider_presets(
+                                index,
+                                "openai",
+                                "Custom OpenAI chat model id",
+                                MAX_INDEXED_MODEL_CHOICES,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            custom_only_model_presets("Custom OpenAI chat model id")
+                        }),
+                    env_value(&current_values, "COAT_CONTROL_CHAT_MODEL").as_deref(),
+                    "Configured OpenAI chat model",
+                );
+                let model = select_model_preset(
+                    &theme,
+                    "OpenAI chat model type",
+                    &openai_presets,
+                    env_value(&current_values, "COAT_CONTROL_CHAT_MODEL")
+                        .as_deref()
+                        .unwrap_or_default(),
+                    "Custom OpenAI chat model id",
+                )?;
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_BACKEND", "configured");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_PROVIDER", "openai");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_COMPLETIONS_URL", "");
                 env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_MODEL", &model);
+                let chat_params = select_model_param_values_with_env(
+                    &theme,
+                    "OpenAI Control Chat runtime params",
+                    "balanced",
+                    &current_values,
+                    "COAT_CONTROL_CHAT",
+                )?;
+                env_text = apply_model_param_values(env_text, "COAT_CONTROL_CHAT", &chat_params);
             }
-            _ => {}
+            _ => {
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_BACKEND", "stub");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_PROVIDER", "");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_COMPLETIONS_URL", "");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_MODEL", "");
+            }
         }
+    }
+
+    if selections.contains(&9) && !memory_gateway_configured {
+        env_text = configure_memory_stores_and_embeddings(
+            &theme,
+            env_text,
+            model_index.as_ref(),
+            None,
+            &mut login_actions,
+        )
+        .await?;
+    }
+
+    if selections.contains(&10) {
+        env_text = configure_web_search_routing(&theme, env_text)?;
     }
 
     let write_env = Confirm::with_theme(&theme)
         .with_prompt("Write local provider env file?")
         .default(true)
         .interact()?;
+    let mut written_env = None;
     if write_env {
         let output: String = Input::with_theme(&theme)
             .with_prompt("Env file path")
             .default(args.output.display().to_string())
             .interact_text()?;
-        write_local_provider_env(&PathBuf::from(output), &env_text)?;
+        let output = PathBuf::from(output);
+        write_local_provider_env(&output, &env_text)?;
+        written_env = Some(output);
     }
 
-    if Confirm::with_theme(&theme)
-        .with_prompt("Print provider login and startup commands?")
-        .default(true)
-        .interact()?
+    if !login_actions.is_empty()
+        && Confirm::with_theme(&theme)
+            .with_prompt("Run selected login/setup actions now?")
+            .default(true)
+            .interact()?
     {
+        run_local_auth_actions(&login_actions, false)?;
+    }
+
+    if let Some(output) = written_env {
+        if Confirm::with_theme(&theme)
+            .with_prompt("Run local Compose preflight with this env file now?")
+            .default(true)
+            .interact()?
+        {
+            run_local_auth_preflight(&output, true)?;
+        }
+    } else {
         print_local_auth_commands();
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmbeddingProviderChoice {
+    Disabled,
+    Suggested,
+    OpenAiHosted,
+    CustomOpenAiCompatible,
+}
+
+fn configure_web_search_routing(
+    theme: &ColorfulTheme,
+    mut env_text: String,
+) -> anyhow::Result<String> {
+    let current_values = parse_env_file_content(&env_text);
+    let route_choices = [
+        "Coordinator-owned durable research task",
+        "Runner registry routed search",
+        "Disabled",
+    ];
+    let existing_route = env_value(&current_values, "COAT_WEB_SEARCH_ROUTE").unwrap_or_else(|| {
+        if env_truthy_value(env_value(&current_values, "COAT_WEB_SEARCH_ENABLED").as_deref()) {
+            "coordinator_task".to_string()
+        } else {
+            "disabled".to_string()
+        }
+    });
+    let route_default = match existing_route.as_str() {
+        "runner_registry" => 1,
+        "disabled" => 2,
+        _ => 0,
+    };
+    let route_choice = Select::with_theme(theme)
+        .with_prompt("Web/reference search route")
+        .items(&route_choices)
+        .default(route_default)
+        .interact()?;
+
+    if route_choice == 2 {
+        env_text = replace_env_line(env_text, "COAT_WEB_SEARCH_ENABLED", "false");
+        env_text = replace_env_line(env_text, "COAT_WEB_SEARCH_ROUTE", "coordinator_task");
+        env_text = replace_env_line(env_text, "CODEX_NATIVE_WEB_SEARCH", "false");
+        env_text = replace_env_line(env_text, "CLAUDE_CODE_NATIVE_WEB_SEARCH", "false");
+        env_text = replace_env_line(env_text, "MODEL_PROVIDER_WEB_SEARCH_ENABLED", "false");
+        env_text = replace_env_line(
+            env_text,
+            "MODEL_PROVIDER_RESEARCH_WEB_SEARCH_ENABLED",
+            "false",
+        );
+        return Ok(env_text);
+    }
+
+    let route = if route_choice == 1 {
+        "runner_registry"
+    } else {
+        "coordinator_task"
+    };
+    env_text = replace_env_line(env_text, "COAT_WEB_SEARCH_ENABLED", "true");
+    env_text = replace_env_line(env_text, "COAT_WEB_SEARCH_ROUTE", route);
+    env_text = replace_env_line(env_text, "COAT_WEB_SEARCH_PROVIDER", "agent_native");
+    env_text = replace_env_line(
+        env_text,
+        "COAT_WEB_SEARCH_DEFAULT_LIMIT",
+        &env_or_default(&current_values, "COAT_WEB_SEARCH_DEFAULT_LIMIT", "10"),
+    );
+    env_text = replace_env_line(
+        env_text,
+        "COAT_WEB_SEARCH_MAX_LIMIT",
+        &env_or_default(&current_values, "COAT_WEB_SEARCH_MAX_LIMIT", "25"),
+    );
+
+    let runner_choices = [
+        "Codex runner native web/search tools",
+        "Claude Code runner native web/search tools",
+        "Model-provider research runner MCP/search gateway",
+    ];
+    let runner_defaults = [
+        env_truthy_value(env_value(&current_values, "CODEX_NATIVE_WEB_SEARCH").as_deref()),
+        env_truthy_value(env_value(&current_values, "CLAUDE_CODE_NATIVE_WEB_SEARCH").as_deref()),
+        env_truthy_value(
+            env_value(
+                &current_values,
+                "MODEL_PROVIDER_RESEARCH_WEB_SEARCH_ENABLED",
+            )
+            .as_deref(),
+        ),
+    ];
+    let selected_runners = MultiSelect::with_theme(theme)
+        .with_prompt("Which runner lanes may advertise web_search?")
+        .items(&runner_choices)
+        .defaults(&runner_defaults)
+        .interact()?;
+    env_text = replace_env_line(
+        env_text,
+        "CODEX_NATIVE_WEB_SEARCH",
+        bool_env(selected_runners.contains(&0)),
+    );
+    env_text = replace_env_line(
+        env_text,
+        "CLAUDE_CODE_NATIVE_WEB_SEARCH",
+        bool_env(selected_runners.contains(&1)),
+    );
+    env_text = replace_env_line(
+        env_text,
+        "MODEL_PROVIDER_RESEARCH_WEB_SEARCH_ENABLED",
+        bool_env(selected_runners.contains(&2)),
+    );
+    Ok(env_text)
+}
+
+async fn configure_memory_stores_and_embeddings(
+    theme: &ColorfulTheme,
+    mut env_text: String,
+    model_index: Option<&ModelsDevIndex>,
+    suggested_provider: Option<(&str, &str, &str)>,
+    login_actions: &mut Vec<LocalAuthAction>,
+) -> anyhow::Result<String> {
+    println!("COAT memory store and embedding setup");
+    let current_values = parse_env_file_content(&env_text);
+    let store_choices = [
+        "Local JSONL journal only",
+        "Qdrant vector store",
+        "Graphiti/Zep MCP graph store",
+        "Qdrant + Graphiti/Zep",
+    ];
+    let default_store = match (
+        env_present(&current_values, "MEMORY_GATEWAY_QDRANT_URL"),
+        env_present(&current_values, "MEMORY_GATEWAY_GRAPHITI_MCP_URL"),
+    ) {
+        (true, true) => 3,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 0,
+    };
+    let store_choice = Select::with_theme(theme)
+        .with_prompt("Memory store adapters")
+        .items(&store_choices)
+        .default(default_store)
+        .interact()?;
+    let use_qdrant = matches!(store_choice, 1 | 3);
+    let use_graphiti = matches!(store_choice, 2 | 3);
+
+    if use_qdrant {
+        let qdrant_url: String = Input::with_theme(theme)
+            .with_prompt("Qdrant URL from Compose containers")
+            .default(
+                env_value(&current_values, "MEMORY_GATEWAY_QDRANT_URL")
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "http://qdrant:6333".to_string()),
+            )
+            .interact_text()?;
+        let qdrant_collection: String = Input::with_theme(theme)
+            .with_prompt("Qdrant collection")
+            .default(
+                env_value(&current_values, "MEMORY_GATEWAY_QDRANT_COLLECTION")
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "jattg_memory".to_string()),
+            )
+            .interact_text()?;
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_QDRANT_URL", &qdrant_url);
+        env_text = replace_env_line(
+            env_text,
+            "MEMORY_GATEWAY_QDRANT_COLLECTION",
+            &qdrant_collection,
+        );
+    } else {
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_QDRANT_URL", "");
+    }
+
+    if use_graphiti {
+        let graphiti_url: String = Input::with_theme(theme)
+            .with_prompt("Graphiti/Zep MCP URL from Compose containers")
+            .default(
+                env_value(&current_values, "MEMORY_GATEWAY_GRAPHITI_MCP_URL")
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "http://graphiti-mcp:8000/mcp/".to_string()),
+            )
+            .interact_text()?;
+        let graphiti_group: String = Input::with_theme(theme)
+            .with_prompt("Graphiti/Zep group or namespace")
+            .default(
+                env_value(&current_values, "MEMORY_GATEWAY_GRAPHITI_GROUP_ID")
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "jattg".to_string()),
+            )
+            .interact_text()?;
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_GRAPHITI_MCP_URL", &graphiti_url);
+        env_text = replace_env_line(
+            env_text,
+            "MEMORY_GATEWAY_GRAPHITI_GROUP_ID",
+            &graphiti_group,
+        );
+    } else {
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_GRAPHITI_MCP_URL", "");
+    }
+
+    let mut embedding_options = vec![(
+        "Disable embeddings".to_string(),
+        EmbeddingProviderChoice::Disabled,
+    )];
+    if let Some((label, _, _)) = suggested_provider {
+        embedding_options.push((
+            format!("Use {label} as the embedding endpoint"),
+            EmbeddingProviderChoice::Suggested,
+        ));
+    }
+    embedding_options.push((
+        "OpenAI hosted embeddings".to_string(),
+        EmbeddingProviderChoice::OpenAiHosted,
+    ));
+    embedding_options.push((
+        "Custom OpenAI-compatible embedding endpoint".to_string(),
+        EmbeddingProviderChoice::CustomOpenAiCompatible,
+    ));
+    let embedding_labels = embedding_options
+        .iter()
+        .map(|(label, _)| label.as_str())
+        .collect::<Vec<_>>();
+    let default_embedding_index = if suggested_provider.is_some() {
+        1
+    } else if env_var_present("OPENAI_API_KEY") {
+        embedding_options
+            .iter()
+            .position(|(_, choice)| *choice == EmbeddingProviderChoice::OpenAiHosted)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let embedding_choice = Select::with_theme(theme)
+        .with_prompt("Embedding model provider")
+        .items(&embedding_labels)
+        .default(default_embedding_index)
+        .interact()?;
+    let embedding_choice = embedding_options
+        .get(embedding_choice)
+        .map(|(_, choice)| *choice)
+        .unwrap_or(EmbeddingProviderChoice::Disabled);
+
+    if embedding_choice == EmbeddingProviderChoice::Disabled {
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_EMBEDDING_URL", "");
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_EMBEDDING_MODEL", "");
+        env_text = replace_env_line(env_text, "MEMORY_GATEWAY_EMBEDDING_DIMENSIONS", "");
+        env_text = replace_env_line(
+            env_text,
+            "MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS",
+            "false",
+        );
+        return Ok(env_text);
+    }
+
+    let (provider_label, provider_kind, base_endpoint): (String, String, String) =
+        match embedding_choice {
+            EmbeddingProviderChoice::Suggested => {
+                let (label, kind, endpoint) = suggested_provider
+                    .expect("suggested embedding option is only shown when provider exists");
+                (label.to_string(), kind.to_string(), endpoint.to_string())
+            }
+            EmbeddingProviderChoice::OpenAiHosted => (
+                "OpenAI hosted embeddings".to_string(),
+                "open_ai".to_string(),
+                "https://api.openai.com/v1".to_string(),
+            ),
+            EmbeddingProviderChoice::CustomOpenAiCompatible => {
+                let provider_kind_choices = [
+                    "Generic OpenAI-compatible endpoint",
+                    "Ollama",
+                    "vLLM",
+                    "llama.cpp",
+                    "Hugging Face endpoint",
+                ];
+                let provider_kind_values = [
+                    "open_ai_compatible",
+                    "ollama",
+                    "vllm",
+                    "llama_cpp",
+                    "hugging_face",
+                ];
+                let provider_kind_choice = Select::with_theme(theme)
+                    .with_prompt("Embedding endpoint kind")
+                    .items(&provider_kind_choices)
+                    .default(0)
+                    .interact()?;
+                let provider_kind = provider_kind_values
+                    .get(provider_kind_choice)
+                    .copied()
+                    .unwrap_or("open_ai_compatible");
+                let endpoint: String = Input::with_theme(theme)
+                    .with_prompt("Embedding OpenAI-compatible base endpoint")
+                    .default("http://host.docker.internal:8080/v1".to_string())
+                    .interact_text()?;
+                (
+                    "Custom OpenAI-compatible embeddings".to_string(),
+                    provider_kind.to_string(),
+                    endpoint,
+                )
+            }
+            EmbeddingProviderChoice::Disabled => unreachable!("handled above"),
+        };
+
+    let embedding_url = openai_embeddings_url(&base_endpoint);
+    let embedding_presets = if provider_kind == "open_ai" {
+        model_index
+            .map(|index| {
+                models_dev_embedding_presets(
+                    index,
+                    "openai",
+                    "Custom OpenAI embedding model id",
+                    MAX_INDEXED_MODEL_CHOICES,
+                )
+            })
+            .unwrap_or_else(|| custom_only_model_presets("Custom OpenAI embedding model id"))
+    } else {
+        let live_models = discover_local_provider_models(&provider_kind, &base_endpoint).await;
+        if live_models.is_empty() {
+            println!(
+                "no live embedding models discovered from {}; choose a custom served model id",
+                base_endpoint
+            );
+        }
+        live_model_presets(live_models, "Custom served embedding model id")
+    };
+    let embedding_presets = model_presets_with_configured(
+        embedding_presets,
+        env_value(&current_values, "MEMORY_GATEWAY_EMBEDDING_MODEL").as_deref(),
+        "Configured embedding model",
+    );
+    let embedding_model = select_model_preset(
+        theme,
+        &format!("{provider_label} model"),
+        &embedding_presets,
+        "",
+        "Custom embedding model id",
+    )?;
+    let default_dimensions = if provider_kind == "open_ai" {
+        model_index
+            .and_then(|index| models_dev_embedding_dimensions(index, "openai", &embedding_model))
+            .map(|dimensions| dimensions.to_string())
+            .unwrap_or_default()
+    } else {
+        env_value(&current_values, "MEMORY_GATEWAY_EMBEDDING_DIMENSIONS").unwrap_or_default()
+    };
+    let embedding_dimensions: String = Input::with_theme(theme)
+        .with_prompt("Embedding dimensions (blank keeps provider default)")
+        .allow_empty(true)
+        .default(default_dimensions)
+        .interact_text()?;
+    let send_dimensions = if embedding_dimensions.trim().is_empty() {
+        false
+    } else {
+        Confirm::with_theme(theme)
+            .with_prompt("Send dimensions in embedding requests?")
+            .default(false)
+            .interact()?
+    };
+
+    env_text = replace_env_line(env_text, "MEMORY_GATEWAY_EMBEDDING_URL", &embedding_url);
+    env_text = replace_env_line(env_text, "MEMORY_GATEWAY_EMBEDDING_MODEL", &embedding_model);
+    env_text = replace_env_line(
+        env_text,
+        "MEMORY_GATEWAY_EMBEDDING_DIMENSIONS",
+        embedding_dimensions.trim(),
+    );
+    env_text = replace_env_line(
+        env_text,
+        "MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS",
+        if send_dimensions { "true" } else { "false" },
+    );
+    if provider_kind == "ollama" {
+        login_actions.push(LocalAuthAction::OllamaPull {
+            model: embedding_model,
+        });
+    }
+    Ok(env_text)
 }
 
 fn write_local_provider_env(path: &Path, env_text: &str) -> anyhow::Result<()> {
@@ -5024,14 +6747,770 @@ fn write_local_provider_env(path: &Path, env_text: &str) -> anyhow::Result<()> {
     fs::write(path, env_text)?;
     println!("wrote {}", path.display());
     println!(
-        "preflight with: coat deploy local preflight --env-file {}",
+        "start with: coat deploy local up --env-file {}",
         path.display()
     );
-    println!(
-        "use with: coat deploy local up --env-file {}",
-        path.display()
-    );
+    println!("`coat deploy local up` runs preflight before Compose starts");
     Ok(())
+}
+
+fn read_or_template_env_file(path: &Path) -> anyhow::Result<String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(local_provider_env_template().to_string())
+        }
+        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+fn local_auth_profile_defaults(
+    existing_env_file: bool,
+    values: &BTreeMap<String, String>,
+) -> Vec<bool> {
+    if !existing_env_file {
+        return vec![
+            true,
+            true,
+            false,
+            env_var_present("OPENAI_API_KEY"),
+            false,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+        ];
+    }
+    vec![
+        env_value_is(values, "CODEX_RUNNER_MODE", "live")
+            || env_value_is(values, "CODEX_REVIEW_RUNNER_MODE", "live"),
+        env_value_is(values, "CLAUDE_CODE_RUNNER_MODE", "live")
+            || env_value_is(values, "STAFF_ENGINEER_RUNNER_MODE", "live"),
+        env_present(values, "COAT_LLM_GATEWAY_URL")
+            || env_present(values, "COAT_LLM_GATEWAY_DEFAULT_MODEL")
+            || env_present(values, "COAT_LLM_GATEWAY_WORK_MODEL"),
+        env_value_is(values, "MODEL_PROVIDER_KIND", "open_ai")
+            || env_value_is(values, "MODEL_PROVIDER_RESEARCH_KIND", "open_ai"),
+        env_value_is(values, "MODEL_PROVIDER_KIND", "bedrock"),
+        env_value_is(values, "LOCAL_MODEL_PROVIDER_KIND", "ollama")
+            || env_value_is(values, "MODEL_PROVIDER_KIND", "ollama")
+            || env_value_is(values, "MODEL_PROVIDER_RESEARCH_KIND", "ollama"),
+        ["vllm", "llama_cpp", "open_ai_compatible"]
+            .iter()
+            .any(|kind| {
+                env_value_is(values, "LOCAL_MODEL_PROVIDER_KIND", kind)
+                    || env_value_is(values, "MODEL_PROVIDER_KIND", kind)
+                    || env_value_is(values, "MODEL_PROVIDER_RESEARCH_KIND", kind)
+            }),
+        env_value_is(values, "MODEL_PROVIDER_KIND", "hugging_face"),
+        env_present(values, "COAT_CONTROL_CHAT_COMPLETIONS_URL")
+            || env_present(values, "COAT_CONTROL_CHAT_MODEL"),
+        memory_surface_configured(values),
+        web_search_surface_configured(values),
+    ]
+}
+
+fn web_search_surface_configured(values: &BTreeMap<String, String>) -> bool {
+    env_truthy_value(env_value(values, "COAT_WEB_SEARCH_ENABLED").as_deref())
+        || env_present(values, "COAT_WEB_SEARCH_URL")
+        || env_truthy_value(env_value(values, "CODEX_NATIVE_WEB_SEARCH").as_deref())
+        || env_truthy_value(env_value(values, "CLAUDE_CODE_NATIVE_WEB_SEARCH").as_deref())
+        || env_truthy_value(env_value(values, "MODEL_PROVIDER_WEB_SEARCH_ENABLED").as_deref())
+        || env_truthy_value(
+            env_value(values, "MODEL_PROVIDER_RESEARCH_WEB_SEARCH_ENABLED").as_deref(),
+        )
+}
+
+fn memory_surface_configured(values: &BTreeMap<String, String>) -> bool {
+    [
+        "MEMORY_GATEWAY_GRAPHITI_MCP_URL",
+        "MEMORY_GATEWAY_QDRANT_URL",
+        "MEMORY_GATEWAY_EMBEDDING_URL",
+        "MEMORY_GATEWAY_EMBEDDING_MODEL",
+    ]
+    .iter()
+    .any(|key| env_present(values, key))
+}
+
+fn auth_choice_default(existing: Option<&str>, choices: &[&str], fallback_index: usize) -> usize {
+    existing
+        .and_then(|existing| {
+            choices
+                .iter()
+                .position(|choice| existing.eq_ignore_ascii_case(choice))
+        })
+        .unwrap_or(fallback_index)
+}
+
+fn local_model_provider_index_for_kind(kind: &str) -> Option<usize> {
+    LOCAL_MODEL_PROVIDER_PRESETS
+        .iter()
+        .position(|preset| preset.kind.eq_ignore_ascii_case(kind))
+}
+
+fn control_chat_default_choice(values: &BTreeMap<String, String>) -> usize {
+    if env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "stub") {
+        return 2;
+    }
+    if env_value_is(values, "COAT_CONTROL_CHAT_PROVIDER", "openai") {
+        return 1;
+    }
+    let url = env_value(values, "COAT_CONTROL_CHAT_COMPLETIONS_URL").unwrap_or_default();
+    if !url.trim().is_empty() {
+        if url.contains("api.openai.com") { 1 } else { 0 }
+    } else if env_present(values, "COAT_CONTROL_CHAT_MODEL")
+        && env_present(values, "OPENAI_API_KEY")
+    {
+        1
+    } else {
+        2
+    }
+}
+
+async fn model_index_setup(args: ModelIndexCommand) -> anyhow::Result<()> {
+    match args.command {
+        ModelIndexSubcommand::Refresh(args) => refresh_model_index(args).await,
+        ModelIndexSubcommand::Show(args) => show_model_index(args),
+    }
+}
+
+async fn refresh_model_index(args: ModelIndexRefreshArgs) -> anyhow::Result<()> {
+    let output = expand_home_path(&args.output)?;
+    let _ = refresh_model_index_file(&args.url, &output, Duration::from_secs(30)).await?;
+    println!("wrote model index {}", output.display());
+    println!("source: {}", args.url);
+    Ok(())
+}
+
+async fn refresh_model_index_file(
+    url: &str,
+    output: &Path,
+    timeout: Duration,
+) -> anyhow::Result<ModelsDevIndex> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .context("build model index HTTP client")?;
+    let body = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("download model index from {url}"))?
+        .error_for_status()
+        .with_context(|| format!("download model index from {url}"))?
+        .text()
+        .await
+        .with_context(|| format!("read model index response from {url}"))?;
+    let index: ModelsDevIndex =
+        serde_json::from_str(&body).context("model index response is not models.dev JSON")?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(&output, format!("{body}\n"))
+        .with_context(|| format!("write {}", output.display()))?;
+    Ok(index)
+}
+
+async fn ensure_setup_model_index() -> anyhow::Result<Option<ModelsDevIndex>> {
+    let existing = match load_model_index_with_source() {
+        Ok(existing) => existing,
+        Err(error) => {
+            println!("warn: could not load cached model index ({error:#}); attempting refresh");
+            None
+        }
+    };
+    if env::var("COAT_MODEL_INDEX")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        if let Some((path, index)) = existing {
+            println!("using explicit model index {}", path.display());
+            return Ok(Some(index));
+        }
+        println!(
+            "warn: COAT_MODEL_INDEX is set but no model index could be loaded; hosted model choices will use custom prompts"
+        );
+        return Ok(None);
+    }
+
+    match load_fresh_model_index_with_source(Duration::from_secs(
+        MODEL_INDEX_REFRESH_DEBOUNCE_SECONDS,
+    )) {
+        Ok(Some((path, index))) => {
+            println!(
+                "using model index {} (fresh within {} minutes)",
+                path.display(),
+                MODEL_INDEX_REFRESH_DEBOUNCE_SECONDS / 60
+            );
+            return Ok(Some(index));
+        }
+        Ok(None) => {}
+        Err(error) => {
+            println!("warn: could not load fresh model index ({error:#}); attempting refresh");
+        }
+    }
+
+    let output = expand_home_path(Path::new(DEFAULT_USER_MODEL_INDEX))?;
+    match refresh_model_index_file(MODELS_DEV_API_URL, &output, Duration::from_secs(10)).await {
+        Ok(index) => {
+            println!("refreshed model index {}", output.display());
+            Ok(Some(index))
+        }
+        Err(error) => {
+            if let Some((path, index)) = existing {
+                println!(
+                    "warn: could not refresh model index ({error:#}); using cached {}",
+                    path.display()
+                );
+                Ok(Some(index))
+            } else {
+                println!(
+                    "warn: could not refresh model index ({error:#}); hosted model choices will use custom prompts"
+                );
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn show_model_index(args: ModelIndexShowArgs) -> anyhow::Result<()> {
+    let (path, index) = load_model_index_with_source()?.with_context(|| {
+        format!(
+            "no model index found; run `coat setup model-index refresh` or set COAT_MODEL_INDEX"
+        )
+    })?;
+    println!("model index: {}", path.display());
+    match args.provider {
+        Some(provider_id) => {
+            let presets = if args.embeddings {
+                models_dev_embedding_presets(
+                    &index,
+                    &provider_id,
+                    "Custom embedding model id",
+                    args.limit.max(1),
+                )
+            } else {
+                models_dev_provider_presets(
+                    &index,
+                    &provider_id,
+                    "Custom model id",
+                    args.limit.max(1),
+                )
+            };
+            if presets.len() == 1 && presets[0].model == CUSTOM_MODEL_ID {
+                bail!(
+                    "provider {provider_id:?} was not found in {} or has no matching models for this filter",
+                    path.display()
+                );
+            }
+            for preset in presets
+                .into_iter()
+                .filter(|preset| preset.model != CUSTOM_MODEL_ID)
+            {
+                println!("{}  {}", preset.model, preset.label);
+            }
+        }
+        None => {
+            for (provider_id, provider) in index.providers.iter().take(args.limit.max(1)) {
+                let name = provider.name.as_deref().unwrap_or(provider_id);
+                println!(
+                    "{}  {}  models={}",
+                    provider_id,
+                    name,
+                    provider.models.len()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_model_index() -> anyhow::Result<Option<ModelsDevIndex>> {
+    Ok(load_model_index_with_source()?.map(|(_, index)| index))
+}
+
+fn load_model_index_with_source() -> anyhow::Result<Option<(PathBuf, ModelsDevIndex)>> {
+    load_model_index_from_paths(model_index_candidate_paths()?)
+}
+
+fn load_model_index_from_paths(
+    paths: Vec<PathBuf>,
+) -> anyhow::Result<Option<(PathBuf, ModelsDevIndex)>> {
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let index = serde_json::from_str::<ModelsDevIndex>(&content)
+            .with_context(|| format!("parse models.dev model index {}", path.display()))?;
+        return Ok(Some((path, index)));
+    }
+    Ok(None)
+}
+
+fn load_fresh_model_index_with_source(
+    max_age: Duration,
+) -> anyhow::Result<Option<(PathBuf, ModelsDevIndex)>> {
+    load_fresh_model_index_from_paths(model_index_candidate_paths()?, max_age)
+}
+
+fn load_fresh_model_index_from_paths(
+    paths: Vec<PathBuf>,
+    max_age: Duration,
+) -> anyhow::Result<Option<(PathBuf, ModelsDevIndex)>> {
+    for path in paths {
+        if !model_index_cache_is_fresh(&path, max_age) {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let index = serde_json::from_str::<ModelsDevIndex>(&content)
+            .with_context(|| format!("parse models.dev model index {}", path.display()))?;
+        return Ok(Some((path, index)));
+    }
+    Ok(None)
+}
+
+fn model_index_cache_is_fresh(path: &Path, max_age: Duration) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age <= max_age)
+}
+
+fn model_index_candidate_paths() -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    if let Ok(path) = env::var("COAT_MODEL_INDEX") {
+        if !path.trim().is_empty() {
+            paths.push(expand_home_path(Path::new(path.trim()))?);
+        }
+    }
+    paths.push(PathBuf::from(DEFAULT_PROJECT_MODEL_INDEX));
+    paths.push(expand_home_path(Path::new(DEFAULT_USER_MODEL_INDEX))?);
+    Ok(paths)
+}
+
+fn models_dev_provider_presets(
+    index: &ModelsDevIndex,
+    provider_id: &str,
+    custom_label: &str,
+    limit: usize,
+) -> Vec<ModelPreset> {
+    models_dev_provider_presets_filtered(
+        index,
+        provider_id,
+        custom_label,
+        limit,
+        models_dev_model_selectable,
+    )
+}
+
+fn models_dev_embedding_presets(
+    index: &ModelsDevIndex,
+    provider_id: &str,
+    custom_label: &str,
+    limit: usize,
+) -> Vec<ModelPreset> {
+    models_dev_provider_presets_filtered(
+        index,
+        provider_id,
+        custom_label,
+        limit,
+        models_dev_embedding_model_selectable,
+    )
+}
+
+fn models_dev_provider_presets_filtered(
+    index: &ModelsDevIndex,
+    provider_id: &str,
+    custom_label: &str,
+    limit: usize,
+    selectable: fn(&str, &ModelsDevModel) -> bool,
+) -> Vec<ModelPreset> {
+    let mut presets = models_dev_provider(index, provider_id)
+        .map(|(provider_key, provider)| {
+            let provider_key = provider_key.as_str();
+            let mut choices = provider
+                .models
+                .iter()
+                .filter_map(|(model_id, model)| {
+                    if !selectable(model_id, model) {
+                        return None;
+                    }
+                    let id = model.id.as_deref().unwrap_or(model_id);
+                    let freshness = model
+                        .last_updated
+                        .as_deref()
+                        .or(model.release_date.as_deref())
+                        .unwrap_or("")
+                        .to_string();
+                    let context = model
+                        .limit
+                        .as_ref()
+                        .and_then(|limit| limit.context)
+                        .unwrap_or(0);
+                    Some((
+                        freshness,
+                        context,
+                        id.to_string(),
+                        ModelPreset {
+                            label: models_dev_model_label(provider_key, provider, id, model),
+                            model: id.to_string(),
+                        },
+                    ))
+                })
+                .collect::<Vec<_>>();
+            choices.sort_by(|left, right| {
+                right
+                    .0
+                    .cmp(&left.0)
+                    .then_with(|| right.1.cmp(&left.1))
+                    .then_with(|| left.2.cmp(&right.2))
+            });
+            choices
+                .into_iter()
+                .take(limit)
+                .map(|(_, _, _, preset)| preset)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    presets.push(custom_model_preset(custom_label));
+    presets
+}
+
+fn models_dev_model_selectable(model_id: &str, model: &ModelsDevModel) -> bool {
+    if model
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("deprecated"))
+    {
+        return false;
+    }
+    if models_dev_embedding_model_selectable(model_id, model) {
+        return false;
+    }
+    model
+        .modalities
+        .as_ref()
+        .map(|modalities| {
+            modalities.output.is_empty()
+                || modalities
+                    .output
+                    .iter()
+                    .any(|modality| modality.eq_ignore_ascii_case("text"))
+        })
+        .unwrap_or(true)
+}
+
+fn models_dev_embedding_model_selectable(model_id: &str, model: &ModelsDevModel) -> bool {
+    if model
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("deprecated"))
+    {
+        return false;
+    }
+    let text = format!(
+        "{} {} {}",
+        model_id,
+        model.id.as_deref().unwrap_or_default(),
+        model.name.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    text.contains("embedding")
+        || text.contains("embed")
+        || model.modalities.as_ref().is_some_and(|modalities| {
+            modalities
+                .input
+                .iter()
+                .chain(modalities.output.iter())
+                .any(|modality| modality.eq_ignore_ascii_case("embedding"))
+        })
+}
+
+fn models_dev_embedding_dimensions(
+    index: &ModelsDevIndex,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<u64> {
+    models_dev_provider(index, provider_id).and_then(|(_, provider)| {
+        provider.models.iter().find_map(|(key, model)| {
+            let id = model.id.as_deref().unwrap_or(key);
+            if id == model_id || key == model_id {
+                model.limit.as_ref().and_then(|limit| limit.output)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn models_dev_provider<'a>(
+    index: &'a ModelsDevIndex,
+    provider_id: &str,
+) -> Option<(&'a String, &'a ModelsDevProvider)> {
+    index.providers.get_key_value(provider_id).or_else(|| {
+        index.providers.iter().find(|(key, provider)| {
+            provider
+                .id
+                .as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case(provider_id))
+                || provider
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(provider_id))
+                || (provider_id == "amazon-bedrock"
+                    && (key.to_ascii_lowercase().contains("bedrock")
+                        || provider
+                            .name
+                            .as_deref()
+                            .is_some_and(|name| name.to_ascii_lowercase().contains("bedrock"))))
+        })
+    })
+}
+
+fn first_models_dev_model(index: &ModelsDevIndex, provider_id: &str) -> Option<String> {
+    models_dev_provider_presets(index, provider_id, "Custom model id", 1)
+        .into_iter()
+        .find(|preset| preset.model != CUSTOM_MODEL_ID)
+        .map(|preset| preset.model)
+}
+
+fn models_dev_model_label(
+    provider_id: &str,
+    provider: &ModelsDevProvider,
+    model_id: &str,
+    model: &ModelsDevModel,
+) -> String {
+    let provider_name = provider.name.as_deref().unwrap_or(provider_id);
+    let provider_key = provider.id.as_deref().unwrap_or(provider_id);
+    let display_name = model.name.as_deref().unwrap_or(model_id);
+    let mut parts = vec![format!("{provider_name}: {display_name} ({model_id})")];
+    if let Some(family) = model.family.as_deref() {
+        parts.push(format!("family={family}"));
+    }
+    if let Some(limit) = &model.limit {
+        if let Some(context) = limit.context {
+            parts.push(format!("ctx={context}"));
+        }
+        if let Some(output) = limit.output {
+            parts.push(format!("out={output}"));
+        }
+    }
+    let mut features = Vec::new();
+    if model.tool_call.unwrap_or(false) {
+        features.push("tools");
+    }
+    if model.structured_output.unwrap_or(false) {
+        features.push("structured");
+    }
+    if model.reasoning.unwrap_or(false) {
+        features.push("reasoning");
+    }
+    if model.open_weights.unwrap_or(false) {
+        features.push("open-weights");
+    }
+    if !features.is_empty() {
+        parts.push(features.join("+"));
+    }
+    if let Some(updated) = model
+        .last_updated
+        .as_deref()
+        .or(model.release_date.as_deref())
+    {
+        parts.push(format!("updated={updated}"));
+    }
+    if provider_key != provider_id {
+        parts.push(format!("provider_id={provider_key}"));
+    }
+    parts.join(" · ")
+}
+
+fn custom_model_preset(label: &str) -> ModelPreset {
+    ModelPreset {
+        label: label.to_string(),
+        model: CUSTOM_MODEL_ID.to_string(),
+    }
+}
+
+fn live_model_presets(model_ids: Vec<String>, custom_label: &str) -> Vec<ModelPreset> {
+    let mut ids = model_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    let mut presets = ids
+        .into_iter()
+        .take(MAX_INDEXED_MODEL_CHOICES)
+        .map(|id| ModelPreset {
+            label: format!("Live served model: {id}"),
+            model: id,
+        })
+        .collect::<Vec<_>>();
+    presets.push(custom_model_preset(custom_label));
+    presets
+}
+
+fn model_presets_with_configured(
+    mut presets: Vec<ModelPreset>,
+    configured_model: Option<&str>,
+    label_prefix: &str,
+) -> Vec<ModelPreset> {
+    let Some(configured_model) = configured_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return presets;
+    };
+    if configured_model == CUSTOM_MODEL_ID
+        || presets
+            .iter()
+            .any(|preset| preset.model == configured_model)
+    {
+        return presets;
+    }
+    presets.insert(
+        0,
+        ModelPreset {
+            label: format!("{label_prefix}: {configured_model}"),
+            model: configured_model.to_string(),
+        },
+    );
+    presets
+}
+
+fn custom_only_model_presets(custom_label: &str) -> Vec<ModelPreset> {
+    vec![custom_model_preset(custom_label)]
+}
+
+async fn discover_openai_compatible_models(endpoint: &str) -> Vec<String> {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return Vec::new();
+    };
+    for endpoint in endpoint_discovery_candidates(endpoint) {
+        let url = openai_models_url(&endpoint);
+        match client.get(url).send().await {
+            Ok(response) => match response.error_for_status() {
+                Ok(response) => {
+                    let models: Vec<String> = response
+                        .json::<OpenAiModelsResponse>()
+                        .await
+                        .map(|body| body.data.into_iter().map(|model| model.id).collect())
+                        .unwrap_or_default();
+                    if !models.is_empty() {
+                        return models;
+                    }
+                }
+                Err(_) => continue,
+            },
+            Err(_) => continue,
+        }
+    }
+    Vec::new()
+}
+
+async fn discover_ollama_models(endpoint: &str) -> Vec<String> {
+    let mut models = discover_openai_compatible_models(endpoint).await;
+    if !models.is_empty() {
+        return models;
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return Vec::new();
+    };
+    for endpoint in endpoint_discovery_candidates(endpoint) {
+        let url = ollama_tags_url(&endpoint);
+        if let Ok(response) = client.get(url).send().await {
+            if let Ok(response) = response.error_for_status() {
+                models = response
+                    .json::<OllamaTagsResponse>()
+                    .await
+                    .map(|body| body.models.into_iter().map(|model| model.name).collect())
+                    .unwrap_or_default();
+                if !models.is_empty() {
+                    return models;
+                }
+            }
+        }
+    }
+    models
+}
+
+async fn discover_local_provider_models(kind: &str, endpoint: &str) -> Vec<String> {
+    match kind {
+        "ollama" => discover_ollama_models(endpoint).await,
+        _ => discover_openai_compatible_models(endpoint).await,
+    }
+}
+
+fn openai_models_url(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else if trimmed.ends_with("/v1/embeddings") {
+        format!("{}/models", trimmed.trim_end_matches("/embeddings"))
+    } else if trimmed.ends_with("/v1/chat/completions") {
+        format!("{}/models", trimmed.trim_end_matches("/chat/completions"))
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
+fn endpoint_discovery_candidates(endpoint: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let trimmed = endpoint.trim().trim_end_matches('/').to_string();
+    if !trimmed.is_empty() {
+        candidates.push(trimmed.clone());
+    }
+    if trimmed.contains("host.docker.internal") {
+        candidates.push(trimmed.replace("host.docker.internal", "localhost"));
+        candidates.push(trimmed.replace("host.docker.internal", "127.0.0.1"));
+    } else if trimmed.contains("localhost") || trimmed.contains("127.0.0.1") {
+        candidates.push(
+            trimmed
+                .replace("localhost", "host.docker.internal")
+                .replace("127.0.0.1", "host.docker.internal"),
+        );
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn openai_embeddings_url(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/v1/embeddings") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/embeddings")
+    } else if trimmed.ends_with("/v1/chat/completions") {
+        format!(
+            "{}/embeddings",
+            trimmed.trim_end_matches("/chat/completions")
+        )
+    } else {
+        format!("{trimmed}/v1/embeddings")
+    }
+}
+
+fn ollama_tags_url(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    let base = trimmed
+        .strip_suffix("/v1")
+        .or_else(|| trimmed.strip_suffix("/v1/chat/completions"))
+        .unwrap_or(trimmed);
+    format!("{base}/api/tags")
 }
 
 fn populate_secret_env_values(mut env_text: String) -> String {
@@ -5041,6 +7520,8 @@ fn populate_secret_env_values(mut env_text: String) -> String {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "COAT_LLM_GATEWAY_API_KEY",
+        "COAT_CONTROL_CHAT_API_KEY",
         "MODEL_PROVIDER_API_KEY",
         "MODEL_PROVIDER_RESEARCH_API_KEY",
         "HF_TOKEN",
@@ -5048,6 +7529,8 @@ fn populate_secret_env_values(mut env_text: String) -> String {
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
+        "MEMORY_GATEWAY_GRAPHITI_TOKEN",
+        "MEMORY_GATEWAY_QDRANT_TOKEN",
         "MEMORY_GATEWAY_EMBEDDING_TOKEN",
     ] {
         if let Ok(value) = env::var(name) {
@@ -5057,6 +7540,295 @@ fn populate_secret_env_values(mut env_text: String) -> String {
         }
     }
     env_text
+}
+
+fn local_model_provider_preset_labels() -> Vec<&'static str> {
+    LOCAL_MODEL_PROVIDER_PRESETS
+        .iter()
+        .map(|preset| preset.label)
+        .collect()
+}
+
+fn default_local_model_provider_index(prefer_vllm: bool) -> usize {
+    let preferred_kind = if prefer_vllm { "vllm" } else { "ollama" };
+    LOCAL_MODEL_PROVIDER_PRESETS
+        .iter()
+        .position(|preset| preset.kind == preferred_kind)
+        .unwrap_or(0)
+}
+
+fn local_model_provider_preset(index: usize) -> LocalModelProviderPreset {
+    LOCAL_MODEL_PROVIDER_PRESETS
+        .get(index)
+        .copied()
+        .unwrap_or(LOCAL_MODEL_PROVIDER_PRESETS[0])
+}
+
+fn model_preset_labels(presets: &[ModelPreset]) -> Vec<String> {
+    presets.iter().map(|preset| preset.label.clone()).collect()
+}
+
+fn default_model_preset_index(presets: &[ModelPreset], default_model: &str) -> usize {
+    presets
+        .iter()
+        .position(|preset| preset.model == default_model)
+        .unwrap_or(0)
+}
+
+fn model_preset(presets: &[ModelPreset], index: usize) -> ModelPreset {
+    presets
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| presets[0].clone())
+}
+
+fn select_model_preset(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    presets: &[ModelPreset],
+    default_model: &str,
+    custom_prompt: &str,
+) -> anyhow::Result<String> {
+    let labels = model_preset_labels(presets);
+    let choice = Select::with_theme(theme)
+        .with_prompt(prompt)
+        .items(&labels)
+        .default(default_model_preset_index(presets, default_model))
+        .interact()?;
+    let preset = model_preset(presets, choice);
+    if preset.model == CUSTOM_MODEL_ID {
+        let mut input = Input::with_theme(theme);
+        input = input.with_prompt(custom_prompt);
+        if !default_model.trim().is_empty() {
+            input = input.default(default_model.to_string());
+        }
+        input.interact_text().map_err(Into::into)
+    } else {
+        Ok(preset.model.to_string())
+    }
+}
+
+fn model_param_preset_labels() -> Vec<&'static str> {
+    MODEL_PARAM_PRESETS
+        .iter()
+        .map(|preset| preset.label)
+        .collect()
+}
+
+fn default_model_param_preset_index(latency_class: &str) -> usize {
+    MODEL_PARAM_PRESETS
+        .iter()
+        .position(|preset| preset.latency_class == Some(latency_class) && !preset.custom)
+        .unwrap_or(1)
+}
+
+fn default_model_param_preset_index_for_values(
+    default_latency_class: &str,
+    defaults: &ModelParamValues,
+) -> usize {
+    if let Some(index) = MODEL_PARAM_PRESETS
+        .iter()
+        .position(|preset| !preset.custom && model_param_values_from_preset(*preset) == *defaults)
+    {
+        return index;
+    }
+    if [
+        defaults.speed_tier.as_ref(),
+        defaults.temperature.as_ref(),
+        defaults.top_p.as_ref(),
+        defaults.max_output_tokens.as_ref(),
+        defaults.reasoning_effort.as_ref(),
+        defaults.timeout_seconds.as_ref(),
+    ]
+    .iter()
+    .any(|value| value.is_some())
+    {
+        return MODEL_PARAM_PRESETS
+            .iter()
+            .position(|preset| preset.custom)
+            .unwrap_or_else(|| default_model_param_preset_index(default_latency_class));
+    }
+    default_model_param_preset_index(
+        defaults
+            .latency_class
+            .as_deref()
+            .unwrap_or(default_latency_class),
+    )
+}
+
+fn model_param_preset(index: usize) -> ModelParamPreset {
+    MODEL_PARAM_PRESETS.get(index).copied().unwrap_or_else(|| {
+        MODEL_PARAM_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| {
+                preset.latency_class == Some("balanced")
+                    && preset.reasoning_effort == Some("medium")
+                    && !preset.custom
+            })
+            .unwrap_or(MODEL_PARAM_PRESETS[0])
+    })
+}
+
+fn model_param_values_from_preset(preset: ModelParamPreset) -> ModelParamValues {
+    ModelParamValues {
+        latency_class: preset.latency_class.map(str::to_string),
+        speed_tier: preset.speed_tier.map(str::to_string),
+        temperature: preset.temperature.map(str::to_string),
+        top_p: preset.top_p.map(str::to_string),
+        max_output_tokens: preset.max_output_tokens.map(str::to_string),
+        reasoning_effort: preset.reasoning_effort.map(str::to_string),
+        timeout_seconds: preset.timeout_seconds.map(str::to_string),
+    }
+}
+
+fn apply_model_param_values(
+    mut env_text: String,
+    prefix: &str,
+    params: &ModelParamValues,
+) -> String {
+    for (suffix, value) in [
+        ("LATENCY_CLASS", params.latency_class.as_deref()),
+        ("SPEED_TIER", params.speed_tier.as_deref()),
+        ("TEMPERATURE", params.temperature.as_deref()),
+        ("TOP_P", params.top_p.as_deref()),
+        ("MAX_OUTPUT_TOKENS", params.max_output_tokens.as_deref()),
+        ("REASONING_EFFORT", params.reasoning_effort.as_deref()),
+        ("TIMEOUT_SECONDS", params.timeout_seconds.as_deref()),
+    ] {
+        env_text = replace_env_line(
+            env_text,
+            &format!("{prefix}_{suffix}"),
+            value.unwrap_or_default(),
+        );
+    }
+    env_text
+}
+
+fn model_param_values_from_env(
+    values: &BTreeMap<String, String>,
+    prefix: &str,
+) -> ModelParamValues {
+    ModelParamValues {
+        latency_class: env_value(values, &format!("{prefix}_LATENCY_CLASS")).and_then(non_empty),
+        speed_tier: env_value(values, &format!("{prefix}_SPEED_TIER")).and_then(non_empty),
+        temperature: env_value(values, &format!("{prefix}_TEMPERATURE")).and_then(non_empty),
+        top_p: env_value(values, &format!("{prefix}_TOP_P")).and_then(non_empty),
+        max_output_tokens: env_value(values, &format!("{prefix}_MAX_OUTPUT_TOKENS"))
+            .and_then(non_empty),
+        reasoning_effort: env_value(values, &format!("{prefix}_REASONING_EFFORT"))
+            .and_then(non_empty),
+        timeout_seconds: env_value(values, &format!("{prefix}_TIMEOUT_SECONDS"))
+            .and_then(non_empty),
+    }
+}
+
+fn select_model_param_values_with_env(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    default_latency_class: &str,
+    values: &BTreeMap<String, String>,
+    prefix: &str,
+) -> anyhow::Result<ModelParamValues> {
+    let mut defaults = model_param_values_from_env(values, prefix);
+    if defaults.latency_class.is_none() {
+        defaults.latency_class = Some(default_latency_class.to_string());
+    }
+    select_model_param_values_with_defaults(theme, prompt, default_latency_class, &defaults)
+}
+
+fn select_model_param_values_with_defaults(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    default_latency_class: &str,
+    defaults: &ModelParamValues,
+) -> anyhow::Result<ModelParamValues> {
+    let labels = model_param_preset_labels();
+    let choice = Select::with_theme(theme)
+        .with_prompt(prompt)
+        .items(&labels)
+        .default(default_model_param_preset_index_for_values(
+            default_latency_class,
+            defaults,
+        ))
+        .interact()?;
+    let preset = model_param_preset(choice);
+    if !preset.custom {
+        return Ok(model_param_values_from_preset(preset));
+    }
+
+    let latency_class: String = Input::with_theme(theme)
+        .with_prompt("Latency class (fast, balanced, deep, batch, or blank)")
+        .allow_empty(true)
+        .default(
+            defaults
+                .latency_class
+                .clone()
+                .unwrap_or_else(|| default_latency_class.to_string()),
+        )
+        .interact_text()?;
+    let speed_tier = prompt_optional_default(
+        theme,
+        "Provider speed tier (speed, priority, flex, auto, default, or blank)",
+        defaults.speed_tier.as_deref(),
+    )?;
+    let temperature = prompt_optional_default(
+        theme,
+        "Temperature (blank keeps provider default)",
+        defaults.temperature.as_deref(),
+    )?;
+    let top_p = prompt_optional_default(
+        theme,
+        "Top-p (blank keeps provider default)",
+        defaults.top_p.as_deref(),
+    )?;
+    let max_output_tokens = prompt_optional_default(
+        theme,
+        "Max output tokens (blank keeps provider default)",
+        defaults.max_output_tokens.as_deref(),
+    )?;
+    let reasoning_effort = prompt_optional_default(
+        theme,
+        "Reasoning effort (minimal, low, medium, high, xhigh, or blank)",
+        defaults.reasoning_effort.as_deref(),
+    )?;
+    let timeout_seconds = prompt_optional_default(
+        theme,
+        "Timeout seconds (blank keeps provider default)",
+        defaults.timeout_seconds.as_deref(),
+    )?;
+
+    Ok(ModelParamValues {
+        latency_class: non_empty(latency_class),
+        speed_tier: non_empty(speed_tier),
+        temperature: non_empty(temperature),
+        top_p: non_empty(top_p),
+        max_output_tokens: non_empty(max_output_tokens),
+        reasoning_effort: non_empty(reasoning_effort),
+        timeout_seconds: non_empty(timeout_seconds),
+    })
+}
+
+fn prompt_optional_default(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    default: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut input = Input::with_theme(theme);
+    input = input.with_prompt(prompt).allow_empty(true);
+    if let Some(default) = default.filter(|value| !value.trim().is_empty()) {
+        input = input.default(default.to_string());
+    }
+    input.interact_text().map_err(Into::into)
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn codex_labels_json(auth_mode: &str, lane: Option<&str>) -> String {
@@ -5087,18 +7859,22 @@ fn claude_labels_json(runtime: &str, auth_mode: &str, device_auth: bool) -> Stri
 
 fn replace_env_line(env_text: String, key: &str, value: &str) -> String {
     let prefix = format!("{key}=");
-    env_text
+    let mut found = false;
+    let mut lines = env_text
         .lines()
         .map(|line| {
             if line.starts_with(&prefix) {
+                found = true;
                 format!("{prefix}{value}")
             } else {
                 line.to_string()
             }
         })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
+        .collect::<Vec<_>>();
+    if !found {
+        lines.push(format!("{prefix}{value}"));
+    }
+    lines.join("\n") + "\n"
 }
 
 fn print_local_auth_checks() {
@@ -5126,6 +7902,15 @@ fn print_local_auth_checks() {
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_AUTH_MODE",
         "STAFF_ENGINEER_AUTH_MODE",
+        "COAT_LLM_GATEWAY_PROVIDER",
+        "COAT_LLM_GATEWAY_URL",
+        "COAT_LLM_GATEWAY_API_KEY",
+        "COAT_LLM_GATEWAY_DEFAULT_MODEL",
+        "COAT_LLM_GATEWAY_WORK_MODEL",
+        "COAT_LLM_GATEWAY_RESEARCH_MODEL",
+        "COAT_LLM_GATEWAY_CHAT_MODEL",
+        "COAT_CONTROL_CHAT_BACKEND",
+        "COAT_CONTROL_CHAT_PROVIDER",
         "AWS_PROFILE",
         "AWS_REGION",
         "AWS_DEFAULT_REGION",
@@ -5138,7 +7923,15 @@ fn print_local_auth_checks() {
         "HUGGINGFACE_TOKEN",
         "LOCAL_MODEL_PROVIDER_ENDPOINT",
         "LOCAL_MODEL_PROVIDER_AUTH_MODE",
+        "COAT_CONTROL_CHAT_COMPLETIONS_URL",
         "COAT_CONTROL_CHAT_MODEL",
+        "COAT_CONTROL_CHAT_API_KEY",
+        "MEMORY_GATEWAY_GRAPHITI_MCP_URL",
+        "MEMORY_GATEWAY_QDRANT_URL",
+        "MEMORY_GATEWAY_EMBEDDING_URL",
+        "MEMORY_GATEWAY_EMBEDDING_MODEL",
+        "MEMORY_GATEWAY_GRAPHITI_TOKEN",
+        "MEMORY_GATEWAY_QDRANT_TOKEN",
         "MEMORY_GATEWAY_EMBEDDING_TOKEN",
     ] {
         println!(
@@ -5155,33 +7948,112 @@ fn print_local_auth_checks() {
 }
 
 fn print_local_auth_commands() {
-    println!("suggested local auth/setup commands:");
+    println!("COAT-managed auth/setup flows:");
+    println!("  coat setup model-index refresh");
+    println!("  coat setup login --codex --claude --preflight");
+    println!("  coat setup login --ollama-model <served-model> --preflight --allow-stub-runners");
+    println!("  coat setup login --hf --preflight");
+    println!("  coat setup sso --profile <profile> --write-env --bedrock-live --preflight");
+    println!();
+    println!("Use --dry-run on either command to see the provider CLI calls without running them.");
     println!(
-        "  codex login   # runner-local device/browser auth; then set CODEX_AUTH_MODE=runner_local_device"
+        "`coat setup local-auth` can also run the selected login/setup actions and preflight in one guided flow."
     );
-    println!(
-        "  claude login  # runner-local Claude Code auth; then set CLAUDE_CODE_AUTH_MODE=runner_local_device"
-    );
-    println!("  aws sso login --profile <profile>");
-    println!("  ollama pull llama3.1");
-    println!("  vllm serve <model> --host 0.0.0.0 --port 8000");
-    println!("  hf auth login");
-    println!("auth modes accepted by preflight:");
-    println!(
-        "  Codex: env_api_key, runner_local_device, app_server, oauth_device_broker, external_broker"
-    );
-    println!(
-        "  Claude/staff-engineer: env_api_key, runner_local_device, oauth_device_broker, external_broker"
-    );
-    println!(
-        "  Model providers: api_key_or_none, provider_token, aws_profile, workload_identity, none, external_broker"
-    );
-    println!("after auth, write an env file with:");
-    println!("  coat setup local-auth --write-env --output infra/compose/local-providers.env");
-    println!("  # or run `coat setup local-auth` interactively to flip selected lanes live");
-    println!("then preflight and start Compose with that env file:");
-    println!("  coat deploy local preflight --env-file infra/compose/local-providers.env");
-    println!("  coat deploy local up --env-file infra/compose/local-providers.env");
+}
+
+fn run_local_auth_actions(actions: &[LocalAuthAction], dry_run: bool) -> anyhow::Result<()> {
+    if actions.is_empty() {
+        println!("no login/setup actions selected");
+        return Ok(());
+    }
+    for action in actions {
+        let (program, args, description) = local_auth_action_command(action);
+        println!("{description}");
+        if dry_run {
+            println!("dry-run: {}", shell_command(&program, &args));
+        } else {
+            run_program_args(&program, &args)?;
+        }
+    }
+    Ok(())
+}
+
+fn local_auth_action_command(action: &LocalAuthAction) -> (String, Vec<String>, String) {
+    match action {
+        LocalAuthAction::CodexLogin => (
+            "codex".to_string(),
+            vec!["login".to_string()],
+            "Codex device/browser login".to_string(),
+        ),
+        LocalAuthAction::ClaudeLogin {
+            email,
+            sso,
+            console,
+        } => {
+            let mut args = vec!["auth".to_string(), "login".to_string()];
+            if let Some(email) = email {
+                args.push("--email".to_string());
+                args.push(email.clone());
+            }
+            if *sso {
+                args.push("--sso".to_string());
+            }
+            if *console {
+                args.push("--console".to_string());
+            }
+            (
+                "claude".to_string(),
+                args,
+                "Claude Code auth login (browser/device)".to_string(),
+            )
+        }
+        LocalAuthAction::AwsSso { profile } => (
+            "aws".to_string(),
+            vec![
+                "sso".to_string(),
+                "login".to_string(),
+                "--profile".to_string(),
+                profile.clone(),
+            ],
+            format!("AWS SSO login for profile {profile}"),
+        ),
+        LocalAuthAction::HuggingFaceLogin => (
+            "hf".to_string(),
+            vec!["auth".to_string(), "login".to_string()],
+            "Hugging Face CLI login".to_string(),
+        ),
+        LocalAuthAction::OllamaPull { model } => (
+            "ollama".to_string(),
+            vec!["pull".to_string(), model.clone()],
+            format!("Ollama pull for model {model}"),
+        ),
+    }
+}
+
+fn run_local_auth_preflight(env_file: &Path, allow_stub_runners: bool) -> anyhow::Result<()> {
+    let restate_cloud_env_file =
+        effective_restate_cloud_env_file(Path::new(DEFAULT_RESTATE_CLOUD_ENV))?;
+    run_local_compose_preflight(LocalComposePreflightInput {
+        env_files: &[env_file.to_path_buf()],
+        restate_cloud: false,
+        restate_cloud_env_file: &restate_cloud_env_file,
+        allow_uninitialized: effective_allow_uninitialized(false)?,
+        allow_stub_runners: allow_stub_runners || effective_allow_stub_runners(false)?,
+    })
+}
+
+fn print_local_auth_preflight_command(env_file: &Path, allow_stub_runners: bool) {
+    let mut args = vec![
+        "deploy".to_string(),
+        "local".to_string(),
+        "preflight".to_string(),
+        "--env-file".to_string(),
+        env_file.display().to_string(),
+    ];
+    if allow_stub_runners {
+        args.push("--allow-stub-runners".to_string());
+    }
+    println!("dry-run: {}", shell_command("coat", &args));
 }
 
 fn probe_command(command: &str) -> (bool, String) {
@@ -5901,11 +8773,15 @@ fn compose_model_preflight_findings(
         failures.extend(live_runner_setup_issues(lane, key, values));
     }
 
-    if memory_embedding_needs_token(values) {
-        warnings.push(
-            "memory embeddings use the OpenAI endpoint but neither MEMORY_GATEWAY_EMBEDDING_TOKEN nor OPENAI_API_KEY is set".to_string(),
-        );
-    }
+    let (mut memory_warnings, mut memory_failures) = memory_store_preflight_findings(values);
+    warnings.append(&mut memory_warnings);
+    failures.append(&mut memory_failures);
+    let (mut chat_warnings, mut chat_failures) = control_chat_preflight_findings(values);
+    warnings.append(&mut chat_warnings);
+    failures.append(&mut chat_failures);
+    let (mut web_warnings, mut web_failures) = web_search_preflight_findings(values);
+    warnings.append(&mut web_warnings);
+    failures.append(&mut web_failures);
 
     (warnings, failures)
 }
@@ -5968,7 +8844,7 @@ fn live_runner_setup_issues(
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `claude login`"
+                    "{lane} is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `coat setup login --claude`"
                 )]
             }
         }
@@ -6047,7 +8923,7 @@ fn model_provider_setup_issues(
 ) -> Vec<String> {
     let mut issues = Vec::new();
     let kind = env_value(values, kind_key).unwrap_or_else(|| "open_ai_compatible".to_string());
-    if !env_present(values, model_key) {
+    if !model_provider_model_present(values, kind_key, model_key) {
         issues.push(format!("{lane} is live but {model_key} is not set"));
     }
     let auth_mode_key = match kind_key {
@@ -6111,12 +8987,55 @@ fn model_provider_setup_issues(
             }
         }
         _ => {
-            if !env_present(values, endpoint_key) {
+            if !model_provider_endpoint_present(values, endpoint_key, &kind) {
                 issues.push(format!("{lane} is live but {endpoint_key} is not set"));
             }
         }
     }
     issues
+}
+
+fn model_provider_model_present(
+    values: &BTreeMap<String, String>,
+    kind_key: &str,
+    model_key: &str,
+) -> bool {
+    if env_present(values, model_key) {
+        return true;
+    }
+    if !matches!(
+        env_value(values, kind_key).as_deref(),
+        Some("open_ai") | Some("open_ai_compatible") | None
+    ) {
+        return false;
+    }
+    match model_key {
+        "MODEL_PROVIDER_RESEARCH_MODEL" => any_env_present(
+            values,
+            &[
+                "COAT_LLM_GATEWAY_RESEARCH_MODEL",
+                "COAT_LLM_GATEWAY_DEFAULT_MODEL",
+            ],
+        ),
+        "MODEL_PROVIDER_MODEL" => any_env_present(
+            values,
+            &[
+                "COAT_LLM_GATEWAY_WORK_MODEL",
+                "COAT_LLM_GATEWAY_DEFAULT_MODEL",
+            ],
+        ),
+        _ => false,
+    }
+}
+
+fn model_provider_endpoint_present(
+    values: &BTreeMap<String, String>,
+    endpoint_key: &str,
+    kind: &str,
+) -> bool {
+    env_present(values, endpoint_key)
+        || matches!(kind, "open_ai" | "open_ai_compatible")
+            && env_present(values, "COAT_LLM_GATEWAY_URL")
 }
 
 fn memory_embedding_needs_token(values: &BTreeMap<String, String>) -> bool {
@@ -6128,6 +9047,145 @@ fn memory_embedding_needs_token(values: &BTreeMap<String, String>) -> bool {
         )
 }
 
+fn web_search_preflight_findings(values: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut failures = Vec::new();
+    if !env_truthy_value(env_value(values, "COAT_WEB_SEARCH_ENABLED").as_deref()) {
+        return (warnings, failures);
+    }
+
+    let route = env_value(values, "COAT_WEB_SEARCH_ROUTE")
+        .unwrap_or_else(|| "coordinator_task".to_string());
+    let provider =
+        env_value(values, "COAT_WEB_SEARCH_PROVIDER").unwrap_or_else(|| "agent_native".to_string());
+    let auth_mode = env_value(values, "COAT_WEB_SEARCH_AUTH_MODE")
+        .unwrap_or_else(|| "api_key_or_none".to_string());
+    let custom_provider = matches!(
+        provider.as_str(),
+        "custom" | "search_api" | "mcp_gateway" | "exa" | "tavily" | "brave" | "serpapi"
+    );
+
+    if custom_provider && !env_present(values, "COAT_WEB_SEARCH_URL") {
+        failures.push(format!(
+            "COAT_WEB_SEARCH_PROVIDER={provider} requires COAT_WEB_SEARCH_URL"
+        ));
+    }
+    if custom_provider
+        && auth_mode == "api_key_or_none"
+        && !any_env_present(values, &["COAT_WEB_SEARCH_API_KEY"])
+    {
+        failures.push(format!(
+            "COAT_WEB_SEARCH_PROVIDER={provider} uses api_key_or_none but COAT_WEB_SEARCH_API_KEY is not set"
+        ));
+    }
+    if route == "runner_registry"
+        && ![
+            "CODEX_NATIVE_WEB_SEARCH",
+            "CLAUDE_CODE_NATIVE_WEB_SEARCH",
+            "MODEL_PROVIDER_WEB_SEARCH_ENABLED",
+            "MODEL_PROVIDER_RESEARCH_WEB_SEARCH_ENABLED",
+        ]
+        .iter()
+        .any(|key| env_truthy_value(env_value(values, key).as_deref()))
+    {
+        warnings.push(
+            "COAT_WEB_SEARCH_ROUTE=runner_registry but no Compose runner lane advertises web_search; external runners may still satisfy it"
+                .to_string(),
+        );
+    }
+
+    (warnings, failures)
+}
+
+fn control_chat_preflight_findings(
+    values: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut failures = Vec::new();
+    let backend = env_value(values, "COAT_CONTROL_CHAT_BACKEND")
+        .unwrap_or_else(|| "configured".to_string())
+        .to_ascii_lowercase();
+    if backend == "stub" {
+        return (warnings, failures);
+    }
+    if matches!(backend.as_str(), "runner_registry" | "auto") {
+        warnings.push(
+            "control gateway chat may use runner-registry discovery; keep this only for explicitly chat-labeled runners"
+                .to_string(),
+        );
+        return (warnings, failures);
+    }
+
+    let has_control_model = env_present(values, "COAT_CONTROL_CHAT_MODEL");
+    let has_gateway_chat_model = env_present(values, "COAT_LLM_GATEWAY_CHAT_MODEL")
+        || env_present(values, "COAT_LLM_GATEWAY_DEFAULT_MODEL");
+    let has_model = has_control_model || has_gateway_chat_model;
+    let has_control_url = env_present(values, "COAT_CONTROL_CHAT_COMPLETIONS_URL");
+    let has_gateway_chat_url = env_present(values, "COAT_LLM_GATEWAY_CHAT_COMPLETIONS_URL")
+        || (env_present(values, "COAT_LLM_GATEWAY_URL") && has_gateway_chat_model);
+    let has_url = has_control_url || has_gateway_chat_url;
+    let direct_openai = env_value_is(values, "COAT_CONTROL_CHAT_PROVIDER", "openai")
+        && has_model
+        && any_env_present(values, &["OPENAI_API_KEY", "COAT_CONTROL_CHAT_API_KEY"]);
+
+    if (has_control_url || env_present(values, "COAT_LLM_GATEWAY_CHAT_COMPLETIONS_URL"))
+        && !has_model
+    {
+        failures.push(
+            "control gateway chat has a URL/gateway configured but no chat model is set"
+                .to_string(),
+        );
+    } else if has_model && !(has_url || direct_openai) {
+        failures.push(
+            "control gateway chat has a model but no matching COAT_CONTROL_CHAT_COMPLETIONS_URL, COAT_LLM_GATEWAY_URL, or direct OpenAI provider/key"
+                .to_string(),
+        );
+    } else if !has_model && !has_url {
+        warnings.push(
+            "control gateway chat has no configured provider and will use the local stub"
+                .to_string(),
+        );
+    }
+
+    (warnings, failures)
+}
+
+fn memory_store_preflight_findings(
+    values: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut failures = Vec::new();
+    let embedding_url = env_present(values, "MEMORY_GATEWAY_EMBEDDING_URL");
+    let embedding_model = env_present(values, "MEMORY_GATEWAY_EMBEDDING_MODEL");
+    let qdrant_url = env_present(values, "MEMORY_GATEWAY_QDRANT_URL");
+
+    if embedding_url && !embedding_model {
+        failures.push(
+            "MEMORY_GATEWAY_EMBEDDING_URL is set but MEMORY_GATEWAY_EMBEDDING_MODEL is missing"
+                .to_string(),
+        );
+    }
+    if embedding_model && !embedding_url {
+        warnings.push(
+            "MEMORY_GATEWAY_EMBEDDING_MODEL is set but MEMORY_GATEWAY_EMBEDDING_URL is missing; embeddings will be disabled"
+                .to_string(),
+        );
+    }
+    if qdrant_url && !(embedding_url && embedding_model) {
+        warnings.push(
+            "MEMORY_GATEWAY_QDRANT_URL is set but embeddings are not fully configured; vector memory will stay inactive"
+                .to_string(),
+        );
+    }
+    if memory_embedding_needs_token(values) {
+        warnings.push(
+            "memory embeddings use the OpenAI endpoint but neither MEMORY_GATEWAY_EMBEDDING_TOKEN nor OPENAI_API_KEY is set".to_string(),
+        );
+    }
+
+    (warnings, failures)
+}
+
 fn any_env_present(values: &BTreeMap<String, String>, names: &[&str]) -> bool {
     names.iter().any(|name| env_present(values, name))
 }
@@ -6136,6 +9194,33 @@ fn env_present(values: &BTreeMap<String, String>, name: &str) -> bool {
     env_value(values, name)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
+}
+
+fn env_or_default(values: &BTreeMap<String, String>, name: &str, default: &str) -> String {
+    env_value(values, name).unwrap_or_else(|| default.to_string())
+}
+
+fn env_value_is(values: &BTreeMap<String, String>, name: &str, expected: &str) -> bool {
+    env_value(values, name).is_some_and(|value| value.eq_ignore_ascii_case(expected))
+}
+
+fn env_value_is_value(values: &BTreeMap<String, String>, name: &str, expected: &str) -> bool {
+    env_value(values, name).is_some_and(|value| value == expected)
+}
+
+fn env_truthy_value(value: Option<&str>) -> bool {
+    value
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn bool_env(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
 }
 
 fn env_value(values: &BTreeMap<String, String>, name: &str) -> Option<String> {
@@ -7199,26 +10284,37 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs, DEFAULT_GOAL_STORE_URL,
-        DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs, HelmTemplateArgs,
-        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec, PlanSubcommand,
-        ProjectInitAction, ProjectInitCheck, apply_config_profile, bump_release_versions,
-        chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
+        CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs,
+        DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs,
+        HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec,
+        LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
+        ProjectInitAction, ProjectInitCheck, SetupSubcommand,
+        apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
+        bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
         compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
-        compose_up_command_args, endpoint_from_config, ensure_json_goal_id, executor_job_manifest,
-        extract_follow_ups, helm_template_args, helm_upgrade_args, kubectl_apply_args,
-        kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args, latest_goal_id_from_value,
-        merge_coat_config, parse_env_file_content, project_init_action, release_plan_json,
-        replace_env_line, replace_toml_section_value, replace_yaml_root_value,
-        restate_cloud_env_placeholders,
+        compose_up_command_args, default_local_model_provider_index,
+        default_model_param_preset_index, default_model_preset_index,
+        endpoint_discovery_candidates, endpoint_from_config, ensure_json_goal_id,
+        executor_job_manifest, extract_follow_ups, helm_template_args, helm_upgrade_args,
+        kubectl_apply_args, kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args,
+        latest_goal_id_from_value, live_model_presets, load_fresh_model_index_from_paths,
+        local_auth_action_command, local_auth_profile_defaults, local_model_provider_preset,
+        local_model_provider_preset_labels, login_actions_from_args, merge_coat_config,
+        model_index_cache_is_fresh, model_param_preset, model_param_preset_labels,
+        model_param_values_from_env, model_param_values_from_preset, model_preset,
+        model_preset_labels, model_presets_with_configured, models_dev_embedding_dimensions,
+        models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
+        parse_env_file_content, project_init_action, release_plan_json, replace_env_line,
+        replace_toml_section_value, replace_yaml_root_value, restate_cloud_env_placeholders,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
-        CoatCliConfig, CoatConfig, CoatLocalDeployConfig, CoatServiceEndpoints, NetworkAccess,
-        SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan, SandboxResourcePlan,
-        SandboxSecurityPlan,
+        CapacityScalingPolicy, CoatCliConfig, CoatConfig, CoatLocalDeployConfig,
+        CoatRunnerCapacityConfig, CoatServiceEndpoints, NetworkAccess, RunnerPoolDemand,
+        RunnerScalingRequest, SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan,
+        SandboxResourcePlan, SandboxSecurityPlan,
     };
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
     use uuid::Uuid;
 
     #[test]
@@ -7283,6 +10379,147 @@ mod tests {
     }
 
     #[test]
+    fn bare_coat_is_help_surface_not_dialogue() {
+        let cli = Cli::parse_from(["coat"]);
+        assert!(
+            cli.command.is_none(),
+            "bare coat should remain an explicit subcommand/help surface"
+        );
+
+        let help = Cli::command().render_long_help().to_string();
+        for expected in [
+            "Usage: coat",
+            "guide",
+            "deploy",
+            "Open guided setup and human-queue workflows",
+        ] {
+            assert!(
+                help.contains(expected),
+                "root help should include {expected:?}; help was:\n{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn runner_help_exposes_capacity_planning_without_provisioning() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("runner")
+            .expect("runner subcommand exists")
+            .render_long_help()
+            .to_string();
+
+        for expected in [
+            "capacity-plan",
+            "bounded capacity recommendation",
+            "Register, inspect, and test distributed runners",
+        ] {
+            assert!(
+                help.contains(expected),
+                "runner help should include {expected:?}; help was:\n{help}"
+            );
+        }
+
+        let capacity_help = command
+            .find_subcommand_mut("runner")
+            .expect("runner subcommand exists")
+            .find_subcommand_mut("capacity-plan")
+            .expect("runner capacity-plan subcommand exists")
+            .render_long_help()
+            .to_string();
+        assert!(
+            capacity_help.contains("policy may be omitted to use config.runner_capacity"),
+            "capacity-plan help should document config policy fallback; help was:\n{capacity_help}"
+        );
+    }
+
+    #[test]
+    fn deploy_help_documents_subcommands_and_examples() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("deploy")
+            .expect("deploy subcommand exists")
+            .render_long_help()
+            .to_string();
+
+        for expected in [
+            "Run and inspect the local Docker Compose stack",
+            "Render, apply, and inspect Kubernetes manifests and executor Jobs",
+            "Lint, render, install, rollback, and package the jattg Helm chart",
+            "Prepare Restate Cloud env, tunnel, and service registration commands",
+            "coat deploy local preflight --allow-stub-runners",
+            "coat deploy restate register-cloud",
+        ] {
+            assert!(
+                help.contains(expected),
+                "deploy help should include {expected:?}; help was:\n{help}"
+            );
+        }
+
+        let mut command = Cli::command();
+        let local_help = command
+            .find_subcommand_mut("deploy")
+            .expect("deploy subcommand exists")
+            .find_subcommand_mut("local")
+            .expect("deploy local subcommand exists")
+            .render_long_help()
+            .to_string();
+        for expected in [
+            "Check initialization, Docker, env files, runner modes, and model setup",
+            "Run docker compose up after preflight unless --skip-preflight is set",
+            "coat deploy local config --env-file infra/compose/local-providers.env",
+        ] {
+            assert!(
+                local_help.contains(expected),
+                "deploy local help should include {expected:?}; help was:\n{local_help}"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_help_documents_login_and_sso_flows() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("setup")
+            .expect("setup subcommand exists")
+            .render_long_help()
+            .to_string();
+
+        for expected in [
+            "Run provider device/browser login flows and optional local preflight",
+            "Run AWS SSO login, update local env, and optionally preflight",
+            "Refresh or inspect the external model index used by setup wizards",
+            "local-auth",
+            "chat-client",
+        ] {
+            assert!(
+                help.contains(expected),
+                "setup help should include {expected:?}; help was:\n{help}"
+            );
+        }
+
+        let login_help = command
+            .find_subcommand_mut("setup")
+            .expect("setup subcommand exists")
+            .find_subcommand_mut("login")
+            .expect("setup login subcommand exists")
+            .render_long_help()
+            .to_string();
+        for expected in [
+            "--claude-email",
+            "--claude-sso",
+            "--claude-console",
+            "Run Claude Code auth login on this runner node",
+            "Force Claude Code organization SSO during auth login",
+        ] {
+            assert!(
+                login_help.contains(expected),
+                "setup login help should include {expected:?}; help was:\n{login_help}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_root_config_profile_override() {
         let cli = Cli::parse_from([
             "coat",
@@ -7336,6 +10573,67 @@ mod tests {
             follow_ups.command,
             Some(Commands::Plan(ref plan))
                 if matches!(plan.command, PlanSubcommand::FollowUps(_))
+        ));
+
+        let login = Cli::try_parse_from([
+            "coat",
+            "setup",
+            "login",
+            "--codex",
+            "--claude",
+            "--preflight",
+        ])
+        .expect("parse setup login");
+        assert!(matches!(
+            login.command,
+            Some(Commands::Setup(ref setup))
+                if matches!(setup.command, SetupSubcommand::Login(_))
+        ));
+
+        let sso = Cli::try_parse_from([
+            "coat",
+            "setup",
+            "sso",
+            "--profile",
+            "jattg-dev",
+            "--write-env",
+            "--bedrock-live",
+        ])
+        .expect("parse setup sso");
+        assert!(matches!(
+            sso.command,
+            Some(Commands::Setup(ref setup)) if matches!(setup.command, SetupSubcommand::Sso(_))
+        ));
+
+        let model_index = Cli::try_parse_from([
+            "coat",
+            "setup",
+            "model-index",
+            "refresh",
+            "--output",
+            "/tmp/models.dev.api.json",
+        ])
+        .expect("parse setup model-index refresh");
+        assert!(matches!(
+            model_index.command,
+            Some(Commands::Setup(ref setup))
+                if matches!(setup.command, SetupSubcommand::ModelIndex(_))
+        ));
+
+        let embedding_index = Cli::try_parse_from([
+            "coat",
+            "setup",
+            "model-index",
+            "show",
+            "--provider",
+            "openai",
+            "--embeddings",
+        ])
+        .expect("parse setup model-index show --embeddings");
+        assert!(matches!(
+            embedding_index.command,
+            Some(Commands::Setup(ref setup))
+                if matches!(setup.command, SetupSubcommand::ModelIndex(_))
         ));
     }
 
@@ -7404,6 +10702,109 @@ mod tests {
     }
 
     #[test]
+    fn compose_preflight_accepts_shared_llm_gateway_for_work_and_research() {
+        let values = BTreeMap::from([
+            ("MODEL_PROVIDER_RUNNER_MODE".to_string(), "live".to_string()),
+            (
+                "MODEL_PROVIDER_KIND".to_string(),
+                "open_ai_compatible".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_RUNNER_MODE".to_string(),
+                "live".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_KIND".to_string(),
+                "open_ai_compatible".to_string(),
+            ),
+            (
+                "COAT_LLM_GATEWAY_URL".to_string(),
+                "http://host.docker.internal:8080/openai".to_string(),
+            ),
+            (
+                "COAT_LLM_GATEWAY_WORK_MODEL".to_string(),
+                "openai/work-model".to_string(),
+            ),
+            (
+                "COAT_LLM_GATEWAY_RESEARCH_MODEL".to_string(),
+                "anthropic/research-model".to_string(),
+            ),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "shared gateway model and endpoint refs should satisfy live model-provider lanes: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_keeps_control_chat_separate_from_runner_models() {
+        let values = BTreeMap::from([
+            (
+                "MODEL_PROVIDER_LOCAL_RUNNER_MODE".to_string(),
+                "live".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_KIND".to_string(),
+                "ollama".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_AUTH_MODE".to_string(),
+                "none".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_MODEL".to_string(),
+                "llama3.2".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_ENDPOINT".to_string(),
+                "http://host.docker.internal:11434/v1".to_string(),
+            ),
+            (
+                "COAT_CONTROL_CHAT_MODEL".to_string(),
+                "llama3.2".to_string(),
+            ),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("control gateway chat has a model")),
+            "control chat model without a gateway/provider must not fall through to local runners: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_accepts_direct_openai_control_chat() {
+        let values = BTreeMap::from([
+            (
+                "COAT_CONTROL_CHAT_BACKEND".to_string(),
+                "configured".to_string(),
+            ),
+            (
+                "COAT_CONTROL_CHAT_PROVIDER".to_string(),
+                "openai".to_string(),
+            ),
+            (
+                "COAT_CONTROL_CHAT_MODEL".to_string(),
+                "gpt-example".to_string(),
+            ),
+            ("OPENAI_API_KEY".to_string(), "set".to_string()),
+        ]);
+        let (_warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "direct OpenAI chat config should satisfy control gateway chat preflight: {failures:?}"
+        );
+    }
+
+    #[test]
     fn compose_preflight_accepts_runner_local_device_auth() {
         let values = BTreeMap::from([
             ("CODEX_RUNNER_MODE".to_string(), "live".to_string()),
@@ -7435,7 +10836,7 @@ mod tests {
             ),
             (
                 "LOCAL_MODEL_PROVIDER_MODEL".to_string(),
-                "llama3.1".to_string(),
+                "served-model".to_string(),
             ),
             (
                 "LOCAL_MODEL_PROVIDER_ENDPOINT".to_string(),
@@ -7448,6 +10849,133 @@ mod tests {
         assert!(
             failures.is_empty(),
             "device/browser and brokered auth modes should unblock live runner lanes: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_accepts_local_model_reused_for_primary_and_research_lanes() {
+        let values = BTreeMap::from([
+            ("MODEL_PROVIDER_RUNNER_MODE".to_string(), "live".to_string()),
+            ("MODEL_PROVIDER_KIND".to_string(), "ollama".to_string()),
+            ("MODEL_PROVIDER_AUTH_MODE".to_string(), "none".to_string()),
+            (
+                "MODEL_PROVIDER_MODEL".to_string(),
+                "served-model".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_ENDPOINT".to_string(),
+                "http://host.docker.internal:11434/v1".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_RUNNER_MODE".to_string(),
+                "live".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_KIND".to_string(),
+                "ollama".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_AUTH_MODE".to_string(),
+                "none".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_MODEL".to_string(),
+                "served-model".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_RESEARCH_ENDPOINT".to_string(),
+                "http://host.docker.internal:11434/v1".to_string(),
+            ),
+            (
+                "MODEL_PROVIDER_LOCAL_RUNNER_MODE".to_string(),
+                "live".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_KIND".to_string(),
+                "ollama".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_AUTH_MODE".to_string(),
+                "none".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_MODEL".to_string(),
+                "served-model".to_string(),
+            ),
+            (
+                "LOCAL_MODEL_PROVIDER_ENDPOINT".to_string(),
+                "http://host.docker.internal:11434/v1".to_string(),
+            ),
+        ]);
+        let (warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "local model reuse should satisfy all model-provider lanes: {failures:?}"
+        );
+        assert!(
+            !warnings
+                .iter()
+                .any(|warning| warning.contains("model-provider")),
+            "all model-provider lanes are live, so preflight should not report model-provider stubs: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compose_preflight_validates_memory_store_embedding_pairs() {
+        let values = BTreeMap::from([
+            (
+                "MEMORY_GATEWAY_EMBEDDING_URL".to_string(),
+                "http://host.docker.internal:11434/v1/embeddings".to_string(),
+            ),
+            (
+                "MEMORY_GATEWAY_QDRANT_URL".to_string(),
+                "http://qdrant:6333".to_string(),
+            ),
+        ]);
+        let (warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("MEMORY_GATEWAY_EMBEDDING_MODEL")),
+            "embedding endpoint without model should fail preflight: {failures:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("vector memory will stay inactive")),
+            "Qdrant without a complete embedding pair should warn: {warnings:?}"
+        );
+
+        let values = BTreeMap::from([
+            (
+                "MEMORY_GATEWAY_EMBEDDING_URL".to_string(),
+                "http://host.docker.internal:11434/v1/embeddings".to_string(),
+            ),
+            (
+                "MEMORY_GATEWAY_EMBEDDING_MODEL".to_string(),
+                "nomic-embed-text".to_string(),
+            ),
+            (
+                "MEMORY_GATEWAY_QDRANT_URL".to_string(),
+                "http://qdrant:6333".to_string(),
+            ),
+        ]);
+        let (warnings, failures) =
+            compose_model_preflight_findings(true, &[PathBuf::from("env")], &values, false, true);
+
+        assert!(
+            failures.is_empty(),
+            "complete local embedding config should pass memory preflight: {failures:?}"
+        );
+        assert!(
+            !warnings
+                .iter()
+                .any(|warning| warning.contains("vector memory will stay inactive")),
+            "Qdrant plus embedding pair should not warn inactive vector memory: {warnings:?}"
         );
     }
 
@@ -7494,7 +11022,7 @@ mod tests {
             # comments are ignored
             CODEX_RUNNER_MODE=live
             MODEL_PROVIDER_LOCAL_RUNNER_MODE=live # comment
-            LOCAL_MODEL_PROVIDER_MODEL=llama3.1
+            LOCAL_MODEL_PROVIDER_MODEL=served-model
             LOCAL_MODEL_PROVIDER_ENDPOINT=http://host.docker.internal:11434/v1
             "#,
         );
@@ -7936,6 +11464,479 @@ mod tests {
             updated,
             "OPENAI_API_KEY=\nLOCAL_MODEL_PROVIDER_KIND=vllm\nOTHER=value\n"
         );
+
+        let appended =
+            replace_env_line(env_text.to_string(), "MODEL_PROVIDER_LATENCY_CLASS", "fast");
+        assert!(appended.contains("\nMODEL_PROVIDER_LATENCY_CLASS=fast\n"));
+    }
+
+    #[test]
+    fn local_model_provider_presets_cover_supported_interactive_choices() {
+        let labels = local_model_provider_preset_labels();
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("Ollama on host.docker.internal:11434")),
+            "local provider selection should include Ollama: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("vLLM OpenAI-compatible")),
+            "local provider selection should include vLLM: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label.contains("llama.cpp")),
+            "local provider selection should include llama.cpp: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("Custom OpenAI-compatible")),
+            "local provider selection should include a custom endpoint: {labels:?}"
+        );
+
+        assert_eq!(
+            local_model_provider_preset(default_local_model_provider_index(false)).kind,
+            "ollama"
+        );
+        assert_eq!(
+            local_model_provider_preset(default_local_model_provider_index(true)).kind,
+            "vllm"
+        );
+        assert_eq!(local_model_provider_preset(usize::MAX).kind, "ollama");
+    }
+
+    #[test]
+    fn local_auth_setup_defaults_from_existing_env_file_state() {
+        let values = parse_env_file_content(
+            r#"
+            CODEX_RUNNER_MODE=live
+            CODEX_AUTH_MODE=app_server
+            CODEX_APP_SERVER_URL=http://host.docker.internal:1455
+            MODEL_PROVIDER_LOCAL_RUNNER_MODE=live
+            LOCAL_MODEL_PROVIDER_KIND=ollama
+            LOCAL_MODEL_PROVIDER_MODEL=llama3.2
+            LOCAL_MODEL_PROVIDER_ENDPOINT=http://host.docker.internal:11434/v1
+            MODEL_PROVIDER_RUNNER_MODE=live
+            MODEL_PROVIDER_KIND=ollama
+            MODEL_PROVIDER_MODEL=llama3.2
+            COAT_CONTROL_CHAT_MODEL=llama3.2
+            MEMORY_GATEWAY_QDRANT_URL=http://qdrant:6333
+            MEMORY_GATEWAY_EMBEDDING_URL=http://host.docker.internal:11434/v1/embeddings
+            MEMORY_GATEWAY_EMBEDDING_MODEL=nomic-embed-text
+            COAT_WEB_SEARCH_ENABLED=true
+            COAT_WEB_SEARCH_ROUTE=coordinator_task
+            "#,
+        );
+
+        let defaults = local_auth_profile_defaults(true, &values);
+        assert!(
+            defaults[0],
+            "existing live Codex lane should be selected by default"
+        );
+        assert!(
+            defaults[5],
+            "existing Ollama lane should be selected by default"
+        );
+        assert!(
+            defaults[8],
+            "existing chat model should be selected by default"
+        );
+        assert!(
+            defaults[9],
+            "existing memory store or embedding config should be selected by default"
+        );
+        assert!(
+            defaults[10],
+            "existing routed web search config should be selected by default"
+        );
+        assert!(
+            !defaults[3],
+            "OpenAI hosted lane should not be selected when the existing env uses local Ollama"
+        );
+
+        let params = model_param_values_from_env(&values, "LOCAL_MODEL_PROVIDER");
+        assert!(params.latency_class.is_none());
+
+        let values = parse_env_file_content(
+            r#"
+            LOCAL_MODEL_PROVIDER_LATENCY_CLASS=fast
+            LOCAL_MODEL_PROVIDER_TEMPERATURE=0.2
+            LOCAL_MODEL_PROVIDER_TOP_P=0.9
+            LOCAL_MODEL_PROVIDER_MAX_OUTPUT_TOKENS=2048
+            LOCAL_MODEL_PROVIDER_REASONING_EFFORT=low
+            LOCAL_MODEL_PROVIDER_TIMEOUT_SECONDS=60
+            "#,
+        );
+        let params = model_param_values_from_env(&values, "LOCAL_MODEL_PROVIDER");
+        assert_eq!(
+            params,
+            model_param_values_from_preset(MODEL_PARAM_PRESETS[0])
+        );
+    }
+
+    #[test]
+    fn model_presets_come_from_real_index_or_live_discovery() {
+        let index: ModelsDevIndex = serde_json::from_str(
+            r#"{
+              "openai": {
+                "id": "openai",
+                "name": "OpenAI",
+                "models": {
+                  "gpt-real": {
+                    "id": "gpt-real",
+                    "name": "GPT Real",
+                    "family": "gpt",
+                    "tool_call": true,
+                    "structured_output": true,
+                    "last_updated": "2026-05-01",
+                    "limit": {"context": 128000, "output": 16384}
+                  },
+                  "old-model": {
+                    "id": "old-model",
+                    "name": "Old Model",
+                    "status": "deprecated"
+                  },
+                  "text-embedding-real": {
+                    "id": "text-embedding-real",
+                    "name": "Text Embedding Real",
+                    "last_updated": "2026-05-02",
+                    "limit": {"context": 8192, "output": 1536},
+                    "modalities": {"input": ["text"], "output": ["text"]}
+                  }
+                }
+              },
+              "amazon-bedrock": {
+                "id": "amazon-bedrock",
+                "name": "Amazon Bedrock",
+                "models": {
+                  "amazon.real-pro-v1:0": {
+                    "id": "amazon.real-pro-v1:0",
+                    "name": "Real Pro",
+                    "reasoning": true,
+                    "last_updated": "2026-04-15"
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("sample models.dev index parses");
+
+        let openai_presets =
+            models_dev_provider_presets(&index, "openai", "Custom OpenAI chat model id", 20);
+        let openai_labels = model_preset_labels(&openai_presets);
+        assert!(
+            openai_labels
+                .iter()
+                .any(|label| label.contains("OpenAI: GPT Real")),
+            "OpenAI choices should be rendered from the model index: {openai_labels:?}"
+        );
+        assert!(
+            openai_presets
+                .iter()
+                .any(|preset| preset.model == "gpt-real"),
+            "OpenAI choices should include model ids from the model index"
+        );
+        assert!(
+            !openai_presets
+                .iter()
+                .any(|preset| preset.model == "old-model"),
+            "deprecated models should not be offered by default"
+        );
+        assert!(
+            !openai_presets
+                .iter()
+                .any(|preset| preset.model == "text-embedding-real"),
+            "embedding models should not be offered as general work-model presets"
+        );
+        assert!(
+            openai_presets
+                .iter()
+                .any(|preset| preset.model == CUSTOM_MODEL_ID),
+            "indexed model choices should still include a custom escape hatch"
+        );
+
+        let bedrock_presets =
+            models_dev_provider_presets(&index, "amazon-bedrock", "Custom Bedrock model id", 20);
+        assert!(
+            bedrock_presets
+                .iter()
+                .any(|preset| preset.model == "amazon.real-pro-v1:0"),
+            "Bedrock choices should come from the model index"
+        );
+
+        let live_presets = live_model_presets(
+            vec![
+                "served-b".to_string(),
+                "served-a".to_string(),
+                "served-a".to_string(),
+            ],
+            "Custom local model id",
+        );
+        assert_eq!(live_presets[0].model, "served-a");
+        assert_eq!(live_presets[1].model, "served-b");
+        assert_eq!(model_preset(&live_presets, usize::MAX).model, "served-a");
+        assert_eq!(
+            model_preset(
+                &openai_presets,
+                default_model_preset_index(&openai_presets, "gpt-real")
+            )
+            .model,
+            "gpt-real"
+        );
+
+        let embedding_presets =
+            models_dev_embedding_presets(&index, "openai", "Custom OpenAI embedding model id", 20);
+        assert!(
+            embedding_presets
+                .iter()
+                .any(|preset| preset.model == "text-embedding-real"),
+            "embedding choices should come from the model index: {embedding_presets:?}"
+        );
+        assert!(
+            !embedding_presets
+                .iter()
+                .any(|preset| preset.model == "gpt-real"),
+            "chat-only model ids should not be offered as hosted embedding presets"
+        );
+        assert_eq!(
+            models_dev_embedding_dimensions(&index, "openai", "text-embedding-real"),
+            Some(1536)
+        );
+        assert_eq!(
+            openai_embeddings_url("http://host.docker.internal:11434/v1"),
+            "http://host.docker.internal:11434/v1/embeddings"
+        );
+        assert_eq!(
+            openai_embeddings_url("http://host.docker.internal:11434/v1/chat/completions"),
+            "http://host.docker.internal:11434/v1/embeddings"
+        );
+    }
+
+    #[test]
+    fn setup_model_choices_keep_configured_model_when_discovery_is_empty() {
+        let presets = model_presets_with_configured(
+            live_model_presets(Vec::new(), "Custom local model id"),
+            Some("llama3.2"),
+            "Configured local model",
+        );
+
+        assert_eq!(presets[0].model, "llama3.2");
+        assert!(
+            presets[0].label.contains("Configured local model"),
+            "configured model should be visible as a first-class option: {presets:?}"
+        );
+        assert!(
+            presets.iter().any(|preset| preset.model == CUSTOM_MODEL_ID),
+            "custom escape hatch should remain present"
+        );
+
+        let candidates = endpoint_discovery_candidates("http://host.docker.internal:11434/v1");
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate == "http://localhost:11434/v1"),
+            "CLI discovery should try a host-local alias for Compose endpoints: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn model_param_presets_apply_fast_and_custom_runtime_env() {
+        let labels = model_param_preset_labels();
+        assert!(
+            labels.iter().any(|label| label.contains("Fast")),
+            "runtime param presets should expose a fast lane: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("Fast completions")),
+            "runtime param presets should expose a fast completions lane: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label.contains("Speed tier")),
+            "runtime param presets should expose a provider speed tier lane: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label.contains("Deep review")),
+            "runtime param presets should expose a deep review lane: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label.contains("XHigh")),
+            "runtime param presets should expose an xhigh reasoning lane: {labels:?}"
+        );
+
+        let fast = model_param_preset(default_model_param_preset_index("fast"));
+        assert_eq!(fast.latency_class, Some("fast"));
+        let xhigh = MODEL_PARAM_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| preset.reasoning_effort == Some("xhigh"))
+            .expect("xhigh preset exists");
+        assert_eq!(xhigh.latency_class, Some("deep"));
+        assert_eq!(xhigh.max_output_tokens, Some("16384"));
+        let speed = MODEL_PARAM_PRESETS
+            .iter()
+            .copied()
+            .find(|preset| preset.speed_tier == Some("speed"))
+            .expect("speed-tier preset exists");
+        assert_eq!(speed.latency_class, Some("fast"));
+        assert_eq!(
+            model_param_preset(usize::MAX).reasoning_effort,
+            Some("medium"),
+            "out-of-range runtime preset should fall back to balanced"
+        );
+
+        let params = model_param_values_from_preset(fast);
+        let env_text = "MODEL_PROVIDER_TEMPERATURE=\nMODEL_PROVIDER_TIMEOUT_SECONDS=\n";
+        let updated = apply_model_param_values(env_text.to_string(), "MODEL_PROVIDER", &params);
+        let parsed = parse_env_file_content(&updated);
+
+        assert_eq!(
+            parsed
+                .get("MODEL_PROVIDER_LATENCY_CLASS")
+                .map(String::as_str),
+            Some("fast")
+        );
+        assert_eq!(
+            parsed
+                .get("MODEL_PROVIDER_SPEED_TIER")
+                .map(|value| value.trim())
+                .unwrap_or_default(),
+            "",
+            "plain fast preset should not force provider speed tiering"
+        );
+        assert_eq!(
+            parsed.get("MODEL_PROVIDER_TEMPERATURE").map(String::as_str),
+            Some("0.2")
+        );
+        assert_eq!(
+            parsed
+                .get("MODEL_PROVIDER_MAX_OUTPUT_TOKENS")
+                .map(String::as_str),
+            Some("2048")
+        );
+        assert_eq!(
+            parsed
+                .get("MODEL_PROVIDER_REASONING_EFFORT")
+                .map(String::as_str),
+            Some("low")
+        );
+        assert_eq!(
+            parsed
+                .get("MODEL_PROVIDER_TIMEOUT_SECONDS")
+                .map(String::as_str),
+            Some("60")
+        );
+
+        let speed_updated = apply_model_param_values(
+            String::new(),
+            "MODEL_PROVIDER",
+            &model_param_values_from_preset(speed),
+        );
+        let speed_parsed = parse_env_file_content(&speed_updated);
+        assert_eq!(
+            speed_parsed
+                .get("MODEL_PROVIDER_SPEED_TIER")
+                .map(String::as_str),
+            Some("speed")
+        );
+    }
+
+    #[test]
+    fn model_index_cache_freshness_debounces_setup_refresh() {
+        let path = std::env::temp_dir().join(format!(
+            "coat-model-index-freshness-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(
+            &path,
+            r#"{"openai":{"id":"openai","name":"OpenAI","models":{"gpt-real":{"id":"gpt-real"}}}}"#,
+        )
+        .expect("write temp model index");
+
+        assert!(
+            model_index_cache_is_fresh(&path, Duration::from_secs(60 * 60)),
+            "newly written model indexes should debounce setup refresh"
+        );
+        let (loaded_path, loaded_index) =
+            load_fresh_model_index_from_paths(vec![path.clone()], Duration::from_secs(60 * 60))
+                .expect("fresh model index should parse")
+                .expect("fresh model index should load");
+        assert_eq!(loaded_path, path);
+        assert!(
+            loaded_index.providers.contains_key("openai"),
+            "fresh debounced cache should be the model index used by setup"
+        );
+        fs::remove_file(&path).expect("remove temp model index");
+        assert!(
+            !model_index_cache_is_fresh(&path, Duration::from_secs(60 * 60)),
+            "missing model indexes cannot satisfy setup refresh debounce"
+        );
+        assert!(
+            load_fresh_model_index_from_paths(vec![path], Duration::from_secs(60 * 60))
+                .expect("missing model index should not error")
+                .is_none(),
+            "missing model indexes should force a refresh attempt before setup options"
+        );
+    }
+
+    #[test]
+    fn login_actions_are_coat_owned_provider_commands() {
+        let args = LoginArgs {
+            codex: true,
+            claude: true,
+            claude_email: Some("engineer@example.com".to_string()),
+            claude_sso: true,
+            claude_console: false,
+            hf: true,
+            ollama_model: vec!["served-model".to_string()],
+            env_file: PathBuf::from("infra/compose/local-providers.env"),
+            preflight: true,
+            allow_stub_runners: false,
+            dry_run: true,
+        };
+        let actions = login_actions_from_args(&args);
+        assert_eq!(
+            actions,
+            vec![
+                LocalAuthAction::CodexLogin,
+                LocalAuthAction::ClaudeLogin {
+                    email: Some("engineer@example.com".to_string()),
+                    sso: true,
+                    console: false,
+                },
+                LocalAuthAction::HuggingFaceLogin,
+                LocalAuthAction::OllamaPull {
+                    model: "served-model".to_string()
+                },
+            ]
+        );
+
+        let (program, command_args, description) =
+            local_auth_action_command(&LocalAuthAction::ClaudeLogin {
+                email: Some("engineer@example.com".to_string()),
+                sso: true,
+                console: false,
+            });
+        assert_eq!(program, "claude");
+        assert_eq!(
+            command_args,
+            ["auth", "login", "--email", "engineer@example.com", "--sso"].map(String::from)
+        );
+        assert!(description.contains("auth login"));
+
+        let (program, command_args, description) =
+            local_auth_action_command(&LocalAuthAction::AwsSso {
+                profile: "jattg-dev".to_string(),
+            });
+        assert_eq!(program, "aws");
+        assert_eq!(
+            command_args,
+            ["sso", "login", "--profile", "jattg-dev"].map(String::from)
+        );
+        assert!(description.contains("jattg-dev"));
     }
 
     #[test]
@@ -7949,6 +11950,13 @@ mod tests {
                 env_files: vec!["infra/compose/local-providers.env".to_string()],
                 allow_stub_runners: Some(false),
                 ..CoatLocalDeployConfig::default()
+            },
+            runner_capacity: CoatRunnerCapacityConfig {
+                default_policy: Some(CapacityScalingPolicy::recommend_only(2)),
+                lane_policies: BTreeMap::from([(
+                    "research".to_string(),
+                    CapacityScalingPolicy::recommend_only(3),
+                )]),
             },
             ..CoatConfig::default()
         };
@@ -7964,6 +11972,13 @@ mod tests {
                 ],
                 allow_stub_runners: Some(true),
                 ..CoatLocalDeployConfig::default()
+            },
+            runner_capacity: CoatRunnerCapacityConfig {
+                default_policy: Some(CapacityScalingPolicy::bounded_ephemeral(5)),
+                lane_policies: BTreeMap::from([(
+                    "review".to_string(),
+                    CapacityScalingPolicy::recommend_only(1),
+                )]),
             },
             ..CoatConfig::default()
         };
@@ -7982,6 +11997,18 @@ mod tests {
             ]
         );
         assert_eq!(base.local_deploy.allow_stub_runners, Some(true));
+        assert_eq!(
+            base.runner_capacity.default_policy,
+            Some(CapacityScalingPolicy::bounded_ephemeral(5))
+        );
+        assert_eq!(
+            base.runner_capacity.policy_for("research"),
+            Some(CapacityScalingPolicy::recommend_only(3))
+        );
+        assert_eq!(
+            base.runner_capacity.policy_for("review"),
+            Some(CapacityScalingPolicy::recommend_only(1))
+        );
     }
 
     #[test]
@@ -8000,6 +12027,10 @@ mod tests {
             restate_cloud.local_deploy.profiles,
             vec!["restate-cloud".to_string()]
         );
+        assert_eq!(
+            restate_cloud.runner_capacity.default_policy,
+            Some(CapacityScalingPolicy::recommend_only(4))
+        );
 
         let mut eks = CoatConfig::project_defaults();
         apply_config_profile(&mut eks, "eks").expect("eks profile");
@@ -8013,6 +12044,71 @@ mod tests {
             eks.kubernetes.workload_identity.as_deref(),
             Some("irsa_or_eks_pod_identity")
         );
+        assert_eq!(
+            eks.runner_capacity.default_policy.as_ref().map(|policy| (
+                policy.enabled,
+                policy.mode.clone(),
+                policy.max_runners,
+                policy.headroom_runners,
+                policy.max_scale_up_step,
+            )),
+            Some((
+                true,
+                coat_domain::CapacityScalingMode::RecommendOnly,
+                24,
+                1,
+                4,
+            ))
+        );
+    }
+
+    #[test]
+    fn capacity_plan_uses_resolved_config_policy_when_request_policy_is_default() {
+        let mut request = RunnerScalingRequest {
+            generated_at_unix_seconds: 0,
+            policy: CapacityScalingPolicy::default(),
+            demands: vec![RunnerPoolDemand {
+                pool_key: "research".to_string(),
+                worker: None,
+                required_capabilities: Vec::new(),
+                required_labels: BTreeMap::new(),
+                queued_tasks: 5,
+                running_tasks: 0,
+                blocked_tasks: 0,
+                unmatched_tasks: 1,
+                event_backlog: 2,
+                priority_boost: 0,
+            }],
+            supplies: Vec::new(),
+        };
+        let config = CoatConfig {
+            runner_capacity: CoatRunnerCapacityConfig {
+                default_policy: Some(CapacityScalingPolicy::recommend_only(2)),
+                lane_policies: BTreeMap::from([(
+                    "research".to_string(),
+                    CapacityScalingPolicy::bounded_ephemeral(7),
+                )]),
+            },
+            ..CoatConfig::default()
+        };
+
+        apply_capacity_plan_policy_from_config(&mut request, false, &config);
+
+        assert_eq!(request.policy, CapacityScalingPolicy::bounded_ephemeral(7));
+
+        apply_capacity_plan_policy_from_config(&mut request, false, &config);
+        assert_eq!(
+            request.policy,
+            CapacityScalingPolicy::bounded_ephemeral(7),
+            "explicit or already-filled request policy should not be overwritten"
+        );
+
+        let mut ignored = RunnerScalingRequest {
+            policy: CapacityScalingPolicy::default(),
+            ..request
+        };
+        apply_capacity_plan_policy_from_config(&mut ignored, true, &config);
+        assert_eq!(ignored.policy, CapacityScalingPolicy::default());
     }
 
     #[test]

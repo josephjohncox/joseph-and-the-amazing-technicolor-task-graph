@@ -379,7 +379,8 @@ label {
 .service-strip,
 .summary-row,
 .button-row,
-.composer-actions {
+.composer-actions,
+.outcome-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -466,58 +467,103 @@ label {
   color: var(--status-unknown);
 }
 
-.chat-row {
+.mode-toggle {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 230px;
-  gap: 12px;
-}
-
-.chat-log {
-  display: grid;
-  gap: 8px;
-  align-content: start;
-  max-height: 310px;
-  overflow: auto;
+  grid-template-columns: repeat(3, minmax(86px, 1fr));
+  gap: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
-  padding: 10px;
+  padding: 4px;
 }
 
-.chat-bubble {
-  max-width: 78ch;
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 10px;
+}
+
+.mode-option.active {
+  border-color: var(--accent);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.outcome-meta {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.chat-shell {
+  min-height: 360px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--bubble-bg);
-  padding: 10px;
-  white-space: pre-wrap;
+  overflow: hidden;
+  background: var(--panel-soft);
 }
 
-.chat-bubble.user {
-  justify-self: end;
-  border-color: var(--good-line);
-  background: var(--user-bubble-bg);
+.coat-chat-container.cs-main-container {
+  height: 360px;
+  border: 0;
+  background: var(--panel-soft);
 }
 
-.draft-card {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--draft-bg);
-  color: var(--draft-text);
+.coat-chat-container .cs-chat-container,
+.coat-chat-container .cs-message-list,
+.coat-chat-container .cs-message-input,
+.coat-chat-container .cs-message-input__content-editor-wrapper,
+.coat-chat-container .cs-message-input__content-editor,
+.coat-chat-container .cs-message-input__tools,
+.coat-chat-container .cs-message-input__tools .cs-button {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.coat-chat-container .cs-message-list {
   padding: 12px;
 }
 
-.composer {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
+.coat-chat-container .cs-message__content {
+  border-radius: 8px;
+  background: var(--bubble-bg);
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.coat-chat-container .cs-message--outgoing .cs-message__content {
+  background: var(--user-bubble-bg);
+  color: var(--text);
+}
+
+.coat-chat-container .cs-message-input {
+  border-top: 1px solid var(--line);
+}
+
+.coat-chat-container .cs-message-input__content-editor-wrapper {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input-bg);
+}
+
+.coat-chat-container .cs-message-input__content-editor {
+  background: var(--input-bg);
+}
+
+.coat-chat-container .cs-button--send {
+  color: var(--accent);
 }
 
 .composer-actions {
   justify-content: flex-end;
+  margin-top: 10px;
 }
 
 .error-text {
@@ -552,8 +598,28 @@ label {
   font-size: 34px;
 }
 
+.outcome-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.outcome-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 0;
+}
+
+.outcome-list li:last-child {
+  border-bottom: 0;
+}
+
 .goal-list,
-.followup-list,
 .approval-list,
 .result-list,
 .compact-list {
@@ -575,40 +641,6 @@ label {
   text-align: left;
 }
 
-.followup-list {
-  margin-top: 12px;
-}
-
-.followup-card {
-  display: grid;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 12px;
-}
-
-.followup-card div {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-}
-
-.followup-card p {
-  margin: 0;
-  color: var(--text);
-}
-
-.followup-meta {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-}
-
-.followup-card small,
 .source-path {
   color: var(--muted);
   font-size: 12px;
@@ -960,8 +992,7 @@ th {
 
   .dashboard-grid,
   .memory-layout,
-  .graph-status-panel,
-  .chat-row {
+  .graph-status-panel {
     grid-template-columns: 1fr;
   }
 

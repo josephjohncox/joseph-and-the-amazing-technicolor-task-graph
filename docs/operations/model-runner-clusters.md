@@ -120,7 +120,7 @@ Default production choices:
 - Graphiti/Zep for temporal knowledge graph memory;
 - Postgres/pgvector for queryable read-model joins and smaller deployments.
 
-Embedding servers should be separate from executor sandboxes. Use `MEMORY_GATEWAY_EMBEDDING_URL`, `MEMORY_GATEWAY_EMBEDDING_MODEL`, `MEMORY_GATEWAY_EMBEDDING_DIMENSIONS`, and `MEMORY_GATEWAY_EMBEDDING_TOKEN` to point the memory gateway at hosted or local embeddings.
+Embedding servers should be separate from executor sandboxes. Use `coat setup local-auth` to select hosted OpenAI embeddings from the models.dev cache or local embeddings discovered from Ollama, vLLM, llama.cpp, Hugging Face, TEI, or another OpenAI-compatible `/models` endpoint. The wizard writes `MEMORY_GATEWAY_EMBEDDING_URL`, `MEMORY_GATEWAY_EMBEDDING_MODEL`, optional `MEMORY_GATEWAY_EMBEDDING_DIMENSIONS`, `MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS`, and store adapter settings for Qdrant or Graphiti/Zep MCP.
 
 For GB10/GPU clusters, run TEI or another standard embedding server on model nodes. For Mac mini clusters, run smaller local embedding models through Ollama/MLX only when latency and quality are acceptable; otherwise use hosted embeddings and keep local Qdrant.
 

@@ -15,7 +15,11 @@
     "capacity.jattg.dev/source": "coordinator-policy"
   },
   "annotations": {
-    "capacity.jattg.dev/policy": "sandbox-executor"
+    "capacity.jattg.dev/policy": "sandbox-executor",
+    "jattg.dev/provision-request-id": "provision-smoke-018f8f2f-1fd8",
+    "jattg.dev/capacity-decision-ref": "capacity-plan://goals/018f8f2f-1fd8-7688-bb12-8bfb6b756602/tasks/018f8f2f-1fd8-7688-bb12-8bfb6b756603/decisions/sandbox-executor-smoke",
+    "jattg.dev/template-ref": "jattg-ephemeral-runner-templates/sandbox-executor",
+    "jattg.dev/result-ingestion-ref": "goal-store://goals/018f8f2f-1fd8-7688-bb12-8bfb6b756602/tasks/018f8f2f-1fd8-7688-bb12-8bfb6b756603/results/kubernetes-executor-smoke"
   },
   "launch_plan": {
     "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",

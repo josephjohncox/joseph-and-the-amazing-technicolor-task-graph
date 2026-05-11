@@ -37,5 +37,6 @@ CI now calls the same `make proto-check` target so protobuf linting, protobuf fo
 
 ## Follow-Ups
 
+- Coordinate generated SDK timing and Restate restart proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 - Add generated Rust/TypeScript SDKs from Buf once the final SDK target is selected.
 - Add a real Restate restart integration test once the Restate test harness is selected.

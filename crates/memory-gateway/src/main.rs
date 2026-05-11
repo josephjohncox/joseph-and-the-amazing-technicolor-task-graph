@@ -1451,6 +1451,7 @@ async fn qdrant_upsert_memory_record(
         "summary": summarize(&record.episode.content),
         "content": record.episode.content,
         "source": record.episode.source,
+        "artifacts": record.episode.artifacts,
         "tags": record.episode.tags,
         "promoted": record.promoted,
         "invalidated": record.invalidated,
@@ -1963,11 +1964,20 @@ fn graphiti_group_id(config: &AppConfig, store: Option<&MemoryStoreRef>) -> Stri
 }
 
 fn graphiti_source_description(scope: &MemoryScope, episode: &MemoryEpisode) -> String {
+    let artifact_uris = episode
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.uri.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "coat memory episode; scope={}; source_type={}; actor={}",
+        "coat memory episode; scope={}; source_type={}; actor={}; source_uri={}; artifact_count={}; artifact_uris={}",
         json_label(scope),
         json_label(&episode.source.source_type),
-        source_actor(&episode.source)
+        source_actor(&episode.source),
+        episode.source.uri.as_deref().unwrap_or("none"),
+        episode.artifacts.len(),
+        artifact_uris
     )
 }
 
@@ -2279,6 +2289,95 @@ mod tests {
         assert_eq!(
             hits[0].source.source_type,
             coat_domain::MemoryEpisodeSourceType::Unifier
+        );
+    }
+
+    #[test]
+    fn graphiti_source_description_includes_research_capture_artifacts() {
+        let episode = MemoryEpisode {
+            title: "Research-backed memory substrate candidate".to_string(),
+            content: "Research recommends Zep/Graphiti with a Qdrant mirror.".to_string(),
+            source: MemoryEpisodeSource {
+                source_type: MemoryEpisodeSourceType::Research,
+                uri: Some("artifact://research-output-memory-substrate".to_string()),
+                actor: Some("research_worker".to_string()),
+            },
+            artifacts: vec![
+                coat_domain::ArtifactRef {
+                    kind: coat_domain::ArtifactKind::ObjectStorageObject,
+                    uri: "s3://jattg-replay-artifacts/research-replay/memory-substrate/raw-source-snapshots.jsonl".to_string(),
+                    description: "Replay raw source snapshots captured for memory substrate research".to_string(),
+                    sha256: None,
+                },
+                coat_domain::ArtifactRef {
+                    kind: coat_domain::ArtifactKind::ObjectStorageObject,
+                    uri: "s3://jattg-replay-artifacts/research-replay/memory-substrate/source-fetch-metadata.json".to_string(),
+                    description: "Replay source fetch metadata for memory substrate research".to_string(),
+                    sha256: None,
+                },
+            ],
+            tags: vec!["research".to_string(), "memory".to_string()],
+        };
+
+        let description = graphiti_source_description(&MemoryScope::Goal, &episode);
+
+        assert!(description.contains("source_type=research"));
+        assert!(description.contains("actor=research_worker"));
+        assert!(description.contains("source_uri=artifact://research-output-memory-substrate"));
+        assert!(description.contains("artifact_count=2"));
+        assert!(description.contains("raw-source-snapshots.jsonl"));
+        assert!(description.contains("source-fetch-metadata.json"));
+    }
+
+    #[test]
+    fn research_memory_fixture_carries_source_capture_object_snapshot_metadata() {
+        let research = serde_json::from_str::<coat_domain::ResearchOutput>(include_str!(
+            "../../../examples/research-output-memory-substrate.json"
+        ))
+        .expect("research memory substrate fixture parses");
+
+        assert_eq!(research.sources.len(), 3);
+        assert!(research.sources.iter().all(|source| {
+            source.captured_at.is_some()
+                && source.quote.is_some()
+                && source.uri.starts_with("https://")
+                && source.confidence >= 0.8
+        }));
+
+        let writes = &research.use_plan.proposed_memory_writes;
+        assert_eq!(writes.len(), 1);
+        let episode = &writes[0].episode;
+        assert_eq!(
+            episode.source.source_type,
+            MemoryEpisodeSourceType::Research
+        );
+        assert_eq!(
+            episode.source.uri.as_deref(),
+            Some("artifact://research-output-memory-substrate")
+        );
+
+        let artifact_uris = episode
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.uri.as_str())
+            .collect::<Vec<_>>();
+        assert!(episode.artifacts.iter().all(|artifact| {
+            artifact.kind == coat_domain::ArtifactKind::ObjectStorageObject
+                && artifact.uri.starts_with("s3://jattg-replay-artifacts/")
+                && artifact.uri.contains("research-replay/memory-substrate/")
+                && artifact.description.contains("Replay")
+        }));
+        assert!(
+            artifact_uris
+                .iter()
+                .any(|uri| uri.ends_with("raw-source-snapshots.jsonl")),
+            "{artifact_uris:?}"
+        );
+        assert!(
+            artifact_uris
+                .iter()
+                .any(|uri| uri.ends_with("source-fetch-metadata.json")),
+            "{artifact_uris:?}"
         );
     }
 
@@ -2778,6 +2877,9 @@ mod tests {
         if !env_flag("COAT_LIVE_QDRANT_MEMORY_TEST") {
             return None;
         }
+        let embedding_dimensions = env_value("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")?
+            .parse()
+            .ok()?;
         Some(AppState {
             memory: Arc::new(RwLock::new(MemoryStore::default())),
             config: AppConfig {
@@ -2786,7 +2888,7 @@ mod tests {
                 graphiti_mcp_url: None,
                 graphiti_group_id: "jattg-live-test".to_string(),
                 graphiti_token: None,
-                qdrant_url: Some(required_env("MEMORY_GATEWAY_QDRANT_URL")),
+                qdrant_url: Some(env_value("MEMORY_GATEWAY_QDRANT_URL")?),
                 qdrant_collection: std::env::var("MEMORY_GATEWAY_QDRANT_COLLECTION")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
@@ -2794,11 +2896,9 @@ mod tests {
                 qdrant_token: std::env::var("MEMORY_GATEWAY_QDRANT_TOKEN")
                     .ok()
                     .filter(|value| !value.trim().is_empty()),
-                embedding_url: Some(required_env("MEMORY_GATEWAY_EMBEDDING_URL")),
-                embedding_model: required_env("MEMORY_GATEWAY_EMBEDDING_MODEL"),
-                embedding_dimensions: required_env("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")
-                    .parse()
-                    .expect("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS must be a positive integer"),
+                embedding_url: Some(env_value("MEMORY_GATEWAY_EMBEDDING_URL")?),
+                embedding_model: env_value("MEMORY_GATEWAY_EMBEDDING_MODEL")?,
+                embedding_dimensions,
                 embedding_token: std::env::var("MEMORY_GATEWAY_EMBEDDING_TOKEN")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
@@ -2814,7 +2914,11 @@ mod tests {
     }
 
     fn live_graphiti_state_from_env() -> Option<AppState> {
-        if !env_flag("COAT_LIVE_GRAPHITI_MEMORY_TEST") {
+        if !env_flag_any(&[
+            "COAT_LIVE_GRAPHITI_MEMORY_TEST",
+            "COAT_LIVE_ZEP_GRAPHITI_MEMORY_TEST",
+            "COAT_LIVE_ZEP_MEMORY_TEST",
+        ]) {
             return None;
         }
         Some(AppState {
@@ -2822,7 +2926,7 @@ mod tests {
             config: AppConfig {
                 bearer_token: None,
                 journal_path: None,
-                graphiti_mcp_url: Some(required_env("MEMORY_GATEWAY_GRAPHITI_MCP_URL")),
+                graphiti_mcp_url: Some(env_value("MEMORY_GATEWAY_GRAPHITI_MCP_URL")?),
                 graphiti_group_id: std::env::var("MEMORY_GATEWAY_GRAPHITI_GROUP_ID")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
@@ -2924,12 +3028,13 @@ mod tests {
             .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
     }
 
-    fn required_env(key: &str) -> String {
+    fn env_flag_any(keys: &[&str]) -> bool {
+        keys.iter().any(|key| env_flag(key))
+    }
+
+    fn env_value(key: &str) -> Option<String> {
         std::env::var(key)
             .ok()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| {
-                panic!("{key} is required when the live memory adapter test is enabled")
-            })
     }
 }

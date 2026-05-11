@@ -39,6 +39,34 @@ npm run --prefix ui/control-plane-web build
 npm run --prefix ui/control-plane-web smoke
 ```
 
+## Protocol SDK Generation
+
+`buf.gen.yaml` is the local generation scaffold for the future ProtocolSDK lane.
+It keeps protobuf packages under `coat.v1`, writes generated Rust output to
+`target/generated-sdks/rust`, and writes generated TypeScript output to
+`target/generated-sdks/typescript`. Those paths are build artifacts, not
+checked-in SDK packages.
+
+```sh
+make proto-sdk-generate
+make proto-sdk-check
+```
+
+The selected SDK package names remain `coat`-scoped because the generated code
+is an operator/control-plane API surface, not a Kubernetes chart or release
+image. Use `coat-protocol-sdk` for the eventual Rust crate and
+`@coat/protocol-sdk` for the eventual TypeScript package unless a later package
+publishing decision supersedes the local scaffold. Keep `jattg` for Helm chart
+names, Kubernetes objects, release archives, and published service images.
+
+The current scaffold uses Buf remote plugins for `community/neoeinstein-prost`,
+`community/neoeinstein-tonic`, and `bufbuild/es`. Generation may need network
+access to the Buf Schema Registry the first time the plugins are resolved. The
+Makefile runs generation with an isolated `BUF_GENERATE_HOME` under `target/` by
+default, so a stale or invalid machine-level Buf token does not affect public
+plugin resolution. Do not add generated files to source control until
+compatibility rules, package metadata, and publish targets are selected.
+
 ## Local Deploy
 
 ```sh
@@ -371,14 +399,14 @@ Use `examples/auth-distribution-codex-device.json` for the node-local shape and 
 
 Default local mode is single-user. Multi-user OIDC MCP delegation is opt-in and should stay off for local smoke runs unless you are testing an auth broker. Use `examples/mcp-context-multi-user-oidc.json`, set runner capabilities to include `oidc_user_delegation`, label the runner with `auth.oidc.user_delegation=true` and tenant labels, and keep all user tokens in the broker or MCP server. Task state should contain only `UserPrincipalRef`, `OidcDelegationPolicy`, consent refs, and `SecretRef` values.
 
-The notifier stores local in-memory notification threads by `feedback_thread_key`, thread target address, or goal ID. This is for operator visibility in local runs; Restate workflow state remains the source of truth for approval and feedback signals.
+The notifier stores local notification threads by `feedback_thread_key`, thread target address, or goal ID, and records each target delivery in a local outbox with `pending`, `delivered`, `awaiting_ack`, `acknowledged`, `retry_scheduled`, and `dead_lettered` states. This is for operator visibility in local runs; Restate workflow state remains the source of truth for approval and feedback signals. Set `COAT_NOTIFIER_JOURNAL_PATH` to persist the notifier thread and outbox journal across restarts. Use `COAT_NOTIFIER_MAX_ATTEMPTS` and `COAT_NOTIFIER_RETRY_BACKOFF_SECONDS` to tune local retry scheduling.
 It supports `NotificationTargetKind::dashboard` for the dashboard human queue, `webhook` by posting the `NotificationRequest` JSON to the target address with optional `SecretRef` bearer auth, `slack` through an incoming webhook URL or secret ref, `email` as a structured local outbox, `sqs` through the official AWS SDK, `pager_duty` through Events API v2, and tracker webhook payloads for `git_hub`, `linear`, and `jira`. Set `COAT_EMAIL_OUTBOX_DIR` to persist email outbox messages as JSON files; otherwise they are only visible through notifier threads and `coat human notify --queue`.
 
-For outbound SQS notifications, put the queue URL in `NotificationTarget.address` and let the SDK resolve credentials through normal AWS environment variables, profile configuration, IRSA, ECS task roles, or workload identity. Use `COAT_SQS_REGION`, `AWS_REGION`, or `AWS_DEFAULT_REGION` for region selection. Set `COAT_SQS_ENDPOINT_URL` for LocalStack or another SQS-compatible endpoint. FIFO queues get `COAT_SQS_MESSAGE_GROUP_ID` or the default `coat-notifications` group.
+For outbound SQS notifications, put the queue URL in `NotificationTarget.address` and let the SDK resolve credentials through normal AWS environment variables, profile configuration, IRSA, ECS task roles, or workload identity. Use `COAT_SQS_REGION`, `AWS_REGION`, or `AWS_DEFAULT_REGION` for region selection. Set `COAT_SQS_ENDPOINT_URL` for LocalStack or another SQS-compatible endpoint. FIFO queues get `COAT_SQS_MESSAGE_GROUP_ID` or the default `coat-notifications` group. A delivered SQS target that requires acknowledgement stays in `awaiting_ack` until an operator posts to `/outbox/{id}/ack`; failed targets move to `retry_scheduled` until `/outbox/{id}/retry` or `/outbox/retry-due` exhausts `COAT_NOTIFIER_MAX_ATTEMPTS`, after which they are visible through `/dlq`.
 
 For inbound SQS events, register `examples/event-source-sqs-notifications.json`, edit the queue URL/region, then run `coat event poll-sqs --source-id sqs-notifications`. The event gateway polls with the same AWS SDK credential chain, converts each message body through the source `generic` JSON Pointer contract, records the normalized event, optionally routes it, and deletes the SQS message only when `sqs.delete_on_success=true` and ingest succeeds.
 
-`coat-event-gateway` listens on `http://localhost:9089` in Compose. It records webhook, generic, calendar, scheduled, and bus events with dedupe keys, then can create or hold triggered goals. Set `COAT_EVENT_GATEWAY_TOKEN` to require bearer auth for mutating endpoints. Use `COAT_RESTATE_INGRESS` when the gateway should submit generated goals directly to Restate.
+`coat-event-gateway` listens on `http://localhost:9089` in Compose. It records webhook, generic, calendar, scheduled, and bus events with dedupe keys, then can create or hold triggered goals. Set `COAT_EVENT_GATEWAY_TOKEN` to require bearer auth for mutating endpoints. Use `COAT_RESTATE_INGRESS` when the gateway should submit generated goals directly to Restate. When `COAT_GOAL_STORE_URL` is configured, trigger decisions with a concrete `goal_id` are also projected into the goal-store event read model so local operators can inspect the event-driven decision path beside goal history.
 
 Prometheus Alertmanager and Datadog monitor examples are disabled by default but show the intended SRE, data-engineering, and data-science loop. When enabled, a provider webhook becomes an observability event with normalized fields under `payload._coat_observability`; the route creates a goal that first checks durable memory for recurrence before deciding whether to generate a service PR, dashboard or alert-tuning PR, data-quality investigation, SLO review, runbook update, or no-action report. Use `coat event webhook` for local JSON payload smoke tests; production providers should use webhook auth and event-source activation approval.
 
@@ -402,11 +430,51 @@ The smoke starts `coat-goal-store` and `coat-event-gateway` on ephemeral
 localhost ports with temporary JSONL journals. It registers an approved risky
 generic CI source, verifies the activation approval projects into goal-store,
 emits and dedupes a generic event through `/events/generic/{source_id}`, checks
-the normalized event fields and human-review trigger state, and inspects both
-service journals. If the environment cannot bind the needed localhost ports, it
-prints a clear `SKIP` line and exits successfully.
+the normalized event fields, verifies the create-goal trigger is recorded when
+Restate ingress is absent, queries the projected goal-store event for the
+generated `goal_id`, and inspects both service journals. If the environment
+cannot bind the needed localhost ports, it prints a clear `SKIP` line and exits
+successfully.
 
 The event API contract lives at `docs/api/event-gateway.asyncapi.yaml`. The cluster CronJob pattern lives at `infra/k8s/examples/calendar-trigger-cronjob.yaml`.
+
+Run the optional LocalStack SQS EventOps proof when Docker is available:
+
+```sh
+make eventops-sqs-smoke
+```
+
+This starts a disposable LocalStack container with SQS only, creates
+`coat-inbound-events` and `coat-notifications` queues, then starts
+`coat-goal-store`, `coat-event-gateway`, and `coat-notifier` on ephemeral
+localhost ports. The script derives local queue URLs from
+`examples/event-source-sqs-notifications.json` and `examples/notification-sqs.json`
+instead of changing those provider-neutral examples.
+
+Inbound proof expectation: the script sends one generic notification-shaped JSON
+message to `coat-inbound-events`, polls it through
+`POST /events/sqs/sqs-notifications/poll`, verifies the gateway normalizes the
+message into an `ExternalEvent`, routes it to human review, records the event and
+trigger in the gateway journal, deletes the SQS message on success, and proves a
+second poll receives zero messages.
+
+Outbound proof expectation: the script posts the SQS notification example to
+`coat-notifier`, verifies the notifier reports a delivered `sqs://message/...`
+delivery, keeps the required-ack item visible in the local notifier queue with
+an explicit outbox state, and
+reads the outbound queue to confirm the durable notification envelope preserves
+the request, target provider, event kind, feedback thread key, and ack
+requirement.
+
+If Docker, the Docker daemon, or LocalStack is unavailable, the script prints a
+clear `SKIP` line and exits successfully. CI jobs that require this proof can set
+`COAT_EVENTOPS_SQS_SMOKE_REQUIRE_LOCALSTACK=1` to turn those skips into failures.
+The script defaults to `localstack/localstack:3.8.1` because `latest` can point
+at auth-gated development images. Set `COAT_LOCALSTACK_IMAGE` to override that
+image. This first proof covers basic inbound ack/delete and outbound delivery
+with a journaled notifier outbox entry, while the notifier unit tests cover
+local acknowledgement mutation, retry scheduling, journal replay, and DLQ state
+transitions.
 
 `coat-goal-store` listens on `http://localhost:9088` in Compose. It stores queryable goal, task, event, approval, and artifact projections in an append-only JSONL journal at `/data/goal-store.jsonl` by default. Restate remains authoritative; the goal store is for local operator inspection and future dashboards.
 
@@ -526,7 +594,7 @@ Review output examples live under `examples/`. Runner implementations should ret
 
 Tester and code-worker results should include `test_evidence` entries with command, exit code, pass/fail, duration, and stdout/stderr or artifact URIs whenever `done_criteria.tests_pass=true`. The validator treats missing or all-failing test evidence as incomplete for work-like and tester tasks.
 
-Research output examples live under `examples/research-output-memory-substrate.json`. `examples/web-search-response-replay.json` is the offline replay fixture for a routed research capture: it stores the original `WebSearchRequest`, the structured `AgentRunResult`, mirrored `ResearchOutput`, source artifacts, diagnostics, and the information-use plan so validators can exercise sourced research without opening the network.
+Research output examples live under `examples/research-output-memory-substrate.json`. The proposed memory write in that fixture carries source-capture object refs for raw snapshots and fetch metadata, so reviewers can verify provenance without opening the network. `examples/web-search-response-replay.json` is the offline replay fixture for a routed research capture: it stores the original `WebSearchRequest`, the structured `AgentRunResult`, mirrored `ResearchOutput`, source artifacts, diagnostics, and the information-use plan so validators can exercise sourced research without live web access.
 
 Validate replay capture locally with:
 
@@ -546,6 +614,8 @@ Set `MEMORY_GATEWAY_JOURNAL_PATH` to enable the local append-only JSONL journal.
 Set `MEMORY_GATEWAY_GRAPHITI_MCP_URL=http://localhost:8000/mcp/` when a Graphiti MCP server is running and the gateway should mirror local memory operations into the graph. `MEMORY_GATEWAY_GRAPHITI_GROUP_ID` defaults to `jattg`; per-goal `MemoryStoreRef.namespace` overrides it. Use `MEMORY_GATEWAY_GRAPHITI_TOKEN` only when the remote MCP endpoint requires bearer auth.
 
 Compose runs Qdrant on `http://localhost:6333`, but `MEMORY_GATEWAY_QDRANT_URL` is blank until an operator enables the vector store. This keeps local smoke stacks on the JSONL journal unless the `coat setup local-auth` memory-store flow selects Qdrant. When Qdrant and an embedding endpoint/model are both configured, the gateway mirrors memory writes and joins into Qdrant, then merges vector hits into `memory_search`.
+
+Live memory adapter tests are explicit opt-ins. `cargo test -p coat-memory-gateway live_qdrant_adapter_round_trips_when_enabled` runs only when `COAT_LIVE_QDRANT_MEMORY_TEST=true` and `MEMORY_GATEWAY_QDRANT_URL`, `MEMORY_GATEWAY_EMBEDDING_URL`, `MEMORY_GATEWAY_EMBEDDING_MODEL`, and `MEMORY_GATEWAY_EMBEDDING_DIMENSIONS` are set. `cargo test -p coat-memory-gateway live_graphiti_adapter_round_trips_when_enabled` runs only when `COAT_LIVE_GRAPHITI_MEMORY_TEST=true`, `COAT_LIVE_ZEP_GRAPHITI_MEMORY_TEST=true`, or `COAT_LIVE_ZEP_MEMORY_TEST=true` and `MEMORY_GATEWAY_GRAPHITI_MCP_URL` is set. Without those gates, the deterministic replay and JSONL tests pass without credentials.
 
 Build a bounded worker context pack with:
 

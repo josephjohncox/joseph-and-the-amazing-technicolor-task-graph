@@ -579,6 +579,7 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
   const runnerRows = rowsFrom(at(props.overview, ["runner_status", "data"]) ?? props.overview?.runner_status);
   const approvalRows = rowsFrom(at(props.overview, ["approvals", "data"]) ?? props.overview?.approvals);
   const eventRows = rowsFrom(at(props.overview, ["recent_events", "data"]) ?? props.overview?.recent_events);
+  const eventSourceRows = rowsFrom(at(props.overview, ["event_sources", "data"]) ?? props.overview?.event_sources);
   const attentionGoals = props.goals.filter((goal) => {
     const status = String(goal.status ?? "").toLowerCase();
     return status.includes("blocked") || status.includes("failed") || Number(goal.blocked_tasks ?? 0) > 0 || Number(goal.failed_tasks ?? 0) > 0;
@@ -589,6 +590,7 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
       <MetricCard label="Runner lanes" value={String(runnerRows.length)} detail="available capacity" />
       <MetricCard label="Human queue" value={String(approvalRows.length)} detail="waiting decisions" />
       <MetricCard label="Events" value={String(eventRows.length)} detail="recent signals" />
+      <MetricCard label="Event sources" value={String(eventSourceRows.length)} detail="registered ingress" />
       <section className="panel span-2">
         <div className="section-heading">
           <h2>Recent goals</h2>
@@ -608,6 +610,7 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
           <OutcomeRow label="Runner lanes" value={runnerRows.length} tone={runnerRows.length ? "running" : "pending"} />
         </ul>
       </section>
+      <EventSourcesPanel rows={eventSourceRows} />
     </div>
   );
 }
@@ -629,6 +632,38 @@ function MetricCard({ label, value, detail }: { label: string; value: string; de
       <small>{detail}</small>
     </section>
   );
+}
+
+function EventSourcesPanel({ rows }: { rows: JsonRecord[] }) {
+  return (
+    <section className="panel">
+      <div className="section-heading">
+        <h2>Event sources</h2>
+        <Network size={18} />
+      </div>
+      <SimpleTable
+        empty="No event sources projected."
+        headers={["Source", "Status", "Activation"]}
+        rows={rows.slice(0, 6).map(eventSourceTableRow)}
+      />
+    </section>
+  );
+}
+
+function eventSourceTableRow(row: JsonRecord): string[] {
+  const sourceId = stringValue(row.source_id) || stringValue(row.event_source_id) || stringValue(row.id) || stringValue(row.name) || "event source";
+  const kind = stringValue(row.kind) || stringValue(row.type) || stringValue(row.provider) || "generic";
+  const enabled = row.enabled === true ? "enabled" : row.enabled === false ? "disabled" : stringValue(row.status) || "unknown";
+  const approvalStatus = stringValue(row.approval_status) || stringValue(row.activation_status);
+  const approvalId = stringValue(row.approval_id);
+  const activation = approvalStatus
+    ? approvalId
+      ? `${approvalStatus} · ${approvalId}`
+      : approvalStatus
+    : row.requires_approval === true
+      ? "approval required"
+      : "direct";
+  return [`${sourceId} · ${kind}`, enabled, activation];
 }
 
 function GoalsView(props: { goals: GoalRow[]; selectedGoalId: string; onSelectGoal: (goalId: string) => void }) {
@@ -1285,28 +1320,12 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
           <h2>Approvals</h2>
           <span className="muted-small">Human gates remain explicit</span>
         </div>
-        <div className="approval-list">
-          {approvalRows.length ? approvalRows.map((row) => {
-            const id = String(row.approval_id ?? row.id ?? "");
-            const goalId = String(row.goal_id ?? selectedGoalId ?? "");
-            return (
-              <div key={id || JSON.stringify(row)} className="approval-card">
-                <div>
-                  <strong>{String(row.risk ?? row.title ?? "Approval")}</strong>
-                  <span>{String(row.status ?? "pending")} · {String(row.goal_id ?? "")}</span>
-                </div>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={!id || !goalId || approvalMutation.isPending}
-                  onClick={() => approvalMutation.mutate({ approvalId: id, goalId })}
-                >
-                  Approve
-                </button>
-              </div>
-            );
-          }) : <EmptyState title="No approvals" detail="Blocked or risky work will appear here." />}
-        </div>
+        <ApprovalList
+          rows={approvalRows}
+          selectedGoalId={selectedGoalId}
+          busy={approvalMutation.isPending}
+          onApprove={(approvalId, goalId) => approvalMutation.mutate({ approvalId, goalId })}
+        />
       </div>
       <div className="panel">
         <div className="section-heading">
@@ -1318,6 +1337,43 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
         </ul>
       </div>
     </section>
+  );
+}
+
+function ApprovalList({
+  rows,
+  selectedGoalId,
+  busy,
+  onApprove,
+}: {
+  rows: JsonRecord[];
+  selectedGoalId: string;
+  busy: boolean;
+  onApprove?: (approvalId: string, goalId: string) => void;
+}) {
+  return (
+    <div className="approval-list">
+      {rows.length ? rows.map((row) => {
+        const id = String(row.approval_id ?? row.id ?? "");
+        const goalId = String(row.goal_id ?? selectedGoalId ?? "");
+        return (
+          <div key={id || JSON.stringify(row)} className="approval-card">
+            <div>
+              <strong>{String(row.risk ?? row.title ?? "Approval")}</strong>
+              <span>{String(row.status ?? "pending")} · {String(row.goal_id ?? "")}</span>
+            </div>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!id || !goalId || busy || !onApprove}
+              onClick={() => onApprove?.(id, goalId)}
+            >
+              Approve
+            </button>
+          </div>
+        );
+      }) : <EmptyState title="No approvals" detail="Blocked or risky work will appear here." />}
+    </div>
   );
 }
 

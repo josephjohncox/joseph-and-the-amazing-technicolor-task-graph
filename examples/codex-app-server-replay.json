@@ -1,0 +1,132 @@
+{
+  "description": "Offline Codex App Server replay fixture for CodexWorker contract tests. It preserves a thread id, turn id, git refs, command evidence, and a structured final AgentRunResult patch without requiring live Codex credentials.",
+  "app_server": {
+    "url": "ws://codex-app-server-replay.local",
+    "thread": {
+      "id": "thr_codex_replay_001",
+      "sessionId": "sess_codex_replay_001",
+      "preview": "Implement the CodexWorker live/replay slice",
+      "modelProvider": "openai",
+      "createdAt": 1778515200,
+      "gitInfo": {
+        "sha": "0123456789abcdef0123456789abcdef01234567",
+        "branch": "jattg/task/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+        "originUrl": "https://example.invalid/jattg.git"
+      }
+    },
+    "turn": {
+      "id": "turn_codex_replay_001",
+      "status": "completed"
+    },
+    "events": [
+      {
+        "method": "thread/started",
+        "params": {
+          "thread": {
+            "id": "thr_codex_replay_001",
+            "sessionId": "sess_codex_replay_001",
+            "status": {
+              "type": "active",
+              "activeFlags": []
+            }
+          }
+        }
+      },
+      {
+        "method": "turn/started",
+        "params": {
+          "threadId": "thr_codex_replay_001",
+          "turn": {
+            "id": "turn_codex_replay_001",
+            "status": "inProgress",
+            "items": [],
+            "error": null
+          }
+        }
+      },
+      {
+        "method": "item/completed",
+        "params": {
+          "threadId": "thr_codex_replay_001",
+          "turnId": "turn_codex_replay_001",
+          "item": {
+            "id": "cmd_build_001",
+            "type": "commandExecution",
+            "command": "npm run --prefix sidecars/codex-runner-ts build",
+            "aggregatedOutput": "tsc -p tsconfig.json",
+            "exitCode": 0,
+            "status": "completed",
+            "durationMs": 431
+          }
+        }
+      },
+      {
+        "method": "item/completed",
+        "params": {
+          "threadId": "thr_codex_replay_001",
+          "turnId": "turn_codex_replay_001",
+          "item": {
+            "id": "patch_001",
+            "type": "fileChange",
+            "status": "completed",
+            "changes": [
+              {
+                "path": "sidecars/codex-runner-ts/src/index.ts",
+                "kind": "update"
+              },
+              {
+                "path": "examples/codex-app-server-replay.json",
+                "kind": "add"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "method": "item/completed",
+        "params": {
+          "threadId": "thr_codex_replay_001",
+          "turnId": "turn_codex_replay_001",
+          "item": {
+            "id": "msg_001",
+            "type": "agentMessage",
+            "text": "{\"status\":\"done\",\"summary\":\"Replay Codex App Server turn produced structured code-worker evidence.\",\"confidence\":0.91,\"next_actions\":[],\"child_requests\":[{\"role\":\"tester\",\"prompt\":\"Replay the Codex App Server fixture and assert checkpoint, git, and command evidence are preserved.\",\"reason\":\"The live worker contract needs deterministic replay coverage before live credentials are required.\"}]}"
+          }
+        }
+      },
+      {
+        "method": "turn/completed",
+        "params": {
+          "threadId": "thr_codex_replay_001",
+          "turn": {
+            "id": "turn_codex_replay_001",
+            "status": "completed",
+            "items": []
+          },
+          "usage": {
+            "inputTokens": 1742,
+            "cachedInputTokens": 0,
+            "outputTokens": 211,
+            "reasoningOutputTokens": 34
+          }
+        }
+      }
+    ],
+    "server_requests": [],
+    "approval_reports": [],
+    "final_response": "{\"status\":\"done\",\"summary\":\"Replay Codex App Server turn produced structured code-worker evidence.\",\"confidence\":0.91,\"next_actions\":[],\"child_requests\":[{\"role\":\"tester\",\"prompt\":\"Replay the Codex App Server fixture and assert checkpoint, git, and command evidence are preserved.\",\"reason\":\"The live worker contract needs deterministic replay coverage before live credentials are required.\"}]}",
+    "usage": {
+      "inputTokens": 1742,
+      "cachedInputTokens": 0,
+      "outputTokens": 211,
+      "reasoningOutputTokens": 34
+    }
+  },
+  "expected": {
+    "status": "done",
+    "thread_id": "thr_codex_replay_001",
+    "turn_id": "turn_codex_replay_001",
+    "git_branch": "jattg/task/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+    "command": "npm run --prefix sidecars/codex-runner-ts build"
+  }
+}

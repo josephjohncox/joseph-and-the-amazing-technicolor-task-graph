@@ -1,0 +1,60 @@
+{
+  "description": "Offline Codex MCP fallback replay fixture for CodexWorker contract tests. It captures the callable-tool path after App Server gating without requiring live Codex credentials.",
+  "codex_mcp": {
+    "server": {
+      "command": "codex mcp-server",
+      "transport": "stdio",
+      "mode": "fallback"
+    },
+    "tool_calls": [
+      {
+        "id": "mcp_run_task_001",
+        "tool": "coat_codex_run_task",
+        "status": "completed",
+        "success": true,
+        "durationMs": 512,
+        "arguments": {
+          "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+          "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+          "sandbox": "workspace_write"
+        },
+        "result": {
+          "status": "done",
+          "summary": "Replay Codex MCP fallback produced structured code-worker evidence.",
+          "confidence": 0.86,
+          "next_actions": [],
+          "child_requests": [
+            {
+              "role": "tester",
+              "prompt": "Replay the Codex MCP fallback fixture and assert tool-call evidence is preserved.",
+              "reason": "CodexWorker needs deterministic fallback coverage without live App Server credentials."
+            }
+          ]
+        }
+      }
+    ],
+    "final_result": {
+      "status": "done",
+      "summary": "Replay Codex MCP fallback produced structured code-worker evidence.",
+      "confidence": 0.86,
+      "next_actions": [],
+      "child_requests": [
+        {
+          "role": "tester",
+          "prompt": "Replay the Codex MCP fallback fixture and assert tool-call evidence is preserved.",
+          "reason": "CodexWorker needs deterministic fallback coverage without live App Server credentials."
+        }
+      ]
+    },
+    "usage": {
+      "toolCalls": 1,
+      "replayed": true
+    },
+    "diagnostics": ["codex_mcp_fallback=replay"]
+  },
+  "expected": {
+    "status": "done",
+    "tool": "coat_codex_run_task",
+    "command": "codex mcp-server replay: coat_codex_run_task"
+  }
+}

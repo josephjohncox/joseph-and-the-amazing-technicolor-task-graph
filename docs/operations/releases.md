@@ -139,6 +139,16 @@ separately from the Helm chart. Pick the target that matches the operator
 machine or CI runner: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
 or `aarch64-apple-darwin`.
 
+The binary release workflow runs the `x86_64-unknown-linux-gnu` smoke after the
+assets are attached to the GitHub Release and before GHCR service images are
+published. Operators can repeat the same proof locally for any supported target:
+
+```sh
+make release-binary-smoke VERSION=0.2.0 TARGET=aarch64-apple-darwin
+```
+
+Set `RELEASE_URL` only when validating a fork, mirror, or retry location.
+
 ```sh
 VERSION=0.2.0
 TARGET=aarch64-apple-darwin
@@ -216,6 +226,17 @@ against a disposable namespace or an existing smoke release. Keep this separate
 from binary release validation because it proves Helm consumption, image tag
 selection, rollout behavior, and rollback mechanics.
 
+The chart release workflow downloads the just-published `jattg` chart asset,
+verifies its checksum, runs `coat deploy chart lint`, and renders a smoke
+manifest. Operators can repeat the local no-cluster smoke with:
+
+```sh
+make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0
+```
+
+Set `HELM_SMOKE_APPLY=true` only when the active Kubernetes context points at a
+disposable namespace or a cluster explicitly reserved for release validation.
+
 ```sh
 CHART_VERSION=0.2.0
 APP_VERSION=0.2.0
@@ -272,6 +293,19 @@ coat deploy chart upgrade \
 Fresh installs have no prior revision to roll back to. Treat a failed first
 install as a failed chart smoke, fix the release, and cut a retry tag instead of
 marking the release healthy.
+
+## Release Smoke Evidence
+
+Record the first successful published smoke in this section or in the release
+notes before marking the `ReleaseHardening` follow-up done. Include:
+
+- binary version, target triple, release URL, workflow run URL or local command,
+  and checksum result;
+- chart version, app image tag, chart URL, namespace, whether apply was dry-run
+  or live, rendered manifest path or workflow artifact, and rollback result when
+  a prior revision existed;
+- any skipped proof with the exact reason, such as no published release yet, no
+  disposable cluster, or no rollback revision.
 
 ## Guardrails
 

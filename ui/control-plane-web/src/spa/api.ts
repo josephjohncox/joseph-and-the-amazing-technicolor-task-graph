@@ -147,7 +147,7 @@ export function rowsFrom(value: unknown): JsonRecord[] {
     return value.filter(isRecord);
   }
   if (isRecord(value)) {
-    for (const key of ["goals", "tasks", "plans", "approvals", "threads", "items", "records", "events"]) {
+    for (const key of ["goals", "tasks", "plans", "approvals", "threads", "items", "records", "events", "event_sources", "sources", "triggers"]) {
       const candidate = value[key];
       if (Array.isArray(candidate)) {
         return candidate.filter(isRecord);

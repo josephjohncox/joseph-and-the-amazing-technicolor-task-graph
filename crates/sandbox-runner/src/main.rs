@@ -179,6 +179,29 @@ struct CommandRunResponse {
     finished_at_unix_seconds: u64,
 }
 
+const PROVISION_REQUEST_ID_ANNOTATION: &str = "jattg.dev/provision-request-id";
+const CAPACITY_DECISION_REF_ANNOTATION: &str = "jattg.dev/capacity-decision-ref";
+const TEMPLATE_REF_ANNOTATION: &str = "jattg.dev/template-ref";
+const RESULT_INGESTION_REF_ANNOTATION: &str = "jattg.dev/result-ingestion-ref";
+const STRUCTURED_RESULT_PATH_ANNOTATION: &str = "jattg.dev/structured-result-path";
+const SANDBOX_ATTESTATION_PATH_ANNOTATION: &str = "jattg.dev/sandbox-attestation-path";
+const PROVISIONER_EVIDENCE_PATH_ANNOTATION: &str = "jattg.dev/provisioner-evidence-path";
+const JOB_WATCH_SELECTOR_ANNOTATION: &str = "jattg.dev/job-watch-selector";
+const PROVISIONER_EVIDENCE_MOUNT_PATH: &str = "/coat/provisioner-evidence.json";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KubernetesProvisionerEvidenceRefs {
+    provision_request_id: String,
+    provision_request_label: String,
+    capacity_decision_ref: Option<String>,
+    template_ref: Option<String>,
+    result_ingestion_ref: Option<String>,
+    structured_result_path: String,
+    sandbox_attestation_path: String,
+    provisioner_evidence_path: String,
+    job_watch_selector: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -436,6 +459,7 @@ async fn kubernetes_executor_job_provision_inner(
     let mut diagnostics = vec![
         "Kubernetes executor Jobs are provisioned from SandboxLaunchPlan through the sandbox-runner backend, not from worker-authored manifest snippets.".to_string(),
     ];
+    diagnostics.extend(kubernetes_provisioner_evidence_diagnostics(&request));
     let planned_objects =
         planned_kubernetes_objects(&request.namespace, &job_name, &config_map_name);
 
@@ -465,6 +489,7 @@ async fn kubernetes_executor_job_provision_inner(
                     diagnostics,
                 });
             }
+            validate_live_kubernetes_provisioner_evidence(&request)?;
             let server_dry_run = request.mode == KubernetesProvisionMode::ServerDryRun;
             let objects =
                 apply_kubernetes_executor_job(&request, &manifest, server_dry_run).await?;
@@ -528,6 +553,163 @@ async fn apply_kubernetes_executor_job(
     ])
 }
 
+fn validate_live_kubernetes_provisioner_evidence(
+    request: &KubernetesExecutorJobProvisionRequest,
+) -> anyhow::Result<()> {
+    let mut missing = Vec::new();
+    if request_annotation(request, CAPACITY_DECISION_REF_ANNOTATION).is_none() {
+        missing.push(CAPACITY_DECISION_REF_ANNOTATION);
+    }
+    if request_annotation(request, TEMPLATE_REF_ANNOTATION).is_none() {
+        missing.push(TEMPLATE_REF_ANNOTATION);
+    }
+    if request_annotation(request, RESULT_INGESTION_REF_ANNOTATION).is_none() {
+        missing.push(RESULT_INGESTION_REF_ANNOTATION);
+    }
+    if request.launch_plan.artifact_manifest_path.trim().is_empty() {
+        missing.push("launch_plan.artifact_manifest_path");
+    }
+    if request
+        .launch_plan
+        .checkpoint_manifest_path
+        .trim()
+        .is_empty()
+    {
+        missing.push("launch_plan.checkpoint_manifest_path");
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "live Kubernetes executor provisioning requires coordinator evidence before contacting the cluster: {}",
+            missing.join(", ")
+        )
+    }
+}
+
+fn kubernetes_provisioner_evidence_diagnostics(
+    request: &KubernetesExecutorJobProvisionRequest,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    if request_annotation(request, CAPACITY_DECISION_REF_ANNOTATION).is_none() {
+        missing.push(CAPACITY_DECISION_REF_ANNOTATION);
+    }
+    if request_annotation(request, TEMPLATE_REF_ANNOTATION).is_none() {
+        missing.push(TEMPLATE_REF_ANNOTATION);
+    }
+    if request_annotation(request, RESULT_INGESTION_REF_ANNOTATION).is_none() {
+        missing.push(RESULT_INGESTION_REF_ANNOTATION);
+    }
+    if missing.is_empty() {
+        vec![
+            "provision request carries coordinator decision refs for live watch/result ingestion proof".to_string(),
+        ]
+    } else {
+        vec![format!(
+            "live apply/server-dry-run requires coordinator annotations before cluster contact: {}",
+            missing.join(", ")
+        )]
+    }
+}
+
+fn kubernetes_provisioner_evidence_refs(
+    request: &KubernetesExecutorJobProvisionRequest,
+    job_name: &str,
+) -> KubernetesProvisionerEvidenceRefs {
+    let provision_request_id = request_annotation(request, PROVISION_REQUEST_ID_ANNOTATION)
+        .unwrap_or_else(|| stable_provision_request_id(request, job_name));
+    let provision_request_label = k8s_label_value(&provision_request_id);
+    let structured_result_path = request_annotation(request, STRUCTURED_RESULT_PATH_ANNOTATION)
+        .unwrap_or_else(|| {
+            workspace_child_path(
+                &request.launch_plan.workspace_path,
+                "results/agent-run-result.json",
+            )
+        });
+    let sandbox_attestation_path = request_annotation(request, SANDBOX_ATTESTATION_PATH_ANNOTATION)
+        .unwrap_or_else(|| {
+            workspace_child_path(
+                &request.launch_plan.workspace_path,
+                "artifacts/sandbox-attestation.json",
+            )
+        });
+    let provisioner_evidence_path = PROVISIONER_EVIDENCE_MOUNT_PATH.to_string();
+    let job_watch_selector = format!("jattg.dev/provision-request-id={provision_request_label}");
+    KubernetesProvisionerEvidenceRefs {
+        provision_request_id,
+        provision_request_label,
+        capacity_decision_ref: request_annotation(request, CAPACITY_DECISION_REF_ANNOTATION),
+        template_ref: request_annotation(request, TEMPLATE_REF_ANNOTATION),
+        result_ingestion_ref: request_annotation(request, RESULT_INGESTION_REF_ANNOTATION),
+        structured_result_path,
+        sandbox_attestation_path,
+        provisioner_evidence_path,
+        job_watch_selector,
+    }
+}
+
+fn kubernetes_provisioner_evidence(
+    request: &KubernetesExecutorJobProvisionRequest,
+    job_name: &str,
+    config_map_name: &str,
+    refs: &KubernetesProvisionerEvidenceRefs,
+    service_account: &str,
+    runtime_class: Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema": "coat.kubernetes_executor_job_provision_evidence.v1",
+        "provision_request_id": refs.provision_request_id.clone(),
+        "goal_id": request.launch_plan.goal_id,
+        "task_id": request.launch_plan.task_id,
+        "workspace_id": request.launch_plan.workspace_id,
+        "mode": request.mode.clone(),
+        "coordinator": {
+            "capacity_decision_ref": refs.capacity_decision_ref.clone(),
+            "template_ref": refs.template_ref.clone(),
+            "result_ingestion_ref": refs.result_ingestion_ref.clone()
+        },
+        "kubernetes": {
+            "namespace": request.namespace.clone(),
+            "job_name": job_name,
+            "config_map_name": config_map_name,
+            "service_account": service_account,
+            "runtime_class": runtime_class.clone(),
+            "field_manager": request.field_manager.clone(),
+            "active_deadline_seconds": request.active_deadline_seconds,
+            "ttl_seconds_after_finished": request.ttl_seconds_after_finished,
+            "backoff_limit": request.backoff_limit
+        },
+        "watch": {
+            "job_selector": refs.job_watch_selector.clone(),
+            "pod_selector": refs.job_watch_selector.clone(),
+            "expected_terminal_conditions": ["Complete", "Failed"],
+            "collect_pod_logs": true,
+            "collect_final_manifests": true
+        },
+        "expected_results": {
+            "structured_result_path": refs.structured_result_path.clone(),
+            "artifact_manifest_path": request.launch_plan.artifact_manifest_path.clone(),
+            "checkpoint_manifest_path": request.launch_plan.checkpoint_manifest_path.clone(),
+            "sandbox_attestation_path": refs.sandbox_attestation_path.clone(),
+            "git_result": request.launch_plan.git_result.clone(),
+            "object_prefix": request.launch_plan.object_prefix.clone(),
+            "result_ingestion_ref": refs.result_ingestion_ref.clone()
+        },
+        "attestation_inputs": {
+            "backend": request.launch_plan.backend,
+            "namespace": request.namespace.clone(),
+            "service_account": service_account,
+            "image": request.image.clone().or_else(|| request.launch_plan.image.clone()),
+            "runtime_class": runtime_class,
+            "security": request.launch_plan.security.clone(),
+            "network": request.launch_plan.network.clone(),
+            "launch_plan_config_map": config_map_name,
+            "launch_plan_mount_path": "/coat/sandbox-launch-plan.json",
+            "provisioner_evidence_path": refs.provisioner_evidence_path.clone()
+        }
+    })
+}
+
 fn kubernetes_executor_job_manifest(
     request: &KubernetesExecutorJobProvisionRequest,
 ) -> anyhow::Result<serde_json::Value> {
@@ -537,6 +719,23 @@ fn kubernetes_executor_job_manifest(
         );
     }
     let (job_name, config_map_name) = provisioned_resource_names(request);
+    let evidence_refs = kubernetes_provisioner_evidence_refs(request, &job_name);
+    let service_account = request
+        .service_account
+        .clone()
+        .unwrap_or_else(|| "jattg-sandbox-task".to_string());
+    let runtime_class = request
+        .runtime_class
+        .clone()
+        .or_else(|| request.launch_plan.runtime_class.clone());
+    let provisioner_evidence = kubernetes_provisioner_evidence(
+        request,
+        &job_name,
+        &config_map_name,
+        &evidence_refs,
+        &service_account,
+        runtime_class.clone(),
+    );
     let mut labels = BTreeMap::from([
         ("app.kubernetes.io/name".to_string(), job_name.clone()),
         ("app.kubernetes.io/part-of".to_string(), "jattg".to_string()),
@@ -563,7 +762,44 @@ fn kubernetes_executor_job_manifest(
     for (key, value) in &request.labels {
         labels.insert(key.clone(), value.clone());
     }
+    labels.insert(
+        PROVISION_REQUEST_ID_ANNOTATION.to_string(),
+        evidence_refs.provision_request_label.clone(),
+    );
+    labels.insert(
+        "jattg.dev/executor-result-contract".to_string(),
+        "structured".to_string(),
+    );
     let mut annotations = request.annotations.clone();
+    annotations.insert(
+        PROVISION_REQUEST_ID_ANNOTATION.to_string(),
+        evidence_refs.provision_request_id.clone(),
+    );
+    if let Some(value) = &evidence_refs.capacity_decision_ref {
+        annotations.insert(CAPACITY_DECISION_REF_ANNOTATION.to_string(), value.clone());
+    }
+    if let Some(value) = &evidence_refs.template_ref {
+        annotations.insert(TEMPLATE_REF_ANNOTATION.to_string(), value.clone());
+    }
+    if let Some(value) = &evidence_refs.result_ingestion_ref {
+        annotations.insert(RESULT_INGESTION_REF_ANNOTATION.to_string(), value.clone());
+    }
+    annotations.insert(
+        STRUCTURED_RESULT_PATH_ANNOTATION.to_string(),
+        evidence_refs.structured_result_path.clone(),
+    );
+    annotations.insert(
+        SANDBOX_ATTESTATION_PATH_ANNOTATION.to_string(),
+        evidence_refs.sandbox_attestation_path.clone(),
+    );
+    annotations.insert(
+        PROVISIONER_EVIDENCE_PATH_ANNOTATION.to_string(),
+        evidence_refs.provisioner_evidence_path.clone(),
+    );
+    annotations.insert(
+        JOB_WATCH_SELECTOR_ANNOTATION.to_string(),
+        evidence_refs.job_watch_selector.clone(),
+    );
     annotations.insert(
         "jattg.dev/workspace-id".to_string(),
         request.launch_plan.workspace_id.to_string(),
@@ -584,6 +820,7 @@ fn kubernetes_executor_job_manifest(
     }
 
     let launch_plan_json = serde_json::to_string_pretty(&request.launch_plan)?;
+    let provisioner_evidence_json = serde_json::to_string_pretty(&provisioner_evidence)?;
     let config_map = serde_json::json!({
         "apiVersion": "v1",
         "kind": "ConfigMap",
@@ -594,6 +831,7 @@ fn kubernetes_executor_job_manifest(
         },
         "data": {
             "sandbox-launch-plan.json": launch_plan_json,
+            "provisioner-evidence.json": provisioner_evidence_json,
         },
     });
 
@@ -633,6 +871,44 @@ fn kubernetes_executor_job_manifest(
     for (key, value) in &request.launch_plan.environment {
         env.insert(key.clone(), value.clone());
     }
+    env.insert(
+        "COAT_PROVISION_REQUEST_ID".to_string(),
+        evidence_refs.provision_request_id.clone(),
+    );
+    if let Some(value) = &evidence_refs.capacity_decision_ref {
+        env.insert("COAT_CAPACITY_DECISION_REF".to_string(), value.clone());
+    }
+    if let Some(value) = &evidence_refs.template_ref {
+        env.insert("COAT_TEMPLATE_REF".to_string(), value.clone());
+    }
+    if let Some(value) = &evidence_refs.result_ingestion_ref {
+        env.insert("COAT_RESULT_INGESTION_REF".to_string(), value.clone());
+    }
+    env.insert(
+        "COAT_STRUCTURED_RESULT_PATH".to_string(),
+        evidence_refs.structured_result_path.clone(),
+    );
+    env.insert(
+        "COAT_SANDBOX_ATTESTATION_PATH".to_string(),
+        evidence_refs.sandbox_attestation_path.clone(),
+    );
+    env.insert(
+        "COAT_PROVISIONER_EVIDENCE_PATH".to_string(),
+        evidence_refs.provisioner_evidence_path.clone(),
+    );
+    env.insert(
+        "COAT_KUBERNETES_NAMESPACE".to_string(),
+        request.namespace.clone(),
+    );
+    env.insert("COAT_KUBERNETES_JOB_NAME".to_string(), job_name.clone());
+    env.insert(
+        "COAT_KUBERNETES_CONFIG_MAP_NAME".to_string(),
+        config_map_name.clone(),
+    );
+    env.insert(
+        "COAT_KUBERNETES_WATCH_SELECTOR".to_string(),
+        evidence_refs.job_watch_selector.clone(),
+    );
 
     let job = serde_json::json!({
         "apiVersion": "batch/v1",
@@ -654,8 +930,8 @@ fn kubernetes_executor_job_manifest(
                 },
                 "spec": {
                     "restartPolicy": "Never",
-                    "serviceAccountName": request.service_account.clone().unwrap_or_else(|| "jattg-sandbox-task".to_string()),
-                    "runtimeClassName": request.runtime_class.clone().or_else(|| request.launch_plan.runtime_class.clone()),
+                    "serviceAccountName": service_account,
+                    "runtimeClassName": runtime_class,
                     "securityContext": pod_security_context(&request.launch_plan.security),
                     "containers": [{
                         "name": "executor",
@@ -669,6 +945,12 @@ fn kubernetes_executor_job_manifest(
                                 "name": "launch-plan",
                                 "mountPath": "/coat/sandbox-launch-plan.json",
                                 "subPath": "sandbox-launch-plan.json",
+                                "readOnly": true
+                            },
+                            {
+                                "name": "launch-plan",
+                                "mountPath": evidence_refs.provisioner_evidence_path,
+                                "subPath": "provisioner-evidence.json",
                                 "readOnly": true
                             },
                             {
@@ -843,8 +1125,48 @@ fn network_access_label(access: &NetworkAccess) -> &'static str {
     }
 }
 
+fn request_annotation(
+    request: &KubernetesExecutorJobProvisionRequest,
+    key: &str,
+) -> Option<String> {
+    request
+        .annotations
+        .get(key)
+        .or_else(|| request.labels.get(key))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn stable_provision_request_id(
+    request: &KubernetesExecutorJobProvisionRequest,
+    job_name: &str,
+) -> String {
+    let seed = serde_json::json!({
+        "goal_id": request.launch_plan.goal_id,
+        "task_id": request.launch_plan.task_id,
+        "workspace_id": request.launch_plan.workspace_id,
+        "namespace": request.namespace,
+        "job_name": job_name
+    });
+    let hash = hex_sha256(seed.to_string().as_bytes());
+    format!("provision-{}", &hash[..16])
+}
+
+fn workspace_child_path(workspace_path: &str, child: &str) -> String {
+    format!(
+        "{}/{}",
+        workspace_path.trim_end_matches('/'),
+        child.trim_start_matches('/')
+    )
+}
+
 fn short_uuid(id: Uuid) -> String {
     id.simple().to_string()[..12].to_string()
+}
+
+fn k8s_label_value(input: &str) -> String {
+    k8s_name(input)
 }
 
 fn k8s_name(input: impl Into<String>) -> String {
@@ -2959,7 +3281,25 @@ mod tests {
             ttl_seconds_after_finished: Some(300),
             backoff_limit: 0,
             labels: BTreeMap::new(),
-            annotations: BTreeMap::new(),
+            annotations: BTreeMap::from([
+                (
+                    PROVISION_REQUEST_ID_ANNOTATION.to_string(),
+                    "provision-example".to_string(),
+                ),
+                (
+                    CAPACITY_DECISION_REF_ANNOTATION.to_string(),
+                    "capacity-decision://example".to_string(),
+                ),
+                (
+                    TEMPLATE_REF_ANNOTATION.to_string(),
+                    "jattg-ephemeral-runner-templates/sandbox-executor".to_string(),
+                ),
+                (
+                    RESULT_INGESTION_REF_ANNOTATION.to_string(),
+                    "goal-store://goals/example/tasks/example/results/kubernetes-executor"
+                        .to_string(),
+                ),
+            ]),
         };
 
         let response = kubernetes_executor_job_provision_inner(&state, request)
@@ -2987,12 +3327,194 @@ mod tests {
             items[1]["metadata"]["labels"]["jattg.dev/network-profile"],
             "control-plane"
         );
+        assert_eq!(
+            items[1]["metadata"]["labels"][PROVISION_REQUEST_ID_ANNOTATION],
+            "provision-example"
+        );
+        assert_eq!(
+            items[1]["metadata"]["annotations"][CAPACITY_DECISION_REF_ANNOTATION],
+            "capacity-decision://example"
+        );
+        assert_eq!(
+            items[1]["metadata"]["annotations"][STRUCTURED_RESULT_PATH_ANNOTATION],
+            "/workspace/results/agent-run-result.json"
+        );
+        assert_eq!(
+            items[1]["metadata"]["annotations"][SANDBOX_ATTESTATION_PATH_ANNOTATION],
+            "/workspace/artifacts/sandbox-attestation.json"
+        );
+        assert_eq!(
+            items[1]["metadata"]["annotations"][JOB_WATCH_SELECTOR_ANNOTATION],
+            "jattg.dev/provision-request-id=provision-example"
+        );
+        let config_map_data = items[0]["data"].as_object().expect("configmap data");
+        let provisioner_evidence: serde_json::Value = serde_json::from_str(
+            config_map_data["provisioner-evidence.json"]
+                .as_str()
+                .expect("provisioner evidence json"),
+        )
+        .expect("parse provisioner evidence");
+        assert_eq!(
+            provisioner_evidence["schema"],
+            "coat.kubernetes_executor_job_provision_evidence.v1"
+        );
+        assert_eq!(
+            provisioner_evidence["coordinator"]["capacity_decision_ref"],
+            "capacity-decision://example"
+        );
+        assert_eq!(
+            provisioner_evidence["coordinator"]["template_ref"],
+            "jattg-ephemeral-runner-templates/sandbox-executor"
+        );
+        assert_eq!(
+            provisioner_evidence["expected_results"]["structured_result_path"],
+            "/workspace/results/agent-run-result.json"
+        );
+        assert_eq!(
+            provisioner_evidence["attestation_inputs"]["launch_plan_config_map"],
+            "executor-example-plan"
+        );
+        let env = items[1]["spec"]["template"]["spec"]["containers"][0]["env"]
+            .as_array()
+            .expect("container env");
+        assert_eq!(
+            container_env_value(env, "COAT_CAPACITY_DECISION_REF"),
+            Some("capacity-decision://example")
+        );
+        assert_eq!(
+            container_env_value(env, "COAT_STRUCTURED_RESULT_PATH"),
+            Some("/workspace/results/agent-run-result.json")
+        );
+        assert_eq!(
+            container_env_value(env, "COAT_SANDBOX_ATTESTATION_PATH"),
+            Some("/workspace/artifacts/sandbox-attestation.json")
+        );
+        assert_eq!(
+            container_env_value(env, "COAT_PROVISIONER_EVIDENCE_PATH"),
+            Some(PROVISIONER_EVIDENCE_MOUNT_PATH)
+        );
+        assert_eq!(
+            container_env_value(env, "COAT_KUBERNETES_WATCH_SELECTOR"),
+            Some("jattg.dev/provision-request-id=provision-example")
+        );
+        let mounts = items[1]["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+            .as_array()
+            .expect("volume mounts");
+        assert!(mounts.iter().any(|mount| {
+            mount["subPath"] == "provisioner-evidence.json"
+                && mount["mountPath"] == PROVISIONER_EVIDENCE_MOUNT_PATH
+        }));
         assert!(
             response
                 .diagnostics
                 .iter()
                 .any(|line| line.contains("not from worker-authored manifest snippets"))
         );
+    }
+
+    #[tokio::test]
+    async fn kubernetes_executor_job_live_modes_require_coordinator_refs_before_cluster_contact() {
+        let state = kubernetes_provision_test_state(true);
+        let request = kubernetes_provision_test_request(
+            KubernetesProvisionMode::ServerDryRun,
+            BTreeMap::new(),
+        );
+
+        let error = kubernetes_executor_job_provision_inner(&state, request)
+            .await
+            .expect_err("missing coordinator evidence rejects live mode before kube client");
+        let message = error.to_string();
+        assert!(message.contains(CAPACITY_DECISION_REF_ANNOTATION));
+        assert!(message.contains(TEMPLATE_REF_ANNOTATION));
+        assert!(message.contains(RESULT_INGESTION_REF_ANNOTATION));
+        assert!(message.contains("before contacting the cluster"));
+    }
+
+    fn container_env_value<'a>(env: &'a [serde_json::Value], name: &str) -> Option<&'a str> {
+        env.iter()
+            .find(|entry| entry["name"] == name)
+            .and_then(|entry| entry["value"].as_str())
+    }
+
+    fn kubernetes_provision_test_state(enable_kubernetes_provisioner: bool) -> AppState {
+        AppState {
+            workspace_root: PathBuf::from("/tmp/coat-sandbox-runner-test"),
+            supported_backends: vec![SandboxBackend::KubernetesJob],
+            enable_live_git_worktrees: false,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: Vec::new(),
+            enable_local_command_execution: false,
+            require_command_approval: true,
+            allowed_local_binaries: parse_allowed_local_binaries(),
+            command_timeout_seconds: 600,
+            command_max_output_bytes: 65_536,
+            enable_kubernetes_provisioner,
+        }
+    }
+
+    fn kubernetes_provision_test_request(
+        mode: KubernetesProvisionMode,
+        annotations: BTreeMap<String, String>,
+    ) -> KubernetesExecutorJobProvisionRequest {
+        let goal_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756602").expect("goal uuid");
+        let task_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756603").expect("task uuid");
+        let launch_plan = SandboxLaunchPlan {
+            goal_id,
+            task_id,
+            workspace_id: Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756604")
+                .expect("workspace uuid"),
+            backend: SandboxBackend::KubernetesJob,
+            runtime_class: Some("gvisor".to_string()),
+            image: Some("ghcr.io/example/jattg-agent-toolbox:test".to_string()),
+            workspace_path: "/workspace".to_string(),
+            artifact_manifest_path: "/workspace/artifacts/artifact-manifest.json".to_string(),
+            checkpoint_manifest_path: "/workspace/checkpoints/checkpoint-manifest.json".to_string(),
+            command: vec!["coat-executor".to_string(), "run".to_string()],
+            environment: BTreeMap::new(),
+            required_capabilities: vec![RunnerCapability::KubernetesJobSandbox],
+            resources: SandboxResourcePlan {
+                cpu_limit_millis: Some(1000),
+                memory_limit_mb: Some(2048),
+                pids_limit: Some(256),
+                ephemeral_storage_mb: Some(4096),
+            },
+            security: SandboxSecurityPlan {
+                read_only_rootfs: true,
+                no_new_privileges: true,
+                run_as_non_root: true,
+                seccomp_profile: Some("RuntimeDefault".to_string()),
+                apparmor_profile: None,
+                drop_capabilities: vec!["ALL".to_string()],
+            },
+            network: SandboxNetworkPlan {
+                access: NetworkAccess::Restricted,
+                deny_by_default: true,
+                egress_policy_ref: Some("allow-control-plane-egress".to_string()),
+                ingress_policy_ref: None,
+                network_policy_labels: BTreeMap::new(),
+                allowed_internal_services: vec!["runner-registry".to_string()],
+            },
+            git_result: None,
+            object_prefix: None,
+            warnings: Vec::new(),
+        };
+        KubernetesExecutorJobProvisionRequest {
+            launch_plan,
+            mode,
+            namespace: "jattg-sandboxes".to_string(),
+            name: Some("executor-example".to_string()),
+            image: None,
+            service_account: Some("jattg-sandbox-task".to_string()),
+            runtime_class: None,
+            workspace_pvc: Some("sandbox-workspaces".to_string()),
+            workspace_mount_path: "/workspace".to_string(),
+            field_manager: "coat-sandbox-runner".to_string(),
+            active_deadline_seconds: Some(900),
+            ttl_seconds_after_finished: Some(300),
+            backoff_limit: 0,
+            labels: BTreeMap::new(),
+            annotations,
+        }
     }
 
     fn run_git(repo: &Path, args: &[&str]) {

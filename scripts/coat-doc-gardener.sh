@@ -126,8 +126,13 @@ if rg -n '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_
 fi
 
 plan_count="$(find "$root/docs/exec-plans/active" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
-if [ "$plan_count" -lt 9 ]; then
-  printf 'expected active execution plans, found only %s\n' "$plan_count" >&2
+if [ "$plan_count" -lt 1 ]; then
+  printf 'expected at least one active execution plan, found %s\n' "$plan_count" >&2
+  exit 1
+fi
+
+if [ ! -f "$root/docs/exec-plans/active/160-live-durable-runtime-and-execution.md" ]; then
+  printf 'missing live durable runtime master plan in docs/exec-plans/active\n' >&2
   exit 1
 fi
 

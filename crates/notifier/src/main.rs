@@ -12,15 +12,19 @@
 
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::Context;
 use aws_config::{BehaviorVersion, meta::region::RegionProviderChain};
 use aws_sdk_sqs::{Client as SqsClient, config::Region};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use coat_domain::{
@@ -28,19 +32,28 @@ use coat_domain::{
     NotificationTargetKind, SecretProvider, SecretRef,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::{fs::OpenOptions, io::AsyncWriteExt, sync::RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
-type NotificationThreads = Arc<RwLock<BTreeMap<String, Vec<NotificationThreadEntry>>>>;
+type NotificationStoreRef = Arc<RwLock<NotificationStore>>;
 
 #[derive(Clone)]
 struct AppState {
-    threads: NotificationThreads,
+    store: NotificationStoreRef,
     client: reqwest::Client,
+    journal_path: Option<PathBuf>,
+    max_attempts: u32,
+    retry_backoff_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct NotificationStore {
+    threads: BTreeMap<String, Vec<NotificationThreadEntry>>,
+    outbox: BTreeMap<Uuid, NotificationOutboxEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct NotificationThreadEntry {
     id: Uuid,
     thread_key: String,
@@ -65,6 +78,67 @@ struct NotificationQueueEntry {
     message: String,
     require_ack: bool,
     targets: Vec<NotificationTarget>,
+    status: NotificationOutboxStatus,
+    attempts: u32,
+    max_attempts: u32,
+    next_attempt_after_unix_seconds: Option<u64>,
+    external_ref: Option<String>,
+    last_error: Option<String>,
+    delivered_at_unix_seconds: Option<u64>,
+    acknowledged_at_unix_seconds: Option<u64>,
+    acknowledged_by: Option<String>,
+    ack_note: Option<String>,
+    dead_lettered_at_unix_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NotificationOutboxEntry {
+    id: Uuid,
+    thread_key: String,
+    request: NotificationRequest,
+    target: NotificationTarget,
+    status: NotificationOutboxStatus,
+    attempts: u32,
+    max_attempts: u32,
+    last_attempt_at_unix_seconds: Option<u64>,
+    next_attempt_after_unix_seconds: Option<u64>,
+    external_ref: Option<String>,
+    last_error: Option<String>,
+    delivered_at_unix_seconds: Option<u64>,
+    acknowledged_at_unix_seconds: Option<u64>,
+    acknowledged_by: Option<String>,
+    ack_note: Option<String>,
+    dead_lettered_at_unix_seconds: Option<u64>,
+    reports: Vec<NotificationDeliveryReport>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum NotificationOutboxStatus {
+    Pending,
+    Delivered,
+    AwaitingAck,
+    Acknowledged,
+    RetryScheduled,
+    DeadLettered,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListOutboxQuery {
+    status: Option<NotificationOutboxStatus>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AckOutboxRequest {
+    acknowledged_by: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+enum NotifierJournalEntry {
+    Thread(NotificationThreadEntry),
+    Outbox(NotificationOutboxEntry),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,14 +164,29 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9086".to_string());
+    let journal_path = std::env::var("COAT_NOTIFIER_JOURNAL_PATH")
+        .or_else(|_| std::env::var("NOTIFIER_JOURNAL_PATH"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    let store = replay_journal(journal_path.as_ref()).context("replay notifier outbox journal")?;
     let state = AppState {
-        threads: Arc::new(RwLock::new(BTreeMap::new())),
+        store: Arc::new(RwLock::new(store)),
         client: reqwest::Client::new(),
+        journal_path,
+        max_attempts: env_u32("COAT_NOTIFIER_MAX_ATTEMPTS", 3).max(1),
+        retry_backoff_seconds: env_u64("COAT_NOTIFIER_RETRY_BACKOFF_SECONDS", 30),
     };
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/notify", post(notify))
         .route("/queue", get(list_queue))
+        .route("/outbox", get(list_outbox))
+        .route("/outbox/retry-due", post(retry_due_outbox))
+        .route("/outbox/{id}", get(get_outbox_entry))
+        .route("/outbox/{id}/ack", post(ack_outbox))
+        .route("/outbox/{id}/retry", post(retry_outbox))
+        .route("/dlq", get(list_dlq))
         .route("/threads", get(list_threads))
         .route("/threads/{thread_key}", get(get_thread))
         .with_state(state)
@@ -109,11 +198,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn healthz() -> Json<serde_json::Value> {
+async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "authority": "notifier",
         "local_threads": true,
+        "outbox_journal_enabled": state.journal_path.is_some(),
+        "outbox_max_attempts": state.max_attempts,
+        "outbox_retry_backoff_seconds": state.retry_backoff_seconds,
         "delivery_adapters": ["thread", "dashboard", "webhook", "slack_incoming_webhook", "email_outbox", "sqs", "pagerduty_events_v2", "tracker_webhook"]
     }))
 }
@@ -121,7 +213,7 @@ async fn healthz() -> Json<serde_json::Value> {
 async fn notify(
     State(state): State<AppState>,
     Json(request): Json<NotificationRequest>,
-) -> Json<Vec<NotificationDeliveryReport>> {
+) -> Result<Json<Vec<NotificationDeliveryReport>>, NotifierError> {
     let thread_key = feedback_thread_key(&request);
     let reports = if request.policy.targets.is_empty() {
         tracing::info!(
@@ -139,34 +231,53 @@ async fn notify(
         }]
     } else {
         let mut reports = Vec::new();
+        let mut outbox_entries = Vec::new();
         for target in request.policy.targets.clone() {
-            reports.push(deliver_target(&state.client, &request, &thread_key, target).await);
+            let mut entry = NotificationOutboxEntry::new(
+                thread_key.clone(),
+                request.clone(),
+                target,
+                state.max_attempts,
+            );
+            let report =
+                attempt_outbox_delivery(&state.client, &mut entry, state.retry_backoff_seconds)
+                    .await;
+            reports.push(report);
+            outbox_entries.push(entry);
+        }
+        for entry in outbox_entries {
+            append_journal(&state, NotifierJournalEntry::Outbox(entry.clone())).await?;
+            state.store.write().await.outbox.insert(entry.id, entry);
         }
         reports
     };
 
+    let thread_entry = NotificationThreadEntry {
+        id: Uuid::new_v4(),
+        thread_key: thread_key.clone(),
+        request,
+        reports: reports.clone(),
+    };
+    append_journal(&state, NotifierJournalEntry::Thread(thread_entry.clone())).await?;
     state
-        .threads
+        .store
         .write()
         .await
-        .entry(thread_key.clone())
+        .threads
+        .entry(thread_key)
         .or_default()
-        .push(NotificationThreadEntry {
-            id: Uuid::new_v4(),
-            thread_key,
-            request,
-            reports: reports.clone(),
-        });
+        .push(thread_entry);
 
-    Json(reports)
+    Ok(Json(reports))
 }
 
 async fn list_threads(State(state): State<AppState>) -> Json<Vec<NotificationThreadSummary>> {
     Json(
         state
-            .threads
+            .store
             .read()
             .await
+            .threads
             .iter()
             .map(|(thread_key, entries)| NotificationThreadSummary {
                 thread_key: thread_key.clone(),
@@ -183,9 +294,10 @@ async fn get_thread(
 ) -> Json<Vec<NotificationThreadEntry>> {
     Json(
         state
-            .threads
+            .store
             .read()
             .await
+            .threads
             .get(&thread_key)
             .cloned()
             .unwrap_or_default(),
@@ -193,41 +305,99 @@ async fn get_thread(
 }
 
 async fn list_queue(State(state): State<AppState>) -> Json<Vec<NotificationQueueEntry>> {
-    let threads = state.threads.read().await;
-    let mut entries = Vec::new();
-    for (thread_key, thread_entries) in threads.iter() {
-        for entry in thread_entries {
-            let targets: Vec<NotificationTarget> = entry
-                .request
-                .policy
-                .targets
-                .iter()
-                .filter(|target| {
-                    matches!(
-                        target.kind,
-                        NotificationTargetKind::Thread
-                            | NotificationTargetKind::Dashboard
-                            | NotificationTargetKind::Email
-                    ) || target.require_ack
-                })
-                .cloned()
-                .collect();
-            if targets.is_empty() {
-                continue;
-            }
-            entries.push(NotificationQueueEntry {
-                id: entry.id,
-                thread_key: thread_key.clone(),
-                event: entry.request.event.clone(),
-                goal_id: entry.request.goal_id,
-                task_id: entry.request.task_id,
-                message: entry.request.message.clone(),
-                require_ack: targets.iter().any(|target| target.require_ack),
-                targets,
-            });
-        }
-    }
+    let store = state.store.read().await;
+    let entries = store
+        .outbox
+        .values()
+        .filter(|entry| entry.visible_in_operator_queue())
+        .map(NotificationQueueEntry::from)
+        .collect();
     Json(entries)
+}
+
+async fn list_outbox(
+    State(state): State<AppState>,
+    Query(query): Query<ListOutboxQuery>,
+) -> Json<Vec<NotificationOutboxEntry>> {
+    let store = state.store.read().await;
+    Json(
+        store
+            .outbox
+            .values()
+            .filter(|entry| query.status.is_none_or(|status| entry.status == status))
+            .cloned()
+            .collect(),
+    )
+}
+
+async fn list_dlq(State(state): State<AppState>) -> Json<Vec<NotificationOutboxEntry>> {
+    let store = state.store.read().await;
+    Json(
+        store
+            .outbox
+            .values()
+            .filter(|entry| entry.status == NotificationOutboxStatus::DeadLettered)
+            .cloned()
+            .collect(),
+    )
+}
+
+async fn get_outbox_entry(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<NotificationOutboxEntry>, NotifierError> {
+    let store = state.store.read().await;
+    let entry = store
+        .outbox
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| NotifierError::NotFound(format!("notification outbox entry {id}")))?;
+    Ok(Json(entry))
+}
+
+async fn ack_outbox(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<AckOutboxRequest>,
+) -> Result<Json<NotificationOutboxEntry>, NotifierError> {
+    let mut entry = read_outbox_entry(&state, id).await?;
+    acknowledge_outbox_entry(&mut entry, request, unix_seconds())?;
+    append_journal(&state, NotifierJournalEntry::Outbox(entry.clone())).await?;
+    state.store.write().await.outbox.insert(id, entry.clone());
+    Ok(Json(entry))
+}
+
+async fn retry_outbox(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<NotificationOutboxEntry>, NotifierError> {
+    let entry = retry_outbox_entry(&state, id).await?;
+    Ok(Json(entry))
+}
+
+async fn retry_due_outbox(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<NotificationOutboxEntry>>, NotifierError> {
+    let now = unix_seconds();
+    let due_ids: Vec<Uuid> = {
+        let store = state.store.read().await;
+        store
+            .outbox
+            .values()
+            .filter(|entry| {
+                entry.status == NotificationOutboxStatus::RetryScheduled
+                    && entry
+                        .next_attempt_after_unix_seconds
+                        .is_some_and(|next_attempt| next_attempt <= now)
+            })
+            .map(|entry| entry.id)
+            .collect()
+    };
+    let mut retried = Vec::new();
+    for id in due_ids {
+        retried.push(retry_outbox_entry(&state, id).await?);
+    }
+    Ok(Json(retried))
 }
 
 fn feedback_thread_key(request: &NotificationRequest) -> String {
@@ -244,6 +414,210 @@ fn feedback_thread_key(request: &NotificationRequest) -> String {
                 .map(|target| target.address.clone())
         })
         .unwrap_or_else(|| request.goal_id.to_string())
+}
+
+impl NotificationOutboxEntry {
+    fn new(
+        thread_key: String,
+        request: NotificationRequest,
+        target: NotificationTarget,
+        max_attempts: u32,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            thread_key,
+            request,
+            target,
+            status: NotificationOutboxStatus::Pending,
+            attempts: 0,
+            max_attempts: max_attempts.max(1),
+            last_attempt_at_unix_seconds: None,
+            next_attempt_after_unix_seconds: None,
+            external_ref: None,
+            last_error: None,
+            delivered_at_unix_seconds: None,
+            acknowledged_at_unix_seconds: None,
+            acknowledged_by: None,
+            ack_note: None,
+            dead_lettered_at_unix_seconds: None,
+            reports: Vec::new(),
+        }
+    }
+
+    fn visible_in_operator_queue(&self) -> bool {
+        if self.status == NotificationOutboxStatus::Acknowledged {
+            return false;
+        }
+        matches!(
+            self.status,
+            NotificationOutboxStatus::RetryScheduled | NotificationOutboxStatus::DeadLettered
+        ) || self.target.require_ack
+            || matches!(
+                self.target.kind,
+                NotificationTargetKind::Thread
+                    | NotificationTargetKind::Dashboard
+                    | NotificationTargetKind::Email
+            )
+    }
+}
+
+impl From<&NotificationOutboxEntry> for NotificationQueueEntry {
+    fn from(entry: &NotificationOutboxEntry) -> Self {
+        Self {
+            id: entry.id,
+            thread_key: entry.thread_key.clone(),
+            event: entry.request.event.clone(),
+            goal_id: entry.request.goal_id,
+            task_id: entry.request.task_id,
+            message: entry.request.message.clone(),
+            require_ack: entry.target.require_ack,
+            targets: vec![entry.target.clone()],
+            status: entry.status,
+            attempts: entry.attempts,
+            max_attempts: entry.max_attempts,
+            next_attempt_after_unix_seconds: entry.next_attempt_after_unix_seconds,
+            external_ref: entry.external_ref.clone(),
+            last_error: entry.last_error.clone(),
+            delivered_at_unix_seconds: entry.delivered_at_unix_seconds,
+            acknowledged_at_unix_seconds: entry.acknowledged_at_unix_seconds,
+            acknowledged_by: entry.acknowledged_by.clone(),
+            ack_note: entry.ack_note.clone(),
+            dead_lettered_at_unix_seconds: entry.dead_lettered_at_unix_seconds,
+        }
+    }
+}
+
+async fn read_outbox_entry(
+    state: &AppState,
+    id: Uuid,
+) -> Result<NotificationOutboxEntry, NotifierError> {
+    state
+        .store
+        .read()
+        .await
+        .outbox
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| NotifierError::NotFound(format!("notification outbox entry {id}")))
+}
+
+async fn retry_outbox_entry(
+    state: &AppState,
+    id: Uuid,
+) -> Result<NotificationOutboxEntry, NotifierError> {
+    let mut entry = read_outbox_entry(state, id).await?;
+    if !entry.status.retryable() {
+        return Err(NotifierError::BadRequest(format!(
+            "notification outbox entry {id} is {:?}, not retryable",
+            entry.status
+        )));
+    }
+    attempt_outbox_delivery(&state.client, &mut entry, state.retry_backoff_seconds).await;
+    append_journal(state, NotifierJournalEntry::Outbox(entry.clone())).await?;
+    state.store.write().await.outbox.insert(id, entry.clone());
+    Ok(entry)
+}
+
+async fn attempt_outbox_delivery(
+    client: &reqwest::Client,
+    entry: &mut NotificationOutboxEntry,
+    retry_backoff_seconds: u64,
+) -> NotificationDeliveryReport {
+    entry.attempts = entry.attempts.saturating_add(1);
+    entry.last_attempt_at_unix_seconds = Some(unix_seconds());
+    let report = deliver_target(
+        client,
+        &entry.request,
+        &entry.thread_key,
+        entry.target.clone(),
+    )
+    .await;
+    apply_delivery_report(entry, report.clone(), retry_backoff_seconds, unix_seconds());
+    report
+}
+
+fn apply_delivery_report(
+    entry: &mut NotificationOutboxEntry,
+    report: NotificationDeliveryReport,
+    retry_backoff_seconds: u64,
+    now: u64,
+) {
+    if report.delivered {
+        entry.status = if entry.target.require_ack {
+            NotificationOutboxStatus::AwaitingAck
+        } else {
+            NotificationOutboxStatus::Delivered
+        };
+        entry.external_ref = report.external_ref.clone();
+        entry.last_error = None;
+        entry.next_attempt_after_unix_seconds = None;
+        entry.delivered_at_unix_seconds = Some(now);
+        entry.dead_lettered_at_unix_seconds = None;
+    } else {
+        entry.external_ref = report.external_ref.clone();
+        entry.last_error = report
+            .error
+            .clone()
+            .or_else(|| Some("notification delivery failed".to_string()));
+        entry.delivered_at_unix_seconds = None;
+        if entry.attempts >= entry.max_attempts {
+            entry.status = NotificationOutboxStatus::DeadLettered;
+            entry.next_attempt_after_unix_seconds = None;
+            entry.dead_lettered_at_unix_seconds = Some(now);
+        } else {
+            entry.status = NotificationOutboxStatus::RetryScheduled;
+            entry.next_attempt_after_unix_seconds = Some(now.saturating_add(retry_backoff_seconds));
+            entry.dead_lettered_at_unix_seconds = None;
+        }
+    }
+    entry.reports.push(report);
+}
+
+fn acknowledge_outbox_entry(
+    entry: &mut NotificationOutboxEntry,
+    request: AckOutboxRequest,
+    now: u64,
+) -> Result<(), NotifierError> {
+    if entry.status == NotificationOutboxStatus::DeadLettered {
+        return Err(NotifierError::BadRequest(format!(
+            "notification outbox entry {} is dead-lettered and cannot be acknowledged",
+            entry.id
+        )));
+    }
+    if matches!(
+        entry.status,
+        NotificationOutboxStatus::Pending | NotificationOutboxStatus::RetryScheduled
+    ) {
+        return Err(NotifierError::BadRequest(format!(
+            "notification outbox entry {} has not been delivered and cannot be acknowledged",
+            entry.id
+        )));
+    }
+    entry.status = NotificationOutboxStatus::Acknowledged;
+    entry.acknowledged_at_unix_seconds = Some(now);
+    entry.acknowledged_by = request.acknowledged_by;
+    entry.ack_note = request.note;
+    entry.next_attempt_after_unix_seconds = None;
+    entry.external_ref = Some(format!("ack://notification/{}", entry.id));
+    entry.last_error = None;
+    entry.reports.push(NotificationDeliveryReport {
+        target: Some(entry.target.clone()),
+        delivered: true,
+        external_ref: entry.external_ref.clone(),
+        error: None,
+    });
+    Ok(())
+}
+
+impl NotificationOutboxStatus {
+    fn retryable(self) -> bool {
+        matches!(
+            self,
+            NotificationOutboxStatus::Pending
+                | NotificationOutboxStatus::RetryScheduled
+                | NotificationOutboxStatus::DeadLettered
+        )
+    }
 }
 
 async fn deliver_target(
@@ -748,11 +1122,111 @@ fn resolve_secret(secret_ref: &SecretRef) -> Result<String, String> {
     }
 }
 
+fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<NotificationStore> {
+    let Some(path) = path else {
+        return Ok(NotificationStore::default());
+    };
+    if !path.exists() {
+        return Ok(NotificationStore::default());
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("read notifier journal {}", path.display()))?;
+    let mut store = NotificationStore::default();
+    for (index, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry: NotifierJournalEntry = serde_json::from_str(line).with_context(|| {
+            format!(
+                "decode notifier journal {} line {}",
+                path.display(),
+                index + 1
+            )
+        })?;
+        apply_journal_entry(&mut store, entry);
+    }
+    Ok(store)
+}
+
+fn apply_journal_entry(store: &mut NotificationStore, entry: NotifierJournalEntry) {
+    match entry {
+        NotifierJournalEntry::Thread(entry) => {
+            store
+                .threads
+                .entry(entry.thread_key.clone())
+                .or_default()
+                .push(entry);
+        }
+        NotifierJournalEntry::Outbox(entry) => {
+            store.outbox.insert(entry.id, entry);
+        }
+    }
+}
+
+async fn append_journal(
+    state: &AppState,
+    entry: NotifierJournalEntry,
+) -> Result<(), NotifierError> {
+    let Some(path) = &state.journal_path else {
+        return Ok(());
+    };
+    append_journal_path(path, &entry)
+        .await
+        .map_err(|error| NotifierError::Internal(error.to_string()))
+}
+
+async fn append_journal_path(path: &PathBuf, entry: &NotifierJournalEntry) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    let line = serde_json::to_string(entry)?;
+    file.write_all(line.as_bytes()).await?;
+    file.write_all(b"\n").await?;
+    Ok(())
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[derive(Debug)]
+enum NotifierError {
+    NotFound(String),
+    BadRequest(String),
+    Internal(String),
+}
+
+impl IntoResponse for NotifierError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+        };
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
 }
 
 #[cfg(test)]
@@ -763,7 +1237,12 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{QueueNotificationEnvelope, sqs_message_group_id, sqs_queue_url};
+    use super::{
+        AckOutboxRequest, NotificationOutboxEntry, NotificationOutboxStatus,
+        NotificationThreadEntry, NotifierJournalEntry, QueueNotificationEnvelope,
+        acknowledge_outbox_entry, append_journal_path, apply_delivery_report, replay_journal,
+        sqs_message_group_id, sqs_queue_url,
+    };
 
     #[test]
     fn sqs_queue_url_uses_target_address() {
@@ -822,5 +1301,172 @@ mod tests {
         assert_eq!(envelope.event, request.event);
         assert_eq!(envelope.require_ack, target.require_ack);
         assert_eq!(envelope.request.message, request.message);
+    }
+
+    #[test]
+    fn delivered_required_ack_entry_stays_queued_until_acknowledged() {
+        let request = notification_request();
+        let target = NotificationTarget {
+            kind: NotificationTargetKind::Dashboard,
+            address: "human-queue".to_string(),
+            secret_ref: None,
+            require_ack: true,
+        };
+        let mut entry = NotificationOutboxEntry::new("ops".to_string(), request, target.clone(), 3);
+        entry.attempts = 1;
+
+        apply_delivery_report(
+            &mut entry,
+            delivery_report(target, true, Some("dashboard://queue/ops/1"), None),
+            30,
+            100,
+        );
+
+        assert_eq!(entry.status, NotificationOutboxStatus::AwaitingAck);
+        assert!(entry.visible_in_operator_queue());
+        assert_eq!(entry.delivered_at_unix_seconds, Some(100));
+        assert_eq!(entry.next_attempt_after_unix_seconds, None);
+
+        acknowledge_outbox_entry(
+            &mut entry,
+            AckOutboxRequest {
+                acknowledged_by: Some("operator".to_string()),
+                note: Some("reviewed".to_string()),
+            },
+            120,
+        )
+        .expect("ack delivered entry");
+
+        assert_eq!(entry.status, NotificationOutboxStatus::Acknowledged);
+        assert!(!entry.visible_in_operator_queue());
+        assert_eq!(entry.acknowledged_at_unix_seconds, Some(120));
+        assert_eq!(entry.acknowledged_by.as_deref(), Some("operator"));
+        assert_eq!(entry.ack_note.as_deref(), Some("reviewed"));
+    }
+
+    #[test]
+    fn failed_delivery_schedules_retry_then_dead_letters() {
+        let request = notification_request();
+        let target = NotificationTarget {
+            kind: NotificationTargetKind::Sqs,
+            address: String::new(),
+            secret_ref: None,
+            require_ack: true,
+        };
+        let mut entry = NotificationOutboxEntry::new("ops".to_string(), request, target.clone(), 2);
+
+        entry.attempts = 1;
+        apply_delivery_report(
+            &mut entry,
+            delivery_report(
+                target.clone(),
+                false,
+                None,
+                Some("sqs target requires queue URL in address or secret_ref"),
+            ),
+            15,
+            100,
+        );
+
+        assert_eq!(entry.status, NotificationOutboxStatus::RetryScheduled);
+        assert_eq!(entry.next_attempt_after_unix_seconds, Some(115));
+        assert_eq!(entry.dead_lettered_at_unix_seconds, None);
+        assert!(entry.visible_in_operator_queue());
+
+        entry.attempts = 2;
+        apply_delivery_report(
+            &mut entry,
+            delivery_report(
+                target,
+                false,
+                None,
+                Some("sqs target requires queue URL in address or secret_ref"),
+            ),
+            15,
+            115,
+        );
+
+        assert_eq!(entry.status, NotificationOutboxStatus::DeadLettered);
+        assert_eq!(entry.next_attempt_after_unix_seconds, None);
+        assert_eq!(entry.dead_lettered_at_unix_seconds, Some(115));
+        assert!(entry.visible_in_operator_queue());
+    }
+
+    #[tokio::test]
+    async fn notifier_journal_replays_latest_outbox_state() {
+        let journal_path =
+            std::env::temp_dir().join(format!("coat-notifier-{}.jsonl", Uuid::new_v4()));
+        let request = notification_request();
+        let target = NotificationTarget {
+            kind: NotificationTargetKind::Dashboard,
+            address: "human-queue".to_string(),
+            secret_ref: None,
+            require_ack: true,
+        };
+        let mut entry =
+            NotificationOutboxEntry::new("ops".to_string(), request.clone(), target.clone(), 3);
+        entry.attempts = 1;
+        apply_delivery_report(
+            &mut entry,
+            delivery_report(target, true, Some("dashboard://queue/ops/1"), None),
+            30,
+            100,
+        );
+        let thread = NotificationThreadEntry {
+            id: Uuid::new_v4(),
+            thread_key: "ops".to_string(),
+            request,
+            reports: entry.reports.clone(),
+        };
+
+        append_journal_path(&journal_path, &NotifierJournalEntry::Thread(thread))
+            .await
+            .expect("append thread");
+        append_journal_path(&journal_path, &NotifierJournalEntry::Outbox(entry.clone()))
+            .await
+            .expect("append delivered outbox");
+        acknowledge_outbox_entry(
+            &mut entry,
+            AckOutboxRequest {
+                acknowledged_by: Some("operator".to_string()),
+                note: None,
+            },
+            130,
+        )
+        .expect("ack delivered entry");
+        append_journal_path(&journal_path, &NotifierJournalEntry::Outbox(entry.clone()))
+            .await
+            .expect("append acked outbox");
+
+        let store = replay_journal(Some(&journal_path)).expect("replay notifier journal");
+        let replayed = store.outbox.get(&entry.id).expect("outbox entry");
+        assert_eq!(replayed.status, NotificationOutboxStatus::Acknowledged);
+        assert_eq!(replayed.acknowledged_by.as_deref(), Some("operator"));
+        assert_eq!(store.threads.get("ops").expect("thread").len(), 1);
+        let _ = std::fs::remove_file(journal_path);
+    }
+
+    fn notification_request() -> NotificationRequest {
+        NotificationRequest {
+            goal_id: Uuid::new_v4(),
+            task_id: Some(Uuid::new_v4()),
+            event: NotificationEvent::HumanFeedbackRequested,
+            message: "waiting for human steering".to_string(),
+            policy: NotificationPolicy::default(),
+        }
+    }
+
+    fn delivery_report(
+        target: NotificationTarget,
+        delivered: bool,
+        external_ref: Option<&str>,
+        error: Option<&str>,
+    ) -> coat_domain::NotificationDeliveryReport {
+        coat_domain::NotificationDeliveryReport {
+            target: Some(target),
+            delivered,
+            external_ref: external_ref.map(str::to_string),
+            error: error.map(str::to_string),
+        }
     }
 }

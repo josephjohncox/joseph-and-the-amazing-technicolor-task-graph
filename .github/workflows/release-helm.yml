@@ -42,14 +42,16 @@ jobs:
           version="${version#v}"
           app_version="${{ inputs.app_version }}"
           app_version="${app_version#v}"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
-          echo "tag=chart-v${version}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${version}"
+            echo "app_version=${app_version}"
+            echo "tag=chart-v${version}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Package chart
         run: |
           cargo build -p coat-cli
-          target/debug/coat helm package \
+          target/debug/coat deploy chart package \
             --chart-version "${{ steps.version.outputs.version }}" \
             --app-version "${{ steps.version.outputs.app_version }}" \
             --release-url "https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${{ steps.version.outputs.version }}"
@@ -65,3 +67,30 @@ jobs:
             dist/helm/index.yaml.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      - name: Smoke published chart asset
+        shell: bash
+        env:
+          CHART_VERSION: ${{ steps.version.outputs.version }}
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          RELEASE_URL: https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          app_version="${APP_VERSION:-$CHART_VERSION}"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          chart="${tmp_dir}/jattg-${CHART_VERSION}.tgz"
+
+          curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "${RELEASE_URL}/jattg-${CHART_VERSION}.tgz" -o "${chart}"
+          curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "${RELEASE_URL}/jattg-${CHART_VERSION}.tgz.sha256" -o "${chart}.sha256"
+          expected_sha="$(cut -d ' ' -f 1 "${chart}.sha256")"
+          printf '%s  %s\n' "${expected_sha}" "${chart}" | shasum -a 256 -c -
+
+          target/debug/coat deploy chart lint --chart "${chart}"
+          target/debug/coat deploy chart template \
+            --release jattg-smoke \
+            --namespace jattg-smoke \
+            --chart "${chart}" \
+            --set "global.imageTag=${app_version}" \
+            --output "${tmp_dir}/rendered.yaml"
+          test -s "${tmp_dir}/rendered.yaml"

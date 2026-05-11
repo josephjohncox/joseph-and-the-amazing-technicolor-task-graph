@@ -89,7 +89,20 @@
             "uri": "artifact://research-output-memory-substrate",
             "actor": "research_worker"
           },
-          "artifacts": [],
+          "artifacts": [
+            {
+              "kind": "object_storage_object",
+              "uri": "s3://jattg-replay-artifacts/research-replay/memory-substrate/raw-source-snapshots.jsonl",
+              "description": "Replay raw source snapshots captured for memory substrate research",
+              "sha256": null
+            },
+            {
+              "kind": "object_storage_object",
+              "uri": "s3://jattg-replay-artifacts/research-replay/memory-substrate/source-fetch-metadata.json",
+              "description": "Replay source fetch metadata for memory substrate research",
+              "sha256": null
+            }
+          ],
           "tags": ["research", "memory", "graphiti", "qdrant"]
         },
         "store": null

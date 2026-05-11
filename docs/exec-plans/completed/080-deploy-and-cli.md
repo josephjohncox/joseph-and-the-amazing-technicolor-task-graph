@@ -43,6 +43,7 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 
 ## Follow-Ups
 
+- Coordinate release, kind/k3d, and executor-provisioning proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 - Keep Compose, Kubernetes, Helm, and release workflows aligned when service names, ports, secrets, or image names change.
 - After the first GitHub Release is created, run the published binary and Helm chart smoke commands from `docs/operations/releases.md` and record the evidence.
 - Add a production controller/provisioner loop that submits per-task executor Jobs from coordinator-approved state and records completion attestations.

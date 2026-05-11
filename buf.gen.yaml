@@ -1,0 +1,9 @@
+version: v2
+clean: true
+plugins:
+  - remote: buf.build/community/neoeinstein-prost
+    out: target/generated-sdks/rust
+  - remote: buf.build/community/neoeinstein-tonic
+    out: target/generated-sdks/rust
+  - remote: buf.build/bufbuild/es
+    out: target/generated-sdks/typescript

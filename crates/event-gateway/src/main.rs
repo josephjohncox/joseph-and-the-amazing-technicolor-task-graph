@@ -30,9 +30,10 @@ use axum::{
 };
 use coat_domain::{
     EventRouteMode, EventSource, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
-    EventSourceApprovalStatus, EventSourceKind, ExternalEvent, GoalSpec, GoalTriggerTemplate,
-    SecretProvider, SecretRef, SqsEventSource, SteeringDirective, TriggeredGoalRequest,
-    TriggeredGoalResponse, TriggeredGoalStatus, WebhookAuthKind,
+    EventSourceApprovalStatus, EventSourceKind, ExternalEvent, GoalEventKind, GoalEventRecord,
+    GoalSpec, GoalStoreEventAppendRequest, GoalTriggerTemplate, ProtocolMetadata, SecretProvider,
+    SecretRef, SqsEventSource, SteeringDirective, TriggeredGoalRequest, TriggeredGoalResponse,
+    TriggeredGoalStatus, WebhookAuthKind,
 };
 use hmac::{Hmac, Mac};
 use reqwest::StatusCode;
@@ -1823,12 +1824,14 @@ async fn append_trigger(
     state: &AppState,
     response: TriggeredGoalResponse,
 ) -> Result<(), GatewayError> {
+    let projection = response.clone();
     if let Some(pool) = &state.postgres {
         insert_trigger_postgres(pool, &response).await?;
     } else {
         append_journal(state, JournalEntry::Trigger(response.clone())).await?;
     }
     state.state.write().await.triggered_goals.push(response);
+    project_trigger_to_goal_store(state, &projection).await?;
     Ok(())
 }
 
@@ -1933,6 +1936,90 @@ async fn project_event_source_approval(
             "goal-store event-source approval projection failed with status {}",
             response.status()
         )))
+    }
+}
+
+async fn project_trigger_to_goal_store(
+    state: &AppState,
+    response: &TriggeredGoalResponse,
+) -> Result<(), GatewayError> {
+    let Some(goal_store_url) = &state.goal_store_url else {
+        return Ok(());
+    };
+    let Some(goal_id) = response.goal_id else {
+        return Ok(());
+    };
+    let event = trigger_goal_event_record(response, goal_id);
+    let request = GoalStoreEventAppendRequest {
+        metadata: ProtocolMetadata::new(event.idempotency_key.clone()),
+        event,
+    };
+    let url = format!("{}/goal-store/events", goal_store_url.trim_end_matches('/'));
+    let response = state
+        .client
+        .post(&url)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| GatewayError::BadGateway(error.to_string()))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(GatewayError::BadGateway(format!(
+            "goal-store trigger projection failed with status {}",
+            response.status()
+        )))
+    }
+}
+
+fn trigger_goal_event_record(response: &TriggeredGoalResponse, goal_id: Uuid) -> GoalEventRecord {
+    let event_id = trigger_record_id(response);
+    GoalEventRecord {
+        event_id,
+        goal_id,
+        task_id: None,
+        sequence: trigger_projection_sequence(event_id),
+        kind: trigger_projection_kind(&response.status),
+        message: format!(
+            "event_gateway_trigger_{}:{}",
+            trigger_status_label(&response.status),
+            response.event_id
+        ),
+        actor: Some("coat-event-gateway".to_string()),
+        idempotency_key: format!("event-gateway:trigger:{event_id}"),
+        created_at: Some(unix_now_string()),
+        payload_json: serde_json::json!({
+            "projection_source": "event_gateway",
+            "trigger": response,
+        }),
+    }
+}
+
+fn trigger_projection_sequence(event_id: Uuid) -> u64 {
+    let bytes = event_id.as_bytes();
+    let mut tail = [0_u8; 8];
+    tail.copy_from_slice(&bytes[8..16]);
+    u64::from_be_bytes(tail).max(1)
+}
+
+fn trigger_projection_kind(status: &TriggeredGoalStatus) -> GoalEventKind {
+    match status {
+        TriggeredGoalStatus::Submitted => GoalEventKind::Submitted,
+        TriggeredGoalStatus::AwaitingHumanReview => GoalEventKind::ApprovalRequested,
+        TriggeredGoalStatus::Failed => GoalEventKind::Failed,
+        TriggeredGoalStatus::Recorded | TriggeredGoalStatus::Deduped => {
+            GoalEventKind::StateProjected
+        }
+    }
+}
+
+fn trigger_status_label(status: &TriggeredGoalStatus) -> &'static str {
+    match status {
+        TriggeredGoalStatus::Recorded => "recorded",
+        TriggeredGoalStatus::Submitted => "submitted",
+        TriggeredGoalStatus::AwaitingHumanReview => "awaiting_human_review",
+        TriggeredGoalStatus::Deduped => "deduped",
+        TriggeredGoalStatus::Failed => "failed",
     }
 }
 

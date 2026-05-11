@@ -1,0 +1,236 @@
+{
+  "description": "Reviewer and validator fixture built from an accepted Codex App Server replay worker output. It preserves command evidence, child task routing, git result refs, and checkpoint branch evidence for offline review tests.",
+  "source_worker_fixture": "examples/codex-app-server-replay.json",
+  "accepted_worker_result": {
+    "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+    "status": "done",
+    "summary": "Codex App Server replay completed TypeScript runner contract changes with command, diff, and checkpoint evidence.",
+    "runner_id": "codex-app-server-replay",
+    "model_used": null,
+    "mcp_context_used": null,
+    "sandbox_attestation": null,
+    "artifacts": [
+      {
+        "kind": "patch",
+        "uri": "git+diff://thr_codex_replay_001/turn_codex_replay_001.patch",
+        "description": "Replay diff from Codex App Server turn turn_codex_replay_001",
+        "sha256": null
+      },
+      {
+        "kind": "artifact_manifest",
+        "uri": "artifact://codex-app-server-replay/artifact-manifest.json",
+        "description": "Replay artifact manifest linking command evidence, changed paths, and checkpoint refs",
+        "sha256": null
+      }
+    ],
+    "git_result": {
+      "repo": "https://example.invalid/jattg.git",
+      "remote": "origin",
+      "base_ref": "refs/heads/main",
+      "branch": "jattg/task/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+      "worktree_path": "/worktrees/replay-fixtures/codex-app-server/018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+      "commit": null,
+      "pushed": false,
+      "pull_request_url": null,
+      "diff_uri": "git+diff://thr_codex_replay_001/turn_codex_replay_001.patch"
+    },
+    "object_artifacts": [],
+    "checkpoints": [
+      {
+        "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
+        "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+        "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+        "parent_checkpoint_id": null,
+        "kind": "git_branch",
+        "label": "codex-app-server-replay-accepted",
+        "summary": "Accepted replay output with command evidence and preserved child task request.",
+        "artifact": {
+          "kind": "checkpoint",
+          "uri": "git+checkpoint://refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay?ref=refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay",
+          "description": "Codex replay checkpoint branch for reviewer fixture",
+          "sha256": null
+        },
+        "git_result": {
+          "repo": "https://example.invalid/jattg.git",
+          "remote": "origin",
+          "base_ref": "refs/heads/main",
+          "branch": "refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay",
+          "worktree_path": "/worktrees/replay-fixtures/codex-app-server/018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+          "commit": null,
+          "pushed": false,
+          "pull_request_url": null,
+          "diff_uri": "git+diff://thr_codex_replay_001/turn_codex_replay_001.patch"
+        },
+        "object_artifact": null,
+        "sequence": 1,
+        "created_at": "2026-05-11T00:00:00Z",
+        "payload_json": {
+          "source_fixture": "examples/codex-app-server-replay.json",
+          "thread_id": "thr_codex_replay_001",
+          "turn_id": "turn_codex_replay_001",
+          "accepted": true
+        }
+      }
+    ],
+    "test_evidence": [
+      {
+        "command": "npm run --prefix sidecars/codex-runner-ts build",
+        "exit_code": 0,
+        "passed": true,
+        "duration_ms": 431,
+        "stdout_uri": "artifact://codex-app-server-replay/command/cmd_build_001/stdout",
+        "stderr_uri": null,
+        "artifact_uri": "artifact://codex-app-server-replay/command/cmd_build_001",
+        "notes": [
+          "Replay command completed with exit code 0 and is tied to turn_codex_replay_001."
+        ]
+      }
+    ],
+    "child_requests": [
+      {
+        "role": "tester",
+        "title": "Replay Codex App Server fixture",
+        "prompt": "Replay the Codex App Server fixture and assert checkpoint, git, and command evidence are preserved.",
+        "reason": "The live worker contract needs deterministic replay coverage before live credentials are required."
+      }
+    ],
+    "confidence": 0.91,
+    "next_actions": [],
+    "diagnostics": [
+      "mode=replay",
+      "thread_id=thr_codex_replay_001",
+      "turn_id=turn_codex_replay_001"
+    ],
+    "notification_reports": []
+  },
+  "reviewer_result": {
+    "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+    "status": "done",
+    "summary": "Reviewer accepted the Codex App Server replay output after checking command evidence, checkpoint branch refs, and child task routing.",
+    "review": {
+      "decision": "accept",
+      "reward": 0.94,
+      "findings": [],
+      "objective_results": [
+        {
+          "objective_id": "correctness.behavior",
+          "decision": "pass",
+          "score": 0.94,
+          "evidence": [
+            "git+diff://thr_codex_replay_001/turn_codex_replay_001.patch",
+            "git+checkpoint://refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay"
+          ],
+          "notes": [
+            "The replay worker result preserves thread id, turn id, command evidence, child task request, and checkpoint branch evidence."
+          ]
+        },
+        {
+          "objective_id": "testing.behavioral_end_to_end",
+          "decision": "pass",
+          "score": 0.92,
+          "evidence": [
+            "artifact://codex-app-server-replay/command/cmd_build_001",
+            "npm run --prefix sidecars/codex-runner-ts build"
+          ],
+          "notes": [
+            "The fixture exercises the replay-to-review validation path and would fail if checkpoint branch evidence is replaced with metadata-only evidence."
+          ]
+        }
+      ],
+      "gate_results": [
+        {
+          "gate_id": "gate.compile",
+          "passed": true,
+          "score": 0.93,
+          "evidence": [
+            "artifact://codex-app-server-replay/command/cmd_build_001"
+          ],
+          "notes": [
+            "Replay build command completed with exit code 0."
+          ]
+        },
+        {
+          "gate_id": "gate.behavioral_coverage",
+          "passed": true,
+          "score": 0.91,
+          "evidence": [
+            "git+checkpoint://refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay"
+          ],
+          "notes": [
+            "Reviewer fixture requires a git checkpoint branch, not only an artifact presence marker."
+          ]
+        }
+      ],
+      "retry_recommended": false,
+      "unification_summary": null
+    },
+    "runner_id": "reviewer-replay",
+    "model_used": null,
+    "mcp_context_used": null,
+    "sandbox_attestation": null,
+    "artifacts": [
+      {
+        "kind": "report",
+        "uri": "artifact://reviewer-fixtures/live-replay-worker-review.json",
+        "description": "Reviewer decision for accepted Codex App Server replay worker output",
+        "sha256": null
+      }
+    ],
+    "git_result": null,
+    "object_artifacts": [],
+    "checkpoints": [
+      {
+        "id": "018f8f2f-1fd8-7688-bb12-8bfb6b756702",
+        "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+        "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+        "parent_checkpoint_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
+        "kind": "git_branch",
+        "label": "reviewer-accepted-live-replay",
+        "summary": "Reviewer accepted the replay worker result after checking command and checkpoint branch evidence.",
+        "artifact": {
+          "kind": "checkpoint",
+          "uri": "git+checkpoint://refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756603/reviewer-accepted?ref=refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756603/reviewer-accepted",
+          "description": "Reviewer checkpoint branch for accepted replay fixture",
+          "sha256": null
+        },
+        "git_result": {
+          "repo": "https://example.invalid/jattg.git",
+          "remote": "origin",
+          "base_ref": "refs/heads/main",
+          "branch": "refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756603/reviewer-accepted",
+          "worktree_path": "/worktrees/replay-fixtures/reviewer/018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+          "commit": null,
+          "pushed": false,
+          "pull_request_url": null,
+          "diff_uri": "git+diff://reviewer-fixtures/live-replay-worker-review.patch"
+        },
+        "object_artifact": null,
+        "sequence": 2,
+        "created_at": "2026-05-11T00:05:00Z",
+        "payload_json": {
+          "reviewed_checkpoint_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
+          "accepted": true
+        }
+      }
+    ],
+    "test_evidence": [],
+    "child_requests": [],
+    "confidence": 0.94,
+    "next_actions": [],
+    "diagnostics": [
+      "mode=replay",
+      "reviewed_checkpoint=refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay"
+    ],
+    "notification_reports": []
+  },
+  "expected": {
+    "source_thread_id": "thr_codex_replay_001",
+    "source_turn_id": "turn_codex_replay_001",
+    "actor_checkpoint_branch": "refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756602/codex-app-server-replay",
+    "reviewer_checkpoint_branch": "refs/heads/jattg/checkpoint/018f8f2f-1fd8-7688-bb12-8bfb6b756601/018f8f2f-1fd8-7688-bb12-8bfb6b756603/reviewer-accepted",
+    "required_command": "npm run --prefix sidecars/codex-runner-ts build",
+    "review_decision": "accept",
+    "min_validator_score": 0.9,
+    "required_child_role": "tester"
+  }
+}

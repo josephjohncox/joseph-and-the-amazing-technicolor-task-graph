@@ -125,6 +125,13 @@ provisioner after budget and approval checks pass. Plan-only requests return the
 Kubernetes objects; live requests use the Rust Kubernetes API path when
 `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`.
 
+Prove this path on kind or k3d before using a managed cluster. The proof should
+begin with a coordinator-approved capacity decision, then call the
+sandbox-runner provision API. The sandbox-runner should perform server-side
+dry-run first, then apply the bounded Job only after the approval and template
+selection are recorded. The operator fixture commands below are for inspection
+and emergency fallback; they are not the source of truth for live capacity.
+
 For operator inspection, render a bounded Job from a `SandboxLaunchPlan`:
 
 ```sh
@@ -140,6 +147,15 @@ coat deploy cluster executor-job apply \
 Review the selected image, command, runtime class, service account, workspace
 volume, resource limits, network policy labels, and plan ConfigMap before using
 any manual apply path.
+
+For the accepted proof, inspect the returned provision record instead of only
+the rendered YAML. It should include the provision request ID, goal/task IDs,
+capacity decision ref, applied ConfigMap and Job UIDs, selected Pod UID, watched
+phase transitions, logs or log artifact refs, cleanup status, structured result
+manifest refs, and sandbox attestation evidence. Treat a Pod `Succeeded` state
+as necessary but not sufficient; task completion still requires the structured
+result and attestation to be ingested by the coordinator and projected into the
+goal store.
 
 ## Smoke Test
 

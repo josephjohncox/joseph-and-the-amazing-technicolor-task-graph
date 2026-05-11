@@ -106,6 +106,16 @@ Use the standard Rust Kubernetes client stack for live control-plane operations:
 ConfigMap and Job objects, while live mode uses Kubernetes server-side apply
 when `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`.
 
+The first live proof should run against kind or k3d before any managed-cluster
+automation is trusted. That proof must start from a coordinator-approved
+capacity decision, not a hand-applied manifest: the coordinator evaluates the
+task budget, approval policy, sandbox profile, `ExecutionProfile.capacity`, and
+runner-registry capacity recommendation, then issues a provision request to the
+sandbox-runner. The sandbox-runner is the only component in the proof that
+materializes the executor Job. Operators may render the same objects for
+inspection, but the accepted path is the API request plus Kubernetes watch and
+result ingestion flow.
+
 ## Image Model
 
 The default image is `jattg-agent-toolbox`, built from the `agent-toolbox` target
@@ -231,11 +241,28 @@ that deadline-driven shutdown behavior.
 `SandboxLaunchPlan` is the durable handoff from the sandbox runner to a concrete
 executor. The backend provisioner path is:
 
-1. coordinator approves a task with `SandboxBackend::KubernetesJob`;
-2. sandbox-runner creates or receives a `SandboxLaunchPlan`;
-3. sandbox-runner calls Kubernetes with the standard Rust `kube` client;
-4. the Job writes artifact, checkpoint, git, and object-store results;
-5. the coordinator validates the returned evidence.
+1. the coordinator marks a runnable task eligible for
+   `SandboxBackend::KubernetesJob` only after budget, approval, sandbox, local
+   tool, capacity, and template-ref checks pass;
+2. the coordinator or executor framework sends the sandbox-runner a provision
+   request containing the durable task ID, approved `SandboxLaunchPlan`, target
+   namespace, field manager, TTL, deadline, service account, runtime class, and
+   expected result locations;
+3. sandbox-runner validates the launch plan, resolves the approved template, and
+   calls Kubernetes with the standard Rust `kube` client;
+4. the provisioner applies a ConfigMap containing `sandbox-launch-plan.json` and
+   a bounded Job through server-side apply;
+5. sandbox-runner watches the Job and selected Pod until completion, timeout,
+   deletion, or a classified Kubernetes failure such as image-pull,
+   unschedulable, runtime-class, admission, or deadline failure;
+6. the executor reads `sandbox-launch-plan.json`, runs only the bounded command
+   contract, writes command, artifact, checkpoint, git, object-store, and
+   structured-result manifests, and emits sandbox attestation evidence;
+7. sandbox-runner collects pod logs, final Job/Pod manifests, result manifests,
+   exit status, timing, cleanup status, and attestation evidence, then returns a
+   normalized result record to the coordinator;
+8. the coordinator validates the returned evidence, updates task state, and
+   projects the result into goal-store.
 
 Plan a bounded Job without contacting the cluster:
 
@@ -250,6 +277,29 @@ When `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, set
 the live Kubernetes API. The endpoint applies a ConfigMap containing the
 `SandboxLaunchPlan` and a bounded Job using server-side apply and the request's
 `field_manager`.
+
+Use `"mode": "server_dry_run"` for the first kind/k3d proof stage: it validates
+admission, defaulting, RBAC, namespace policy, service account permissions, and
+runtime class references without launching work. Use `"mode": "apply"` only
+after that dry-run returns the expected ConfigMap and Job and the coordinator
+has recorded the approval that allowed this capacity request.
+
+Live `server_dry_run` and `apply` requests must include coordinator evidence
+annotations before sandbox-runner contacts the cluster:
+
+- `jattg.dev/capacity-decision-ref`: the durable capacity decision or approval
+  record that authorized this executor Job;
+- `jattg.dev/template-ref`: the approved template or template-library entry used
+  to materialize the Job;
+- `jattg.dev/result-ingestion-ref`: the coordinator or goal-store destination
+  that will ingest the structured executor result.
+
+The sandbox-runner also writes `provisioner-evidence.json` beside
+`sandbox-launch-plan.json` in the launch-plan ConfigMap, mounts it at
+`/coat/provisioner-evidence.json`, and injects `COAT_PROVISION_REQUEST_ID`,
+`COAT_STRUCTURED_RESULT_PATH`, `COAT_SANDBOX_ATTESTATION_PATH`,
+`COAT_PROVISIONER_EVIDENCE_PATH`, and Kubernetes watch selector environment
+variables into the executor container.
 
 The CLI renderer remains useful for inspection and dry-run fixtures:
 
@@ -268,6 +318,28 @@ runtime class, security context, resource limits, workspace volume, plan
 environment, and network-policy labels. The executor writes artifacts back
 through the task workspace or object-store refs; the coordinator then validates
 the result and records the attestation.
+
+The Job watch result should preserve enough evidence for later review:
+
+- provision request ID, goal ID, task ID, sandbox profile, template ref, and
+  capacity decision ref;
+- applied ConfigMap and Job object UIDs plus final resource versions;
+- selected Pod UID, node name when available, phase transitions, container
+  statuses, restart count, exit code, signal, reason, and message;
+- first and final timestamp for pending, running, succeeded, failed, timeout,
+  cleanup, and TTL observation;
+- bounded pod logs with truncation metadata and object-artifact refs for full
+  logs when needed;
+- command, artifact, checkpoint, git, object-store, and structured-result
+  manifests written by the executor;
+- sandbox attestation evidence describing namespace, service account, image
+  digest when available, runtime class, security context, network profile,
+  mounted launch-plan ConfigMap, and cleanup outcome.
+
+Do not count a Kubernetes Job as satisfying the task only because the Pod
+reached `Succeeded`. The coordinator should require the structured result
+manifest and attestation evidence, then let validator or review tasks decide
+whether the objective-level evidence is sufficient.
 
 ## Helm
 

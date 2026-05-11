@@ -52,6 +52,7 @@ try {
   await assertStylesheet();
   await assertClientScript();
   await assertMemoryReplacementDiffRender();
+  await assertOperatorWorkflowRender();
   await assertOverviewApi();
   await assertFollowUpsApi();
   await assertFollowUpDraftApi();
@@ -277,6 +278,236 @@ async function assertMemoryReplacementDiffRender() {
     const emptyMarkup = renderToStaticMarkup(React.createElement(MemoryDiffTable, { value: null }));
     assert(emptyMarkup.includes("No replacement preview"), "empty memory diff renders no-preview state");
     assert(emptyMarkup.includes("Preview a memory edit."), "empty memory diff renders preview guidance");
+  } finally {
+    await viteServer.close();
+  }
+}
+
+async function assertOperatorWorkflowRender() {
+  const viteServer = await createViteServer({
+    configFile: false,
+    root: packageRoot,
+    logLevel: "silent",
+    plugins: [
+      react(),
+      {
+        name: "coat-operator-workflow-render-smoke",
+        enforce: "post",
+        transform(code, id) {
+          if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
+            return `${code}\nexport { ApprovalList, Dashboard, EventSourcesPanel, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, eventSourceTableRow, runnerTableRow, taskMatchesGraphFilter, taskStatusCounts };`;
+          }
+          return null;
+        },
+      },
+    ],
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, hmr: false },
+    appType: "custom",
+  });
+
+  try {
+    const {
+      ApprovalList,
+      Dashboard,
+      EventSourcesPanel,
+      GoalList,
+      GraphStatusPanel,
+      MemoryEventsTable,
+      RunnersView,
+      eventSourceTableRow,
+      runnerTableRow,
+      taskMatchesGraphFilter,
+      taskStatusCounts,
+    } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+
+    const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
+    const goals = [
+      {
+        goal_id: goalId,
+        title: "Operator workflow coverage",
+        objective: "Exercise goal selection, task progress, and human gates.",
+        status: "running",
+        percent_done: 0.42,
+        open_tasks: 4,
+        blocked_tasks: 1,
+      },
+      {
+        goal_id: "018f8f2f-1fd8-7688-bb12-8bfb6b756603",
+        title: "Completed validation",
+        objective: "Keep done goals visible but lower urgency.",
+        status: "done",
+        percent_done: 1,
+        open_tasks: 0,
+        blocked_tasks: 0,
+      },
+    ];
+    const runnerRows = [
+      {
+        registration: {
+          runner_id: "codex-runner-a",
+          node_id: "local-dev-a",
+          endpoint: "http://runner-a.example:9093",
+          labels: { runtime: "model-provider", lane: "work" },
+          max_concurrency: 3,
+        },
+        running_tasks: 1,
+        capacity_remaining: 2,
+        dispatchable: true,
+        stale: false,
+        full: false,
+      },
+    ];
+    const approvals = [
+      {
+        approval_id: "approval-prod-deploy",
+        goal_id: goalId,
+        status: "pending",
+        risk: "deployment",
+      },
+    ];
+    const eventSources = [
+      {
+        source_id: "github-pr-webhook",
+        kind: "webhook",
+        enabled: true,
+        approval_status: "pending",
+        approval_id: "approval-source-github",
+      },
+    ];
+    const overview = {
+      runner_status: { data: runnerRows },
+      approvals: { data: approvals },
+      recent_events: {
+        data: [
+          { event_type: "TaskStarted", goal_id: goalId },
+          { event_type: "ApprovalRequested", goal_id: goalId },
+        ],
+      },
+      event_sources: { sources: eventSources },
+    };
+
+    const dashboardMarkup = renderToStaticMarkup(
+      React.createElement(Dashboard, {
+        overview,
+        goals,
+        selectedGoalId: goalId,
+        onSelectGoal: () => {},
+      }),
+    );
+    for (const expected of [
+      "Active goals",
+      ">2<",
+      "Human queue",
+      "Event sources",
+      "github-pr-webhook · webhook",
+      "pending · approval-source-github",
+      "Goal attention",
+      "Runner lanes",
+    ]) {
+      assert(dashboardMarkup.includes(expected), `operator dashboard markup includes ${expected}`);
+    }
+
+    const goalListMarkup = renderToStaticMarkup(React.createElement(GoalList, { goals, selectedGoalId: goalId, onSelect: () => {} }));
+    for (const expected of [
+      "goal-card active",
+      "Operator workflow coverage",
+      "Exercise goal selection, task progress, and human gates.",
+      "42% complete · 4 open · 1 blocked",
+      "Completed validation",
+      "100% complete · 0 open · 0 blocked",
+    ]) {
+      assert(goalListMarkup.includes(expected), `goal list markup includes ${expected}`);
+    }
+
+    const taskRows = [
+      { task_id: "task-failed", status: "failed" },
+      { task_id: "task-blocked", status: "blocked" },
+      { task_id: "task-approval", status: "waiting_approval" },
+      { task_id: "task-running", status: "running" },
+      { task_id: "task-done", status: "done" },
+    ];
+    const counts = taskStatusCounts(taskRows);
+    assertEqual(counts.get("waiting_approval"), 1, "task status counts preserve raw status spelling");
+    assertEqual(taskMatchesGraphFilter(taskRows[0], "attention"), true, "failed task matches attention filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[3], "active"), true, "running task matches active filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[4], "completed"), true, "done task matches completed filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[4], "attention"), false, "done task does not match attention filter");
+    const graphStatusMarkup = renderToStaticMarkup(React.createElement(GraphStatusPanel, { counts, taskCount: taskRows.length }));
+    for (const expected of [
+      "3 need attention",
+      "5 tasks · 1 running · 1 done",
+      "Graph legend",
+      "Approval",
+      "human gate open",
+    ]) {
+      assert(graphStatusMarkup.includes(expected), `graph status markup includes ${expected}`);
+    }
+
+    const approvalMarkup = renderToStaticMarkup(
+      React.createElement(ApprovalList, {
+        rows: approvals,
+        selectedGoalId: "",
+        busy: false,
+        onApprove: () => {},
+      }),
+    );
+    assert(approvalMarkup.includes("deployment"), "approval list renders risk");
+    assert(approvalMarkup.includes(`pending · ${goalId}`), "approval list renders goal-scoped pending state");
+    assert(approvalMarkup.includes(">Approve<"), "approval list renders approval command");
+    assert(!approvalMarkup.includes("disabled=\"\""), "approval command is enabled when approval and goal ids exist");
+
+    const disabledApprovalMarkup = renderToStaticMarkup(
+      React.createElement(ApprovalList, {
+        rows: [{ approval_id: "", status: "pending", risk: "unknown gate" }],
+        selectedGoalId: "",
+        busy: false,
+        onApprove: () => {},
+      }),
+    );
+    assert(disabledApprovalMarkup.includes("disabled=\"\""), "approval command is disabled without a goal id");
+
+    const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { overview }));
+    for (const expected of [
+      "model-provider / work (codex-runner-a)",
+      "local-dev-a",
+      "active",
+      "2/3 free, 1 running",
+      "http://runner-a.example:9093",
+    ]) {
+      assert(runnersMarkup.includes(expected), `runner fleet markup includes ${expected}`);
+    }
+    const runnerRow = runnerTableRow(runnerRows[0]);
+    assertEqual(runnerRow[0], "model-provider / work (codex-runner-a)", "runner row derives display name from labels");
+    assertEqual(runnerRow[3], "2/3 free, 1 running", "runner row derives remaining capacity");
+
+    const eventsMarkup = renderToStaticMarkup(
+      React.createElement(MemoryEventsTable, {
+        selectedGoalId: goalId,
+        value: {
+          events: [
+            {
+              action: "edit",
+              key: "mem-replacement",
+              scope: "goal",
+              summary: "operator replaced stale memory after preview",
+            },
+          ],
+        },
+        loading: false,
+      }),
+    );
+    for (const expected of ["edit", "mem-replacement", "goal", "operator replaced stale memory after preview"]) {
+      assert(eventsMarkup.includes(expected), `memory events markup includes ${expected}`);
+    }
+
+    const sourceMarkup = renderToStaticMarkup(React.createElement(EventSourcesPanel, { rows: eventSources }));
+    assert(sourceMarkup.includes("github-pr-webhook · webhook"), "event source panel renders source identity");
+    assert(sourceMarkup.includes("pending · approval-source-github"), "event source panel renders activation approval");
+    const sourceRow = eventSourceTableRow(eventSources[0]);
+    assertEqual(sourceRow[0], "github-pr-webhook · webhook", "event source row derives source label");
+    assertEqual(sourceRow[1], "enabled", "event source row derives enabled state");
+    assertEqual(sourceRow[2], "pending · approval-source-github", "event source row derives approval state");
   } finally {
     await viteServer.close();
   }

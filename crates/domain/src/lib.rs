@@ -11144,25 +11144,20 @@ impl ValidationReport {
         if req.task.done_criteria.artifact_exists && !artifact_exists {
             missing_criteria.push("artifact_exists".to_string());
         }
-        if req.task.execution.results.checkpoints.enabled
-            && req
-                .task
-                .execution
-                .results
-                .checkpoints
-                .require_for_code_changes
-            && req.task.purpose.is_work_like()
-            && matches!(
-                req.task.role,
-                WorkerKind::Codex
-                    | WorkerKind::ClaudeCode
-                    | WorkerKind::StaffEngineerClaude
-                    | WorkerKind::ModelProvider
-                    | WorkerKind::RustTool
-            )
-            && req.result.checkpoints.is_empty()
-        {
-            missing_criteria.push("checkpoint_required".to_string());
+        if code_task_requires_checkpoint(&req.task) {
+            if req.result.checkpoints.is_empty() {
+                missing_criteria.push("checkpoint_required".to_string());
+            } else if req.task.execution.results.git.enabled
+                && req
+                    .task
+                    .execution
+                    .results
+                    .checkpoints
+                    .git_checkpoint_on_result
+                && !result_has_git_checkpoint(&req.result)
+            {
+                missing_criteria.push("git_checkpoint_required".to_string());
+            }
         }
         if req.task.done_criteria.tests_pass
             && (req.task.purpose.is_work_like() || req.task.role == WorkerKind::Tester)
@@ -11185,6 +11180,7 @@ impl ValidationReport {
                 missing_criteria.push("validator_score_min".to_string());
             }
         }
+        collect_stub_truthfulness_missing(&req.task, &req.result, &mut missing_criteria);
         if req.task.purpose.is_research() {
             match &research {
                 Some(research) => {
@@ -11311,6 +11307,167 @@ impl ValidationReport {
             test_evidence: req.result.test_evidence,
         }
     }
+}
+
+fn collect_stub_truthfulness_missing(
+    task: &TaskNode,
+    result: &AgentRunResult,
+    missing_criteria: &mut Vec<String>,
+) {
+    if !task_requires_non_stub_execution(task) {
+        return;
+    }
+
+    if task.purpose.is_work_like() && result_has_stub_marker(result) {
+        push_unique(missing_criteria, "stub_actor_output".to_string());
+    }
+    if task.purpose.is_research()
+        && (result_has_stub_marker(result)
+            || result
+                .research
+                .as_ref()
+                .is_some_and(research_output_has_stub_marker))
+    {
+        push_unique(missing_criteria, "stub_research_output".to_string());
+    }
+    if (task.purpose.is_review() || task.purpose.is_unification())
+        && (result_has_stub_marker(result)
+            || result
+                .review
+                .as_ref()
+                .is_some_and(review_output_has_stub_marker))
+    {
+        push_unique(missing_criteria, "stub_review_output".to_string());
+    }
+}
+
+fn code_task_requires_checkpoint(task: &TaskNode) -> bool {
+    task.execution.results.checkpoints.enabled
+        && task.execution.results.checkpoints.require_for_code_changes
+        && task.purpose.is_work_like()
+        && matches!(
+            task.role,
+            WorkerKind::Codex
+                | WorkerKind::ClaudeCode
+                | WorkerKind::StaffEngineerClaude
+                | WorkerKind::ModelProvider
+                | WorkerKind::RustTool
+        )
+}
+
+fn result_has_git_checkpoint(result: &AgentRunResult) -> bool {
+    result.checkpoints.iter().any(|checkpoint| {
+        matches!(
+            checkpoint.kind,
+            CheckpointKind::GitBranch | CheckpointKind::GitCommit | CheckpointKind::GitTag
+        ) && checkpoint
+            .git_result
+            .as_ref()
+            .is_some_and(|git| !git.branch.trim().is_empty())
+    })
+}
+
+fn task_requires_non_stub_execution(task: &TaskNode) -> bool {
+    task.execution
+        .runner
+        .required_labels
+        .iter()
+        .any(|(key, value)| non_stub_runner_label(key, value))
+}
+
+fn non_stub_runner_label(key: &str, value: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    let value = value.trim().to_ascii_lowercase();
+    matches!(
+        (key.as_str(), value.as_str()),
+        ("mode", "live")
+            | ("mode", "real")
+            | ("mode", "production")
+            | ("runner.mode", "live")
+            | ("runner.mode", "real")
+            | ("runner.mode", "production")
+            | ("execution.mode", "live")
+            | ("execution.mode", "real")
+            | ("execution.mode", "production")
+            | ("stub", "false")
+            | ("allow_stub", "false")
+            | ("allow_stub_runners", "false")
+    )
+}
+
+fn result_has_stub_marker(result: &AgentRunResult) -> bool {
+    result.runner_id.as_deref().is_some_and(is_stubish_text)
+        || is_stubish_text(&result.summary)
+        || result.diagnostics.iter().any(|line| {
+            let normalized = line.trim().to_ascii_lowercase();
+            normalized == "mode=stub" || normalized == "runner_mode=stub" || is_stubish_text(line)
+        })
+        || result.artifacts.iter().any(|artifact| {
+            artifact.uri.starts_with("memory://task/")
+                || is_stubish_text(&artifact.description)
+                || is_stubish_text(&artifact.uri)
+        })
+        || result.checkpoints.iter().any(|checkpoint| {
+            is_stubish_text(&checkpoint.label) || is_stubish_text(&checkpoint.summary)
+        })
+        || result
+            .test_evidence
+            .iter()
+            .any(test_evidence_has_stub_marker)
+}
+
+fn test_evidence_has_stub_marker(evidence: &TestCommandEvidence) -> bool {
+    is_stubish_text(&evidence.command)
+        || evidence.notes.iter().any(|note| is_stubish_text(note))
+        || evidence
+            .artifact_uri
+            .as_deref()
+            .is_some_and(is_stubish_text)
+}
+
+fn research_output_has_stub_marker(research: &ResearchOutput) -> bool {
+    is_stubish_text(&research.answer)
+        || research.sources.iter().any(|source| {
+            is_stubish_text(&source.title)
+                || is_stubish_text(&source.uri)
+                || is_stubish_text(&source.summary)
+        })
+        || research
+            .use_plan
+            .facts_to_use
+            .iter()
+            .chain(research.use_plan.facts_to_avoid.iter())
+            .chain(research.use_plan.validation_checks.iter())
+            .any(|text| is_stubish_text(text))
+}
+
+fn review_output_has_stub_marker(review: &ReviewOutput) -> bool {
+    review
+        .unification_summary
+        .as_deref()
+        .is_some_and(is_stubish_text)
+        || review.objective_results.iter().any(|result| {
+            result.evidence.iter().any(|text| is_stubish_text(text))
+                || result.notes.iter().any(|text| is_stubish_text(text))
+        })
+        || review.gate_results.iter().any(|result| {
+            result.evidence.iter().any(|text| is_stubish_text(text))
+                || result.notes.iter().any(|text| is_stubish_text(text))
+        })
+}
+
+fn is_stubish_text(text: &str) -> bool {
+    let normalized = text.trim().to_ascii_lowercase();
+    normalized == "stub"
+        || normalized == "stub-runner"
+        || normalized.starts_with("stub ")
+        || normalized.starts_with("stub-")
+        || normalized.contains(" placeholder")
+        || normalized.contains("placeholder ")
+        || normalized.contains("contract smoke")
+        || normalized.contains("/stub")
+        || normalized.contains("stub/")
+        || normalized.contains("://stub")
 }
 
 fn branch_candidate_ids(purpose: &TaskPurpose) -> Option<&[TaskId]> {
@@ -12538,6 +12695,26 @@ pub enum DomainError {
 mod tests {
     use super::*;
 
+    #[derive(Debug, serde::Deserialize)]
+    struct ReviewerValidatorFixture {
+        source_worker_fixture: String,
+        accepted_worker_result: AgentRunResult,
+        reviewer_result: AgentRunResult,
+        expected: ReviewerValidatorFixtureExpected,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ReviewerValidatorFixtureExpected {
+        source_thread_id: String,
+        source_turn_id: String,
+        actor_checkpoint_branch: String,
+        reviewer_checkpoint_branch: String,
+        required_command: String,
+        review_decision: ReviewDecision,
+        min_validator_score: f32,
+        required_child_role: WorkerKind,
+    }
+
     fn git_branch_checkpoint(task: &TaskNode, suffix: &str, label: &str) -> CheckpointRef {
         CheckpointRef::from_git_result(
             task,
@@ -12558,6 +12735,31 @@ mod tests {
             label,
             format!("checkpoint branch for {label}"),
         )
+    }
+
+    fn live_replay_reviewer_fixture() -> ReviewerValidatorFixture {
+        serde_json::from_str(include_str!(
+            "../../../examples/reviewer-fixtures/live-replay-worker-fixture.json"
+        ))
+        .expect("live replay reviewer fixture parses")
+    }
+
+    fn rebind_result_to_task(mut result: AgentRunResult, task: &TaskNode) -> AgentRunResult {
+        result.task_id = task.id;
+        for checkpoint in &mut result.checkpoints {
+            checkpoint.goal_id = task.goal_id;
+            checkpoint.task_id = task.id;
+        }
+        result
+    }
+
+    fn checkpoint_branches(result: &AgentRunResult) -> Vec<&str> {
+        result
+            .checkpoints
+            .iter()
+            .filter_map(|checkpoint| checkpoint.git_result.as_ref())
+            .map(|git| git.branch.as_str())
+            .collect()
     }
 
     #[test]
@@ -12983,6 +13185,98 @@ mod tests {
         });
         assert!(!report.passed);
         assert_eq!(report.status_after_validation, TaskStatus::Runnable);
+    }
+
+    #[test]
+    fn non_stub_actor_task_rejects_stub_worker_result() {
+        let mut goal = GoalSpec::new(
+            "live actor",
+            "complete actor work with a live runner instead of placeholder output",
+        );
+        goal.review_policy.enabled = false;
+        goal.default_execution
+            .runner
+            .required_labels
+            .insert("runner.mode".to_string(), "live".to_string());
+        let mut state = GoalState::new(goal);
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult::stub_done(&task);
+        state
+            .apply_agent_result(result.clone(), &SpawnPolicy::default())
+            .expect("agent result");
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result,
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"stub_actor_output".to_string())
+        );
+        state.apply_validation(report).expect("validation applies");
+        assert!(!state.satisfaction_report().satisfied);
+    }
+
+    #[test]
+    fn non_stub_research_task_rejects_placeholder_research_output() {
+        let state = GoalState::new(GoalSpec::new(
+            "live research",
+            "answer research with sourced live evidence instead of placeholders",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        task.execution
+            .runner
+            .required_labels
+            .insert("runner.mode".to_string(), "live".to_string());
+        task.role = WorkerKind::Research;
+        task.purpose = TaskPurpose::Research {
+            question: "which current integration should be used?".to_string(),
+        };
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result: AgentRunResult::stub_done(&task),
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"stub_research_output".to_string())
+        );
+    }
+
+    #[test]
+    fn non_stub_review_task_rejects_placeholder_review_output() {
+        let state = GoalState::new(GoalSpec::new(
+            "live review",
+            "review actor evidence with a live critic instead of placeholders",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        task.execution
+            .runner
+            .required_labels
+            .insert("runner.mode".to_string(), "live".to_string());
+        task.role = WorkerKind::Reviewer;
+        task.purpose = TaskPurpose::Review {
+            subject_id: task.id,
+            round: 1,
+        };
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task: task.clone(),
+            result: AgentRunResult::stub_done(&task),
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"stub_review_output".to_string())
+        );
     }
 
     #[test]
@@ -15877,6 +16171,255 @@ mod tests {
     }
 
     #[test]
+    fn live_replay_worker_fixture_feeds_reviewer_and_validator_checkpoint_evidence() {
+        let fixture = live_replay_reviewer_fixture();
+        let source: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../examples/codex-app-server-replay.json"
+        ))
+        .expect("source replay fixture parses");
+        assert_eq!(
+            source
+                .pointer("/expected/thread_id")
+                .and_then(serde_json::Value::as_str),
+            Some(fixture.expected.source_thread_id.as_str())
+        );
+        assert_eq!(
+            source
+                .pointer("/expected/turn_id")
+                .and_then(serde_json::Value::as_str),
+            Some(fixture.expected.source_turn_id.as_str())
+        );
+        assert_eq!(
+            source
+                .pointer("/expected/command")
+                .and_then(serde_json::Value::as_str),
+            Some(fixture.expected.required_command.as_str())
+        );
+        assert_eq!(
+            fixture.source_worker_fixture,
+            "examples/codex-app-server-replay.json"
+        );
+        assert!(fixture.accepted_worker_result.test_evidence.iter().any(
+            |evidence| evidence.command == fixture.expected.required_command && evidence.passed
+        ));
+        assert!(
+            fixture
+                .accepted_worker_result
+                .child_requests
+                .iter()
+                .any(|request| request.role == fixture.expected.required_child_role)
+        );
+        assert_eq!(
+            checkpoint_branches(&fixture.accepted_worker_result),
+            vec![fixture.expected.actor_checkpoint_branch.as_str()]
+        );
+        assert_eq!(
+            checkpoint_branches(&fixture.reviewer_result),
+            vec![fixture.expected.reviewer_checkpoint_branch.as_str()]
+        );
+        assert!(
+            fixture
+                .accepted_worker_result
+                .checkpoints
+                .iter()
+                .all(|checkpoint| checkpoint.kind == CheckpointKind::GitBranch
+                    && checkpoint
+                        .git_result
+                        .as_ref()
+                        .is_some_and(|git| git.worktree_path.is_some() && git.diff_uri.is_some()))
+        );
+
+        let mut goal = GoalSpec::new(
+            "live replay reviewer fixture",
+            "accept replayed Codex worker output only with reviewable command and checkpoint branch evidence",
+        );
+        goal.default_execution
+            .runner
+            .required_labels
+            .insert("runner.mode".to_string(), "live".to_string());
+        goal.default_execution.runner.worker = Some(WorkerKind::Codex);
+        goal.default_execution.results.git.enabled = true;
+        goal.default_execution
+            .results
+            .checkpoints
+            .require_for_code_changes = true;
+        goal.review_policy.require_unification = false;
+        goal.review_policy.max_review_rounds = 1;
+
+        let mut state = GoalState::new(goal);
+        let root_id = state.runnable_tasks().remove(0).id;
+        {
+            let root = state.task_mut(root_id).expect("root task");
+            root.role = WorkerKind::Codex;
+            root.execution.runner.worker = Some(WorkerKind::Codex);
+            root.purpose = TaskPurpose::Work;
+        }
+        let actor_task = state.task(root_id).expect("actor task").clone();
+        let actor_result =
+            rebind_result_to_task(fixture.accepted_worker_result.clone(), &actor_task);
+
+        let mut metadata_only_result = actor_result.clone();
+        metadata_only_result.checkpoints[0].kind = CheckpointKind::Metadata;
+        metadata_only_result.checkpoints[0].git_result = None;
+        let metadata_only_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: actor_task.goal_id,
+            task: actor_task.clone(),
+            result: metadata_only_result,
+        });
+        assert!(!metadata_only_report.passed);
+        assert!(
+            metadata_only_report
+                .missing_criteria
+                .contains(&"git_checkpoint_required".to_string()),
+            "{:?}",
+            metadata_only_report.missing_criteria
+        );
+
+        state
+            .apply_agent_result(actor_result.clone(), &SpawnPolicy::default())
+            .expect("actor result applies");
+        let actor_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: actor_task.goal_id,
+            task: actor_task.clone(),
+            result: actor_result,
+        });
+        assert!(actor_report.passed, "{:?}", actor_report.missing_criteria);
+        assert!(
+            !actor_report
+                .missing_criteria
+                .contains(&"stub_actor_output".to_string())
+        );
+        assert!(actor_report.checkpoints.iter().any(|checkpoint| {
+            checkpoint
+                .git_result
+                .as_ref()
+                .is_some_and(|git| git.branch == fixture.expected.actor_checkpoint_branch)
+        }));
+        state
+            .apply_validation(actor_report)
+            .expect("actor validation applies");
+
+        let tester_task = state
+            .tasks
+            .values()
+            .find(|task| task.parent_id == Some(root_id) && task.role == WorkerKind::Tester)
+            .cloned()
+            .expect("tester child request became a durable task");
+        let tester_result = AgentRunResult {
+            task_id: tester_task.id,
+            status: WorkerRunStatus::Done,
+            summary:
+                "Replay tester verified Codex App Server command and checkpoint branch evidence."
+                    .to_string(),
+            review: None,
+            research: None,
+            branch_vote: None,
+            runner_id: Some("tester-replay".to_string()),
+            model_used: None,
+            mcp_context_used: None,
+            sandbox_attestation: None,
+            artifacts: vec![ArtifactRef {
+                kind: ArtifactKind::TestResult,
+                uri: "artifact://reviewer-fixtures/live-replay-worker-fixture/tester-result.json"
+                    .to_string(),
+                description: "Tester replay result for accepted live worker output".to_string(),
+                sha256: None,
+            }],
+            git_result: None,
+            object_artifacts: Vec::new(),
+            checkpoints: Vec::new(),
+            test_evidence: fixture.accepted_worker_result.test_evidence.clone(),
+            child_requests: Vec::new(),
+            confidence: 0.93,
+            next_actions: Vec::new(),
+            diagnostics: vec!["mode=replay".to_string()],
+            notification_reports: Vec::new(),
+        };
+        state
+            .apply_agent_result(tester_result.clone(), &SpawnPolicy::default())
+            .expect("tester result applies");
+        let tester_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: tester_task.goal_id,
+            task: tester_task,
+            result: tester_result,
+        });
+        assert!(tester_report.passed, "{:?}", tester_report.missing_criteria);
+        assert!(
+            !tester_report
+                .missing_criteria
+                .contains(&"stub_actor_output".to_string())
+        );
+        state
+            .apply_validation(tester_report)
+            .expect("tester validation applies");
+
+        assert!(
+            state
+                .ensure_review_frontier(&SpawnPolicy::default())
+                .expect("review frontier"),
+            "accepted actor result should spawn a reviewer"
+        );
+        let review_task = state
+            .tasks
+            .values()
+            .find(|task| task.purpose.is_review())
+            .cloned()
+            .expect("review task");
+        let review_result = rebind_result_to_task(fixture.reviewer_result.clone(), &review_task);
+        assert_eq!(
+            review_result.review.as_ref().map(|review| &review.decision),
+            Some(&fixture.expected.review_decision)
+        );
+
+        state
+            .apply_agent_result(review_result.clone(), &SpawnPolicy::default())
+            .expect("reviewer result applies");
+        let review_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: review_task.goal_id,
+            task: review_task.clone(),
+            result: review_result,
+        });
+        assert!(review_report.passed, "{:?}", review_report.missing_criteria);
+        assert!(review_report.score >= fixture.expected.min_validator_score);
+        assert!(
+            !review_report
+                .missing_criteria
+                .contains(&"stub_review_output".to_string())
+        );
+        assert!(review_report.checkpoints.iter().any(|checkpoint| {
+            checkpoint
+                .git_result
+                .as_ref()
+                .is_some_and(|git| git.branch == fixture.expected.reviewer_checkpoint_branch)
+        }));
+        state
+            .apply_validation(review_report)
+            .expect("review validation applies");
+        state
+            .ensure_review_frontier(&SpawnPolicy::default())
+            .expect("review round joins without unifier");
+
+        let snapshot = GoalStoreSnapshot::from_state(&state);
+        for branch in [
+            fixture.expected.actor_checkpoint_branch,
+            fixture.expected.reviewer_checkpoint_branch,
+        ] {
+            assert!(snapshot.artifacts.iter().any(|record| {
+                record
+                    .git_result
+                    .as_ref()
+                    .is_some_and(|git| git.branch == branch && git.worktree_path.is_some())
+            }));
+        }
+        assert!(
+            state
+                .review_rounds
+                .iter()
+                .any(|round| round.status == ReviewRoundStatus::Unified)
+        );
+    }
+
+    #[test]
     fn doctrine_coverage_fixture_is_behavioral_and_not_presence_only() {
         let mut goal = GoalSpec::new(
             "doctrine fixture",
@@ -16027,6 +16570,7 @@ mod tests {
             "../../../examples/review-output-doctrine-coverage.json"
         ))
         .expect("review doctrine coverage fixture parses");
+        live_replay_reviewer_fixture();
         serde_json::from_str::<SteeringDirective>(include_str!(
             "../../../examples/steering-request-research.json"
         ))

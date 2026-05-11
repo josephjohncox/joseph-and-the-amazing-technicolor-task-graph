@@ -12,7 +12,8 @@
  */
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 type WorkerKind =
   | "planner"
@@ -60,6 +61,7 @@ type RunnerCapability =
 
 type ModelProviderKind =
   | "codex"
+  | "claude_code"
   | "open_ai"
   | "open_ai_compatible"
   | "bedrock"
@@ -145,6 +147,19 @@ type AgentRunRequest = {
       subagents?: unknown;
       results?: unknown;
     };
+    sandbox?: {
+      filesystem?: string;
+      network?: string;
+      approval_policy?: string;
+      isolated_runner?: boolean;
+      [key: string]: unknown;
+    };
+    done_criteria?: {
+      tests_pass?: boolean;
+      artifact_exists?: boolean;
+      validator_score_min?: number | null;
+      [key: string]: unknown;
+    };
   };
   timeout_seconds?: number | null;
 };
@@ -159,6 +174,7 @@ type AgentRunResult = {
   runner_id: string | null;
   model_used: unknown | null;
   mcp_context_used: unknown | null;
+  sandbox_attestation: unknown | null;
   artifacts: Array<{ kind: string; uri: string; description: string; sha256?: string | null }>;
   git_result: unknown | null;
   object_artifacts: unknown[];
@@ -276,8 +292,59 @@ type MemoryContextResponse = {
   }>;
 };
 
+type RunnerMode = "stub" | "live" | "replay" | "mcp-replay" | "mcp-healthcheck";
+
+type JsonRpcMessage = Record<string, unknown>;
+
+type AppServerRunTrace = {
+  source: "live" | "replay";
+  app_server_url: string | null;
+  thread: Record<string, unknown>;
+  turn: Record<string, unknown>;
+  events: JsonRpcMessage[];
+  server_requests: JsonRpcMessage[];
+  approval_reports: Record<string, unknown>[];
+  final_response: string;
+  items: Record<string, unknown>[];
+  usage: unknown | null;
+  diagnostics: string[];
+};
+
+type McpFallbackRunTrace = {
+  source: "replay";
+  server: Record<string, unknown>;
+  tool_calls: Record<string, unknown>[];
+  final_response: string;
+  usage: unknown | null;
+  diagnostics: string[];
+};
+
+type ProviderVerificationLane = {
+  lane_id: string;
+  provider: string;
+  surface: string;
+  model: string | null;
+  endpoint: string | null;
+  source: string;
+};
+
+type ProviderVerificationProfile = ProviderVerificationLane & {
+  status: "verified" | "skipped" | "failed";
+  attempted: boolean;
+  available: boolean | null;
+  configured: boolean;
+  skipped_reason: string | null;
+  error: string | null;
+  auth: Record<string, unknown>;
+  checks: Array<Record<string, unknown>>;
+  secret_values_exposed: false;
+};
+
+type AgentResultPatch = Partial<
+  Pick<AgentRunResult, "status" | "summary" | "review" | "research" | "branch_vote" | "test_evidence" | "child_requests" | "confidence" | "next_actions">
+>;
+
 const port = Number(process.env.PORT ?? "9091");
-const mode = process.env.CODEX_RUNNER_MODE ?? "stub";
 const runnerId = process.env.RUNNER_ID ?? "codex-runner-ts";
 const nodeId = process.env.NODE_ID ?? process.env.HOSTNAME ?? "local-node";
 const registryUrl = process.env.RUNNER_REGISTRY_URL ?? process.env.COAT_RUNNER_REGISTRY_URL ?? "";
@@ -297,10 +364,21 @@ const durableSubagentContext = [
   "The coordinator validates budgets, approval policy, routing, memory context, and sandbox policy before dispatch.",
 ];
 
+function runnerMode(): RunnerMode {
+  const raw = (process.env.CODEX_RUNNER_MODE ?? "stub").trim().toLowerCase();
+  if (raw === "live" || raw === "app-server" || raw === "app_server") return "live";
+  if (raw === "replay" || raw === "fixture") return "replay";
+  if (raw === "mcp-replay" || raw === "mcp_replay" || raw === "mcp-fallback-replay" || raw === "mcp_fallback_replay") {
+    return "mcp-replay";
+  }
+  if (raw === "mcp-healthcheck") return "mcp-healthcheck";
+  return "stub";
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/healthz") {
-      return json(res, 200, { status: "ok", mode, runner_id: runnerId });
+      return json(res, 200, { status: "ok", mode: runnerMode(), runner_id: runnerId });
     }
     if (req.method === "GET" && req.url === "/registration") {
       return json(res, 200, buildRegistration());
@@ -321,17 +399,22 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`codex-runner-ts listening on :${port} (${mode})`);
-  void registerAndHeartbeat();
-});
+if (isMainModule()) {
+  server.listen(port, () => {
+    console.log(`codex-runner-ts listening on :${port} (${runnerMode()})`);
+    void registerAndHeartbeat();
+  });
+}
 
-async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
+export async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
   runningTasks += 1;
   try {
-    if (mode === "mcp-healthcheck") {
-      await ensureCodexMcpStarts();
-    }
+    const mode = runnerMode();
+    if (mode === "live") return await runLiveAppServerTask(request);
+    if (mode === "replay") return runReplayTask(request);
+    if (mode === "mcp-replay") return runMcpReplayTask(request);
+    if (mode === "mcp-healthcheck") return await runMcpHealthcheckTask(request);
+
     let memoryContextError: string | null = null;
     const memoryContext = await fetchMemoryContext(request).catch((error) => {
       memoryContextError = error instanceof Error ? error.message : String(error);
@@ -352,6 +435,7 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
       runner_id: runnerId,
       model_used: request.task.execution?.model?.candidates?.[0] ?? null,
       mcp_context_used: request.task.execution?.mcp ?? null,
+      sandbox_attestation: sandboxAttestation(request, false, false, "stub"),
       artifacts: [
         {
           kind: "report",
@@ -383,6 +467,182 @@ async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
   } finally {
     runningTasks -= 1;
   }
+}
+
+async function runLiveAppServerTask(request: AgentRunRequest): Promise<AgentRunResult> {
+  const gateFailures = appServerLiveGateFailures(request);
+  if (gateFailures.length > 0) {
+    return blockedResult(request, "Codex App Server live execution is not enabled for this task", [
+      "mode=live",
+      "app_server_live_gate=blocked",
+      ...gateFailures.map((failure) => `app_server_live_gate_failure=${failure}`),
+    ]);
+  }
+
+  let memoryContextError: string | null = null;
+  const memoryContext = await fetchMemoryContext(request).catch((error) => {
+    memoryContextError = error instanceof Error ? error.message : String(error);
+    return null;
+  });
+
+  try {
+    const trace = await runCodexAppServerTurn(request, memoryContext);
+    return buildCodexAppServerResult(request, trace, memoryContext, memoryContextError);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return failedResult(request, "Codex App Server live execution failed before producing a valid result", [
+      "mode=live",
+      "app_server_live_gate=passed",
+      `app_server_error=${message}`,
+      ...memoryContextDiagnostics(memoryContext, memoryContextError),
+    ]);
+  }
+}
+
+function runReplayTask(request: AgentRunRequest): AgentRunResult {
+  const trace = traceFromReplayFixture(loadReplayFixture());
+  return buildCodexAppServerResult(request, trace, null, null);
+}
+
+function runMcpReplayTask(request: AgentRunRequest): AgentRunResult {
+  const trace = traceFromMcpReplayFixture(loadMcpReplayFixture());
+  return buildCodexMcpFallbackResult(request, trace);
+}
+
+async function runMcpHealthcheckTask(request: AgentRunRequest): Promise<AgentRunResult> {
+  try {
+    await ensureCodexMcpStarts();
+    return {
+      task_id: request.task.id,
+      status: "done",
+      summary: `Codex MCP healthcheck completed for task ${request.task.id}`,
+      review: null,
+      research: null,
+      branch_vote: null,
+      runner_id: runnerId,
+      model_used: request.task.execution?.model?.candidates?.[0] ?? null,
+      mcp_context_used: request.task.execution?.mcp ?? null,
+      sandbox_attestation: sandboxAttestation(request, false, false, "codex_mcp_healthcheck"),
+      artifacts: [
+        {
+          kind: "report",
+          uri: `codex-mcp://healthcheck/${request.task.id}`,
+          description: "Codex MCP server startup healthcheck result",
+          sha256: null,
+        },
+      ],
+      git_result: null,
+      object_artifacts: [],
+      checkpoints: buildCheckpoints(request, null, [], {
+        source: "live",
+        app_server_url: null,
+        thread: {},
+        turn: { id: `mcp-healthcheck-${request.task.id}`, status: "completed" },
+        events: [],
+        server_requests: [],
+        approval_reports: [],
+        final_response: "",
+        items: [],
+        usage: null,
+        diagnostics: ["codex_mcp_server=available"],
+      }),
+      test_evidence: [
+        {
+          command: "codex mcp-server",
+          exit_code: 0,
+          passed: true,
+          duration_ms: 1000,
+          stdout_uri: null,
+          stderr_uri: null,
+          artifact_uri: `codex-mcp://healthcheck/${request.task.id}`,
+          notes: ["The Codex MCP server process started and stayed alive until the healthcheck timeout."],
+        },
+      ],
+      child_requests: [],
+      confidence: 0.8,
+      next_actions: [],
+      diagnostics: ["mode=mcp-healthcheck", "codex_mcp_server=available"],
+      notification_reports: [],
+    };
+  } catch (error) {
+    return failedResult(request, "Codex MCP healthcheck failed", [
+      "mode=mcp-healthcheck",
+      `codex_mcp_error=${error instanceof Error ? error.message : String(error)}`,
+    ]);
+  }
+}
+
+function appServerLiveGateFailures(request: AgentRunRequest): string[] {
+  const failures: string[] = [];
+  const authMode = (process.env.CODEX_AUTH_MODE ?? "env_api_key").trim().toLowerCase();
+  const appServerUrl = process.env.CODEX_APP_SERVER_URL?.trim() ?? "";
+  const cwd = liveWorkingDirectory(request);
+
+  if (authMode !== "app_server") {
+    failures.push("CODEX_AUTH_MODE must be app_server for Codex App Server live mode");
+  }
+  if (!appServerUrl) {
+    failures.push("CODEX_APP_SERVER_URL is required");
+  } else if (!normalizeAppServerWebSocketUrl(appServerUrl)) {
+    failures.push("CODEX_APP_SERVER_URL must use ws://, wss://, http://, or https:// for this runner slice");
+  }
+  if (request.task.sandbox?.isolated_runner !== true && !truthyEnv("CODEX_ALLOW_NON_ISOLATED_LIVE")) {
+    failures.push("task.sandbox.isolated_runner must be true for live Codex execution");
+  }
+  if (!cwd) {
+    failures.push("CODEX_APP_SERVER_CWD, CODEX_WORKSPACE_DIR, or an existing task git worktree is required");
+  } else if (!existsSync(cwd)) {
+    failures.push(`live workspace does not exist: ${cwd}`);
+  }
+  return failures;
+}
+
+function blockedResult(request: AgentRunRequest, summary: string, diagnostics: string[]): AgentRunResult {
+  return baseNonStubResult(request, "blocked", summary, diagnostics, 0.05);
+}
+
+function failedResult(request: AgentRunRequest, summary: string, diagnostics: string[]): AgentRunResult {
+  return baseNonStubResult(request, "failed", summary, diagnostics, 0.05);
+}
+
+function baseNonStubResult(
+  request: AgentRunRequest,
+  status: AgentRunResult["status"],
+  summary: string,
+  diagnostics: string[],
+  confidence: number,
+): AgentRunResult {
+  return {
+    task_id: request.task.id,
+    status,
+    summary,
+    review: null,
+    research: null,
+    branch_vote: null,
+    runner_id: runnerId,
+    model_used: request.task.execution?.model?.candidates?.[0] ?? null,
+    mcp_context_used: request.task.execution?.mcp ?? null,
+    sandbox_attestation: sandboxAttestation(request, false, false, "declared"),
+    artifacts: [
+      {
+        kind: "report",
+        uri: `codex-runner://${request.goal_id}/${request.task.id}/gate`,
+        description: "Codex runner gate report",
+        sha256: null,
+      },
+    ],
+    git_result: null,
+    object_artifacts: [],
+    checkpoints: [],
+    test_evidence: [],
+    child_requests: [],
+    confidence,
+    next_actions: diagnostics
+      .filter((line) => line.includes("_failure="))
+      .map((line) => line.slice(line.indexOf("=") + 1)),
+    diagnostics,
+    notification_reports: [],
+  };
 }
 
 function testEvidence(request: AgentRunRequest): TestCommandEvidence[] {
@@ -582,6 +842,435 @@ function researchOutput(request: AgentRunRequest, memoryContext: MemoryContextRe
   };
 }
 
+async function runCodexAppServerTurn(
+  request: AgentRunRequest,
+  memoryContext: MemoryContextResponse | null,
+): Promise<AppServerRunTrace> {
+  const appServerUrl = process.env.CODEX_APP_SERVER_URL?.trim() ?? "";
+  const websocketUrl = normalizeAppServerWebSocketUrl(appServerUrl);
+  if (!websocketUrl) throw new Error("unsupported CODEX_APP_SERVER_URL");
+
+  const timeoutMs = Math.max(1, request.timeout_seconds ?? numberEnv("CODEX_APP_SERVER_TIMEOUT_SECONDS", 600)) * 1000;
+  const client = new AppServerJsonRpcClient(websocketUrl, timeoutMs, appServerApprovalResult);
+  await client.connect();
+  try {
+    const initialize = await client.request("initialize", {
+      clientInfo: {
+        name: "coat_codex_runner",
+        title: "COAT Codex Runner",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: false,
+        optOutNotificationMethods: ["item/agentMessage/delta"],
+      },
+    });
+    client.notify("initialized", {});
+
+    const existingThreadId = requestedCodexThreadId(request);
+    const threadParams = appServerThreadParams(request);
+    const threadResponse = existingThreadId
+      ? await client.request("thread/resume", { ...threadParams, threadId: existingThreadId, excludeTurns: true })
+      : await client.request("thread/start", threadParams);
+    const thread = responseRecord(threadResponse, "thread");
+    const threadId = stringValue(thread.id) ?? existingThreadId;
+    if (!threadId) throw new Error("Codex App Server did not return a thread id");
+
+    const turnResponse = await client.request("turn/start", {
+      threadId,
+      input: [{ type: "text", text: codexAppServerPrompt(request, memoryContext) }],
+      ...appServerTurnParams(request),
+      outputSchema: agentRunResultOutputSchema(),
+    });
+    const startedTurn = responseRecord(turnResponse, "turn");
+    const turnId = stringValue(startedTurn.id);
+    if (!turnId) throw new Error("Codex App Server did not return a turn id");
+
+    const completed = await client.waitFor((message) => {
+      if (message.method !== "turn/completed") return false;
+      const params = isRecord(message.params) ? message.params : {};
+      const completedTurn = isRecord(params.turn) ? params.turn : params;
+      return stringValue(completedTurn.id) === turnId || stringValue(params.turnId) === turnId;
+    });
+    const completedParams = isRecord(completed.params) ? completed.params : {};
+    const completedTurn = isRecord(completedParams.turn) ? completedParams.turn : startedTurn;
+    const items = completedItems(client.messages);
+    const finalResponse = finalAgentMessage(items);
+
+    return {
+      source: "live",
+      app_server_url: redactUrl(websocketUrl),
+      thread,
+      turn: { ...startedTurn, ...completedTurn },
+      events: client.messages,
+      server_requests: client.serverRequests,
+      approval_reports: client.approvalReports,
+      final_response: finalResponse,
+      items,
+      usage: completedParams.usage ?? null,
+      diagnostics: [
+        `app_server_initialize=${isRecord(initialize) ? "ok" : "unknown"}`,
+        `app_server_thread_id=${threadId}`,
+        `app_server_turn_id=${turnId}`,
+        `app_server_items=${items.length}`,
+        `app_server_server_requests=${client.serverRequests.length}`,
+        `app_server_approvals=${client.approvalReports.length}`,
+      ],
+    };
+  } finally {
+    client.close();
+  }
+}
+
+function buildCodexAppServerResult(
+  request: AgentRunRequest,
+  trace: AppServerRunTrace,
+  memoryContext: MemoryContextResponse | null,
+  memoryContextError: string | null,
+): AgentRunResult {
+  const resultPatch = parseAgentResultPatch(trace.final_response);
+  const gitResult = buildGitResultFromTrace(request, trace);
+  const objectArtifacts = buildObjectArtifactsFromTrace(request, trace);
+  const checkpoints = buildCheckpoints(request, gitResult, objectArtifacts, trace);
+  const patchStatus = normalizeResultStatus(resultPatch.patch.status);
+  const traceStatus = statusFromTrace(trace);
+  const status = patchStatus ?? traceStatus;
+  const summary =
+    typeof resultPatch.patch.summary === "string" && resultPatch.patch.summary.trim()
+      ? resultPatch.patch.summary.trim()
+      : `Codex App Server ${trace.source} completed task ${request.task.id}`;
+
+  return {
+    task_id: request.task.id,
+    status,
+    summary,
+    review: resultPatch.patch.review ?? reviewOutput(request),
+    research: resultPatch.patch.research ?? researchOutput(request, memoryContext),
+    branch_vote: resultPatch.patch.branch_vote ?? branchVoteOutput(request),
+    runner_id: runnerId,
+    model_used: request.task.execution?.model?.candidates?.[0] ?? null,
+    mcp_context_used: request.task.execution?.mcp ?? null,
+    sandbox_attestation: sandboxAttestation(request, false, false, "codex_app_server"),
+    artifacts: [
+      {
+        kind: "report",
+        uri: codexThreadUri(trace),
+        description: "Codex App Server thread and turn transcript reference",
+        sha256: null,
+      },
+      ...resultChannelArtifacts(request, gitResult, objectArtifacts),
+      ...memoryContextArtifacts(request, memoryContext),
+    ],
+    git_result: gitResult,
+    object_artifacts: objectArtifacts,
+    checkpoints,
+    test_evidence: [...commandEvidenceFromTrace(request, trace), ...(resultPatch.patch.test_evidence ?? [])],
+    child_requests: Array.isArray(resultPatch.patch.child_requests) ? resultPatch.patch.child_requests : [],
+    confidence: typeof resultPatch.patch.confidence === "number" ? resultPatch.patch.confidence : trace.source === "live" ? 0.75 : 0.85,
+    next_actions: Array.isArray(resultPatch.patch.next_actions) ? resultPatch.patch.next_actions.filter(isString) : [],
+    diagnostics: [
+      `mode=${trace.source === "live" ? "live" : "replay"}`,
+      `codex_app_server_source=${trace.source}`,
+      `codex_app_server_thread_id=${stringValue(trace.thread.id) ?? "unknown"}`,
+      `codex_app_server_session_id=${stringValue(trace.thread.sessionId) ?? stringValue(trace.thread.session_id) ?? "unknown"}`,
+      `codex_app_server_turn_id=${stringValue(trace.turn.id) ?? "unknown"}`,
+      `codex_app_server_events=${trace.events.length}`,
+      `codex_app_server_items=${trace.items.length}`,
+      `codex_app_server_final_json=${resultPatch.parsed}`,
+      ...trace.diagnostics,
+      ...memoryContextDiagnostics(memoryContext, memoryContextError),
+      ...subagentDiagnostics(request.task.execution?.subagents),
+      ...mcpDiagnostics(request.task.execution?.mcp),
+    ],
+    notification_reports: [],
+  };
+}
+
+function buildCodexMcpFallbackResult(request: AgentRunRequest, trace: McpFallbackRunTrace): AgentRunResult {
+  const resultPatch = parseAgentResultPatch(trace.final_response);
+  const gitResult = buildGitResult(request);
+  const objectArtifacts = buildObjectArtifactsFromMcpTrace(request);
+  const checkpoints = buildCheckpoints(request, gitResult, objectArtifacts, trace);
+  const patchStatus = normalizeResultStatus(resultPatch.patch.status);
+  const status = patchStatus ?? statusFromMcpTrace(trace);
+  const summary =
+    typeof resultPatch.patch.summary === "string" && resultPatch.patch.summary.trim()
+      ? resultPatch.patch.summary.trim()
+      : `Codex MCP fallback replay completed task ${request.task.id}`;
+
+  return {
+    task_id: request.task.id,
+    status,
+    summary,
+    review: resultPatch.patch.review ?? reviewOutput(request),
+    research: resultPatch.patch.research ?? null,
+    branch_vote: resultPatch.patch.branch_vote ?? branchVoteOutput(request),
+    runner_id: runnerId,
+    model_used: request.task.execution?.model?.candidates?.[0] ?? null,
+    mcp_context_used: request.task.execution?.mcp ?? null,
+    sandbox_attestation: sandboxAttestation(request, false, false, "codex_mcp_fallback_replay"),
+    artifacts: [
+      {
+        kind: "report",
+        uri: codexMcpFallbackUri(request),
+        description: "Codex MCP fallback replay transcript reference",
+        sha256: null,
+      },
+      ...resultChannelArtifacts(request, gitResult, objectArtifacts),
+    ],
+    git_result: gitResult,
+    object_artifacts: objectArtifacts,
+    checkpoints,
+    test_evidence: [...commandEvidenceFromMcpTrace(request, trace), ...(resultPatch.patch.test_evidence ?? [])],
+    child_requests: Array.isArray(resultPatch.patch.child_requests) ? resultPatch.patch.child_requests : [],
+    confidence: typeof resultPatch.patch.confidence === "number" ? resultPatch.patch.confidence : 0.82,
+    next_actions: Array.isArray(resultPatch.patch.next_actions) ? resultPatch.patch.next_actions.filter(isString) : [],
+    diagnostics: [
+      "mode=mcp-replay",
+      `codex_mcp_source=${trace.source}`,
+      `codex_mcp_server_command=${stringValue(trace.server.command) ?? "codex mcp-server"}`,
+      `codex_mcp_transport=${stringValue(trace.server.transport) ?? "stdio"}`,
+      `codex_mcp_tool_calls=${trace.tool_calls.length}`,
+      `codex_mcp_final_json=${resultPatch.parsed}`,
+      ...trace.diagnostics,
+      ...subagentDiagnostics(request.task.execution?.subagents),
+      ...mcpDiagnostics(request.task.execution?.mcp),
+    ],
+    notification_reports: [],
+  };
+}
+
+export function loadReplayFixture(path = process.env.CODEX_REPLAY_FIXTURE ?? "examples/codex-app-server-replay.json"): unknown {
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
+}
+
+export function traceFromReplayFixture(fixture: unknown): AppServerRunTrace {
+  if (!isRecord(fixture)) throw new Error("replay fixture must be an object");
+  const appServer = isRecord(fixture.app_server) ? fixture.app_server : fixture;
+  const events = Array.isArray(appServer.events) ? appServer.events.filter(isRecord) : [];
+  const items = completedItems(events);
+  const thread =
+    (isRecord(appServer.thread) ? appServer.thread : null) ??
+    firstNotificationRecord(events, "thread/started", "thread") ??
+    {};
+  const turn =
+    (isRecord(appServer.turn) ? appServer.turn : null) ??
+    firstNotificationRecord(events, "turn/completed", "turn") ??
+    firstNotificationRecord(events, "turn/started", "turn") ??
+    {};
+  return {
+    source: "replay",
+    app_server_url: typeof appServer.url === "string" ? appServer.url : null,
+    thread,
+    turn,
+    events,
+    server_requests: Array.isArray(appServer.server_requests) ? appServer.server_requests.filter(isRecord) : [],
+    approval_reports: Array.isArray(appServer.approval_reports) ? appServer.approval_reports.filter(isRecord) : [],
+    final_response: typeof appServer.final_response === "string" ? appServer.final_response : finalAgentMessage(items),
+    items,
+    usage: isRecord(appServer.usage) ? appServer.usage : firstNotificationUsage(events),
+    diagnostics: ["app_server_replay_fixture=loaded"],
+  };
+}
+
+export function loadMcpReplayFixture(
+  path = process.env.CODEX_MCP_REPLAY_FIXTURE ?? "examples/codex-mcp-fallback-replay.json",
+): unknown {
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
+}
+
+export function traceFromMcpReplayFixture(fixture: unknown): McpFallbackRunTrace {
+  if (!isRecord(fixture)) throw new Error("Codex MCP replay fixture must be an object");
+  const mcp = isRecord(fixture.codex_mcp) ? fixture.codex_mcp : fixture;
+  const toolCalls = Array.isArray(mcp.tool_calls) ? mcp.tool_calls.filter(isRecord) : [];
+  const diagnostics = Array.isArray(mcp.diagnostics) ? mcp.diagnostics.filter(isString) : [];
+  return {
+    source: "replay",
+    server: isRecord(mcp.server) ? mcp.server : {},
+    tool_calls: toolCalls,
+    final_response:
+      typeof mcp.final_response === "string"
+        ? mcp.final_response
+        : isRecord(mcp.final_result)
+          ? JSON.stringify(mcp.final_result)
+          : finalMcpToolResult(toolCalls),
+    usage: isRecord(mcp.usage) ? mcp.usage : null,
+    diagnostics: ["codex_mcp_replay_fixture=loaded", ...diagnostics],
+  };
+}
+
+function normalizeAppServerWebSocketUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "ws:" || url.protocol === "wss:") return url.toString();
+    if (url.protocol === "http:") {
+      url.protocol = "ws:";
+      return url.toString();
+    }
+    if (url.protocol === "https:") {
+      url.protocol = "wss:";
+      return url.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function appServerThreadParams(request: AgentRunRequest): Record<string, unknown> {
+  return {
+    model: selectedModelName(request),
+    cwd: liveWorkingDirectory(request),
+    approvalPolicy: appServerApprovalPolicy(request),
+    sandbox: appServerSandbox(request),
+    personality: "pragmatic",
+    serviceName: "coat_codex_runner",
+    sessionStartSource: "startup",
+  };
+}
+
+function appServerTurnParams(request: AgentRunRequest): Record<string, unknown> {
+  return {
+    cwd: liveWorkingDirectory(request),
+    approvalPolicy: appServerApprovalPolicy(request),
+    sandboxPolicy: appServerSandboxPolicy(request),
+    model: selectedModelName(request),
+    effort: selectedReasoningEffort(request),
+    summary: "concise",
+    personality: "pragmatic",
+  };
+}
+
+function liveWorkingDirectory(request: AgentRunRequest): string | null {
+  const configured = process.env.CODEX_APP_SERVER_CWD ?? process.env.CODEX_WORKSPACE_DIR ?? "";
+  if (configured.trim()) return configured.trim();
+  const plannedGit = buildGitResult(request);
+  if (isRecord(plannedGit) && typeof plannedGit.worktree_path === "string" && existsSync(plannedGit.worktree_path)) {
+    return plannedGit.worktree_path;
+  }
+  if (truthyEnv("CODEX_ALLOW_REPO_CWD_LIVE")) return process.cwd();
+  return null;
+}
+
+function requestedCodexThreadId(request: AgentRunRequest): string | null {
+  const fromEnv = process.env.CODEX_THREAD_ID?.trim();
+  if (fromEnv) return fromEnv;
+  const execution = request.task.execution;
+  if (!isRecord(execution)) return null;
+  const executionRecord = execution as Record<string, unknown>;
+  for (const key of ["codex_app_server", "codex", "thread", "runner_context"]) {
+    const section = executionRecord[key];
+    if (isRecord(section)) {
+      const id = stringValue(section.thread_id) ?? stringValue(section.threadId) ?? stringValue(section.id);
+      if (id) return id;
+    }
+  }
+  return null;
+}
+
+function selectedModelName(request: AgentRunRequest): string | null {
+  const candidate = request.task.execution?.model?.candidates?.[0];
+  if (isRecord(candidate) && typeof candidate.model === "string") return candidate.model;
+  return process.env.CODEX_MODEL ?? null;
+}
+
+function selectedReasoningEffort(request: AgentRunRequest): string | null {
+  const candidate = request.task.execution?.model?.candidates?.[0];
+  if (isRecord(candidate) && isRecord(candidate.params) && typeof candidate.params.reasoning_effort === "string") {
+    return candidate.params.reasoning_effort;
+  }
+  return process.env.CODEX_REASONING_EFFORT ?? null;
+}
+
+function appServerApprovalPolicy(request: AgentRunRequest): string {
+  const policy = request.task.sandbox?.approval_policy;
+  if (policy === "never") return "never";
+  if (policy === "on_failure") return "onFailure";
+  if (policy === "on_request") return "unlessTrusted";
+  return process.env.CODEX_APP_SERVER_APPROVAL_POLICY ?? "unlessTrusted";
+}
+
+function appServerSandbox(request: AgentRunRequest): string {
+  const filesystem = request.task.sandbox?.filesystem;
+  if (filesystem === "read_only") return "readOnly";
+  if (filesystem === "full_access") return "dangerFullAccess";
+  return "workspaceWrite";
+}
+
+function appServerSandboxPolicy(request: AgentRunRequest): Record<string, unknown> {
+  const filesystem = request.task.sandbox?.filesystem;
+  const network = request.task.sandbox?.network;
+  if (filesystem === "read_only") return { type: "readOnly" };
+  if (filesystem === "full_access") return { type: "dangerFullAccess" };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [liveWorkingDirectory(request)].filter(isString),
+    networkAccess: network === "open" || network === "enabled",
+  };
+}
+
+function appServerApprovalResult(request: JsonRpcMessage): Record<string, unknown> {
+  const decision = process.env.CODEX_APP_SERVER_APPROVAL_DECISION ?? "decline";
+  const method = typeof request.method === "string" ? request.method : "unknown";
+  if (method === "mcpServer/elicitation/request") return { action: "decline", content: null };
+  if (method === "item/permissions/requestApproval") return { scope: "turn", permissions: {} };
+  return { decision };
+}
+
+function codexAppServerPrompt(request: AgentRunRequest, memoryContext: MemoryContextResponse | null): string {
+  return [
+    "You are the Codex worker for a COAT durable task.",
+    "Do the bounded task in the current workspace and return a structured worker result.",
+    ...durableSubagentContext,
+    "Final response requirements:",
+    "- Return only JSON matching the provided output schema.",
+    "- Put proposed durable child work in child_requests only.",
+    "- Include test_evidence only for commands actually run.",
+    "- Do not claim artifact uploads, git pushes, sandbox enforcement, or approvals that did not happen.",
+    "",
+    "Task contract:",
+    JSON.stringify(
+      {
+        goal_id: request.goal_id,
+        task_id: request.task.id,
+        role: request.task.role,
+        purpose: request.task.purpose ?? { kind: "work" },
+        prompt: request.task.prompt,
+        sandbox: request.task.sandbox ?? null,
+        done_criteria: request.task.done_criteria ?? null,
+        mcp: request.task.execution?.mcp ?? null,
+        memory_context: memoryContext
+          ? {
+              hits: memoryContext.hits.map((hit) => ({ key: hit.key, scope: hit.scope, score: hit.score, summary: hit.summary })),
+              use_plan: memoryContext.use_plan,
+            }
+          : null,
+      },
+      null,
+      2,
+    ),
+  ].join("\n");
+}
+
+function agentRunResultOutputSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      status: { type: "string", enum: ["done", "partial", "blocked", "failed", "timed_out"] },
+      summary: { type: "string" },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      next_actions: { type: "array", items: { type: "string" } },
+      child_requests: { type: "array", items: { type: "object" } },
+      test_evidence: { type: "array", items: { type: "object" } },
+      review: { type: ["object", "null"] },
+      research: { type: ["object", "null"] },
+      branch_vote: { type: ["object", "null"] },
+    },
+    required: ["status", "summary", "confidence", "next_actions", "child_requests"],
+    additionalProperties: true,
+  };
+}
+
 async function fetchMemoryContext(request: AgentRunRequest): Promise<MemoryContextResponse | null> {
   if (!memoryGatewayUrl) return null;
   const response = await fetch(`${memoryGatewayUrl.replace(/\/$/, "")}/memory/context`, {
@@ -678,7 +1367,7 @@ function buildObjectArtifacts(request: AgentRunRequest): Record<string, unknown>
       content_type: "application/json",
       size_bytes: null,
       sha256: null,
-      description: "stub object storage artifact manifest location",
+      description: "object storage artifact manifest location",
     },
   ];
 }
@@ -687,6 +1376,7 @@ function buildCheckpoints(
   request: AgentRunRequest,
   gitResult: Record<string, unknown> | null,
   objectArtifacts: Record<string, unknown>[],
+  trace?: AppServerRunTrace | McpFallbackRunTrace,
 ): Record<string, unknown>[] {
   const checkpointPolicy = resultPolicy(request, "checkpoints");
   if (isRecord(checkpointPolicy) && checkpointPolicy.enabled === false) return [];
@@ -710,7 +1400,7 @@ function buildCheckpoints(
       object_artifact: null,
       sequence: 1,
       created_at: null,
-      payload_json: {},
+      payload_json: checkpointPayload(trace),
     });
   }
   objectArtifacts.forEach((artifact, index) => {
@@ -732,7 +1422,7 @@ function buildCheckpoints(
       object_artifact: artifact,
       sequence: index + 2,
       created_at: null,
-      payload_json: {},
+      payload_json: checkpointPayload(trace),
     });
   });
   if (checkpoints.length === 0) {
@@ -754,10 +1444,328 @@ function buildCheckpoints(
       object_artifact: null,
       sequence: 1,
       created_at: null,
-      payload_json: {},
+      payload_json: checkpointPayload(trace),
     });
   }
   return checkpoints;
+}
+
+function checkpointPayload(trace?: AppServerRunTrace | McpFallbackRunTrace): Record<string, unknown> {
+  if (!trace) return {};
+  if (isMcpFallbackTrace(trace)) {
+    return {
+      codex_mcp: {
+        source: trace.source,
+        server_command: stringValue(trace.server.command) ?? "codex mcp-server",
+        transport: stringValue(trace.server.transport) ?? "stdio",
+        tool_call_count: trace.tool_calls.length,
+        tool_calls: trace.tool_calls.map((call) => ({
+          id: stringValue(call.id) ?? null,
+          tool: mcpToolName(call),
+          status: stringValue(call.status) ?? null,
+        })),
+        usage: trace.usage,
+      },
+    };
+  }
+  return {
+    codex_app_server: {
+      source: trace.source,
+      app_server_url: trace.app_server_url,
+      thread_id: stringValue(trace.thread.id) ?? null,
+      session_id: stringValue(trace.thread.sessionId) ?? stringValue(trace.thread.session_id) ?? null,
+      turn_id: stringValue(trace.turn.id) ?? null,
+      turn_status: stringValue(trace.turn.status) ?? null,
+      event_count: trace.events.length,
+      item_ids: trace.items.map((item) => stringValue(item.id)).filter(isString),
+      server_request_count: trace.server_requests.length,
+      approval_count: trace.approval_reports.length,
+      usage: trace.usage,
+    },
+  };
+}
+
+function isMcpFallbackTrace(trace: AppServerRunTrace | McpFallbackRunTrace): trace is McpFallbackRunTrace {
+  return "tool_calls" in trace;
+}
+
+function buildGitResultFromTrace(request: AgentRunRequest, trace: AppServerRunTrace): Record<string, unknown> | null {
+  const planned = buildGitResult(request);
+  const gitInfo = isRecord(trace.thread.gitInfo)
+    ? trace.thread.gitInfo
+    : isRecord(trace.thread.git_info)
+      ? trace.thread.git_info
+      : null;
+  if (!gitInfo) return planned;
+  const branch = stringValue(gitInfo.branch) ?? (isRecord(planned) ? stringValue(planned.branch) : null);
+  if (!branch && !planned) return null;
+  return {
+    repo: stringValue(gitInfo.originUrl) ?? stringValue(gitInfo.origin_url) ?? (isRecord(planned) ? planned.repo : null),
+    remote: isRecord(planned) && typeof planned.remote === "string" ? planned.remote : "origin",
+    base_ref: isRecord(planned) && typeof planned.base_ref === "string" ? planned.base_ref : "HEAD",
+    branch: branch ?? `jattg/task/${request.goal_id}/${request.task.id}`,
+    worktree_path: liveWorkingDirectory(request) ?? (isRecord(planned) ? planned.worktree_path : null),
+    commit: stringValue(gitInfo.sha) ?? stringValue(gitInfo.commit) ?? (isRecord(planned) ? planned.commit : null),
+    pushed: isRecord(planned) && typeof planned.pushed === "boolean" ? planned.pushed : false,
+    pull_request_url: isRecord(planned) ? planned.pull_request_url : null,
+    diff_uri: `${codexThreadUri(trace)}/git-diff`,
+  };
+}
+
+function buildObjectArtifactsFromTrace(request: AgentRunRequest, trace: AppServerRunTrace): Record<string, unknown>[] {
+  const objectArtifacts = buildObjectArtifacts(request);
+  const objectStorage = resultPolicy(request, "object_storage");
+  if (!isRecord(objectStorage) || objectStorage.enabled !== true || !isRecord(objectStorage.store)) return objectArtifacts;
+  const keyPrefix = objectStorageKeyPrefix(request, objectStorage);
+  const store = objectStorage.store;
+  const bucket = typeof store.bucket === "string" ? store.bucket : "jattg-artifacts";
+  const replayKey = `${keyPrefix}/codex-app-server-replay.json`;
+  objectArtifacts.push({
+    store,
+    key: replayKey,
+    uri: `s3://${bucket}/${replayKey}`,
+    content_type: "application/json",
+    size_bytes: null,
+    sha256: null,
+    description: `${trace.source} Codex App Server replay trace with thread, turn, item, approval, git, and diagnostic refs`,
+  });
+  return objectArtifacts;
+}
+
+function buildObjectArtifactsFromMcpTrace(request: AgentRunRequest): Record<string, unknown>[] {
+  const objectArtifacts = buildObjectArtifacts(request);
+  const objectStorage = resultPolicy(request, "object_storage");
+  if (!isRecord(objectStorage) || objectStorage.enabled !== true || !isRecord(objectStorage.store)) return objectArtifacts;
+  const keyPrefix = objectStorageKeyPrefix(request, objectStorage);
+  const store = objectStorage.store;
+  const bucket = typeof store.bucket === "string" ? store.bucket : "jattg-artifacts";
+  const replayKey = `${keyPrefix}/codex-mcp-fallback-replay.json`;
+  objectArtifacts.push({
+    store,
+    key: replayKey,
+    uri: `s3://${bucket}/${replayKey}`,
+    content_type: "application/json",
+    size_bytes: null,
+    sha256: null,
+    description: "replay Codex MCP fallback trace with tool-call and diagnostic refs",
+  });
+  return objectArtifacts;
+}
+
+function objectStorageKeyPrefix(request: AgentRunRequest, objectStorage: Record<string, unknown>): string {
+  const prefixTemplate =
+    typeof objectStorage.key_prefix_template === "string"
+      ? objectStorage.key_prefix_template
+      : "goals/{goal_id}/tasks/{task_id}";
+  return prefixTemplate
+    .replaceAll("{goal_id}", request.goal_id)
+    .replaceAll("{task_id}", request.task.id)
+    .replace(/^\/+|\/+$/g, "");
+}
+
+function codexThreadUri(trace: AppServerRunTrace): string {
+  const threadId = stringValue(trace.thread.id) ?? "unknown-thread";
+  const turnId = stringValue(trace.turn.id) ?? "unknown-turn";
+  return `codex-app-server://thread/${encodeURIComponent(threadId)}/turn/${encodeURIComponent(turnId)}`;
+}
+
+function codexMcpFallbackUri(request: AgentRunRequest): string {
+  return `codex-mcp://fallback-replay/${encodeURIComponent(request.task.id)}`;
+}
+
+function parseAgentResultPatch(text: string): { parsed: boolean; patch: AgentResultPatch } {
+  for (const candidate of jsonCandidates(text)) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (!isRecord(parsed)) continue;
+      return { parsed: true, patch: parsed as AgentResultPatch };
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return { parsed: false, patch: {} };
+}
+
+function jsonCandidates(text: string): string[] {
+  const trimmed = text.trim();
+  const candidates: string[] = [];
+  if (trimmed) candidates.push(trimmed);
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.push(trimmed.slice(first, last + 1));
+  return [...new Set(candidates)];
+}
+
+function normalizeResultStatus(status: unknown): AgentRunResult["status"] | null {
+  if (typeof status !== "string") return null;
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "completed" || normalized === "complete") return "done";
+  if (["done", "partial", "blocked", "failed", "timed_out"].includes(normalized)) {
+    return normalized as AgentRunResult["status"];
+  }
+  if (normalized === "timedout" || normalized === "timeout") return "timed_out";
+  return null;
+}
+
+function statusFromTrace(trace: AppServerRunTrace): AgentRunResult["status"] {
+  const status = stringValue(trace.turn.status)?.toLowerCase();
+  if (status === "completed" || status === "done") return "done";
+  if (status === "failed" || trace.items.some((item) => item.type === "error")) return "failed";
+  if (status === "interrupted" || status === "canceled" || status === "cancelled") return "partial";
+  return "partial";
+}
+
+function statusFromMcpTrace(trace: McpFallbackRunTrace): AgentRunResult["status"] {
+  if (trace.tool_calls.some((call) => mcpToolCallPassed(call) === false)) return "failed";
+  return "done";
+}
+
+function commandEvidenceFromTrace(request: AgentRunRequest, trace: AppServerRunTrace): TestCommandEvidence[] {
+  return trace.items.filter(isCommandExecutionItem).map((item) => {
+    const id = stringValue(item.id) ?? deterministicUuid(`${request.task.id}:command`);
+    const exitCode = numberValue(item.exitCode) ?? numberValue(item.exit_code);
+    const status = stringValue(item.status);
+    return {
+      command: commandText(item.command),
+      exit_code: exitCode,
+      passed: status === "completed" && exitCode === 0,
+      duration_ms: numberValue(item.durationMs) ?? numberValue(item.duration_ms),
+      stdout_uri: `${codexThreadUri(trace)}/items/${encodeURIComponent(id)}/output`,
+      stderr_uri: null,
+      artifact_uri: `${codexThreadUri(trace)}/items/${encodeURIComponent(id)}`,
+      notes: [
+        `Codex App Server commandExecution item ${id} finished with status=${status ?? "unknown"} exit_code=${
+          exitCode ?? "unknown"
+        }`,
+      ],
+    };
+  });
+}
+
+function commandEvidenceFromMcpTrace(request: AgentRunRequest, trace: McpFallbackRunTrace): TestCommandEvidence[] {
+  return trace.tool_calls.map((call) => {
+    const id = stringValue(call.id) ?? deterministicUuid(`${request.task.id}:${mcpToolName(call)}`);
+    const passed = mcpToolCallPassed(call);
+    return {
+      command: `codex mcp-server replay: ${mcpToolName(call)}`,
+      exit_code: passed ? 0 : 1,
+      passed,
+      duration_ms: numberValue(call.durationMs) ?? numberValue(call.duration_ms),
+      stdout_uri: null,
+      stderr_uri: null,
+      artifact_uri: `${codexMcpFallbackUri(request)}/tool-calls/${encodeURIComponent(id)}`,
+      notes: [
+        `Codex MCP fallback tool call ${id} ran ${mcpToolName(call)} with status=${
+          stringValue(call.status) ?? (passed ? "completed" : "failed")
+        }`,
+      ],
+    };
+  });
+}
+
+function isCommandExecutionItem(item: Record<string, unknown>): boolean {
+  return item.type === "commandExecution" || item.type === "command_execution";
+}
+
+function commandText(command: unknown): string {
+  if (Array.isArray(command)) return command.map(String).join(" ");
+  if (typeof command === "string") return command;
+  return "codex app-server command";
+}
+
+function completedItems(messages: JsonRpcMessage[]): Record<string, unknown>[] {
+  const items = new Map<string, Record<string, unknown>>();
+  for (const message of messages) {
+    if (message.method !== "item/completed" && message.method !== "item/started" && message.method !== "item/updated") continue;
+    const params = isRecord(message.params) ? message.params : {};
+    const item = isRecord(params.item) ? params.item : isRecord(message.item) ? message.item : null;
+    if (!item) continue;
+    const id = stringValue(item.id) ?? deterministicUuid(JSON.stringify(item));
+    items.set(id, item);
+  }
+  return [...items.values()];
+}
+
+function finalAgentMessage(items: Record<string, unknown>[]): string {
+  for (const item of [...items].reverse()) {
+    if (item.type !== "agentMessage" && item.type !== "agent_message") continue;
+    const text = stringValue(item.text) ?? stringValue(item.message);
+    if (text) return text;
+  }
+  return "";
+}
+
+function finalMcpToolResult(toolCalls: Record<string, unknown>[]): string {
+  for (const call of [...toolCalls].reverse()) {
+    if (typeof call.result === "string") return call.result;
+    if (isRecord(call.result)) return JSON.stringify(call.result);
+  }
+  return "";
+}
+
+function mcpToolName(call: Record<string, unknown>): string {
+  return stringValue(call.tool) ?? stringValue(call.name) ?? "codex.mcp.tool";
+}
+
+function mcpToolCallPassed(call: Record<string, unknown>): boolean {
+  if (typeof call.success === "boolean") return call.success;
+  if (isRecord(call.error)) return false;
+  const status = stringValue(call.status)?.toLowerCase();
+  return status === "completed" || status === "done" || status === "success" || status === "ok";
+}
+
+function firstNotificationRecord(events: JsonRpcMessage[], method: string, key: string): Record<string, unknown> | null {
+  for (const event of events) {
+    if (event.method !== method || !isRecord(event.params)) continue;
+    const value = event.params[key];
+    if (isRecord(value)) return value;
+  }
+  return null;
+}
+
+function firstNotificationUsage(events: JsonRpcMessage[]): unknown | null {
+  for (const event of events) {
+    if (event.method !== "turn/completed" || !isRecord(event.params)) continue;
+    return event.params.usage ?? null;
+  }
+  return null;
+}
+
+function responseRecord(response: unknown, key: string): Record<string, unknown> {
+  if (isRecord(response) && isRecord(response[key])) return response[key];
+  return {};
+}
+
+function sandboxAttestation(
+  request: AgentRunRequest,
+  enforceable: boolean,
+  strongIsolation: boolean,
+  source: string,
+): Record<string, unknown> {
+  const filesystem = request.task.sandbox?.filesystem ?? "workspace_write";
+  const network = request.task.sandbox?.network ?? "restricted";
+  return {
+    backend: "local_workspace",
+    runtime_class: null,
+    enforceable,
+    strong_isolation: strongIsolation,
+    isolation_summary: `${source} sandbox declaration with filesystem=${filesystem}, network=${network}; no strong sandbox attestation claimed`,
+    warnings: [
+      strongIsolation
+        ? "strong sandbox was requested and should include executor evidence"
+        : "local workspace sandboxing is not a strong isolation boundary",
+    ],
+    evidence: [
+      {
+        kind: "report",
+        uri: `codex-runner://${request.goal_id}/${request.task.id}/sandbox`,
+        description: "declared sandbox profile carried through the worker result",
+        sha256: null,
+      },
+    ],
+  };
 }
 
 function deterministicUuid(input: string): string {
@@ -805,9 +1813,6 @@ function resultPolicy(request: AgentRunRequest, key: string): unknown {
 
 function taskSummary(request: AgentRunRequest): string {
   const purpose = taskPurposeKind(request.task.purpose);
-  if (mode !== "stub") {
-    return `Codex runner ${mode} accepted ${purpose} ${request.task.id}; live integration is intentionally gated by environment`;
-  }
   if (purpose === "review") {
     return `stub Codex critic reviewed actor task ${request.task.id}`;
   }
@@ -852,18 +1857,18 @@ async function ensureCodexMcpStarts(): Promise<void> {
   });
 }
 
-async function verifyCodexIntegration(): Promise<Record<string, unknown>> {
+export async function verifyCodexIntegration(): Promise<Record<string, unknown>> {
   const cli = await checkCommand("codex", ["--version"], 1000);
   const mcp = process.env.CODEX_VERIFY_MCP === "1" ? await checkCodexMcp() : { attempted: false };
   const appServerUrl = process.env.CODEX_APP_SERVER_URL ?? "";
   const authMode = process.env.CODEX_AUTH_MODE ?? "env_api_key";
   const appServer =
     appServerUrl && process.env.CODEX_VERIFY_APP_SERVER === "1"
-      ? await checkHttp(`${appServerUrl.replace(/\/$/, "")}/healthz`, 1000)
+      ? await checkAppServer(appServerUrl, 1000)
       : { attempted: false, configured: Boolean(appServerUrl) };
   return {
     runner_id: runnerId,
-    mode,
+    mode: runnerMode(),
     package: "@openai/codex-sdk",
     codex_sdk_dependency_declared: true,
     codex_cli: cli,
@@ -880,12 +1885,432 @@ async function verifyCodexIntegration(): Promise<Record<string, unknown>> {
       secret_values_exposed: false,
     },
     live_execution_requires: [
-      "explicit CODEX_RUNNER_MODE",
-      "Codex CLI, Codex App Server, env API key, or explicit runner-local/brokered auth mode",
-      "isolated workspace",
-      "approved sandbox profile",
+      "CODEX_RUNNER_MODE=live",
+      "CODEX_AUTH_MODE=app_server",
+      "CODEX_APP_SERVER_URL pointing at a reachable Codex App Server websocket endpoint",
+      "task.sandbox.isolated_runner=true and an existing live workspace directory",
     ],
+    provider_profiles: await buildProviderVerificationProfiles({ cli, mcp, appServer }),
   };
+}
+
+async function buildProviderVerificationProfiles(probes: {
+  cli: Record<string, unknown>;
+  mcp: Record<string, unknown>;
+  appServer: Record<string, unknown>;
+}): Promise<ProviderVerificationProfile[]> {
+  return Promise.all(configuredProviderVerificationLanes().map((lane) => providerVerificationProfile(lane, probes)));
+}
+
+function configuredProviderVerificationLanes(): ProviderVerificationLane[] {
+  const registration = buildRegistration();
+  const lanes = new Map<string, ProviderVerificationLane>();
+
+  const addLane = (lane: ProviderVerificationLane) => {
+    lanes.set(lane.lane_id, lane);
+  };
+
+  for (const model of registration.models) {
+    const provider = String(model.provider);
+    if (provider === "codex") {
+      addLane({
+        lane_id: "codex:app_server",
+        provider: "codex",
+        surface: "app_server",
+        model: model.model,
+        endpoint: process.env.CODEX_APP_SERVER_URL ?? model.endpoint ?? null,
+        source: "runner_model",
+      });
+      addLane({
+        lane_id: "codex:mcp",
+        provider: "codex",
+        surface: "mcp_fallback",
+        model: model.model,
+        endpoint: null,
+        source: "runner_model",
+      });
+      continue;
+    }
+    addLane({
+      lane_id: providerLaneId(provider, model.model, model.endpoint),
+      provider,
+      surface: providerSurface(provider),
+      model: model.model,
+      endpoint: model.endpoint ?? providerEndpointFromEnv(provider),
+      source: "runner_model",
+    });
+  }
+
+  for (const configured of parseJsonEnv<unknown[]>("CODEX_PROVIDER_VERIFY_PROFILES_JSON", [])) {
+    if (!isRecord(configured)) continue;
+    const provider = stringValue(configured.provider);
+    if (!provider) continue;
+    const model = stringValue(configured.model);
+    const endpoint = stringValue(configured.endpoint) ?? providerEndpointFromEnv(provider);
+    const surface = stringValue(configured.surface) ?? providerSurface(provider);
+    addLane({
+      lane_id: stringValue(configured.lane_id) ?? providerLaneId(provider, model, endpoint),
+      provider,
+      surface,
+      model,
+      endpoint,
+      source: "env_profile",
+    });
+  }
+
+  return [...lanes.values()].sort((left, right) => left.lane_id.localeCompare(right.lane_id));
+}
+
+async function providerVerificationProfile(
+  lane: ProviderVerificationLane,
+  probes: {
+    cli: Record<string, unknown>;
+    mcp: Record<string, unknown>;
+    appServer: Record<string, unknown>;
+  },
+): Promise<ProviderVerificationProfile> {
+  if (lane.provider === "codex" && lane.surface === "app_server") {
+    return codexAppServerProviderProfile(lane, probes.appServer);
+  }
+  if (lane.provider === "codex" && lane.surface === "mcp_fallback") {
+    return codexMcpProviderProfile(lane, probes.cli, probes.mcp);
+  }
+
+  const auth = providerAuthProfile(lane.provider);
+  const missing = providerMissingSetup(lane, auth);
+  if (missing.length > 0) {
+    return providerProfile(lane, {
+      status: "skipped",
+      attempted: false,
+      available: null,
+      configured: false,
+      skipped_reason: missing.join("; "),
+      error: null,
+      auth,
+      checks: [
+        {
+          name: "configuration",
+          attempted: true,
+          passed: false,
+          evidence: missing,
+        },
+      ],
+    });
+  }
+
+  if (!truthyEnv("CODEX_VERIFY_PROVIDER_NETWORK")) {
+    return providerProfile(lane, {
+      status: "skipped",
+      attempted: false,
+      available: null,
+      configured: true,
+      skipped_reason: "CODEX_VERIFY_PROVIDER_NETWORK=1 not set; emitted profile without a live provider call",
+      error: null,
+      auth,
+      checks: [
+        {
+          name: "configuration",
+          attempted: true,
+          passed: true,
+          evidence: ["required endpoint/auth setup is present or not required"],
+        },
+        {
+          name: "live_provider_probe",
+          attempted: false,
+          passed: null,
+          evidence: ["network probe disabled"],
+        },
+      ],
+    });
+  }
+
+  if (!lane.endpoint) {
+    return providerProfile(lane, {
+      status: "skipped",
+      attempted: false,
+      available: null,
+      configured: true,
+      skipped_reason: `${lane.provider} does not expose a configured HTTP endpoint for this verifier`,
+      error: null,
+      auth,
+      checks: [
+        {
+          name: "configuration",
+          attempted: true,
+          passed: true,
+          evidence: ["required auth setup is present or not required"],
+        },
+        {
+          name: "live_provider_probe",
+          attempted: false,
+          passed: null,
+          evidence: ["no HTTP endpoint configured for automated probe"],
+        },
+      ],
+    });
+  }
+
+  const probe = await checkHttp(lane.endpoint as string, 1000);
+  const available = probe.available === true;
+  return providerProfile(lane, {
+    status: available ? "verified" : "failed",
+    attempted: true,
+    available,
+    configured: true,
+    skipped_reason: null,
+    error: typeof probe.error === "string" ? probe.error : null,
+    auth,
+    checks: [
+      {
+        name: "configuration",
+        attempted: true,
+        passed: true,
+        evidence: ["required endpoint/auth setup is present or not required"],
+      },
+      {
+        name: "live_provider_probe",
+        attempted: true,
+        passed: available,
+        evidence: [probe],
+      },
+    ],
+  });
+}
+
+function codexAppServerProviderProfile(lane: ProviderVerificationLane, appServer: Record<string, unknown>): ProviderVerificationProfile {
+  const auth = providerAuthProfile("codex");
+  const configured = Boolean(process.env.CODEX_APP_SERVER_URL);
+  if (appServer.attempted === true) {
+    return providerProfile(lane, {
+      status: appServer.available === true ? "verified" : "failed",
+      attempted: true,
+      available: appServer.available === true,
+      configured,
+      skipped_reason: null,
+      error: typeof appServer.error === "string" ? appServer.error : null,
+      auth,
+      checks: [
+        {
+          name: "codex_app_server_initialize",
+          attempted: true,
+          passed: appServer.available === true,
+          evidence: [appServer],
+        },
+      ],
+    });
+  }
+  return providerProfile(lane, {
+    status: "skipped",
+    attempted: false,
+    available: null,
+    configured,
+    skipped_reason: configured
+      ? "CODEX_VERIFY_APP_SERVER=1 not set; App Server live verification skipped"
+      : "CODEX_APP_SERVER_URL not set; App Server live verification skipped",
+    error: null,
+    auth,
+    checks: [
+      {
+        name: "codex_app_server_config",
+        attempted: true,
+        passed: configured,
+        evidence: [configured ? "CODEX_APP_SERVER_URL configured" : "CODEX_APP_SERVER_URL missing"],
+      },
+      {
+        name: "codex_app_server_initialize",
+        attempted: false,
+        passed: null,
+        evidence: ["live App Server probe disabled"],
+      },
+    ],
+  });
+}
+
+function codexMcpProviderProfile(
+  lane: ProviderVerificationLane,
+  cli: Record<string, unknown>,
+  mcp: Record<string, unknown>,
+): ProviderVerificationProfile {
+  const auth = providerAuthProfile("codex");
+  if (mcp.attempted === true) {
+    return providerProfile(lane, {
+      status: mcp.available === true ? "verified" : "failed",
+      attempted: true,
+      available: mcp.available === true,
+      configured: cli.available === true,
+      skipped_reason: null,
+      error: typeof mcp.error === "string" ? mcp.error : null,
+      auth,
+      checks: [
+        {
+          name: "codex_cli",
+          attempted: true,
+          passed: cli.available === true,
+          evidence: [redactProbe(cli)],
+        },
+        {
+          name: "codex_mcp_server",
+          attempted: true,
+          passed: mcp.available === true,
+          evidence: [mcp],
+        },
+      ],
+    });
+  }
+  return providerProfile(lane, {
+    status: "skipped",
+    attempted: false,
+    available: null,
+    configured: cli.available === true,
+    skipped_reason:
+      cli.available === true
+        ? "CODEX_VERIFY_MCP=1 not set; MCP fallback live verification skipped"
+        : "codex CLI unavailable; MCP fallback live verification skipped",
+    error: null,
+    auth,
+    checks: [
+      {
+        name: "codex_cli",
+        attempted: true,
+        passed: cli.available === true,
+        evidence: [redactProbe(cli)],
+      },
+      {
+        name: "codex_mcp_server",
+        attempted: false,
+        passed: null,
+        evidence: ["live MCP server startup probe disabled"],
+      },
+    ],
+  });
+}
+
+function providerProfile(
+  lane: ProviderVerificationLane,
+  data: Omit<ProviderVerificationProfile, keyof ProviderVerificationLane | "secret_values_exposed">,
+): ProviderVerificationProfile {
+  return {
+    ...lane,
+    ...data,
+    secret_values_exposed: false,
+  };
+}
+
+function providerLaneId(provider: string, model: string | null, endpoint: string | null): string {
+  const endpointLabel = endpoint ? `:${redactUrl(endpoint).replace(/[^a-zA-Z0-9_.-]+/g, "_")}` : "";
+  return `${provider}:${model ?? "default"}${endpointLabel}`;
+}
+
+function providerSurface(provider: string): string {
+  if (provider === "claude_code") return "cli_runner";
+  if (provider === "open_ai_compatible") return "openai_compatible_http";
+  if (provider === "vllm" || provider === "ollama" || provider === "llama_cpp") return "local_http";
+  if (provider === "bedrock") return "aws_bedrock";
+  if (provider === "hugging_face") return "hugging_face";
+  return "model_provider";
+}
+
+function providerEndpointFromEnv(provider: string): string | null {
+  if (provider === "open_ai") return process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+  if (provider === "open_ai_compatible") {
+    return process.env.COAT_LLM_GATEWAY_URL ?? process.env.OPENAI_COMPATIBLE_BASE_URL ?? process.env.OPENAI_BASE_URL ?? null;
+  }
+  if (provider === "vllm") return process.env.VLLM_BASE_URL ?? process.env.VLLM_ENDPOINT ?? null;
+  if (provider === "ollama") return process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+  if (provider === "llama_cpp") return process.env.LLAMA_CPP_BASE_URL ?? process.env.LLAMA_CPP_ENDPOINT ?? null;
+  if (provider === "hugging_face") return process.env.HUGGING_FACE_INFERENCE_ENDPOINT ?? process.env.HF_INFERENCE_ENDPOINT ?? null;
+  return null;
+}
+
+function providerAuthProfile(provider: string): Record<string, unknown> {
+  if (provider === "codex") {
+    const authMode = process.env.CODEX_AUTH_MODE ?? "env_api_key";
+    return {
+      mode: authMode,
+      has_openai_api_key: Boolean(process.env.OPENAI_API_KEY),
+      has_codex_api_key: Boolean(process.env.CODEX_API_KEY),
+      app_server_configured: Boolean(process.env.CODEX_APP_SERVER_URL),
+      auth_state_path_configured: Boolean(process.env.CODEX_AUTH_STATE_PATH),
+      secret_values_exposed: false,
+    };
+  }
+  if (provider === "open_ai") {
+    return {
+      has_openai_api_key: Boolean(process.env.OPENAI_API_KEY),
+      base_url_configured: Boolean(process.env.OPENAI_BASE_URL),
+      secret_values_exposed: false,
+    };
+  }
+  if (provider === "open_ai_compatible") {
+    return {
+      has_gateway_api_key: Boolean(process.env.COAT_LLM_GATEWAY_API_KEY || process.env.OPENAI_COMPATIBLE_API_KEY || process.env.OPENAI_API_KEY),
+      gateway_url_configured: Boolean(process.env.COAT_LLM_GATEWAY_URL || process.env.OPENAI_COMPATIBLE_BASE_URL || process.env.OPENAI_BASE_URL),
+      secret_values_exposed: false,
+    };
+  }
+  if (provider === "bedrock") {
+    return {
+      aws_profile_configured: Boolean(process.env.AWS_PROFILE),
+      aws_access_key_configured: Boolean(process.env.AWS_ACCESS_KEY_ID),
+      aws_web_identity_configured: Boolean(process.env.AWS_WEB_IDENTITY_TOKEN_FILE),
+      aws_region_configured: Boolean(process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION),
+      secret_values_exposed: false,
+    };
+  }
+  if (provider === "hugging_face") {
+    return {
+      has_hf_token: Boolean(process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN),
+      inference_endpoint_configured: Boolean(process.env.HUGGING_FACE_INFERENCE_ENDPOINT || process.env.HF_INFERENCE_ENDPOINT),
+      secret_values_exposed: false,
+    };
+  }
+  if (provider === "claude_code" || provider === "anthropic") {
+    return {
+      has_anthropic_api_key: Boolean(process.env.ANTHROPIC_API_KEY),
+      claude_auth_state_path_configured: Boolean(process.env.CLAUDE_CODE_AUTH_STATE_PATH),
+      secret_values_exposed: false,
+    };
+  }
+  return {
+    auth_not_required_by_default: provider === "vllm" || provider === "ollama" || provider === "llama_cpp" || provider === "local_process",
+    secret_values_exposed: false,
+  };
+}
+
+function providerMissingSetup(lane: ProviderVerificationLane, auth: Record<string, unknown>): string[] {
+  const missing: string[] = [];
+  if (!lane.endpoint && ["open_ai_compatible", "vllm", "ollama", "llama_cpp", "hugging_face"].includes(lane.provider)) {
+    missing.push(`${lane.provider} endpoint is not configured`);
+  }
+  if (lane.provider === "open_ai" && auth.has_openai_api_key !== true) missing.push("OPENAI_API_KEY is not set");
+  if (lane.provider === "open_ai_compatible" && auth.has_gateway_api_key !== true) {
+    missing.push("OpenAI-compatible gateway API key is not set");
+  }
+  if (
+    lane.provider === "bedrock" &&
+    auth.aws_profile_configured !== true &&
+    auth.aws_access_key_configured !== true &&
+    auth.aws_web_identity_configured !== true
+  ) {
+    missing.push("AWS Bedrock credentials are not configured");
+  }
+  if (lane.provider === "hugging_face" && auth.has_hf_token !== true) missing.push("Hugging Face token is not configured");
+  if (
+    (lane.provider === "claude_code" || lane.provider === "anthropic") &&
+    auth.has_anthropic_api_key !== true &&
+    auth.claude_auth_state_path_configured !== true
+  ) {
+    missing.push("Claude Code or Anthropic auth is not configured");
+  }
+  return missing;
+}
+
+function redactProbe(probe: Record<string, unknown>): Record<string, unknown> {
+  const redacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(probe)) {
+    redacted[key] = typeof value === "string" && key.toLowerCase().includes("url") ? redactUrl(value) : value;
+  }
+  return redacted;
 }
 
 async function checkCodexMcp(): Promise<Record<string, unknown>> {
@@ -949,6 +2374,198 @@ async function checkHttp(url: string, timeoutMs: number): Promise<Record<string,
     };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function checkAppServer(url: string, timeoutMs: number): Promise<Record<string, unknown>> {
+  const websocketUrl = normalizeAppServerWebSocketUrl(url);
+  if (!websocketUrl) {
+    return { attempted: true, configured: true, available: false, error: "unsupported_app_server_url" };
+  }
+  const client = new AppServerJsonRpcClient(websocketUrl, timeoutMs, appServerApprovalResult);
+  try {
+    await client.connect();
+    const initialize = await client.request("initialize", {
+      clientInfo: {
+        name: "coat_codex_runner_verify",
+        title: "COAT Codex Runner Verify",
+        version: "0.1.0",
+      },
+    });
+    client.notify("initialized", {});
+    return {
+      attempted: true,
+      configured: true,
+      available: true,
+      transport: "websocket",
+      url: redactUrl(websocketUrl),
+      initialized: isRecord(initialize),
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      configured: true,
+      available: false,
+      transport: "websocket",
+      url: redactUrl(websocketUrl),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    client.close();
+  }
+}
+
+class AppServerJsonRpcClient {
+  readonly messages: JsonRpcMessage[] = [];
+  readonly serverRequests: JsonRpcMessage[] = [];
+  readonly approvalReports: Record<string, unknown>[] = [];
+
+  private ws: WebSocket | null = null;
+  private nextId = 1;
+  private pending = new Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private waiters: Array<{
+    predicate: (message: JsonRpcMessage) => boolean;
+    resolve: (message: JsonRpcMessage) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }> = [];
+
+  constructor(
+    private readonly url: string,
+    private readonly timeoutMs: number,
+    private readonly serverRequestHandler: (request: JsonRpcMessage) => Record<string, unknown>,
+  ) {}
+
+  async connect(): Promise<void> {
+    if (typeof WebSocket !== "function") {
+      throw new Error("global WebSocket is unavailable; Node 22+ is required for Codex App Server live mode");
+    }
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(this.url);
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error(`timed out connecting to ${redactUrl(this.url)}`));
+      }, this.timeoutMs);
+      ws.addEventListener("open", () => {
+        clearTimeout(timer);
+        this.ws = ws;
+        resolve();
+      });
+      ws.addEventListener("message", (event) => this.handleMessage(event.data));
+      ws.addEventListener("error", () => {
+        clearTimeout(timer);
+        reject(new Error(`failed to connect to ${redactUrl(this.url)}`));
+      });
+      ws.addEventListener("close", () => {
+        this.rejectAll(new Error(`Codex App Server connection closed: ${redactUrl(this.url)}`));
+      });
+    });
+  }
+
+  request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Codex App Server request timed out: ${method}`));
+      }, this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.send({ id, method, ...(params === undefined ? {} : { params }) });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  notify(method: string, params?: Record<string, unknown>): void {
+    this.send({ method, ...(params === undefined ? {} : { params }) });
+  }
+
+  waitFor(predicate: (message: JsonRpcMessage) => boolean): Promise<JsonRpcMessage> {
+    for (const message of this.messages) {
+      if (predicate(message)) return Promise.resolve(message);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((waiter) => waiter.resolve !== resolve);
+        reject(new Error("timed out waiting for Codex App Server notification"));
+      }, this.timeoutMs);
+      this.waiters.push({ predicate, resolve, reject, timer });
+    });
+  }
+
+  close(): void {
+    this.ws?.close();
+    this.ws = null;
+  }
+
+  private send(message: JsonRpcMessage): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("Codex App Server websocket is not open");
+    }
+    this.ws.send(JSON.stringify(message));
+  }
+
+  private handleMessage(data: unknown): void {
+    const text = typeof data === "string" ? data : Buffer.from(data as ArrayBuffer).toString("utf8");
+    const message = JSON.parse(text) as JsonRpcMessage;
+    this.messages.push(message);
+
+    const id = numberValue(message.id);
+    if (id !== null && !("method" in message)) {
+      const pending = this.pending.get(id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pending.delete(id);
+      if (isRecord(message.error)) {
+        pending.reject(new Error(stringValue(message.error.message) ?? JSON.stringify(message.error)));
+      } else {
+        pending.resolve(message.result ?? {});
+      }
+      return;
+    }
+
+    if (id !== null && typeof message.method === "string") {
+      this.serverRequests.push(message);
+      const result = this.serverRequestHandler(message);
+      this.approvalReports.push({
+        method: message.method,
+        request_id: id,
+        result,
+      });
+      this.send({ id, result });
+      return;
+    }
+
+    for (const waiter of [...this.waiters]) {
+      if (!waiter.predicate(message)) continue;
+      clearTimeout(waiter.timer);
+      this.waiters = this.waiters.filter((candidate) => candidate !== waiter);
+      waiter.resolve(message);
+    }
+  }
+
+  private rejectAll(error: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    for (const waiter of this.waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.waiters = [];
   }
 }
 
@@ -1055,10 +2672,25 @@ function buildRegistration(): RunnerRegistration {
         labels: {},
       },
     ] satisfies ModelCandidate[]),
-    labels: parseJsonEnv("RUNNER_LABELS_JSON", { pool: "default", runtime: "codex" }),
+    labels: buildRunnerLabels(),
     mcp_servers: parseJsonEnv("RUNNER_MCP_SERVERS_JSON", [] satisfies McpServerRef[]),
     max_concurrency: maxConcurrency,
     lease_ttl_seconds: leaseTtlSeconds,
+  };
+}
+
+function buildRunnerLabels(): Record<string, string> {
+  const configured = parseJsonEnv<Record<string, string>>("RUNNER_LABELS_JSON", {});
+  const mode = runnerMode();
+  const authMode = process.env.CODEX_AUTH_MODE ?? "env_api_key";
+  return {
+    pool: "default",
+    runtime: "codex",
+    ...configured,
+    mode,
+    "runner.mode": mode,
+    "auth.codex.mode": authMode,
+    "auth.codex.app_server": String(authMode === "app_server" && Boolean(process.env.CODEX_APP_SERVER_URL)),
   };
 }
 
@@ -1076,15 +2708,43 @@ function buildCapabilities(): Record<string, unknown> {
   return {
     runner_id: runnerId,
     node_id: nodeId,
-    mode,
+    mode: runnerMode(),
     running_tasks: runningTasks,
     capacity_remaining: Math.max(maxConcurrency - runningTasks, 0),
     endpoints: ["/healthz", "/registration", "/capabilities", "/verify", "/run-task"],
     registration,
+    execution_modes: {
+      active: runnerMode(),
+      stub: {
+        explicit: runnerMode() === "stub",
+        local_smoke_only: true,
+      },
+      replay: {
+        enabled: runnerMode() === "replay",
+        fixture: process.env.CODEX_REPLAY_FIXTURE ?? "examples/codex-app-server-replay.json",
+      },
+      mcp_replay: {
+        enabled: runnerMode() === "mcp-replay",
+        fixture: process.env.CODEX_MCP_REPLAY_FIXTURE ?? "examples/codex-mcp-fallback-replay.json",
+      },
+      live_app_server: {
+        enabled: runnerMode() === "live",
+        auth_mode: process.env.CODEX_AUTH_MODE ?? "env_api_key",
+        configured: Boolean(process.env.CODEX_APP_SERVER_URL),
+        url: process.env.CODEX_APP_SERVER_URL ? redactUrl(process.env.CODEX_APP_SERVER_URL) : null,
+        supported_transports: ["ws", "wss"],
+      },
+    },
     package_verification: {
       endpoint: "/verify",
       package: "@openai/codex-sdk",
-      live_execution_requires: ["Codex CLI or App Server", "OpenAI credentials", "isolated workspace"],
+      provider_profiles: configuredProviderVerificationLanes(),
+      live_execution_requires: [
+        "CODEX_RUNNER_MODE=live",
+        "CODEX_AUTH_MODE=app_server",
+        "CODEX_APP_SERVER_URL",
+        "isolated task workspace",
+      ],
     },
     model_routing: {
       providers: [...new Set(registration.models.map((model) => model.provider))],
@@ -1252,8 +2912,41 @@ function isSecretRef(value: unknown): value is SecretRef {
   return isRecord(value) && typeof value.name === "string";
 }
 
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username) url.username = "redacted";
+    if (url.password) url.password = "redacted";
+    for (const key of [...url.searchParams.keys()]) {
+      if (key.toLowerCase().includes("token") || key.toLowerCase().includes("secret")) {
+        url.searchParams.set(key, "redacted");
+      }
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function isMainModule(): boolean {
+  const entrypoint = process.argv[1];
+  return Boolean(entrypoint) && fileURLToPath(import.meta.url) === entrypoint;
 }
 
 function parseJsonEnv<T>(name: string, fallback: T): T {

@@ -210,11 +210,15 @@ cat >"$tmpdir/event-source.json" <<'JSON'
   "schedule": null,
   "calendar": null,
   "route": {
-    "mode": "human_review",
-    "goal_template": null,
+    "mode": "create_goal",
+    "goal_template": {
+      "title_template": "Investigate {{event_type}} from {{source_id}}",
+      "objective_template": "Investigate event {{event_id}} from {{source_id}}: {{subject}}",
+      "repo": null
+    },
     "target_goal_id": null,
     "steering_directive": null,
-    "require_approval": true,
+    "require_approval": false,
     "dedupe_window_seconds": 3600
   }
 }
@@ -256,6 +260,19 @@ curl -fsS "$goal_store_url/healthz" >"$tmpdir/goal-store-health.json"
 curl -fsS "$event_gateway_url/events?source_id=ci-events" >"$tmpdir/events.json"
 curl -fsS "$event_gateway_url/triggers" >"$tmpdir/triggers.json"
 curl -fsS "$goal_store_url/goal-store/event-source-approvals?source_id=ci-events" >"$tmpdir/event-source-approvals.json"
+goal_id=$(python3 - "$tmpdir/emit-response.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    response = json.load(handle)
+goal_id = response.get("goal_id")
+if not goal_id:
+    raise SystemExit("emit response did not include projected goal_id")
+print(goal_id)
+PY
+)
+curl -fsS "$goal_store_url/goal-store/goals/$goal_id/events" >"$tmpdir/goal-events.json"
 
 python3 - "$tmpdir" "$event_gateway_journal" "$goal_store_journal" <<'PY'
 import json
@@ -286,7 +303,9 @@ require(goal_store_health["backend"] == "jsonl", goal_store_health)
 registered = load("register-source.json")
 require(registered["id"] == "ci-events", registered)
 require(registered["enabled"] is True, registered)
-require(registered["route"]["mode"] == "human_review", registered)
+require(registered["route"]["mode"] == "create_goal", registered)
+require(registered["route"]["require_approval"] is False, registered)
+require(registered["route"]["goal_template"]["title_template"].startswith("Investigate"), registered)
 
 approval_records = load("event-source-approvals.json")["records"]
 require(len(approval_records) == 1, approval_records)
@@ -296,14 +315,20 @@ require(approval["approval_ref"] == "smoke-approval-120", approval)
 require(approval["operator"] == "local-smoke", approval)
 require(approval["risky"] is True, approval)
 require(approval["status"] == "provided", approval)
-require(approval["payload_json"]["route_mode"] == "human_review", approval)
-require(approval["payload_json"]["route_requires_approval"] is True, approval)
+require(approval["payload_json"]["route_mode"] == "create_goal", approval)
+require(approval["payload_json"]["route_requires_approval"] is False, approval)
 
 emit = load("emit-response.json")
 require(emit["accepted"] is True, emit)
-require(emit["status"] == "awaiting_human_review", emit)
+require(emit["status"] == "recorded", emit)
 require(emit["event_id"] == "ci-run-12345", emit)
 require(emit["deduped"] is False, emit)
+goal_id = emit["goal_id"]
+require(goal_id, emit)
+require(
+    emit["diagnostics"] == ["COAT_RESTATE_INGRESS is not configured; goal recorded only"],
+    emit,
+)
 
 duplicate = load("emit-duplicate-response.json")
 require(duplicate["accepted"] is True, duplicate)
@@ -324,8 +349,25 @@ require(event["occurred_at"] == "2026-05-06T22:15:00Z", event)
 require(event["payload"]["workflow"] == "cargo-test", event)
 
 triggers = load("triggers.json")
-require([trigger["status"] for trigger in triggers] == ["awaiting_human_review", "deduped"], triggers)
+require([trigger["status"] for trigger in triggers] == ["recorded", "deduped"], triggers)
 require([trigger["event_id"] for trigger in triggers] == ["ci-run-12345", "ci-run-12345"], triggers)
+require(triggers[0]["goal_id"] == goal_id, triggers)
+require(triggers[1]["goal_id"] is None, triggers)
+
+goal_events = load("goal-events.json")
+require(goal_events["goal_id"] == goal_id, goal_events)
+require(len(goal_events["events"]) == 1, goal_events)
+projection = goal_events["events"][0]
+require(projection["goal_id"] == goal_id, projection)
+require(projection["task_id"] is None, projection)
+require(projection["kind"] == "state_projected", projection)
+require(projection["actor"] == "coat-event-gateway", projection)
+require(projection["message"] == "event_gateway_trigger_recorded:ci-run-12345", projection)
+require(projection["idempotency_key"].startswith("event-gateway:trigger:"), projection)
+require(projection["payload_json"]["projection_source"] == "event_gateway", projection)
+require(projection["payload_json"]["trigger"]["event_id"] == "ci-run-12345", projection)
+require(projection["payload_json"]["trigger"]["status"] == "recorded", projection)
+require(projection["payload_json"]["trigger"]["goal_id"] == goal_id, projection)
 
 gateway_entries = [
     json.loads(line)
@@ -334,7 +376,8 @@ gateway_entries = [
 ]
 require([entry["type"] for entry in gateway_entries] == ["source", "event", "trigger", "trigger"], gateway_entries)
 require(gateway_entries[1]["id"] == "ci-run-12345", gateway_entries[1])
-require(gateway_entries[2]["status"] == "awaiting_human_review", gateway_entries[2])
+require(gateway_entries[2]["status"] == "recorded", gateway_entries[2])
+require(gateway_entries[2]["goal_id"] == goal_id, gateway_entries[2])
 require(gateway_entries[3]["status"] == "deduped", gateway_entries[3])
 
 store_entries = [
@@ -342,9 +385,12 @@ store_entries = [
     for line in goal_store_journal.read_text().splitlines()
     if line.strip()
 ]
-require(len(store_entries) == 1, store_entries)
+require(len(store_entries) == 2, store_entries)
 require(store_entries[0]["type"] == "event_source_approval", store_entries)
 require(store_entries[0]["source_id"] == "ci-events", store_entries[0])
+require(store_entries[1]["type"] == "event", store_entries)
+require(store_entries[1]["event"]["goal_id"] == goal_id, store_entries[1])
+require(store_entries[1]["event"]["payload_json"]["trigger"]["status"] == "recorded", store_entries[1])
 
 print("event gateway smoke assertions passed")
 PY

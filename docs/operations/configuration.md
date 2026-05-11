@@ -139,6 +139,7 @@ coat --config-profile restate-cloud plan list
 coat --config-profile restate-cloud human notify --queue
 coat --config-profile local memory search --file examples/memory-search.json
 coat --config-profile local runner list
+coat --config-profile local tool list
 ```
 
 Explicit endpoint flags still override profile values:
@@ -151,9 +152,9 @@ coat goal progress \
 ```
 
 The resolved config can set defaults for Restate ingress, goal store, event
-gateway, memory gateway, runner registry, notifier, sandbox runner, and the
-control MCP gateway. Avoid placing endpoint defaults in direnv. Environment
-variables remain available for secrets, process runtime boundaries, and rare
+gateway, memory gateway, runner registry, tool registry, notifier, sandbox
+runner, and the control MCP gateway. Avoid placing endpoint defaults in direnv.
+Environment variables remain available for secrets, process runtime boundaries, and rare
 one-off overrides, but project and operator defaults should live in COAT config.
 
 ## Initialization Policy

@@ -60,7 +60,7 @@ spec:
                 secretKeyRef:
                   name: jattg-restate-service-identity
                   key: RESTATE_SIGNING_PUBLIC_KEY
-            - name: COAT_RUNNER_REGISTRY
+            - name: COAT_RUNNER_REGISTRY_URL
               value: http://runner-registry:9085
             - name: COAT_NOTIFIER_URL
               value: http://notifier:9086

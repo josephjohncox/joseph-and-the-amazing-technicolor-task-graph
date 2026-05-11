@@ -28,9 +28,9 @@ use coat_domain::{
     ArtifactKind, ArtifactRef, GitResultPolicy, GitResultRef,
     KubernetesExecutorJobProvisionRequest, KubernetesExecutorJobProvisionResponse,
     KubernetesObjectRef, KubernetesProvisionMode, KubernetesProvisionStatus, LocalToolPolicy,
-    NetworkAccess, ObjectStorageArtifactRef, ObjectStoragePolicy, SandboxAttestation,
-    SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan,
-    SandboxSecurityPlan,
+    NetworkAccess, ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreRef,
+    SandboxAttestation, SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan, SandboxProfile,
+    SandboxResourcePlan, SandboxSecurityPlan,
 };
 use k8s_openapi::api::{batch::v1::Job, core::v1::ConfigMap};
 use kube::{
@@ -297,30 +297,13 @@ async fn create_workspace_inner(
                 .push(format!("live git worktree creation skipped: {error}")),
         }
     }
-    let object_prefix = request
-        .object_storage
-        .store
-        .clone()
-        .filter(|_| request.object_storage.enabled)
-        .map(|store| {
-            let prefix = request
-                .object_storage
-                .key_prefix_template
-                .replace("{goal_id}", &request.goal_id.to_string())
-                .replace("{task_id}", &request.task_id.to_string())
-                .trim_matches('/')
-                .to_string();
-            let key = format!("{prefix}/artifact-manifest.json");
-            ObjectStorageArtifactRef {
-                uri: format!("s3://{}/{}", store.bucket, key),
-                store,
-                key,
-                content_type: Some("application/json".to_string()),
-                size_bytes: None,
-                sha256: None,
-                description: "task object artifact manifest prefix".to_string(),
-            }
-        });
+    let object_storage = request.object_storage.clone();
+    let object_prefix =
+        object_storage_artifact_manifest_ref(&object_storage, request.goal_id, request.task_id);
+    if let Some(warning) = object_storage_contract_warning(&object_storage, object_prefix.as_ref())
+    {
+        attestation.warnings.push(warning);
+    }
     let launch_plan = sandbox_launch_plan(
         request.goal_id,
         request.task_id,
@@ -357,6 +340,7 @@ async fn create_workspace_inner(
     write_workspace_manifest(&path_buf, &record).await?;
     write_launch_plan(&path_buf, &launch_plan).await?;
     write_checkpoint_manifest(&path_buf, &record).await?;
+    write_artifact_manifest(&path_buf, &record, &object_storage).await?;
     Ok(WorkspaceResponse {
         workspace_id,
         path: path.clone(),
@@ -401,30 +385,17 @@ async fn launch_plan(
     } else {
         None
     };
-    let object_prefix = request
-        .object_storage
-        .store
-        .clone()
-        .filter(|_| request.object_storage.enabled)
-        .map(|store| {
-            let prefix = request
-                .object_storage
-                .key_prefix_template
-                .replace("{goal_id}", &request.goal_id.to_string())
-                .replace("{task_id}", &request.task_id.to_string())
-                .trim_matches('/')
-                .to_string();
-            let key = format!("{prefix}/artifact-manifest.json");
-            ObjectStorageArtifactRef {
-                uri: format!("s3://{}/{}", store.bucket, key),
-                store,
-                key,
-                content_type: Some("application/json".to_string()),
-                size_bytes: None,
-                sha256: None,
-                description: "task object artifact manifest prefix".to_string(),
-            }
-        });
+    let object_prefix = object_storage_artifact_manifest_ref(
+        &request.object_storage,
+        request.goal_id,
+        request.task_id,
+    );
+    let mut warnings = attestation.warnings;
+    if let Some(warning) =
+        object_storage_contract_warning(&request.object_storage, object_prefix.as_ref())
+    {
+        warnings.push(warning);
+    }
     Json(sandbox_launch_plan(
         request.goal_id,
         request.task_id,
@@ -433,7 +404,7 @@ async fn launch_plan(
         &request.sandbox,
         git_result,
         object_prefix,
-        attestation.warnings,
+        warnings,
     ))
 }
 
@@ -1487,10 +1458,21 @@ async fn snapshot_inner(state: &AppState, workspace_id: Uuid) -> ArtifactRef {
             let latest_path = snapshot_dir.join("latest.json");
             let manifest = serde_json::json!({
                 "workspace_id": workspace_id,
-                "path": record.path,
+                "path": record.path.clone(),
                 "snapshot_created_at_unix_seconds": unix_seconds(),
                 "artifact_uri": format!("workspace://{workspace_id}/snapshot/latest"),
-                "object_prefix": record.object_prefix,
+                "object_prefix": record.object_prefix.clone(),
+                "object_upload": object_upload_contract(
+                    "workspace_snapshot_manifest",
+                    record.object_prefix.as_ref().map(|object_prefix| {
+                        object_artifact_ref_for_relative_key(
+                            object_prefix,
+                            "snapshots/latest.json",
+                            "workspace snapshot manifest upload target",
+                        )
+                    }),
+                    "workspace snapshot manifest upload target",
+                ),
             });
             let (description, sha256) = match serde_json::to_vec_pretty(&manifest) {
                 Ok(bytes) => {
@@ -1747,6 +1729,82 @@ async fn write_checkpoint_manifest(
     Ok(())
 }
 
+async fn write_artifact_manifest(
+    path: &std::path::Path,
+    record: &WorkspaceRecord,
+    object_storage: &ObjectStoragePolicy,
+) -> anyhow::Result<()> {
+    let manifest_path = path.join("artifacts/artifact-manifest.json");
+    let snapshot_object = record.object_prefix.as_ref().map(|object_prefix| {
+        object_artifact_ref_for_relative_key(
+            object_prefix,
+            "snapshots/latest.json",
+            "workspace snapshot manifest upload target",
+        )
+    });
+    let planned_object_artifacts: Vec<serde_json::Value> = [
+        record.object_prefix.as_ref().map(|object| {
+            object_upload_contract(
+                "artifact_manifest",
+                Some(object.clone()),
+                "artifact manifest object upload target",
+            )
+        }),
+        snapshot_object.clone().map(|object| {
+            object_upload_contract(
+                "workspace_snapshot_manifest",
+                Some(object),
+                "workspace snapshot manifest upload target",
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let upload_status = object_storage_upload_status(object_storage, record.object_prefix.as_ref());
+    let manifest = serde_json::json!({
+        "schema": "coat.object_artifact_manifest.v1",
+        "goal_id": record.goal_id,
+        "task_id": record.task_id,
+        "workspace_id": record.workspace_id,
+        "created_at_unix_seconds": record.created_at_unix_seconds,
+        "workspace_uri": format!("workspace://{}", record.workspace_id),
+        "object_storage": {
+            "requested": object_storage.enabled,
+            "store_configured": record.object_prefix.is_some(),
+            "manifest_required": object_storage.require_manifest,
+            "max_inline_bytes": object_storage.max_inline_bytes,
+            "upload_status": upload_status,
+            "upload_performed_by_sandbox_runner": false,
+            "manifest_object": record.object_prefix,
+            "snapshot_object": snapshot_object,
+            "note": "local sandbox-runner writes this manifest as a validation contract; object upload is performed by an external uploader when configured"
+        },
+        "workspace_artifacts": [
+            {
+                "kind": "workspace_manifest",
+                "uri": format!("workspace://{}/workspace-manifest", record.workspace_id),
+                "path": path.join("workspace-manifest.json").display().to_string()
+            },
+            {
+                "kind": "sandbox_launch_plan",
+                "uri": format!("workspace://{}/sandbox-launch-plan", record.workspace_id),
+                "path": path.join("sandbox-launch-plan.json").display().to_string()
+            },
+            {
+                "kind": "workspace_snapshot_manifest",
+                "uri": format!("workspace://{}/snapshot/latest", record.workspace_id),
+                "path": path.join("snapshots/latest.json").display().to_string()
+            }
+        ],
+        "planned_object_artifacts": planned_object_artifacts,
+        "artifacts": []
+    });
+    let bytes = serde_json::to_vec_pretty(&manifest)?;
+    tokio::fs::write(manifest_path, bytes).await?;
+    Ok(())
+}
+
 fn sandbox_launch_plan(
     goal_id: Uuid,
     task_id: Uuid,
@@ -1827,6 +1885,132 @@ fn sandbox_launch_plan(
         object_prefix,
         warnings,
     }
+}
+
+fn object_storage_artifact_manifest_ref(
+    policy: &ObjectStoragePolicy,
+    goal_id: Uuid,
+    task_id: Uuid,
+) -> Option<ObjectStorageArtifactRef> {
+    let store = policy.store.clone().filter(|_| policy.enabled)?;
+    let key_prefix = object_key_prefix(policy, goal_id, task_id);
+    let key = join_object_key_parts(&[&key_prefix, "artifact-manifest.json"]);
+    Some(object_artifact_ref(
+        store,
+        key,
+        "application/json",
+        "planned task artifact manifest object; upload is external to sandbox runner",
+    ))
+}
+
+fn object_artifact_ref_for_relative_key(
+    manifest_object: &ObjectStorageArtifactRef,
+    relative_key: &str,
+    description: &str,
+) -> ObjectStorageArtifactRef {
+    let key_prefix = object_prefix_from_manifest_key(&manifest_object.key);
+    let key = join_object_key_parts(&[&key_prefix, relative_key]);
+    object_artifact_ref(
+        manifest_object.store.clone(),
+        key,
+        "application/json",
+        description,
+    )
+}
+
+fn object_artifact_ref(
+    store: ObjectStoreRef,
+    key: String,
+    content_type: &str,
+    description: &str,
+) -> ObjectStorageArtifactRef {
+    ObjectStorageArtifactRef {
+        uri: format!("s3://{}/{}", store.bucket, key),
+        store,
+        key,
+        content_type: Some(content_type.to_string()),
+        size_bytes: None,
+        sha256: None,
+        description: description.to_string(),
+    }
+}
+
+fn object_key_prefix(policy: &ObjectStoragePolicy, goal_id: Uuid, task_id: Uuid) -> String {
+    let store_prefix = policy
+        .store
+        .as_ref()
+        .and_then(|store| store.prefix.as_deref())
+        .unwrap_or_default();
+    let task_prefix = policy
+        .key_prefix_template
+        .replace("{goal_id}", &goal_id.to_string())
+        .replace("{task_id}", &task_id.to_string());
+    join_object_key_parts(&[store_prefix, &task_prefix])
+}
+
+fn object_prefix_from_manifest_key(key: &str) -> String {
+    key.strip_suffix("/artifact-manifest.json")
+        .or_else(|| key.strip_suffix("artifact-manifest.json"))
+        .unwrap_or(key)
+        .trim_matches('/')
+        .to_string()
+}
+
+fn join_object_key_parts(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .map(|part| part.trim_matches('/'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn object_storage_upload_status(
+    policy: &ObjectStoragePolicy,
+    object_prefix: Option<&ObjectStorageArtifactRef>,
+) -> &'static str {
+    if !policy.enabled {
+        "disabled"
+    } else if object_prefix.is_some() {
+        "planned_external_upload"
+    } else {
+        "missing_store"
+    }
+}
+
+fn object_storage_contract_warning(
+    policy: &ObjectStoragePolicy,
+    object_prefix: Option<&ObjectStorageArtifactRef>,
+) -> Option<String> {
+    if !policy.enabled {
+        None
+    } else if object_prefix.is_some() {
+        Some(
+            "object storage upload is not performed by sandbox-runner; returning planned object refs for an external uploader"
+                .to_string(),
+        )
+    } else {
+        Some("object storage was requested but no object store was configured".to_string())
+    }
+}
+
+fn object_upload_contract(
+    role: &str,
+    object: Option<ObjectStorageArtifactRef>,
+    description: &str,
+) -> serde_json::Value {
+    let upload_status = if object.is_some() {
+        "planned_external_upload"
+    } else {
+        "disabled"
+    };
+    serde_json::json!({
+        "role": role,
+        "description": description,
+        "upload_status": upload_status,
+        "upload_performed_by_sandbox_runner": false,
+        "object": object
+    })
 }
 
 fn unix_seconds() -> u64 {
@@ -2116,7 +2300,7 @@ mod tests {
     use super::*;
     use coat_domain::{
         KubernetesExecutorJobProvisionRequest, KubernetesProvisionMode, LocalToolCategory,
-        LocalToolPermission, LocalToolRisk, RunnerCapability,
+        LocalToolPermission, LocalToolRisk, ObjectStoreKind, RunnerCapability,
     };
 
     #[tokio::test]
@@ -2196,6 +2380,135 @@ mod tests {
 
         let cleanup_again = cleanup_inner(&state, first.workspace_id).await;
         assert_eq!(cleanup_again["status"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn object_storage_contract_writes_local_manifest_without_live_upload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = AppState {
+            workspace_root: temp.path().to_path_buf(),
+            supported_backends: vec![SandboxBackend::LocalWorkspace],
+            enable_live_git_worktrees: false,
+            require_live_git_worktree_approval: true,
+            approved_git_repo_roots: Vec::new(),
+            enable_local_command_execution: false,
+            require_command_approval: true,
+            allowed_local_binaries: parse_allowed_local_binaries(),
+            command_timeout_seconds: 600,
+            command_max_output_bytes: 65_536,
+            enable_kubernetes_provisioner: false,
+        };
+        let goal_id = Uuid::new_v4();
+        let task_id = Uuid::new_v4();
+        let object_storage = ObjectStoragePolicy {
+            enabled: true,
+            store: Some(ObjectStoreRef {
+                kind: ObjectStoreKind::Minio,
+                bucket: "jattg-artifacts".to_string(),
+                prefix: Some("local-contracts".to_string()),
+                endpoint: Some("http://object-store:9000".to_string()),
+                region: Some("us-east-1".to_string()),
+                force_path_style: true,
+                secret_ref: None,
+            }),
+            key_prefix_template: "/goals/{goal_id}/tasks/{task_id}/".to_string(),
+            require_manifest: true,
+            max_inline_bytes: 1024,
+        };
+        let request = CreateWorkspaceRequest {
+            goal_id,
+            task_id,
+            repo: None,
+            sandbox: SandboxProfile::default(),
+            git: GitResultPolicy::default(),
+            object_storage,
+            live_git_worktree: LiveGitWorktreePolicy::default(),
+        };
+
+        let response = create_workspace_inner(&state, request)
+            .await
+            .expect("workspace with object contract");
+        let object_prefix = response.object_prefix.as_ref().expect("object prefix ref");
+        let expected_prefix = format!("local-contracts/goals/{goal_id}/tasks/{task_id}");
+        let expected_manifest_key = format!("{expected_prefix}/artifact-manifest.json");
+        let expected_snapshot_key = format!("{expected_prefix}/snapshots/latest.json");
+        let expected_manifest_uri = format!("s3://jattg-artifacts/{expected_manifest_key}");
+        let expected_snapshot_uri = format!("s3://jattg-artifacts/{expected_snapshot_key}");
+
+        assert_eq!(object_prefix.key, expected_manifest_key);
+        assert_eq!(object_prefix.uri, expected_manifest_uri);
+        assert_eq!(
+            response
+                .launch_plan
+                .object_prefix
+                .as_ref()
+                .expect("launch plan object prefix")
+                .key,
+            expected_manifest_key
+        );
+        assert!(
+            response
+                .attestation
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("not performed by sandbox-runner"))
+        );
+
+        let artifact_manifest_path =
+            PathBuf::from(&response.path).join("artifacts/artifact-manifest.json");
+        let artifact_manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&artifact_manifest_path).expect("artifact manifest"),
+        )
+        .expect("artifact manifest JSON");
+        assert_eq!(
+            artifact_manifest["object_storage"]["upload_status"].as_str(),
+            Some("planned_external_upload")
+        );
+        assert_eq!(
+            artifact_manifest["object_storage"]["upload_performed_by_sandbox_runner"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            artifact_manifest["object_storage"]["manifest_object"]["uri"].as_str(),
+            Some(expected_manifest_uri.as_str())
+        );
+        assert_eq!(
+            artifact_manifest["object_storage"]["snapshot_object"]["key"].as_str(),
+            Some(expected_snapshot_key.as_str())
+        );
+        assert!(
+            artifact_manifest["artifacts"]
+                .as_array()
+                .expect("worker artifacts array")
+                .is_empty()
+        );
+        assert_eq!(
+            artifact_manifest["planned_object_artifacts"]
+                .as_array()
+                .expect("planned object artifacts")
+                .len(),
+            2
+        );
+
+        let snapshot = snapshot_inner(&state, response.workspace_id).await;
+        assert!(snapshot.sha256.is_some());
+        let snapshot_manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(PathBuf::from(&response.path).join("snapshots/latest.json"))
+                .expect("snapshot manifest"),
+        )
+        .expect("snapshot manifest JSON");
+        assert_eq!(
+            snapshot_manifest["object_upload"]["upload_status"].as_str(),
+            Some("planned_external_upload")
+        );
+        assert_eq!(
+            snapshot_manifest["object_upload"]["upload_performed_by_sandbox_runner"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot_manifest["object_upload"]["object"]["uri"].as_str(),
+            Some(expected_snapshot_uri.as_str())
+        );
     }
 
     #[tokio::test]

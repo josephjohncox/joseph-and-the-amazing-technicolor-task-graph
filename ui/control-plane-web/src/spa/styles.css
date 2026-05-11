@@ -899,6 +899,11 @@ label {
   gap: 14px;
 }
 
+.panel-stack {
+  display: grid;
+  gap: 14px;
+}
+
 .table-wrap {
   overflow: auto;
 }

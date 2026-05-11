@@ -2080,6 +2080,151 @@ mod tests {
         assert!(score > 0.6);
     }
 
+    #[tokio::test]
+    async fn live_qdrant_adapter_round_trips_when_enabled() {
+        let Some(state) = live_qdrant_state_from_env() else {
+            return;
+        };
+        let goal_id = Uuid::new_v4();
+        let key = format!("live-qdrant-{goal_id}");
+        let request = MemoryWriteRequest {
+            goal_id,
+            task_id: None,
+            scope: MemoryScope::Goal,
+            key: Some(key.clone()),
+            episode: MemoryEpisode {
+                title: "Live Qdrant adapter test".to_string(),
+                content: format!(
+                    "Live Qdrant memory adapter round-trip marker {key} for COAT validation."
+                ),
+                source: MemoryEpisodeSource {
+                    source_type: MemoryEpisodeSourceType::Tool,
+                    uri: Some("test://memory-gateway/live-qdrant".to_string()),
+                    actor: Some("coat-memory-gateway-test".to_string()),
+                },
+                artifacts: Vec::new(),
+                tags: vec!["live".to_string(), "qdrant".to_string()],
+            },
+            store: None,
+        };
+
+        let write = write_memory_with_adapters(&state, request)
+            .await
+            .expect("write through live Qdrant adapter");
+        assert_adapter_success(
+            &write.adapter_reports,
+            MemoryStoreKind::Qdrant,
+            "memory_write_vector",
+        );
+
+        let search = search_memory_with_adapters(
+            &state,
+            MemorySearchRequest {
+                goal_id,
+                task_id: None,
+                query: format!("COAT validation marker {key}"),
+                scopes: vec![MemoryScope::Goal],
+                limit: Some(5),
+                store: None,
+            },
+        )
+        .await
+        .expect("search through live Qdrant adapter");
+        assert_adapter_success(
+            &search.adapter_reports,
+            MemoryStoreKind::Qdrant,
+            "memory_search_vector",
+        );
+        assert!(
+            search.hits.iter().any(|hit| hit.key == key),
+            "live Qdrant search should return the written key {key}; hits: {:?}",
+            search.hits
+        );
+    }
+
+    #[tokio::test]
+    async fn live_graphiti_adapter_round_trips_when_enabled() {
+        let Some(state) = live_graphiti_state_from_env() else {
+            return;
+        };
+        let goal_id = Uuid::new_v4();
+        let key = format!("live-graphiti-{goal_id}");
+        let request = MemoryWriteRequest {
+            goal_id,
+            task_id: None,
+            scope: MemoryScope::Goal,
+            key: Some(key.clone()),
+            episode: MemoryEpisode {
+                title: "Live Graphiti adapter test".to_string(),
+                content: format!(
+                    "Live Graphiti memory adapter round-trip marker {key} for COAT validation."
+                ),
+                source: MemoryEpisodeSource {
+                    source_type: MemoryEpisodeSourceType::Tool,
+                    uri: Some("test://memory-gateway/live-graphiti".to_string()),
+                    actor: Some("coat-memory-gateway-test".to_string()),
+                },
+                artifacts: Vec::new(),
+                tags: vec!["live".to_string(), "graphiti".to_string()],
+            },
+            store: Some(MemoryStoreRef {
+                kind: MemoryStoreKind::ZepGraphiti,
+                endpoint: None,
+                namespace: Some(state.config.graphiti_group_id.clone()),
+                mcp_server_name: Some("graphiti".to_string()),
+                secret_refs: Vec::new(),
+            }),
+        };
+
+        let write = write_memory_with_adapters(&state, request)
+            .await
+            .expect("write through live Graphiti adapter");
+        assert_adapter_success(
+            &write.adapter_reports,
+            MemoryStoreKind::ZepGraphiti,
+            "memory_write",
+        );
+
+        let search = search_memory_with_adapters(
+            &state,
+            MemorySearchRequest {
+                goal_id,
+                task_id: None,
+                query: format!("COAT validation marker {key}"),
+                scopes: vec![MemoryScope::Goal],
+                limit: Some(5),
+                store: Some(MemoryStoreRef {
+                    kind: MemoryStoreKind::ZepGraphiti,
+                    endpoint: None,
+                    namespace: Some(state.config.graphiti_group_id.clone()),
+                    mcp_server_name: Some("graphiti".to_string()),
+                    secret_refs: Vec::new(),
+                }),
+            },
+        )
+        .await
+        .expect("search through live Graphiti adapter");
+        assert_adapter_success(
+            &search.adapter_reports,
+            MemoryStoreKind::ZepGraphiti,
+            "memory_search_nodes",
+        );
+        assert_adapter_success(
+            &search.adapter_reports,
+            MemoryStoreKind::ZepGraphiti,
+            "memory_search_facts",
+        );
+        assert!(
+            search
+                .hits
+                .iter()
+                .any(|hit| hit.key == key && hit.summary.contains(&key)),
+            "local search should return the live Graphiti marker key {key}; hits: {:?}",
+            search.hits
+        );
+        assert_graphiti_search_contains_marker(&state, &key).await;
+    }
+
     #[test]
     fn qdrant_filter_scopes_goal_and_memory_scope() {
         let goal_id = Uuid::new_v4();
@@ -2627,5 +2772,164 @@ mod tests {
         let record = replayed.records.get("durable").expect("record replayed");
         assert!(record.promoted);
         assert_eq!(replayed.events.get(&goal_id).expect("events").len(), 3);
+    }
+
+    fn live_qdrant_state_from_env() -> Option<AppState> {
+        if !env_flag("COAT_LIVE_QDRANT_MEMORY_TEST") {
+            return None;
+        }
+        Some(AppState {
+            memory: Arc::new(RwLock::new(MemoryStore::default())),
+            config: AppConfig {
+                bearer_token: None,
+                journal_path: None,
+                graphiti_mcp_url: None,
+                graphiti_group_id: "jattg-live-test".to_string(),
+                graphiti_token: None,
+                qdrant_url: Some(required_env("MEMORY_GATEWAY_QDRANT_URL")),
+                qdrant_collection: std::env::var("MEMORY_GATEWAY_QDRANT_COLLECTION")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "jattg_memory_live_test".to_string()),
+                qdrant_token: std::env::var("MEMORY_GATEWAY_QDRANT_TOKEN")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty()),
+                embedding_url: Some(required_env("MEMORY_GATEWAY_EMBEDDING_URL")),
+                embedding_model: required_env("MEMORY_GATEWAY_EMBEDDING_MODEL"),
+                embedding_dimensions: required_env("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")
+                    .parse()
+                    .expect("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS must be a positive integer"),
+                embedding_token: std::env::var("MEMORY_GATEWAY_EMBEDDING_TOKEN")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| {
+                        std::env::var("OPENAI_API_KEY")
+                            .ok()
+                            .filter(|value| !value.trim().is_empty())
+                    }),
+                embedding_send_dimensions: env_flag("MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS"),
+            },
+            client: live_test_client(),
+        })
+    }
+
+    fn live_graphiti_state_from_env() -> Option<AppState> {
+        if !env_flag("COAT_LIVE_GRAPHITI_MEMORY_TEST") {
+            return None;
+        }
+        Some(AppState {
+            memory: Arc::new(RwLock::new(MemoryStore::default())),
+            config: AppConfig {
+                bearer_token: None,
+                journal_path: None,
+                graphiti_mcp_url: Some(required_env("MEMORY_GATEWAY_GRAPHITI_MCP_URL")),
+                graphiti_group_id: std::env::var("MEMORY_GATEWAY_GRAPHITI_GROUP_ID")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "jattg-live-test".to_string()),
+                graphiti_token: std::env::var("MEMORY_GATEWAY_GRAPHITI_TOKEN")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty()),
+                qdrant_url: None,
+                qdrant_collection: "jattg_memory_live_test".to_string(),
+                qdrant_token: None,
+                embedding_url: None,
+                embedding_model: String::new(),
+                embedding_dimensions: 0,
+                embedding_token: None,
+                embedding_send_dimensions: false,
+            },
+            client: live_test_client(),
+        })
+    }
+
+    fn assert_adapter_success(
+        reports: &[MemoryAdapterReport],
+        store_kind: MemoryStoreKind,
+        operation: &str,
+    ) {
+        let Some(report) = reports
+            .iter()
+            .find(|report| report.store_kind == store_kind && report.operation == operation)
+        else {
+            panic!("missing adapter report for {store_kind:?}/{operation}: {reports:?}");
+        };
+        assert!(
+            report.attempted,
+            "adapter report should be attempted for {store_kind:?}/{operation}: {report:?}"
+        );
+        assert!(
+            report.success,
+            "adapter report should succeed for {store_kind:?}/{operation}: {report:?}"
+        );
+    }
+
+    async fn assert_graphiti_search_contains_marker(state: &AppState, key: &str) {
+        let group_id = state.config.graphiti_group_id.clone();
+        let attempts = std::env::var("COAT_LIVE_GRAPHITI_SEARCH_ATTEMPTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(5)
+            .max(1);
+        let mut last_payload = String::new();
+        for attempt in 1..=attempts {
+            let nodes = call_graphiti_tool(
+                state,
+                "search_nodes",
+                serde_json::json!({
+                    "query": key,
+                    "group_ids": [group_id.clone()],
+                    "max_nodes": 10,
+                }),
+            )
+            .await
+            .expect("Graphiti search_nodes should succeed during the live round-trip test");
+            let facts = call_graphiti_tool(
+                state,
+                "search_facts",
+                serde_json::json!({
+                    "query": key,
+                    "group_ids": [group_id.clone()],
+                    "max_facts": 10,
+                }),
+            )
+            .await
+            .expect("Graphiti search_facts should succeed during the live round-trip test");
+            last_payload = format!("{nodes} {facts}");
+            if last_payload.contains(key) {
+                return;
+            }
+            if attempt < attempts {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        panic!("Graphiti search did not return marker {key}; last payload: {last_payload}");
+    }
+
+    fn live_test_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(
+                std::env::var("COAT_LIVE_MEMORY_TEST_TIMEOUT_SECONDS")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(15),
+            ))
+            .build()
+            .expect("live test client")
+    }
+
+    fn env_flag(key: &str) -> bool {
+        std::env::var(key)
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+    }
+
+    fn required_env(key: &str) -> String {
+        std::env::var(key)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                panic!("{key} is required when the live memory adapter test is enabled")
+            })
     }
 }

@@ -51,7 +51,7 @@ spec:
           env:
             - name: BIND_ADDR
               value: 0.0.0.0:9080
-            - name: COAT_RUNNER_REGISTRY
+            - name: COAT_RUNNER_REGISTRY_URL
               value: http://runner-registry:9085
             - name: COAT_NOTIFIER_URL
               value: http://notifier:9086

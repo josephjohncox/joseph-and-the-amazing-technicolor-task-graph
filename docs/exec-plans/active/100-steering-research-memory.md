@@ -33,14 +33,17 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 - Memory gateway can edit memory by retracting old keys and writing a replacement record.
 - Memory gateway can preview memory replacement diffs before committing an edit.
 - Memory gateway dry-run repair counts selected records and adapter operations.
+- Live Qdrant and Graphiti adapter round-trip tests are gated by explicit env flags and service credentials, so normal CI remains local-only while real adapter validation is available on configured nodes.
 - Control gateway exposes memory join, retract, edit, edit-preview, repair, event reads, and research-output steering helpers.
+- Control gateway UI can preview memory replacements with before/after excerpts before applying a durable edit.
+- Control gateway smoke renders the memory replacement preview status and before/after diff table against realistic ready and blocked edit-preview payloads.
 - Examples parse against the domain contracts.
 - Schemas include control, steering, research, and memory contracts.
 
 ## Follow-Ups
 
-- Add live Graphiti/Zep and Qdrant adapter tests gated by service URLs and credentials.
-- Add rendered side-by-side diff tables for memory replacement history once browser-level dashboard tests exist.
+- Run live Graphiti/Zep and Qdrant adapter tests in CI once those service URLs and credentials are approved for the test environment.
+- Add a full browser interaction smoke for selecting a goal, previewing memory replacement diffs, and applying edits once a lightweight browser harness is approved for CI.
 
 ## Acceptance
 

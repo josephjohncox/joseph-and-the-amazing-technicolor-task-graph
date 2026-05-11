@@ -734,6 +734,12 @@
             "string",
             "null"
           ]
+        },
+        "tool_registry_url": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

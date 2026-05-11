@@ -35,7 +35,7 @@ use coat_domain::{
     ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration, RunnerScalingRequest,
     SandboxLaunchPlan, SandboxResourcePlan, SandboxSecurityPlan, StandardReviewCheck,
     SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WorkerKind,
+    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WebSearchRequest, WorkerKind,
 };
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use uuid::Uuid;
@@ -55,6 +55,7 @@ const DEFAULT_RESTATE_LOCAL_ADMIN: &str = "http://localhost:19070";
 const DEFAULT_COORDINATOR_URL: &str = "http://localhost:9080";
 const DEFAULT_RESTATE_INGRESS: &str = "http://localhost:8080";
 const DEFAULT_SANDBOX_RUNNER_URL: &str = "http://localhost:9083";
+const DEFAULT_TOOL_REGISTRY_URL: &str = "http://localhost:9084";
 const DEFAULT_RUNNER_REGISTRY_URL: &str = "http://localhost:9085";
 const DEFAULT_NOTIFIER_URL: &str = "http://localhost:9086";
 const DEFAULT_MEMORY_GATEWAY_URL: &str = "http://localhost:9087";
@@ -103,6 +104,8 @@ enum Commands {
     Event(EventCommand),
     #[command(about = "Register, inspect, and test distributed runners")]
     Runner(RunnerCommand),
+    #[command(about = "Call MCP/tool-registry utilities")]
+    Tool(ToolCommand),
     #[command(about = "Write, search, join, edit, repair, and inspect durable memory")]
     Memory(MemoryCommand),
     #[command(about = "Inspect goal-store projections and audit records")]
@@ -590,7 +593,7 @@ struct MemoryEventsArgs {
 struct RunnerListArgs {
     #[arg(
         long,
-        env = "COAT_RUNNER_REGISTRY",
+        env = "COAT_RUNNER_REGISTRY_URL",
         default_value = "http://localhost:9085"
     )]
     registry_url: String,
@@ -600,7 +603,7 @@ struct RunnerListArgs {
 struct RunnerRegisterArgs {
     #[arg(
         long,
-        env = "COAT_RUNNER_REGISTRY",
+        env = "COAT_RUNNER_REGISTRY_URL",
         default_value = "http://localhost:9085"
     )]
     registry_url: String,
@@ -612,7 +615,7 @@ struct RunnerRegisterArgs {
 struct RunnerDispatchArgs {
     #[arg(
         long,
-        env = "COAT_RUNNER_REGISTRY",
+        env = "COAT_RUNNER_REGISTRY_URL",
         default_value = "http://localhost:9085"
     )]
     registry_url: String,
@@ -624,7 +627,7 @@ struct RunnerDispatchArgs {
 struct RunnerCapacityPlanArgs {
     #[arg(
         long,
-        env = "COAT_RUNNER_REGISTRY",
+        env = "COAT_RUNNER_REGISTRY_URL",
         default_value = "http://localhost:9085"
     )]
     registry_url: String,
@@ -638,6 +641,56 @@ struct RunnerCapacityPlanArgs {
         help = "Do not fill an omitted/default request policy from COAT config"
     )]
     ignore_config_policy: bool,
+}
+
+#[derive(Debug, Args)]
+struct ToolCommand {
+    #[command(subcommand)]
+    command: ToolSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolSubcommand {
+    #[command(about = "List configured MCP/tool-registry tools")]
+    List(ToolRegistryArgs),
+    #[command(about = "Call a named MCP tool with JSON arguments")]
+    Call(ToolCallArgs),
+    #[command(about = "Route a web/reference search through coat_web_search")]
+    WebSearch(ToolWebSearchArgs),
+}
+
+#[derive(Debug, Args)]
+struct ToolRegistryArgs {
+    #[arg(
+        long,
+        env = "COAT_TOOL_REGISTRY_URL",
+        default_value = "http://localhost:9084"
+    )]
+    tool_registry_url: String,
+    #[arg(
+        long,
+        env = "COAT_TOOL_REGISTRY_TOKEN",
+        help = "Bearer token for the tool registry; falls back to MCP_TOOL_TOKEN when unset"
+    )]
+    token: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ToolCallArgs {
+    #[command(flatten)]
+    registry: ToolRegistryArgs,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct ToolWebSearchArgs {
+    #[command(flatten)]
+    registry: ToolRegistryArgs,
+    #[arg(long)]
+    file: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2104,6 +2157,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Deploy(args) => deploy(args),
         Commands::Event(args) => event(args).await,
         Commands::Runner(args) => runner(args).await,
+        Commands::Tool(args) => tool(args).await,
         Commands::Memory(args) => memory(args).await,
         Commands::Store(args) => store(args).await,
         Commands::Sandbox(args) => sandbox(args).await,
@@ -2232,6 +2286,7 @@ fn print_command_map() {
     println!("  coat deploy chart <lint|template|upgrade|rollback|package>");
     println!("  coat deploy restate <cloud-env|tunnel-docker|register-cloud>");
     println!("  coat runner <list|status|register|dispatch|capacity-plan>");
+    println!("  coat tool <list|call|web-search>");
     println!("  coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>");
     println!("  coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>");
     println!("  coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>");
@@ -3684,6 +3739,81 @@ async fn runner(args: RunnerCommand) -> anyhow::Result<()> {
     }
 }
 
+async fn tool(args: ToolCommand) -> anyhow::Result<()> {
+    match args.command {
+        ToolSubcommand::List(mut args) => {
+            args.tool_registry_url = effective_tool_registry_url(&args.tool_registry_url)?;
+            let token = tool_registry_token(args.token);
+            get_url(
+                &format!(
+                    "{}/tools/list",
+                    args.tool_registry_url.trim_end_matches('/')
+                ),
+                token.as_deref(),
+            )
+            .await
+        }
+        ToolSubcommand::Call(mut args) => {
+            args.registry.tool_registry_url =
+                effective_tool_registry_url(&args.registry.tool_registry_url)?;
+            let arguments: serde_json::Value = read_json_file(&args.file)?;
+            let token = tool_registry_token(args.registry.token);
+            call_tool_registry(
+                &args.registry.tool_registry_url,
+                token.as_deref(),
+                &args.name,
+                arguments,
+            )
+            .await
+        }
+        ToolSubcommand::WebSearch(mut args) => {
+            args.registry.tool_registry_url =
+                effective_tool_registry_url(&args.registry.tool_registry_url)?;
+            let arguments: serde_json::Value = read_json_file(&args.file)?;
+            let _: WebSearchRequest = serde_json::from_value(arguments.clone())
+                .with_context(|| format!("validate {}", args.file.display()))?;
+            let token = tool_registry_token(args.registry.token);
+            call_tool_registry(
+                &args.registry.tool_registry_url,
+                token.as_deref(),
+                "coat_web_search",
+                arguments,
+            )
+            .await
+        }
+    }
+}
+
+async fn call_tool_registry(
+    tool_registry_url: &str,
+    token: Option<&str>,
+    name: &str,
+    arguments: serde_json::Value,
+) -> anyhow::Result<()> {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": format!("coat-tool-{name}"),
+        "method": "tools/call",
+        "params": {
+            "name": name,
+            "arguments": arguments
+        }
+    });
+    let response = post_json_value_to_url(
+        &format!("{}/mcp", tool_registry_url.trim_end_matches('/')),
+        &request,
+        token,
+        None,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+fn tool_registry_token(token: Option<String>) -> Option<String> {
+    token.or_else(|| env::var("MCP_TOOL_TOKEN").ok())
+}
+
 fn apply_capacity_plan_config_policy(
     request: &mut RunnerScalingRequest,
     ignore_config_policy: bool,
@@ -3884,6 +4014,7 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
         Commands::Human(_)
         | Commands::Event(_)
         | Commands::Runner(_)
+        | Commands::Tool(_)
         | Commands::Memory(_)
         | Commands::Store(_)
         | Commands::Sandbox(_)
@@ -4065,6 +4196,7 @@ fn merge_service_endpoints(base: &mut CoatServiceEndpoints, overlay: CoatService
     replace_if_some(&mut base.coordinator_url, overlay.coordinator_url);
     replace_if_some(&mut base.sandbox_runner_url, overlay.sandbox_runner_url);
     replace_if_some(&mut base.runner_registry_url, overlay.runner_registry_url);
+    replace_if_some(&mut base.tool_registry_url, overlay.tool_registry_url);
     replace_if_some(&mut base.notifier_url, overlay.notifier_url);
     replace_if_some(&mut base.memory_gateway_url, overlay.memory_gateway_url);
     replace_if_some(&mut base.goal_store_url, overlay.goal_store_url);
@@ -4280,7 +4412,10 @@ fn overlay_env_status(output: &mut serde_json::Value) {
         "COAT_EVENT_GATEWAY_URL": env::var("COAT_EVENT_GATEWAY_URL").ok(),
         "COAT_MEMORY_GATEWAY_URL": env::var("COAT_MEMORY_GATEWAY_URL").ok(),
         "COAT_SANDBOX_RUNNER_URL": env::var("COAT_SANDBOX_RUNNER_URL").ok(),
-        "COAT_RUNNER_REGISTRY": env::var("COAT_RUNNER_REGISTRY").ok(),
+        "COAT_RUNNER_REGISTRY_URL": env::var("COAT_RUNNER_REGISTRY_URL").ok(),
+        "COAT_TOOL_REGISTRY_URL": env::var("COAT_TOOL_REGISTRY_URL").ok(),
+        "COAT_TOOL_REGISTRY_TOKEN": env::var("COAT_TOOL_REGISTRY_TOKEN").ok().map(|_| "<set>"),
+        "MCP_TOOL_TOKEN": env::var("MCP_TOOL_TOKEN").ok().map(|_| "<set>"),
         "COAT_NOTIFIER_URL": env::var("COAT_NOTIFIER_URL").ok(),
         "COAT_CONTROL_MCP_URL": env::var("COAT_CONTROL_MCP_URL").ok(),
         "COAT_ALLOW_UNINITIALIZED": env::var("COAT_ALLOW_UNINITIALIZED").ok(),
@@ -4323,6 +4458,18 @@ fn effective_runner_registry_url(value: &str) -> anyhow::Result<String> {
         value,
         DEFAULT_RUNNER_REGISTRY_URL,
         config.service_endpoints.runner_registry_url,
+    ))
+}
+
+fn effective_tool_registry_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_TOOL_REGISTRY_URL {
+        return Ok(value.to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_TOOL_REGISTRY_URL,
+        config.service_endpoints.tool_registry_url,
     ))
 }
 
@@ -10288,7 +10435,7 @@ mod tests {
         DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs,
         HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec,
         LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
-        ProjectInitAction, ProjectInitCheck, SetupSubcommand,
+        ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
         apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
         bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
         compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
@@ -10304,15 +10451,16 @@ mod tests {
         model_param_values_from_env, model_param_values_from_preset, model_preset,
         model_preset_labels, model_presets_with_configured, models_dev_embedding_dimensions,
         models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
-        parse_env_file_content, project_init_action, release_plan_json, replace_env_line,
-        replace_toml_section_value, replace_yaml_root_value, restate_cloud_env_placeholders,
+        parse_env_file_content, project_init_action, read_json_file, release_plan_json,
+        replace_env_line, replace_toml_section_value, replace_yaml_root_value,
+        restate_cloud_env_placeholders,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
         CapacityScalingPolicy, CoatCliConfig, CoatConfig, CoatLocalDeployConfig,
         CoatRunnerCapacityConfig, CoatServiceEndpoints, NetworkAccess, RunnerPoolDemand,
         RunnerScalingRequest, SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan,
-        SandboxResourcePlan, SandboxSecurityPlan,
+        SandboxResourcePlan, SandboxSecurityPlan, WebSearchRequest,
     };
     use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
     use uuid::Uuid;
@@ -10354,8 +10502,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         for expected in [
-            "guide", "plan", "goal", "human", "deploy", "event", "runner", "memory", "store",
-            "sandbox", "release", "setup", "init",
+            "guide", "plan", "goal", "human", "deploy", "event", "runner", "tool", "memory",
+            "store", "sandbox", "release", "setup", "init",
         ] {
             assert!(
                 visible.contains(&expected.to_string()),
@@ -10431,6 +10579,42 @@ mod tests {
             capacity_help.contains("policy may be omitted to use config.runner_capacity"),
             "capacity-plan help should document config policy fallback; help was:\n{capacity_help}"
         );
+    }
+
+    #[test]
+    fn tool_help_exposes_registry_and_web_search_calls() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("tool")
+            .expect("tool subcommand exists")
+            .render_long_help()
+            .to_string();
+
+        for expected in [
+            "Call MCP/tool-registry utilities",
+            "list",
+            "call",
+            "web-search",
+        ] {
+            assert!(
+                help.contains(expected),
+                "tool help should include {expected:?}; help was:\n{help}"
+            );
+        }
+
+        let web_search_help = command
+            .find_subcommand_mut("tool")
+            .expect("tool subcommand exists")
+            .find_subcommand_mut("web-search")
+            .expect("tool web-search subcommand exists")
+            .render_long_help()
+            .to_string();
+        for expected in ["--tool-registry-url", "--file", "COAT_TOOL_REGISTRY_TOKEN"] {
+            assert!(
+                web_search_help.contains(expected),
+                "tool web-search help should include {expected:?}; help was:\n{web_search_help}"
+            );
+        }
     }
 
     #[test]
@@ -10635,6 +10819,58 @@ mod tests {
             Some(Commands::Setup(ref setup))
                 if matches!(setup.command, SetupSubcommand::ModelIndex(_))
         ));
+
+        let tool_list = Cli::try_parse_from(["coat", "tool", "list"]).expect("parse tool list");
+        assert!(matches!(
+            tool_list.command,
+            Some(Commands::Tool(ref tool)) if matches!(tool.command, ToolSubcommand::List(_))
+        ));
+
+        let tool_web_search = Cli::try_parse_from([
+            "coat",
+            "tool",
+            "web-search",
+            "--file",
+            "examples/web-search-request.json",
+        ])
+        .expect("parse tool web-search");
+        assert!(matches!(
+            tool_web_search.command,
+            Some(Commands::Tool(ref tool))
+                if matches!(tool.command, ToolSubcommand::WebSearch(_))
+        ));
+
+        let tool_call = Cli::try_parse_from([
+            "coat",
+            "tool",
+            "call",
+            "--name",
+            "subagent_policy",
+            "--file",
+            "examples/tool-subagent-policy-request.json",
+        ])
+        .expect("parse tool call");
+        assert!(matches!(
+            tool_call.command,
+            Some(Commands::Tool(ref tool)) if matches!(tool.command, ToolSubcommand::Call(_))
+        ));
+    }
+
+    #[test]
+    fn web_search_example_is_a_valid_structured_tool_request() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/web-search-request.json");
+        let request: WebSearchRequest =
+            read_json_file(&path).expect("example web search request parses");
+
+        assert!(
+            request.query.contains("OpenAI Agents SDK"),
+            "example should be a real research query"
+        );
+        assert_eq!(request.limit, Some(5));
+        assert!(request.require_sources.unwrap_or(false));
+        assert!(request.require_use_plan.unwrap_or(false));
+        assert_eq!(request.allowed_providers.len(), 3);
     }
 
     #[test]
@@ -11944,6 +12180,7 @@ mod tests {
         let mut base = CoatConfig {
             service_endpoints: CoatServiceEndpoints {
                 goal_store_url: Some("http://localhost:9088".to_string()),
+                tool_registry_url: Some("http://localhost:9084".to_string()),
                 ..CoatServiceEndpoints::default()
             },
             local_deploy: CoatLocalDeployConfig {
@@ -11963,6 +12200,7 @@ mod tests {
         let overlay = CoatConfig {
             service_endpoints: CoatServiceEndpoints {
                 goal_store_url: Some("http://remote-goal-store:9088".to_string()),
+                tool_registry_url: Some("http://remote-tool-registry:9084".to_string()),
                 ..CoatServiceEndpoints::default()
             },
             local_deploy: CoatLocalDeployConfig {
@@ -11988,6 +12226,10 @@ mod tests {
         assert_eq!(
             base.service_endpoints.goal_store_url.as_deref(),
             Some("http://remote-goal-store:9088")
+        );
+        assert_eq!(
+            base.service_endpoints.tool_registry_url.as_deref(),
+            Some("http://remote-tool-registry:9084")
         );
         assert_eq!(
             base.local_deploy.env_files,

@@ -24,6 +24,7 @@
 # Optional secrets and interactive chat-client tokens.
 # export COAT_CONTROL_GATEWAY_TOKEN=
 # export COAT_CONTROL_MCP_TOKEN=
+# export COAT_TOOL_REGISTRY_TOKEN=
 # export OPENAI_API_KEY=
 # export ANTHROPIC_API_KEY=
 # export CLAUDE_CODE_OAUTH_TOKEN=

@@ -442,7 +442,7 @@ spec:
               value: /workspace
             - name: BIND_ADDR
               value: 0.0.0.0:9080
-            - name: COAT_RUNNER_REGISTRY
+            - name: COAT_RUNNER_REGISTRY_URL
               value: http://runner-registry.jattg.svc.cluster.local:9085
             - name: COAT_NOTIFIER_URL
               value: http://notifier.jattg.svc.cluster.local:9086

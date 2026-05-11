@@ -76,6 +76,7 @@ secrets:
     AWS_REGION: ""
     AWS_ACCESS_KEY_ID: ""
     AWS_SECRET_ACCESS_KEY: ""
+    COAT_TOOL_REGISTRY_TOKEN: ""
     MCP_TOOL_TOKEN: replace-me
     QDRANT_API_KEY: ""
     EMBEDDING_API_KEY: replace-me
@@ -138,7 +139,7 @@ workloads:
       repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator
     env:
       BIND_ADDR: 0.0.0.0:9080
-      COAT_RUNNER_REGISTRY: http://runner-registry:9085
+      COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
       COAT_NOTIFIER_URL: http://notifier:9086
       COAT_GOAL_STORE_URL: http://goal-store:9088
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
@@ -199,6 +200,7 @@ workloads:
       TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT: /workspaces
       TOOL_REGISTRY_SANDBOX_RUNNER_URL: http://sandbox-runner:9083
     secretEnv:
+      COAT_TOOL_REGISTRY_TOKEN: COAT_TOOL_REGISTRY_TOKEN
       MCP_TOOL_TOKEN: MCP_TOOL_TOKEN
     ports:
       - name: http

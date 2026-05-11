@@ -107,7 +107,7 @@ const eventGatewayUrl = trimSlash(process.env.COAT_EVENT_GATEWAY_URL ?? "http://
 const eventGatewayToken = process.env.COAT_EVENT_GATEWAY_TOKEN ?? "";
 const notifierUrl = trimSlash(process.env.COAT_NOTIFIER_URL ?? "http://localhost:9086");
 const runnerRegistryUrl = trimSlash(
-  process.env.COAT_RUNNER_REGISTRY_URL ?? process.env.COAT_RUNNER_REGISTRY ?? "http://localhost:9085",
+  process.env.COAT_RUNNER_REGISTRY_URL ?? "http://localhost:9085",
 );
 const memoryGatewayUrl = trimSlash(process.env.COAT_MEMORY_GATEWAY_URL ?? "http://localhost:9087");
 const memoryGatewayToken = process.env.COAT_MEMORY_GATEWAY_TOKEN ?? process.env.MEMORY_GATEWAY_TOKEN ?? "";

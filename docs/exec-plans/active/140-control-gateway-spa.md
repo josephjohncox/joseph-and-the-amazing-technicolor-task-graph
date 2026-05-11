@@ -22,6 +22,9 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 - Run control gateway smoke tests for browser-facing Vite assets, chat stub responses, and MCP tool listing.
 - Smoke tests must also prove behavior: chat authoring preserves the operator objective, emits acceptance evidence, keeps initial executable tasks coordinator-owned, and MCP follow-up drafting preserves source plan/path/index while producing a structured durable-plan prompt.
 - Smoke tests cover degraded backend visibility, gateway-assigned goal workflow IDs, unsupported workflow-handler rejection, and research-output-to-steering conversion.
+- Smoke tests cover backend-backed goal snapshots, checkpoint history, human queues, approval routing, plan compilation, memory search/context/edit/event proxying, and steering submissions through the gateway contract.
+- Smoke tests render the memory replacement preview status and before/after diff table with realistic ready and blocked payloads through the existing Vite/React stack.
+- GitHub CI runs the control gateway smoke after building the TypeScript gateway and SPA.
 - Run `cargo test --workspace` and `cargo fmt --all --check`.
 - Validate Compose with `coat deploy local config` when Docker is available.
 - Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
@@ -29,7 +32,8 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 
 ## Follow-Ups
 
-- Extend browser-level smoke tests to cover live backend-backed goal snapshots, checkpoint history, human queues, plan compilation, memory search, and steering submissions once a Compose harness is available.
+- Extend browser-level smoke tests from gateway-backed contract checks to a full Compose harness once CI can run the stack.
+- Add a full browser interaction smoke for selecting a goal, previewing memory replacement diffs, and applying edits once a lightweight browser harness is approved for CI.
 - Add a token-broker-backed multi-user MCP smoke test once a broker implementation is selected.
 
 ## Acceptance

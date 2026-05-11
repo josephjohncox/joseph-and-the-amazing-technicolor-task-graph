@@ -3,6 +3,12 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      compose-runner-smoke:
+        description: "Run Docker Compose runner/registry smoke"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -25,9 +31,9 @@ jobs:
       - run: cargo check --workspace
       - run: cargo test --workspace
       - run: cargo build -p coat-cli
-      - run: cargo run -p coat-domain --bin generate-schemas -- schemas
-      - run: git diff --exit-code schemas
-      - run: buf lint
+      - run: make event-gateway-smoke
+      - run: make runner-smoke
+      - run: make proto-check
       - run: sh scripts/coat-doc-gardener.sh
       - run: npm ci --prefix sidecars/codex-runner-ts
       - run: npm run --prefix sidecars/codex-runner-ts build
@@ -37,7 +43,17 @@ jobs:
       - run: npm run --prefix sidecars/model-provider-runner-ts build
       - run: npm ci --prefix sidecars/staff-engineer-runner-ts
       - run: npm run --prefix sidecars/staff-engineer-runner-ts build
-      - run: npm install --prefix ui/control-plane-web
+      - run: npm ci --prefix ui/control-plane-web
       - run: npm run --prefix ui/control-plane-web build
+      - run: npm run --prefix ui/control-plane-web smoke
       - run: target/debug/coat compose config
       - run: target/debug/coat compose config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
+
+  compose-runner-smoke:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs['compose-runner-smoke'] }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - run: docker compose version
+      - run: make compose-runner-smoke

@@ -6,6 +6,9 @@
       "data_dir": "~/.coat/data",
       "cache_dir": "~/.coat/cache"
     },
+    "service_endpoints": {
+      "tool_registry_url": "http://localhost:9084"
+    },
     "model_routing": {
       "mode": "hybrid",
       "gateway": {

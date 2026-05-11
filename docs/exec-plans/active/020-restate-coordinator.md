@@ -14,6 +14,7 @@ Make Restate the durable outer loop for goals and task-tree state.
 - Model approvals as durable state transitions: create `ApprovalRequest`, notify, pause task dispatch, apply `HumanApproval`, and resume the frontier loop after acceptance.
 - Apply runner call timeouts as structured worker results, then let restart policy decide whether a task is requeued.
 - Add branch competition frontier behavior: candidate branches, vote tasks, optional unification, and selected implementation records.
+- Emit structured coordinator transition observations for projection reasons, task-status counts, pending approvals, and terminal task mix before optional goal-store projection.
 
 ## Tests
 
@@ -22,12 +23,13 @@ Make Restate the durable outer loop for goals and task-tree state.
 - Cancel accepts a signal; approval updates durable state and resumes accepted work.
 - Restart requeues matching tasks and resumes the frontier loop.
 - Branch and select-branch mutate durable state and project the updated goal store snapshot.
+- Transition observation tests cover approval pauses and terminal outcome counts.
 - Restart-resume integration test is added once Restate testcontainers are introduced.
 
 ## Follow-Ups
 
 - Add restart/resume integration tests with a real Restate runtime or testcontainer once the test harness is selected.
-- Add metrics and trace assertions for durable fanout, approval pauses, restarts, validation retries, and projection failures.
+- Extend transition observation checks into metrics and trace assertions for durable fanout, restarts, validation retries, and projection failures once the Restate test harness is selected.
 
 ## Acceptance
 

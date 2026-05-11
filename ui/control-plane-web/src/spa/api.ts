@@ -94,6 +94,18 @@ export function memoryWrite(body: JsonRecord): Promise<unknown> {
   return api("/api/memory/write", jsonPost(body));
 }
 
+export function memoryEditPreview(body: JsonRecord): Promise<unknown> {
+  return api("/api/memory/edit-preview", jsonPost(body));
+}
+
+export function memoryEdit(body: JsonRecord): Promise<unknown> {
+  return api("/api/memory/edit", jsonPost(body));
+}
+
+export function memoryEvents(goalId: string): Promise<unknown> {
+  return api(`/api/memory/events/${encodeURIComponent(goalId)}`);
+}
+
 export function chat(sessionId: string, mode: string, goalId: string, messages: ChatMessage[], runId?: string): Promise<ChatResponse> {
   return api<ChatResponse>("/api/chat", jsonPost({ session_id: sessionId, run_id: runId, mode, goal_id: goalId || undefined, messages }));
 }

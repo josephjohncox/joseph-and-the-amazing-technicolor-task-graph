@@ -16,6 +16,7 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 - Validation requires passing `test_evidence` for work-like and tester tasks when `done_criteria.tests_pass=true`.
 - Validation blocks high/critical or priority 0/1 review findings even if the reviewer decision says `accept`.
 - Patch merger and branch-unifier votes can select only declared branch candidates that have already validated successfully.
+- Local domain tests model review-unifier and patch-merger checkpoint branch evidence with typed git refs, without requiring live git worktrees.
 - Failed validation becomes retry, child-task request, blocked, or failed according to policy.
 
 ## Tests
@@ -26,11 +27,12 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 - Doctrine fixtures must cover every strict objective and gate, and must fail for meaningful behavioral gaps rather than passing on presence-only evidence.
 - Critic decisions block `SatisfactionReport.satisfied` even when reward is high.
 - Patch merger refuses unknown or unvalidated branch candidates.
+- Review unification and patch-merger branch selection preserve typed git checkpoint branch refs in state and goal-store projections.
 
 ## Follow-Ups
 
 - Add more real-world reviewer fixtures as live worker outputs become available.
-- Add patch-merger and review-unifier tests over real git checkpoint branches once live git worktrees are part of CI.
+- Add live git-worktree integration coverage for checkpoint branches once CI can provision isolated worktrees.
 
 ## Acceptance
 

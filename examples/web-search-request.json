@@ -1,0 +1,19 @@
+{
+  "query": "What is the current OpenAI Agents SDK web search tool surface?",
+  "limit": 5,
+  "allowed_providers": [
+    "web",
+    "docs",
+    "mcp"
+  ],
+  "source_quality_order": [
+    "official_docs",
+    "primary"
+  ],
+  "context": [
+    "Prefer official SDK documentation and capture source URLs.",
+    "Return an InformationUsePlan that explains which facts should influence implementation."
+  ],
+  "require_sources": true,
+  "require_use_plan": true
+}

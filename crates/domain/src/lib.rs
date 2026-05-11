@@ -362,6 +362,8 @@ pub struct CoatServiceEndpoints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner_registry_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_registry_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notifier_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_gateway_url: Option<String>,
@@ -387,6 +389,7 @@ impl CoatServiceEndpoints {
             coordinator_url: Some("http://localhost:9080".to_string()),
             sandbox_runner_url: Some("http://localhost:9083".to_string()),
             runner_registry_url: Some("http://localhost:9085".to_string()),
+            tool_registry_url: Some("http://localhost:9084".to_string()),
             notifier_url: Some("http://localhost:9086".to_string()),
             memory_gateway_url: Some("http://localhost:9087".to_string()),
             goal_store_url: Some("http://localhost:9088".to_string()),
@@ -12535,6 +12538,28 @@ pub enum DomainError {
 mod tests {
     use super::*;
 
+    fn git_branch_checkpoint(task: &TaskNode, suffix: &str, label: &str) -> CheckpointRef {
+        CheckpointRef::from_git_result(
+            task,
+            GitResultRef {
+                repo: Some("file:///workspace/jattg/.git".to_string()),
+                remote: Some("origin".to_string()),
+                base_ref: Some("refs/heads/main".to_string()),
+                branch: format!(
+                    "refs/heads/jattg/checkpoint/{}/{}/{}",
+                    task.goal_id, task.id, suffix
+                ),
+                worktree_path: None,
+                commit: None,
+                pushed: false,
+                pull_request_url: None,
+                diff_uri: Some(format!("git+diff://{}/{}", task.id, suffix)),
+            },
+            label,
+            format!("checkpoint branch for {label}"),
+        )
+    }
+
     #[test]
     fn new_goal_has_runnable_root() {
         let state = GoalState::new(GoalSpec::new("test", "do the thing"));
@@ -13984,6 +14009,354 @@ mod tests {
             error
                 .to_string()
                 .contains("before it was successfully validated")
+        );
+    }
+
+    #[test]
+    fn review_unification_accepts_git_checkpoint_branch_evidence() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "review checkpoint",
+            "ship work only after review unification checkpoint evidence",
+        ));
+        let root = state.runnable_tasks().remove(0);
+        let actor_checkpoint = git_branch_checkpoint(&root, "actor-ready", "actor-ready");
+        let actor_result = AgentRunResult {
+            artifacts: Vec::new(),
+            git_result: None,
+            object_artifacts: Vec::new(),
+            checkpoints: vec![actor_checkpoint.clone()],
+            ..AgentRunResult::stub_done(&root)
+        };
+        state
+            .apply_agent_result(actor_result.clone(), &SpawnPolicy::default())
+            .expect("actor result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: root.goal_id,
+                task: root,
+                result: actor_result,
+            }))
+            .expect("actor validation");
+
+        assert!(
+            state
+                .ensure_review_frontier(&SpawnPolicy::default())
+                .expect("spawn review")
+        );
+        let review = state
+            .tasks
+            .values()
+            .find(|task| task.purpose.is_review())
+            .cloned()
+            .expect("review task");
+        let review_checkpoint =
+            git_branch_checkpoint(&review, "critic-accepted", "critic-accepted");
+        let review_result = AgentRunResult {
+            artifacts: Vec::new(),
+            git_result: None,
+            object_artifacts: Vec::new(),
+            checkpoints: vec![review_checkpoint.clone()],
+            review: Some(ReviewOutput {
+                decision: ReviewDecision::Accept,
+                reward: 0.93,
+                findings: Vec::new(),
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
+                retry_recommended: false,
+                unification_summary: None,
+            }),
+            ..AgentRunResult::stub_done(&review)
+        };
+        state
+            .apply_agent_result(review_result.clone(), &SpawnPolicy::default())
+            .expect("review result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: review.goal_id,
+                task: review.clone(),
+                result: review_result,
+            }))
+            .expect("review validation");
+
+        assert!(
+            state
+                .ensure_review_frontier(&SpawnPolicy::default())
+                .expect("spawn unifier")
+        );
+        let unifier = state
+            .tasks
+            .values()
+            .find(|task| task.purpose.is_unification())
+            .cloned()
+            .expect("unifier task");
+        assert_eq!(unifier.role, WorkerKind::PatchMerger);
+        assert_eq!(unifier.dependencies, vec![review.id]);
+        let unifier_checkpoint =
+            git_branch_checkpoint(&unifier, "review-unified", "review-unified");
+        let unifier_result = AgentRunResult {
+            artifacts: Vec::new(),
+            git_result: None,
+            object_artifacts: Vec::new(),
+            checkpoints: vec![unifier_checkpoint.clone()],
+            review: Some(ReviewOutput {
+                decision: ReviewDecision::Accept,
+                reward: 0.96,
+                findings: Vec::new(),
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
+                retry_recommended: false,
+                unification_summary: Some(
+                    "accepted reviewer checkpoint branch evidence".to_string(),
+                ),
+            }),
+            ..AgentRunResult::stub_done(&unifier)
+        };
+        state
+            .apply_agent_result(unifier_result.clone(), &SpawnPolicy::default())
+            .expect("unifier result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: unifier.goal_id,
+                task: unifier,
+                result: unifier_result,
+            }))
+            .expect("unifier validation");
+
+        let satisfaction = state.satisfaction.as_ref().expect("satisfaction");
+        assert!(satisfaction.satisfied, "{:?}", satisfaction.reasons);
+        assert!(satisfaction.unification_done);
+        assert_eq!(satisfaction.latest_decision, Some(ReviewDecision::Accept));
+        assert!(
+            state
+                .learning_signals
+                .iter()
+                .any(|signal| signal.source == LearningSignalSource::ReviewUnification)
+        );
+
+        let snapshot = GoalStoreSnapshot::from_state(&state);
+        for checkpoint in [
+            actor_checkpoint,
+            review_checkpoint,
+            unifier_checkpoint.clone(),
+        ] {
+            assert_eq!(checkpoint.kind, CheckpointKind::GitBranch);
+            assert!(
+                checkpoint
+                    .git_result
+                    .as_ref()
+                    .expect("git checkpoint")
+                    .branch
+                    .starts_with("refs/heads/jattg/checkpoint/")
+            );
+            assert!(snapshot.artifacts.iter().any(|record| {
+                record
+                    .checkpoint
+                    .as_ref()
+                    .is_some_and(|recorded| recorded.id == checkpoint.id)
+                    && record.git_result.is_some()
+            }));
+        }
+        assert!(
+            state
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.id == unifier_checkpoint.id)
+        );
+    }
+
+    #[test]
+    fn patch_merger_selects_validated_checkpoint_branch_candidate() {
+        let mut goal = GoalSpec::new(
+            "branch checkpoint",
+            "select the validated implementation branch with patch merger evidence",
+        );
+        goal.review_policy.enabled = false;
+        goal.branching_policy.enabled = true;
+        goal.branching_policy.default_selection_strategy = BranchSelectionStrategy::UnifierDecision;
+        goal.branching_policy.voting.min_votes = 1;
+        goal.branching_policy.voting.require_unification = true;
+
+        let mut state = GoalState::new(goal);
+        let root_id = state.runnable_tasks().remove(0).id;
+        let group = state
+            .branch_task(
+                BranchRequest {
+                    goal_id: state.goal.id,
+                    target_task_id: Some(root_id),
+                    subgoal_id: None,
+                    reason: "compare checkpoint branches".to_string(),
+                    candidate_count: 2,
+                    candidate_roles: vec![WorkerKind::Codex, WorkerKind::Codex],
+                    candidate_executions: Vec::new(),
+                    prompt_overrides: Vec::new(),
+                    selection_strategy: Some(BranchSelectionStrategy::UnifierDecision),
+                    operator: Some("test".to_string()),
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("branch group");
+
+        let mut candidate_checkpoints = Vec::new();
+        for (index, candidate_id) in group.candidate_task_ids.iter().copied().enumerate() {
+            let candidate = state.tasks[&candidate_id].clone();
+            let checkpoint = git_branch_checkpoint(
+                &candidate,
+                &format!("candidate-{}", index + 1),
+                &format!("candidate-{}", index + 1),
+            );
+            let result = AgentRunResult {
+                artifacts: Vec::new(),
+                git_result: None,
+                object_artifacts: Vec::new(),
+                checkpoints: vec![checkpoint.clone()],
+                confidence: 0.91 + index as f32 * 0.02,
+                ..AgentRunResult::stub_done(&candidate)
+            };
+            state
+                .apply_agent_result(result.clone(), &SpawnPolicy::default())
+                .expect("candidate result");
+            state
+                .apply_validation(ValidationReport::from_result(ValidationRequest {
+                    goal_id: candidate.goal_id,
+                    task: candidate,
+                    result,
+                }))
+                .expect("candidate validation");
+            candidate_checkpoints.push(checkpoint);
+        }
+
+        assert!(
+            state
+                .ensure_branch_frontier(&SpawnPolicy::default())
+                .expect("spawn branch vote")
+        );
+        let vote_task = state
+            .tasks
+            .values()
+            .find(|task| matches!(task.purpose, TaskPurpose::BranchVote { .. }))
+            .cloned()
+            .expect("vote task");
+        let selected = group.candidate_task_ids[1];
+        let vote_result = AgentRunResult {
+            branch_vote: Some(BranchVoteOutput {
+                group_id: group.id,
+                selected_task_id: selected,
+                ranked_task_ids: vec![selected, group.candidate_task_ids[0]],
+                confidence: 0.88,
+                rationale: "candidate 2 has clearer checkpoint evidence".to_string(),
+            }),
+            ..AgentRunResult::stub_done(&vote_task)
+        };
+        state
+            .apply_agent_result(vote_result.clone(), &SpawnPolicy::default())
+            .expect("vote result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: vote_task.goal_id,
+                task: vote_task,
+                result: vote_result,
+            }))
+            .expect("vote validation");
+
+        assert!(
+            state
+                .ensure_branch_frontier(&SpawnPolicy::default())
+                .expect("spawn branch unifier")
+        );
+        let unifier = state
+            .tasks
+            .values()
+            .find(|task| matches!(task.purpose, TaskPurpose::BranchUnification { .. }))
+            .cloned()
+            .expect("branch unifier task");
+        assert_eq!(unifier.role, WorkerKind::PatchMerger);
+        assert!(unifier.dependencies.contains(&group.candidate_task_ids[0]));
+        assert!(unifier.dependencies.contains(&group.candidate_task_ids[1]));
+        assert!(unifier.dependencies.iter().any(|id| {
+            state
+                .tasks
+                .get(id)
+                .is_some_and(|task| matches!(task.purpose, TaskPurpose::BranchVote { .. }))
+        }));
+
+        let merge_checkpoint =
+            git_branch_checkpoint(&unifier, "patch-merger-selected", "patch-merger-selected");
+        let unifier_result = AgentRunResult {
+            artifacts: Vec::new(),
+            git_result: None,
+            object_artifacts: Vec::new(),
+            checkpoints: vec![merge_checkpoint.clone()],
+            branch_vote: Some(BranchVoteOutput {
+                group_id: group.id,
+                selected_task_id: selected,
+                ranked_task_ids: vec![selected, group.candidate_task_ids[0]],
+                confidence: 0.97,
+                rationale: "patch merger selected the validated candidate branch".to_string(),
+            }),
+            review: Some(ReviewOutput {
+                decision: ReviewDecision::Accept,
+                reward: 0.97,
+                findings: Vec::new(),
+                objective_results: Vec::new(),
+                gate_results: Vec::new(),
+                retry_recommended: false,
+                unification_summary: Some(
+                    "selected a validated checkpoint branch without a live worktree".to_string(),
+                ),
+            }),
+            ..AgentRunResult::stub_done(&unifier)
+        };
+        state
+            .apply_agent_result(unifier_result.clone(), &SpawnPolicy::default())
+            .expect("unifier result");
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: unifier.goal_id,
+                task: unifier.clone(),
+                result: unifier_result,
+            }))
+            .expect("unifier validation");
+
+        let selected_group = state
+            .branch_groups
+            .iter()
+            .find(|candidate| candidate.id == group.id)
+            .expect("branch group");
+        assert_eq!(selected_group.status, BranchGroupStatus::Selected);
+        assert_eq!(selected_group.selected_task_id, Some(selected));
+        assert!(state.branch_votes.iter().any(|vote| {
+            vote.group_id == group.id
+                && vote.voter_task_id == unifier.id
+                && vote.selected_task_id == selected
+        }));
+
+        let snapshot = GoalStoreSnapshot::from_state(&state);
+        for checkpoint in candidate_checkpoints
+            .into_iter()
+            .chain(std::iter::once(merge_checkpoint.clone()))
+        {
+            assert_eq!(checkpoint.kind, CheckpointKind::GitBranch);
+            assert!(
+                checkpoint
+                    .git_result
+                    .as_ref()
+                    .is_some_and(|git| git.worktree_path.is_none() && !git.pushed)
+            );
+            assert!(snapshot.artifacts.iter().any(|record| {
+                record
+                    .checkpoint
+                    .as_ref()
+                    .is_some_and(|recorded| recorded.id == checkpoint.id)
+                    && record.git_result.as_ref().is_some_and(|git| {
+                        git.branch == checkpoint.git_result.as_ref().unwrap().branch
+                    })
+            }));
+        }
+        assert!(
+            state
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.id == merge_checkpoint.id)
         );
     }
 
@@ -15444,6 +15817,66 @@ mod tests {
     }
 
     #[test]
+    fn research_replay_fixture_validates_without_live_web_access() {
+        let response = serde_json::from_str::<WebSearchResponse>(include_str!(
+            "../../../examples/web-search-response-replay.json"
+        ))
+        .expect("web-search replay response fixture parses");
+        assert_eq!(response.status, WebSearchStatus::Routed);
+
+        let result = response.result.clone().expect("replay includes result");
+        assert_eq!(
+            response.request.task_id.expect("request task id"),
+            result.task_id
+        );
+        let research = response.research.clone().expect("replay includes research");
+        assert_eq!(research.sources.len(), 3);
+        assert!(research.sources.iter().all(|source| {
+            source.captured_at.is_some()
+                && source.quote.is_some()
+                && !source.uri.is_empty()
+                && !source.summary.is_empty()
+        }));
+        assert_eq!(result.research.as_ref(), Some(&research));
+        assert_eq!(result.object_artifacts.len(), 2);
+        assert!(result.object_artifacts.iter().all(|artifact| {
+            artifact.uri.starts_with("s3://jattg-replay-artifacts/")
+                && artifact
+                    .key
+                    .starts_with("research-replay/memory-substrate/")
+                && artifact.sha256.is_none()
+                && (artifact.description.contains("Replay")
+                    || artifact.description.contains("replay"))
+        }));
+
+        let state = GoalState::new(GoalSpec::new(
+            "research replay",
+            "validate captured sourced research offline",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        task.id = result.task_id;
+        task.role = WorkerKind::Research;
+        task.purpose = TaskPurpose::Research {
+            question: response.request.query,
+        };
+        task.done_criteria.artifact_exists = true;
+        task.done_criteria.validator_score_min = Some(0.75);
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+        assert!(report.passed, "{:?}", report.missing_criteria);
+        assert!(
+            report
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("with 3 sources"))
+        );
+    }
+
+    #[test]
     fn doctrine_coverage_fixture_is_behavioral_and_not_presence_only() {
         let mut goal = GoalSpec::new(
             "doctrine fixture",
@@ -15634,6 +16067,10 @@ mod tests {
             "../../../examples/research-output-memory-substrate.json"
         ))
         .expect("research-output example parses");
+        serde_json::from_str::<WebSearchResponse>(include_str!(
+            "../../../examples/web-search-response-replay.json"
+        ))
+        .expect("web-search response replay example parses");
         serde_json::from_str::<MemoryWriteRequest>(include_str!(
             "../../../examples/memory-write-fact.json"
         ))

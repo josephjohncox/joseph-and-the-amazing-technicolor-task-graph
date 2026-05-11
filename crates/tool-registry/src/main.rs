@@ -90,7 +90,6 @@ async fn main() -> anyhow::Result<()> {
     let runner_registry_url = env_first(&[
         "TOOL_REGISTRY_RUNNER_REGISTRY_URL",
         "COAT_RUNNER_REGISTRY_URL",
-        "COAT_RUNNER_REGISTRY",
         "RUNNER_REGISTRY_URL",
     ])
     .map(|value| value.trim_end_matches('/').to_string());
@@ -115,8 +114,7 @@ async fn main() -> anyhow::Result<()> {
         runner_registry_url,
         web_search_enabled,
         web_search_route,
-        auth_token: std::env::var("MCP_TOOL_TOKEN")
-            .ok()
+        auth_token: env_first(&["COAT_TOOL_REGISTRY_TOKEN", "MCP_TOOL_TOKEN"])
             .filter(|token| !token.is_empty() && token != "replace-me"),
     });
     let app = Router::new()
@@ -185,8 +183,20 @@ fn tool_descriptors() -> Vec<ToolDescriptor> {
     ]
 }
 
-async fn list_tools() -> Json<Vec<ToolDescriptor>> {
-    Json(tool_descriptors())
+async fn list_tools(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(error) = authorize(&state, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "error": format!("unauthorized tool list request: {error}")
+            })),
+        );
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(tool_descriptors())))
 }
 
 async fn mcp(
@@ -1121,11 +1131,16 @@ fn mcp_error(id: Option<serde_json::Value>, code: i64, message: String) -> serde
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
+    use std::sync::Arc;
+
+    use axum::{
+        extract::State,
+        http::{HeaderMap, HeaderValue, StatusCode, header::AUTHORIZATION},
+    };
 
     use super::{
-        AppState, artifact_manifest, authorize, checkpoint_history, coat_web_search, local_command,
-        resolve_repo_path, runner_run_task_url, subagent_policy, test_command,
+        AppState, artifact_manifest, authorize, checkpoint_history, coat_web_search, list_tools,
+        local_command, resolve_repo_path, runner_run_task_url, subagent_policy, test_command,
     };
     use coat_domain::{ExecutionProfile, WebSearchRoutingPreference, WorkerKind};
 
@@ -1153,6 +1168,39 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
         assert!(authorize(&state, &headers).is_ok());
+    }
+
+    #[tokio::test]
+    async fn tools_list_uses_same_bearer_auth_policy_as_mcp() {
+        let state = Arc::new(AppState {
+            auth_token: Some("secret".to_string()),
+            ..test_state()
+        });
+
+        let (status, body) = list_tools(State(Arc::clone(&state)), HeaderMap::new()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(
+            body.0
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .contains("unauthorized tool list request"),
+            "unauthorized body should explain the failure: {body:?}"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+        let (status, body) = list_tools(State(state), headers).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.0
+                .as_array()
+                .map(|tools| tools
+                    .iter()
+                    .any(|tool| tool.get("name") == Some(&serde_json::json!("coat_web_search"))))
+                .unwrap_or(false),
+            "authorized list should expose coat_web_search: {body:?}"
+        );
     }
 
     #[test]

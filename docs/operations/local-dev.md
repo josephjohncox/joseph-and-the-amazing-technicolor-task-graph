@@ -298,6 +298,42 @@ The runner registry records registrations and heartbeats in
 `runner-registry` preserves the visible runner set while stale heartbeat TTL and
 capacity still decide whether a runner is dispatchable.
 
+Run the bounded runner-registry smoke test without Docker or live model
+credentials:
+
+```sh
+make runner-smoke
+```
+
+The smoke starts `coat-runner-registry` on an ephemeral localhost port with a
+temporary journal, registers full, stale, and active runners through the HTTP
+operator surface, checks `/runners/status`, verifies dispatch selects only the
+active compatible remote runner, and asks `/capacity/plan` for a bounded scaling
+recommendation.
+
+Run the optional Compose-backed runner pool smoke when Docker is available:
+
+```sh
+make compose-runner-smoke
+```
+
+This uses `infra/compose/docker-compose.yml` with the existing
+`runner-registry`, `codex-runner`, `codex-reviewer-runner`,
+`claude-code-runner`, `model-provider-runner`,
+`model-provider-research-runner`, `model-provider-local-runner`, and
+`staff-engineer-runner` service names. The script forces those runner lanes to
+stub mode for the smoke, starts an isolated Compose project, waits for sidecar
+`/capabilities` responses, waits for all seven runner IDs to appear as
+dispatchable in `/runners/status`, verifies `/dispatch` selects
+`codex-runner-ts` for an explicit task contract, and verifies `/capacity/plan`
+uses the heartbeat-derived pool supply.
+
+If Docker, the daemon, or the Compose plugin is unavailable, the script prints a
+clear `SKIP` line and exits successfully. CI jobs that require Docker coverage
+can set `COAT_COMPOSE_RUNNER_SMOKE_REQUIRE_DOCKER=1` to turn that skip into a
+failure. Set `COAT_COMPOSE_RUNNER_SMOKE_KEEP=1` to keep the temporary Compose
+project for debugging.
+
 Use sidecar verification endpoints for non-mutating dependency checks:
 
 ```sh
@@ -313,12 +349,12 @@ Claude Code CLI probing is opt-in through `CLAUDE_CODE_VERIFY_CLI=1`. Model-prov
 Local MCP smoke call:
 
 ```sh
-curl -sS -X POST http://localhost:9084/mcp \
-  -H 'content-type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+coat tool list
+coat tool call --name subagent_policy --file examples/tool-subagent-policy-request.json
 ```
 
-Set `MCP_TOOL_TOKEN` to require bearer auth on `/mcp`.
+Set `COAT_TOOL_REGISTRY_TOKEN` or `MCP_TOOL_TOKEN` when the registry requires
+bearer auth for `/tools/list` and `/mcp`.
 In Compose, `tool-registry` mounts the sandbox workspace volume read-only and sets `TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT=/workspaces`, so `artifact_manifest` can return `workspace-manifest.json`, `sandbox-launch-plan.json`, `snapshots/latest.json`, and worker `artifacts/artifact-manifest.json` for a `{goal_id, task_id}` lookup. Kubernetes should normally resolve large artifacts from object storage or the goal-store projection; set the same env var only when the registry can safely read the sandbox workspace volume.
 Compose also sets `TOOL_REGISTRY_SANDBOX_RUNNER_URL=http://sandbox-runner:9083`. With that URL configured, the MCP `test_command` tool posts to `coat-sandbox-runner /commands/plan` and returns an approval-aware command plan instead of executing commands in the tool registry process.
 The MCP `local_command` tool uses the same sandbox runner boundary for local binaries such as `git`, `docker`, `helm`, `kubectl`, build tools, and package managers. It plans by default; execution requires `execute=true`, an approval ID when `SANDBOX_REQUIRE_COMMAND_APPROVAL=true`, a known task workspace, and `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION=true`.
@@ -354,6 +390,21 @@ Webhook source auth is separate from gateway admin auth. Register a `WebhookAuth
 Provider presets cover GitHub HMAC, Slack Events API HMAC, and Stripe-style HMAC canonicalization. The Slack example expects `COAT_SLACK_SIGNING_SECRET`; the Stripe example expects `COAT_STRIPE_WEBHOOK_SECRET`.
 
 Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` to smoke-test production activation policy. Risky enabled sources then need `coat event register --approval-id ...` on registration, or they should be registered with `"enabled": false` until a human approves activation. When `COAT_GOAL_STORE_URL` is configured on the event gateway, accepted activation references are projected to `coat-goal-store` and can be inspected with `coat store event-source-approvals`.
+
+Run the local no-Docker event gateway smoke when you need ingress-to-projection
+coverage without Compose:
+
+```sh
+make event-gateway-smoke
+```
+
+The smoke starts `coat-goal-store` and `coat-event-gateway` on ephemeral
+localhost ports with temporary JSONL journals. It registers an approved risky
+generic CI source, verifies the activation approval projects into goal-store,
+emits and dedupes a generic event through `/events/generic/{source_id}`, checks
+the normalized event fields and human-review trigger state, and inspects both
+service journals. If the environment cannot bind the needed localhost ports, it
+prints a clear `SKIP` line and exits successfully.
 
 The event API contract lives at `docs/api/event-gateway.asyncapi.yaml`. The cluster CronJob pattern lives at `infra/k8s/examples/calendar-trigger-cronjob.yaml`.
 
@@ -475,7 +526,16 @@ Review output examples live under `examples/`. Runner implementations should ret
 
 Tester and code-worker results should include `test_evidence` entries with command, exit code, pass/fail, duration, and stdout/stderr or artifact URIs whenever `done_criteria.tests_pass=true`. The validator treats missing or all-failing test evidence as incomplete for work-like and tester tasks.
 
-Research output examples live under `examples/research-output-memory-substrate.json`. A live research runner should replace stub sources with primary, official, or peer-reviewed sources and include a concrete information-use plan.
+Research output examples live under `examples/research-output-memory-substrate.json`. `examples/web-search-response-replay.json` is the offline replay fixture for a routed research capture: it stores the original `WebSearchRequest`, the structured `AgentRunResult`, mirrored `ResearchOutput`, source artifacts, diagnostics, and the information-use plan so validators can exercise sourced research without opening the network.
+
+Validate replay capture locally with:
+
+```sh
+cargo test -p coat-domain research_replay_fixture_validates_without_live_web_access
+cargo test -p coat-domain examples_parse_against_domain_contracts
+```
+
+A live research runner should replace stub sources with primary, official, or peer-reviewed sources and include a concrete information-use plan. When live adapters are added, commit captured replay fixtures before changing validator behavior so reviewers can reproduce citation checks without live web credentials.
 
 Graphiti/Zep memory is configured as a policy and MCP endpoint in this scaffold. For local experiments, run the upstream Graphiti MCP server and point task MCP context at `http://localhost:8000/mcp/`; keep credentials in `SecretRef` or environment, not in goal JSON.
 
@@ -534,11 +594,21 @@ Compose runs an S3-compatible MinIO object store:
 
 Tasks that enable `ExecutionProfile.results.git` should return `git_result` with the task branch and worktree path. Tasks that enable `ExecutionProfile.results.object_storage` should return `object_artifacts` with `s3://...` URIs. Use git for code/diffs and object storage for large generated assets.
 
+The sandbox runner can validate the object-artifact contract locally without
+contacting MinIO or live S3. When a workspace request enables `object_storage`
+and provides an `ObjectStoreRef`, `coat-sandbox-runner` writes
+`artifacts/artifact-manifest.json` with the planned artifact-manifest object,
+the planned snapshot-manifest object, `upload_status=planned_external_upload`,
+and `upload_performed_by_sandbox_runner=false`. `/snapshot` also writes
+`snapshots/latest.json` with the planned snapshot upload ref. These manifests
+are validation contracts for workers, validators, and a future uploader; they do
+not mean bytes were uploaded.
+
 Do not enable live code execution without isolated workspaces and an explicit sandbox profile.
 
 ## Sandbox Runner
 
-The sandbox runner listens on `http://localhost:9083` in Compose. It creates a deterministic per-task workspace, records a local registry file, writes `workspace-manifest.json`, and returns git/object-storage result refs that workers can use in their structured results.
+The sandbox runner listens on `http://localhost:9083` in Compose. It creates a deterministic per-task workspace, records a local registry file, writes `workspace-manifest.json`, `sandbox-launch-plan.json`, `checkpoints/checkpoint-manifest.json`, and `artifacts/artifact-manifest.json`, and returns git/object-storage result refs that workers can use in their structured results.
 
 Local binary execution is opt-in and allowlisted. `/commands/plan` is always available for approval-aware planning. `/commands/run` only executes bare binary names when `SANDBOX_ENABLE_LOCAL_COMMAND_EXECUTION=true`, the workspace exists, the command has an approval ID when required, and the binary is listed in `SANDBOX_ALLOWED_LOCAL_BINARIES`. When a request supplies task-local `ExecutionProfile.local_tools`, the sandbox runner also enforces denied binaries, allowed subcommands, denied arguments, network requirements, policy timeouts, and output limits before execution. The default allowlist is aimed at validation and operator tooling: `git`, build/test tools, package managers, `docker`, `helm`, and `kubectl`. Keep this disabled unless the runner node is isolated enough for the requested task.
 

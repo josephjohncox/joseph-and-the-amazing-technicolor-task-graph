@@ -30,10 +30,11 @@ coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>
 coat deploy chart <lint|template|upgrade|rollback|package>
 coat deploy restate <cloud-env|tunnel-docker|register-cloud>
 coat runner <list|status|register|dispatch|capacity-plan>
+coat tool <list|call|web-search>
 coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>
 coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>
 coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>
-coat setup <config|local-auth|chat-client>
+coat setup <login|sso|model-index|config|local-auth|chat-client>
 ```
 
 ## Rules
@@ -59,7 +60,7 @@ coat setup <config|local-auth|chat-client>
   Use `coat setup config --list-profiles` to inspect configured profiles.
 - Endpoint commands inherit the active profile when endpoint flags are omitted.
   This includes `goal`, `plan`, `store`, `human`, `event`, `memory`, `runner`,
-  `sandbox`, and `setup chat-client`. Prefer explicit endpoint flags for
+  `tool`, `sandbox`, and `setup chat-client`. Prefer explicit endpoint flags for
   one-off routing; keep durable endpoint defaults in COAT config.
 - Durable commands fail outside an initialized project when
   `config.cli.require_project_for_durable_commands=true`. Local authoring and
@@ -83,6 +84,24 @@ The coordinator or an approved provisioner is responsible for turning a
 recommendation into ephemeral Kubernetes Jobs, persistent runner changes, or no
 action. Scale-down recommendations mean drain or TTL expiry, not killing active
 task work.
+
+## Tool Registry
+
+Use `coat tool list` to inspect the MCP tools registered by the local Rust tool
+registry. Use `coat tool call --name ... --file ...` for a generic tool call,
+and `coat tool web-search --file examples/web-search-request.json` for the
+first-class `coat_web_search` route.
+
+`coat tool web-search` validates the file against `WebSearchRequest`, then
+posts the original JSON to MCP `tools/call`. Leaving `route` out of the file
+lets the tool registry apply its configured search route; setting
+`"route": "coordinator_task"` or `"route": "runner_registry"` makes the
+operator choice explicit.
+
+Tool commands inherit `config.service_endpoints.tool_registry_url` and can also
+use `--tool-registry-url`. If the registry requires auth, prefer
+`COAT_TOOL_REGISTRY_TOKEN`; `MCP_TOOL_TOKEN` is accepted as the shared local
+fallback for MCP-compatible clients.
 
 ## Help And Dialogue Surfaces
 

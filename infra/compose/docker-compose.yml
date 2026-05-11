@@ -35,7 +35,7 @@ services:
     environment:
       BIND_ADDR: 0.0.0.0:9080
       RUST_LOG: coat_coordinator=info,restate_sdk=info
-      COAT_RUNNER_REGISTRY: http://runner-registry:9085
+      COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
       COAT_NOTIFIER_URL: http://notifier:9086
       COAT_GOAL_STORE_URL: http://goal-store:9088
       COAT_MEMORY_GATEWAY_URL: http://memory-gateway:9087
@@ -131,6 +131,7 @@ services:
       TOOL_REGISTRY_RUNNER_REGISTRY_URL: http://runner-registry:9085
       COAT_WEB_SEARCH_ENABLED: ${COAT_WEB_SEARCH_ENABLED:-false}
       COAT_WEB_SEARCH_ROUTE: ${COAT_WEB_SEARCH_ROUTE:-coordinator_task}
+      COAT_TOOL_REGISTRY_TOKEN: ${COAT_TOOL_REGISTRY_TOKEN:-}
       MCP_TOOL_TOKEN: ${MCP_TOOL_TOKEN:-}
     ports:
       - "9084:9084"

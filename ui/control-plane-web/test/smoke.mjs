@@ -2,12 +2,20 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer as createViteServer } from "vite";
+import react from "@vitejs/plugin-react";
 
 const defaultPort = 19000 + (process.pid % 1000);
 const port = Number(process.env.COAT_CONTROL_SMOKE_PORT ?? String(defaultPort));
 const baseUrl = `http://127.0.0.1:${port}`;
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const chatJournalPath = `/tmp/coat-control-chat-smoke-${process.pid}-${Date.now()}.jsonl`;
+
+class SmokeSkip extends Error {}
+
+let smokeSkipped = false;
 const server = spawn(process.execPath, ["dist/server.js"], {
   cwd: packageRoot,
   env: {
@@ -43,6 +51,7 @@ try {
   await assertBrandAssets();
   await assertStylesheet();
   await assertClientScript();
+  await assertMemoryReplacementDiffRender();
   await assertOverviewApi();
   await assertFollowUpsApi();
   await assertFollowUpDraftApi();
@@ -51,19 +60,32 @@ try {
   await assertChatApiDiscoversRegisteredModel();
   await assertGoalSubmitAssignsWorkflowId();
   await assertUnsupportedWorkflowHandlerGuard();
+  await assertBackendBackedControlSurfaces();
   await assertMcpTools();
   await assertMcpChatAssistBehavior();
   await assertMcpFollowUpDraftBehavior();
   await assertMcpApplyResearchOutputBehavior();
   console.log("coat-control-plane-web smoke passed");
+} catch (error) {
+  if (error instanceof SmokeSkip) {
+    smokeSkipped = true;
+    console.log(`coat-control-plane-web smoke skipped: ${error.message}`);
+  } else {
+    throw error;
+  }
 } finally {
   server.kill("SIGTERM");
+}
+
+if (smokeSkipped) {
+  process.exit(0);
 }
 
 async function waitForHealth() {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) {
+      skipOnBindPermissionFailure(stderr);
       throw new Error(`server exited early\nstdout:\n${stdout}\nstderr:\n${stderr}`);
     }
     try {
@@ -139,6 +161,124 @@ async function assertStylesheet() {
   const css = await response.text();
   for (const expected of ["data-theme=dark", "--status-running", ".theme-control", ".mode-toggle", ".coat-chat-container", ".outcome-list", ".graph-filter", ".graph-status-panel", ".react-flow__node.task-node"]) {
     assert(css.includes(expected), `stylesheet includes ${expected}`);
+  }
+}
+
+async function assertMemoryReplacementDiffRender() {
+  const viteServer = await createViteServer({
+    configFile: false,
+    root: packageRoot,
+    logLevel: "silent",
+    plugins: [
+      react(),
+      {
+        name: "coat-memory-diff-render-smoke",
+        enforce: "post",
+        transform(code, id) {
+          if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
+            return `${code}\nexport { MemoryDiffTable, PreviewStatus, memoryEditPayload, previewReady };`;
+          }
+          return null;
+        },
+      },
+    ],
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, hmr: false },
+    appType: "custom",
+  });
+
+  try {
+    const {
+      MemoryDiffTable,
+      PreviewStatus,
+      memoryEditPayload,
+      previewReady,
+    } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+
+    assert(typeof MemoryDiffTable === "function", "memory diff render smoke can load MemoryDiffTable");
+    assert(typeof PreviewStatus === "function", "memory diff render smoke can load PreviewStatus");
+    assert(typeof memoryEditPayload === "function", "memory diff render smoke can load memory edit payload builder");
+    assert(typeof previewReady === "function", "memory diff render smoke can load preview readiness helper");
+
+    const editPayload = memoryEditPayload({
+      goalId: "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+      replaceKeys: ["mem-control-boundary", "mem-runner-policy"],
+      replacementKey: "mem-replacement",
+      replacementTitle: "Reviewed control boundary",
+      replacementContent: "The coordinator owns truth; runners return structured results with evidence.",
+      replacementReason: "replace stale wording after operator review",
+      replacementTags: ["operator", "reviewed"],
+    });
+    assertEqual(editPayload.goal_id, "018f8f2f-1fd8-7688-bb12-8bfb6b756602", "memory edit payload preserves goal id");
+    assertEqual(editPayload.replace_keys.length, 2, "memory edit payload preserves all replacement keys");
+    assertEqual(editPayload.replacement_key, "mem-replacement", "memory edit payload preserves stable replacement key");
+    assertEqual(editPayload.replacement_episode.title, "Reviewed control boundary", "memory edit payload preserves replacement title");
+    assertEqual(editPayload.replacement_episode.source.actor, "operator", "memory edit payload marks operator source");
+    assertEqual(editPayload.reason, "replace stale wording after operator review", "memory edit payload preserves review reason");
+
+    const readyPreview = {
+      data: {
+        ready_to_edit: true,
+        replacement_key: "mem-replacement",
+        missing_keys: [],
+        diffs: [
+          {
+            key: "mem-control-boundary",
+            before_title: "Control boundary",
+            before_excerpt: "Coordinator owns truth; runners return structured results.",
+            after_title: "Reviewed control boundary",
+            after_excerpt: "The coordinator owns truth; runners return structured results with evidence.",
+          },
+          {
+            key: "mem-runner-policy",
+            before_title: "Runner policy",
+            before_excerpt: "Workers may spawn local subagents from prompt text.",
+            after_title: "Reviewed control boundary",
+            after_excerpt: "Workers request durable child tasks; the coordinator queues and routes them.",
+          },
+        ],
+      },
+    };
+    assertEqual(previewReady(readyPreview), true, "memory preview helper treats ready payload as editable");
+    const readyStatusMarkup = renderToStaticMarkup(React.createElement(PreviewStatus, { value: readyPreview }));
+    assert(readyStatusMarkup.includes("status-done"), "ready memory preview renders done status tone");
+    assert(readyStatusMarkup.includes(">Ready<"), "ready memory preview renders Ready label");
+    const readyDiffMarkup = renderToStaticMarkup(React.createElement(MemoryDiffTable, { value: readyPreview }));
+    for (const expected of [
+      "Replacement mem-replacement",
+      "mem-control-boundary",
+      "Control boundary: Coordinator owns truth; runners return structured results.",
+      "Reviewed control boundary: The coordinator owns truth; runners return structured results with evidence.",
+      "mem-runner-policy",
+      "Runner policy: Workers may spawn local subagents from prompt text.",
+      "Reviewed control boundary: Workers request durable child tasks; the coordinator queues and routes them.",
+      "Inspect preview",
+    ]) {
+      assert(readyDiffMarkup.includes(expected), `ready memory diff markup includes ${expected}`);
+    }
+    assert(!readyDiffMarkup.includes("Missing"), "ready memory diff does not render missing-key warning");
+
+    const blockedPreview = {
+      data: {
+        ready_to_edit: false,
+        replacement_key: "mem-replacement",
+        missing_keys: ["mem-absent"],
+        diffs: [],
+      },
+    };
+    assertEqual(previewReady(blockedPreview), false, "memory preview helper blocks missing-key payload");
+    const blockedStatusMarkup = renderToStaticMarkup(React.createElement(PreviewStatus, { value: blockedPreview }));
+    assert(blockedStatusMarkup.includes("status-blocked"), "blocked memory preview renders blocked status tone");
+    assert(blockedStatusMarkup.includes(">Blocked<"), "blocked memory preview renders Blocked label");
+    const blockedDiffMarkup = renderToStaticMarkup(React.createElement(MemoryDiffTable, { value: blockedPreview }));
+    assert(blockedDiffMarkup.includes("Missing mem-absent"), "blocked memory diff renders missing key warning");
+    assert(blockedDiffMarkup.includes("No diff rows."), "blocked memory diff renders empty diff rows state");
+
+    const emptyMarkup = renderToStaticMarkup(React.createElement(MemoryDiffTable, { value: null }));
+    assert(emptyMarkup.includes("No replacement preview"), "empty memory diff renders no-preview state");
+    assert(emptyMarkup.includes("Preview a memory edit."), "empty memory diff renders preview guidance");
+  } finally {
+    await viteServer.close();
   }
 }
 
@@ -501,6 +641,510 @@ async function assertUnsupportedWorkflowHandlerGuard() {
   );
 }
 
+async function assertBackendBackedControlSurfaces() {
+  const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
+  const compiledGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756603";
+  const planId = "plan-smoke-compile";
+  const approvalId = "approval-prod-deploy";
+  const calls = {
+    goalStore: [],
+    restate: [],
+    notifier: [],
+    memory: [],
+  };
+  const taskPrompt = "Compile the backend-backed smoke plan and preserve coordinator ownership.";
+  const taskRows = [
+    {
+      goal_id: goalId,
+      task_id: "task-plan",
+      parent_task_id: null,
+      subgoal_id: "sg-control-plane",
+      title: "Compile plan before execution",
+      role: "planner",
+      status: "running",
+      purpose_kind: "work",
+      depth: 0,
+      priority: 5,
+      attempts: 1,
+      payload_json: {
+        prompt: taskPrompt,
+        execution: { profile: "strict-local", local_tools: ["npm"], runner: "codex" },
+        budget: { max_attempts: 2, max_runtime_seconds: 600 },
+        sandbox: { profile: "workspace-write", network: "disabled" },
+        done_criteria: { tests_pass: true, evidence: ["behavioral smoke assertions pass"] },
+        dependencies: [],
+        children: ["task-review"],
+      },
+    },
+  ];
+  const eventRows = [
+    {
+      goal_id: goalId,
+      task_id: "task-plan",
+      event_type: "TaskStarted",
+      message: "planner accepted durable task",
+      created_at: "2026-05-09T12:00:00Z",
+    },
+    {
+      goal_id: goalId,
+      task_id: "task-review",
+      event_type: "TaskQueued",
+      message: "review waits for checkpoint evidence",
+      created_at: "2026-05-09T12:01:00Z",
+    },
+  ];
+  const artifactRows = [
+    {
+      goal_id: goalId,
+      task_id: "task-plan",
+      artifact_id: "artifact-diff",
+      kind: "git_diff",
+      uri: "git:smoke-diff",
+    },
+  ];
+  const checkpointRows = [
+    {
+      checkpoint_id: "cp-git-1",
+      goal_id: goalId,
+      task_id: "task-plan",
+      kind: "git",
+      git: { branch: "codex/smoke", commit: "abc1234" },
+      snapshot_uri: "s3://coat-smoke/checkpoints/cp-git-1.tar.zst",
+      created_at: "2026-05-09T12:02:00Z",
+    },
+  ];
+  const approvalRows = [
+    {
+      approval_id: approvalId,
+      goal_id: goalId,
+      status: "pending",
+      risk: "deployment",
+      reason: "requires explicit human gate before execution",
+    },
+  ];
+  const threadRows = [
+    {
+      thread_key: `approval:${approvalId}`,
+      goal_id: goalId,
+      entries: 2,
+      latest_status: "waiting_operator",
+      latest_message: "Approve before execution",
+    },
+  ];
+
+  const goalStoreServer = http.createServer(async (req, res) => {
+    const request = await captureRequest(req);
+    calls.goalStore.push(request);
+    if (request.method === "GET" && request.path === "/healthz") {
+      respondJson(res, 200, { service: "goal-store", ok: true });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}`) {
+      respondJson(res, 200, {
+        goal_id: goalId,
+        title: "Backend-backed smoke goal",
+        status: "running",
+        objective: "Exercise real control-plane projections",
+      });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/tasks`) {
+      respondJson(res, 200, { tasks: taskRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/events`) {
+      respondJson(res, 200, { events: eventRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/artifacts`) {
+      respondJson(res, 200, { artifacts: artifactRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/checkpoints`) {
+      respondJson(res, 200, { checkpoints: checkpointRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/approvals`) {
+      respondJson(res, 200, { approvals: approvalRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/approvals") {
+      respondJson(res, 200, { data: approvalRows, queue_owner: "goal-store-projection" });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/plans") {
+      respondJson(res, 200, {
+        data: [
+          {
+            plan_id: planId,
+            title: "Backend-backed smoke plan",
+            status: "ready_for_review",
+            mode: "durable_plan",
+          },
+        ],
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/goal-store/plans/${planId}/compile`) {
+      respondJson(res, 200, {
+        compiled_goal_id: compiledGoalId,
+        received: request.body,
+        goal_spec: {
+          id: compiledGoalId,
+          objective: "Compiled from durable smoke plan",
+          plan: { subgoals: [{ id: "sg-control-plane", title: "Exercise backend-backed control surfaces" }] },
+          initial_tasks: [{ task_id: "task-plan", role: "planner" }],
+        },
+      });
+      return;
+    }
+    respondJson(res, 404, { error: "not found", path: request.path });
+  });
+  const restateServer = http.createServer(async (req, res) => {
+    const request = await captureRequest(req);
+    calls.restate.push(request);
+    if (request.method === "GET" && request.path === "/health") {
+      respondJson(res, 200, { service: "restate", ok: true });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/status`) {
+      respondJson(res, 200, {
+        goal_id: goalId,
+        status: "running",
+        durable_owner: "restate",
+        current_task_id: "task-plan",
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/progress`) {
+      respondJson(res, 200, {
+        goal_id: goalId,
+        satisfaction_score: 0.42,
+        next_tasks: [{ task_id: "task-plan", runnable: true, reason: "checkpoint evidence pending" }],
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/steer`) {
+      respondJson(res, 200, { accepted: true, handler: "steer", directive: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/approve`) {
+      respondJson(res, 200, { accepted: true, handler: "approve", approval: request.body });
+      return;
+    }
+    respondJson(res, 404, { error: "not found", path: request.path });
+  });
+  const notifierServer = http.createServer(async (req, res) => {
+    const request = await captureRequest(req);
+    calls.notifier.push(request);
+    if (request.method === "GET" && request.path === "/healthz") {
+      respondJson(res, 200, { service: "notifier", ok: true });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/threads") {
+      respondJson(res, 200, { data: threadRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/threads/${encodeURIComponent(`approval:${approvalId}`)}`) {
+      respondJson(res, 200, { thread: threadRows[0], messages: ["waiting for operator approval"] });
+      return;
+    }
+    respondJson(res, 404, { error: "not found", path: request.path });
+  });
+  const memoryServer = http.createServer(async (req, res) => {
+    const request = await captureRequest(req);
+    calls.memory.push(request);
+    if (request.method === "GET" && request.path === "/healthz") {
+      respondJson(res, 200, { service: "memory-gateway", ok: true });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/memory/search") {
+      respondJson(res, 200, {
+        query: request.body?.query ?? "",
+        results: [
+          {
+            key: "mem-control-boundary",
+            goal_id: goalId,
+            score: 0.91,
+            text: "Coordinator owns truth; runners return structured results.",
+          },
+        ],
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/memory/context") {
+      respondJson(res, 200, {
+        pack: {
+          goal_id: request.body?.goal_id ?? null,
+          query: request.body?.query ?? "",
+          facts: ["budget and sandbox policy travel with the durable task"],
+        },
+        context: [
+          {
+            key: "ctx-budget-sandbox",
+            text: "Every worker task has a budget, sandbox profile, and done criteria.",
+            provenance: "fake-memory-gateway",
+          },
+        ],
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/memory/edit/preview") {
+      respondJson(res, 200, {
+        ready_to_edit: true,
+        replacement_key: request.body?.replacement_key ?? "mem-replacement",
+        missing_keys: [],
+        diffs: [
+          {
+            key: request.body?.replace_keys?.[0] ?? "mem-control-boundary",
+            before_title: "Control boundary",
+            before_excerpt: "Coordinator owns truth; runners return structured results.",
+            after_title: request.body?.replacement_episode?.title ?? "Reviewed control boundary",
+            after_excerpt: request.body?.replacement_episode?.content ?? "Reviewed replacement memory.",
+          },
+        ],
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/memory/edit") {
+      respondJson(res, 200, {
+        status: "edited",
+        goal_id: request.body?.goal_id ?? null,
+        replacement_key: request.body?.replacement_key ?? "mem-replacement",
+        retracted_keys: request.body?.replace_keys ?? [],
+        reason: request.body?.reason ?? "",
+      });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/memory/events/${encodeURIComponent(goalId)}`) {
+      respondJson(res, 200, {
+        goal_id: goalId,
+        events: [
+          {
+            action: "edit",
+            key: "mem-replacement",
+            scope: "goal",
+            summary: "operator replaced stale control-boundary memory",
+          },
+        ],
+      });
+      return;
+    }
+    respondJson(res, 404, { error: "not found", path: request.path });
+  });
+
+  const goalStorePort = await listenLocal(goalStoreServer);
+  const restatePort = await listenLocal(restateServer);
+  const notifierPort = await listenLocal(notifierServer);
+  const memoryPort = await listenLocal(memoryServer);
+  const backendPort = 22000 + (process.pid % 1000);
+  const backendBaseUrl = `http://127.0.0.1:${backendPort}`;
+  const backendServer = spawn(process.execPath, ["dist/server.js"], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: String(backendPort),
+      COAT_CONTROL_GATEWAY_TOKEN: "",
+      COAT_CONTROL_MCP_TOKEN: "",
+      COAT_CONTROL_CHAT_STORE_BACKEND: "disabled",
+      COAT_GOAL_STORE_URL: `http://127.0.0.1:${goalStorePort}`,
+      COAT_RESTATE_INGRESS: `http://127.0.0.1:${restatePort}`,
+      COAT_RESTATE_ADMIN_URL: `http://127.0.0.1:${restatePort}`,
+      COAT_NOTIFIER_URL: `http://127.0.0.1:${notifierPort}`,
+      COAT_MEMORY_GATEWAY_URL: `http://127.0.0.1:${memoryPort}`,
+      COAT_MEMORY_GATEWAY_TOKEN: "memory-smoke-token",
+      COAT_EVENT_GATEWAY_URL: "http://127.0.0.1:9",
+      COAT_RUNNER_REGISTRY_URL: "http://127.0.0.1:9",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let backendStdout = "";
+  let backendStderr = "";
+  backendServer.stdout.on("data", (chunk) => {
+    backendStdout += chunk;
+  });
+  backendServer.stderr.on("data", (chunk) => {
+    backendStderr += chunk;
+  });
+
+  try {
+    await waitForProcessHealth(backendBaseUrl, backendServer, () => ({ stdout: backendStdout, stderr: backendStderr }));
+
+    const snapshotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}`);
+    assert(snapshotResponse.ok, "backend-backed goal snapshot returns ok");
+    const snapshot = await snapshotResponse.json();
+    assertEqual(snapshot.goal_id, goalId, "goal snapshot preserves requested goal id");
+    assertEqual(snapshot.goal_store_goal.status, 200, "goal snapshot includes successful goal projection status");
+    assertEqual(snapshot.goal_store_goal.data.objective, "Exercise real control-plane projections", "goal snapshot preserves backend objective");
+    assertEqual(snapshot.workflow_status.data.durable_owner, "restate", "goal snapshot includes Restate workflow status");
+    assertEqual(snapshot.workflow_progress.data.satisfaction_score, 0.42, "goal snapshot includes workflow progress score");
+    assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "goal snapshot includes checkpoint refs");
+    assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "goal snapshot includes human approval gates");
+    assertEqual(snapshot.agent_activity.length, 1, "goal snapshot derives one agent activity row from projected tasks");
+    const activity = snapshot.agent_activity[0];
+    assertEqual(activity.task_id, "task-plan", "agent activity preserves task id");
+    assertEqual(activity.current_prompt, taskPrompt, "agent activity exposes current prompt payload");
+    assertEqual(activity.runnable, true, "agent activity merges Restate progress runnable state");
+    assertEqual(activity.progress.reason, "checkpoint evidence pending", "agent activity preserves progress reason");
+    assertEqual(activity.recent_events[0].event_type, "TaskStarted", "agent activity attaches task-local events");
+    assertEqual(activity.artifacts[0].uri, "git:smoke-diff", "agent activity attaches task-local artifacts");
+    assertEqual(activity.execution.local_tools[0], "npm", "agent activity exposes execution local tools");
+    assertEqual(activity.budget.max_attempts, 2, "agent activity exposes task budget");
+    assertEqual(activity.sandbox.network, "disabled", "agent activity exposes sandbox policy");
+    assertEqual(activity.done_criteria.tests_pass, true, "agent activity exposes done criteria");
+
+    const mcpSnapshot = await callMcpAt(backendBaseUrl, "coat_goal_snapshot", { goal_id: goalId });
+    assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp goal snapshot uses the same backend aggregation path");
+
+    const checkpointHistory = await callMcpAt(backendBaseUrl, "coat_checkpoint_history", { goal_id: goalId });
+    assertEqual(checkpointHistory.data.checkpoints[0].git.commit, "abc1234", "checkpoint history returns git checkpoint commit");
+    assertEqual(checkpointHistory.data.checkpoints[0].task_id, "task-plan", "checkpoint history preserves task ownership");
+
+    const threadsResponse = await fetch(`${backendBaseUrl}/api/human/threads`);
+    assert(threadsResponse.ok, "human threads api returns ok");
+    const threads = await threadsResponse.json();
+    assertEqual(threads.data.data[0].thread_key, `approval:${approvalId}`, "human threads preserve notifier thread key");
+    assertEqual(threads.data.data[0].latest_status, "waiting_operator", "human threads preserve waiting status");
+    const approvalQueue = await callMcpAt(backendBaseUrl, "coat_approval_queue", { limit: 3 });
+    assertEqual(approvalQueue.data.data[0].approval_id, approvalId, "approval queue reads projected human gate");
+    assert(
+      calls.goalStore.some((call) => call.url === "/goal-store/approvals?limit=3"),
+      "mcp approval queue forwards requested limit to goal-store",
+    );
+    const approvalResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ approval_id: approvalId, approved: true, note: "smoke approval" }),
+    });
+    assert(approvalResponse.ok, "goal approval api returns ok");
+    const approvalBody = await approvalResponse.json();
+    assertEqual(approvalBody.data.handler, "approve", "goal approval routes through workflow approve handler");
+    const approvalCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/approve`);
+    assertEqual(approvalCall?.body?.approval_id, approvalId, "goal approval forwards approval id");
+    assertEqual(approvalCall?.body?.approved, true, "goal approval forwards operator decision");
+
+    const compileResponse = await fetch(`${backendBaseUrl}/api/plans/${planId}/compile`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operator: "smoke", emit_initial_tasks: true }),
+    });
+    assert(compileResponse.ok, "plan compile api returns ok");
+    const compileBody = await compileResponse.json();
+    assertEqual(compileBody.data.compiled_goal_id, compiledGoalId, "plan compile returns compiled GoalSpec id");
+    assertEqual(compileBody.data.goal_spec.initial_tasks[0].role, "planner", "plan compile preserves coordinator-owned initial task");
+    const apiCompileCall = calls.goalStore.find((call) => call.url === `/goal-store/plans/${planId}/compile` && call.body?.operator === "smoke");
+    assertEqual(apiCompileCall?.body?.emit_initial_tasks, true, "plan compile forwards operator compile options");
+    const mcpCompile = await callMcpAt(backendBaseUrl, "coat_plan_compile", { plan_id: planId, operator: "mcp-smoke" });
+    assertEqual(mcpCompile.data.received.plan_id, planId, "mcp plan compile includes durable plan id in forwarded body");
+
+    const directive = {
+      id: "directive-smoke",
+      kind: { kind: "add_constraint", constraint: "Keep fake backend assertions behavior-level." },
+      message: "Pin behavioral smoke coverage.",
+    };
+    const steerResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/steer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(directive),
+    });
+    assert(steerResponse.ok, "goal steering api returns ok");
+    const steerBody = await steerResponse.json();
+    assertEqual(steerBody.data.handler, "steer", "goal steering routes through workflow steer handler");
+    assertEqual(steerBody.data.directive.kind.kind, "add_constraint", "goal steering forwards directive kind");
+    const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer`);
+    assertEqual(steerCall?.body?.message, "Pin behavioral smoke coverage.", "goal steering forwards operator message");
+
+    const memorySearchResponse = await fetch(`${backendBaseUrl}/api/memory/search`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goal_id: goalId, query: "coordinator truth", limit: 2 }),
+    });
+    assert(memorySearchResponse.ok, "memory search api returns ok");
+    const memorySearch = await memorySearchResponse.json();
+    assertEqual(memorySearch.data.results[0].key, "mem-control-boundary", "memory search returns ranked memory evidence");
+    const memorySearchCall = calls.memory.find((call) => call.url === "/memory/search" && call.body?.query === "coordinator truth");
+    assertEqual(memorySearchCall?.authorization, "Bearer memory-smoke-token", "memory search forwards memory gateway bearer token");
+    assertEqual(memorySearchCall?.body?.limit, 2, "memory search forwards scoped search limit");
+
+    const memoryContext = await callMcpAt(backendBaseUrl, "coat_memory_context", {
+      goal_id: goalId,
+      query: "task graph policy",
+      limit: 3,
+    });
+    assertEqual(memoryContext.data.pack.goal_id, goalId, "memory context preserves scoped goal id");
+    assert(
+      memoryContext.data.context[0].text.includes("budget, sandbox profile, and done criteria"),
+      "memory context returns durable task policy evidence",
+    );
+    const memoryContextCall = calls.memory.find((call) => call.url === "/memory/context" && call.body?.query === "task graph policy");
+    assertEqual(memoryContextCall?.authorization, "Bearer memory-smoke-token", "memory context forwards memory gateway bearer token");
+    assertEqual(memoryContextCall?.body?.limit, 3, "memory context forwards requested context limit");
+
+    const memoryEditPayload = {
+      goal_id: goalId,
+      replace_keys: ["mem-control-boundary"],
+      replacement_key: "mem-replacement",
+      replacement_episode: {
+        title: "Reviewed control boundary",
+        content: "The coordinator owns truth; runners return structured results with evidence.",
+        source: { source_type: "human", uri: null, actor: "operator" },
+        artifacts: [],
+        tags: ["operator", "reviewed"],
+      },
+      reason: "replace stale wording after operator review",
+    };
+    const memoryPreviewResponse = await fetch(`${backendBaseUrl}/api/memory/edit-preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(memoryEditPayload),
+    });
+    assert(memoryPreviewResponse.ok, "memory edit preview api returns ok");
+    const memoryPreview = await memoryPreviewResponse.json();
+    assertEqual(memoryPreview.data.ready_to_edit, true, "memory edit preview confirms edit readiness");
+    assertEqual(memoryPreview.data.diffs[0].key, "mem-control-boundary", "memory edit preview returns replaced key diff");
+    const memoryPreviewCall = calls.memory.find((call) => call.url === "/memory/edit/preview" && call.body?.replacement_key === "mem-replacement");
+    assertEqual(memoryPreviewCall?.authorization, "Bearer memory-smoke-token", "memory edit preview forwards bearer token");
+
+    const memoryEditResponse = await fetch(`${backendBaseUrl}/api/memory/edit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...memoryEditPayload, task_id: null, scope: "goal", store: null }),
+    });
+    assert(memoryEditResponse.ok, "memory edit api returns ok");
+    const memoryEdit = await memoryEditResponse.json();
+    assertEqual(memoryEdit.data.status, "edited", "memory edit applies through backend proxy");
+    assertEqual(memoryEdit.data.retracted_keys[0], "mem-control-boundary", "memory edit forwards replacement keys");
+    const memoryEditCall = calls.memory.find((call) => call.url === "/memory/edit" && call.body?.replacement_key === "mem-replacement");
+    assertEqual(memoryEditCall?.authorization, "Bearer memory-smoke-token", "memory edit forwards bearer token");
+
+    const memoryEventsResponse = await fetch(`${backendBaseUrl}/api/memory/events/${encodeURIComponent(goalId)}`);
+    assert(memoryEventsResponse.ok, "memory events api returns ok");
+    const memoryEvents = await memoryEventsResponse.json();
+    assertEqual(memoryEvents.data.events[0].key, "mem-replacement", "memory events return replacement history");
+    const memoryEventsCall = calls.memory.find((call) => call.url === `/memory/events/${encodeURIComponent(goalId)}`);
+    assertEqual(memoryEventsCall?.authorization, "Bearer memory-smoke-token", "memory events forwards bearer token");
+
+    const mcpMemoryPreview = await callMcpAt(backendBaseUrl, "coat_memory_edit_preview", memoryEditPayload);
+    assertEqual(mcpMemoryPreview.data.ready_to_edit, true, "mcp memory preview returns edit readiness");
+    const mcpMemoryEdit = await callMcpAt(backendBaseUrl, "coat_memory_edit", {
+      ...memoryEditPayload,
+      task_id: null,
+      scope: "goal",
+      store: null,
+    });
+    assertEqual(mcpMemoryEdit.data.status, "edited", "mcp memory edit applies through backend proxy");
+    const mcpMemoryEvents = await callMcpAt(backendBaseUrl, "coat_memory_events", { goal_id: goalId });
+    assertEqual(mcpMemoryEvents.data.events[0].action, "edit", "mcp memory events return durable event history");
+  } finally {
+    backendServer.kill("SIGTERM");
+    await closeServer(goalStoreServer);
+    await closeServer(restateServer);
+    await closeServer(notifierServer);
+    await closeServer(memoryServer);
+  }
+}
+
 async function assertFollowUpsApi() {
   const response = await fetch(`${baseUrl}/api/follow-ups`);
   assert(response.ok, "follow-ups api returns ok");
@@ -628,7 +1272,11 @@ async function assertMcpApplyResearchOutputBehavior() {
 }
 
 async function callMcp(name, args) {
-  const response = await fetch(`${baseUrl}/mcp`, {
+  return callMcpAt(baseUrl, name, args);
+}
+
+async function callMcpAt(targetBaseUrl, name, args) {
+  const response = await fetch(`${targetBaseUrl}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -653,6 +1301,7 @@ async function waitForProcessHealth(targetBaseUrl, targetServer, readLogs) {
   while (Date.now() < deadline) {
     if (targetServer.exitCode !== null) {
       const logs = readLogs();
+      skipOnBindPermissionFailure(logs.stderr);
       throw new Error(`server exited early\nstdout:\n${logs.stdout}\nstderr:\n${logs.stderr}`);
     }
     try {
@@ -672,6 +1321,11 @@ async function listenLocal(server) {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
+  }).catch((error) => {
+    if (isBindPermissionFailure(error)) {
+      throw new SmokeSkip(`localhost bind denied (${error.code})`);
+    }
+    throw error;
   });
   return server.address().port;
 }
@@ -694,6 +1348,38 @@ async function readIncomingBody(req) {
     body += chunk;
   }
   return body;
+}
+
+async function captureRequest(req) {
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  const bodyText = await readIncomingBody(req);
+  return {
+    method: req.method ?? "",
+    path: url.pathname,
+    url: `${url.pathname}${url.search}`,
+    authorization: String(req.headers.authorization ?? ""),
+    body: bodyText.trim() ? JSON.parse(bodyText) : null,
+  };
+}
+
+function respondJson(res, status, body) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function skipOnBindPermissionFailure(text) {
+  const match = String(text).match(/\b(EACCES|EPERM)\b[\s\S]*\b(?:listen|bind|127\.0\.0\.1|localhost)\b/i);
+  if (match) {
+    throw new SmokeSkip(`localhost bind denied (${match[1]})`);
+  }
+}
+
+function isBindPermissionFailure(error) {
+  return (
+    error &&
+    (error.code === "EACCES" || error.code === "EPERM") &&
+    String(error.syscall ?? "").toLowerCase() === "listen"
+  );
 }
 
 function assert(value, message) {

@@ -21,6 +21,8 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - `/snapshot` writes `snapshots/latest.json` when the workspace is known and is safe to call repeatedly.
 - `/cleanup` removes the workspace and registry record only when the path is inside `SANDBOX_WORKSPACE_ROOT`; repeated cleanup returns `not_found`.
 - Git and object-storage result refs are returned as contracts without mutating a source repository or uploading blobs.
+- `coat-sandbox-runner` writes `artifacts/artifact-manifest.json` locally as an object-artifact validation contract; when object storage is configured it records planned artifact-manifest and snapshot-manifest `s3://` refs with `upload_performed_by_sandbox_runner=false`.
+- `/snapshot` writes a local `object_upload` contract in `snapshots/latest.json` so validators can inspect the intended snapshot upload target without requiring live S3.
 - `SandboxProfile.isolation` now captures backend, runtime class, seccomp/AppArmor profile, dropped capabilities, read-only rootfs intent, limits, egress policy ref, and snapshot strategy.
 - `SandboxProfile.isolation` also carries ingress policy refs and network-policy labels so runners can attach Kubernetes, Cilium, Calico, cloud firewall, or provider sandbox guardrails without embedding policy syntax in task state.
 - `coat-sandbox-runner` returns `SandboxAttestation`; local Compose defaults to `local_workspace` and does not pretend to enforce gVisor/Kata/Firecracker.
@@ -43,6 +45,7 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 - Snapshot and cleanup endpoints are idempotent.
 - Tool registry lists known tools.
 - Artifact manifest lookup reads real sandbox workspace files in Compose.
+- Object-storage artifact manifest and snapshot upload refs are validated locally without contacting MinIO or S3.
 - Dangerous commands require approval metadata.
 - Local command execution is disabled by default, requires approval by default, rejects binaries outside `SANDBOX_ALLOWED_LOCAL_BINARIES`, and blocks task-local denied binaries, denied subcommands, and denied arguments before execution.
 - Live git worktree creation remains metadata-only unless all operator and approval gates are present.
@@ -51,7 +54,7 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 
 ## Follow-Ups
 
-- Promote content-addressed snapshot archives from local manifests into object storage when the object-store upload adapter is live.
+- Promote content-addressed snapshot archives from local manifests into object storage when the external object-store upload adapter is live.
 - Connect `SandboxProfile.isolation.backend = kubernetes_job` to coordinator-approved capacity provisioning and write enforcement attestations after live Kubernetes Job completion.
 - Add provider-backed sandbox adapters where managed sandbox APIs can return attestations.
 

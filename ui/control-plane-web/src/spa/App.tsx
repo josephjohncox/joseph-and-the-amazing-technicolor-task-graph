@@ -50,6 +50,9 @@ import {
   goals,
   isRecord,
   memoryContext,
+  memoryEdit,
+  memoryEditPreview,
+  memoryEvents,
   memorySearch,
   memoryWrite,
   overview,
@@ -883,9 +886,39 @@ function normalizeStatus(status: unknown): string {
 }
 
 function MemoryView({ selectedGoalId }: { selectedGoalId: string }) {
+  const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [note, setNote] = useState("");
   const [result, setResult] = useState<unknown>(null);
+  const [replaceKeysText, setReplaceKeysText] = useState("");
+  const [replacementKey, setReplacementKey] = useState("");
+  const [replacementTitle, setReplacementTitle] = useState("");
+  const [replacementContent, setReplacementContent] = useState("");
+  const [replacementReason, setReplacementReason] = useState("");
+  const [replacementTagsText, setReplacementTagsText] = useState("operator, reviewed");
+  const [previewResult, setPreviewResult] = useState<unknown>(null);
+  useEffect(() => {
+    setPreviewResult(null);
+  }, [selectedGoalId]);
+  const memoryEventsQuery = useQuery({
+    queryKey: ["memory-events", selectedGoalId],
+    queryFn: () => memoryEvents(selectedGoalId),
+    enabled: Boolean(selectedGoalId),
+  });
+  const editPayload = () => {
+    if (!selectedGoalId) {
+      throw new Error("Select a goal.");
+    }
+    return memoryEditPayload({
+      goalId: selectedGoalId,
+      replaceKeys: tokenList(replaceKeysText),
+      replacementKey,
+      replacementTitle,
+      replacementContent,
+      replacementReason,
+      replacementTags: tokenList(replacementTagsText),
+    });
+  };
   const searchMutation = useMutation({
     mutationFn: () => memorySearch({ goal_id: selectedGoalId || undefined, query, limit: 8 }),
     onSuccess: setResult,
@@ -902,45 +935,297 @@ function MemoryView({ selectedGoalId }: { selectedGoalId: string }) {
       text: note,
       tags: ["operator", "dashboard"],
     }),
-    onSuccess: setResult,
+    onSuccess: (value) => {
+      setResult(value);
+      void queryClient.invalidateQueries({ queryKey: ["memory-events", selectedGoalId] });
+    },
   });
-  const busy = searchMutation.isPending || contextMutation.isPending || writeMutation.isPending;
+  const previewMutation = useMutation({
+    mutationFn: () => memoryEditPreview(editPayload()),
+    onSuccess: setPreviewResult,
+  });
+  const editMutation = useMutation({
+    mutationFn: () => memoryEdit({
+      ...editPayload(),
+      task_id: null,
+      scope: "goal",
+      store: null,
+    }),
+    onSuccess: (value) => {
+      setResult(value);
+      void queryClient.invalidateQueries({ queryKey: ["memory-events", selectedGoalId] });
+    },
+  });
+  const busy = searchMutation.isPending || contextMutation.isPending || writeMutation.isPending || previewMutation.isPending || editMutation.isPending;
+  const replacementReady = Boolean(
+    selectedGoalId
+      && tokenList(replaceKeysText).length
+      && replacementTitle.trim()
+      && replacementContent.trim()
+      && replacementReason.trim(),
+  );
+  const editError = previewMutation.error ?? editMutation.error;
   return (
     <section className="memory-layout">
-      <div className="panel">
-        <div className="section-heading">
-          <h2>Search shared memory</h2>
-          <Search size={18} />
-        </div>
-        <label>
-          Search or context request
-          <textarea value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What should the agents remember before continuing?" />
-        </label>
-        <div className="button-row">
-          <button className="primary-button" type="button" disabled={busy} onClick={() => searchMutation.mutate()}>
-            Search
+      <div className="panel-stack">
+        <div className="panel">
+          <div className="section-heading">
+            <h2>Search shared memory</h2>
+            <Search size={18} />
+          </div>
+          <label>
+            Search or context request
+            <textarea value={query} onChange={(event) => setQuery(event.target.value)} placeholder="What should the agents remember before continuing?" />
+          </label>
+          <div className="button-row">
+            <button className="primary-button" type="button" disabled={busy} onClick={() => searchMutation.mutate()}>
+              Search
+            </button>
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => contextMutation.mutate()}>
+              Build context
+            </button>
+          </div>
+          <label>
+            Durable operator note
+            <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Write a reviewed fact, constraint, or decision." />
+          </label>
+          <button className="secondary-button" type="button" disabled={busy || !note.trim()} onClick={() => writeMutation.mutate()}>
+            Save memory note
           </button>
-          <button className="secondary-button" type="button" disabled={busy} onClick={() => contextMutation.mutate()}>
-            Build context
-          </button>
         </div>
-        <label>
-          Durable operator note
-          <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Write a reviewed fact, constraint, or decision." />
-        </label>
-        <button className="secondary-button" type="button" disabled={busy || !note.trim()} onClick={() => writeMutation.mutate()}>
-          Save memory note
-        </button>
+
+        <div className="panel">
+          <div className="section-heading">
+            <h2>Replace memory</h2>
+            <span className={clsx("status-pill", selectedGoalId ? "status-running" : "status-pending")}>
+              {selectedGoalId ? selectedGoalId.slice(0, 8) : "Select goal"}
+            </span>
+          </div>
+          <label>
+            Replace keys
+            <textarea
+              value={replaceKeysText}
+              onChange={(event) => {
+                setReplaceKeysText(event.target.value);
+                setPreviewResult(null);
+              }}
+              placeholder="memory-key-1, memory-key-2"
+            />
+          </label>
+          <label>
+            Replacement key
+            <input
+              value={replacementKey}
+              onChange={(event) => {
+                setReplacementKey(event.target.value);
+                setPreviewResult(null);
+              }}
+              placeholder="optional stable key"
+            />
+          </label>
+          <label>
+            Replacement title
+            <input
+              value={replacementTitle}
+              onChange={(event) => {
+                setReplacementTitle(event.target.value);
+                setPreviewResult(null);
+              }}
+              placeholder="Reviewed decision"
+            />
+          </label>
+          <label>
+            Replacement content
+            <textarea
+              value={replacementContent}
+              onChange={(event) => {
+                setReplacementContent(event.target.value);
+                setPreviewResult(null);
+              }}
+              placeholder="Reviewed replacement memory."
+            />
+          </label>
+          <label>
+            Reason
+            <input
+              value={replacementReason}
+              onChange={(event) => {
+                setReplacementReason(event.target.value);
+                setPreviewResult(null);
+              }}
+              placeholder="why the replacement supersedes the old keys"
+            />
+          </label>
+          <label>
+            Tags
+            <input
+              value={replacementTagsText}
+              onChange={(event) => {
+                setReplacementTagsText(event.target.value);
+                setPreviewResult(null);
+              }}
+              placeholder="operator, reviewed"
+            />
+          </label>
+          <div className="button-row">
+            <button className="primary-button" type="button" disabled={busy || !replacementReady} onClick={() => previewMutation.mutate()}>
+              Preview diff
+            </button>
+            <button className="secondary-button" type="button" disabled={busy || !replacementReady || !previewReady(previewResult)} onClick={() => editMutation.mutate()}>
+              Apply edit
+            </button>
+          </div>
+          {editError && <span className="error-text">{editError.message}</span>}
+        </div>
       </div>
-      <div className="panel">
-        <div className="section-heading">
-          <h2>Memory results</h2>
-          <span className="muted-small">Scoped by goal when selected</span>
+      <div className="panel-stack">
+        <div className="panel">
+          <div className="section-heading">
+            <h2>Memory results</h2>
+            <span className="muted-small">Scoped by goal when selected</span>
+          </div>
+          <ResultList value={result} />
         </div>
-        <ResultList value={result} />
+        <div className="panel">
+          <div className="section-heading">
+            <h2>Replacement diff</h2>
+            <PreviewStatus value={previewResult} />
+          </div>
+          <MemoryDiffTable value={previewResult} />
+        </div>
+        <div className="panel">
+          <div className="section-heading">
+            <h2>Memory events</h2>
+            {Boolean(memoryEventsQuery.data) && <InspectButton title="Memory events" payload={memoryEventsQuery.data} />}
+          </div>
+          <MemoryEventsTable selectedGoalId={selectedGoalId} value={memoryEventsQuery.data} loading={memoryEventsQuery.isFetching} />
+        </div>
       </div>
     </section>
   );
+}
+
+function memoryEditPayload(input: {
+  goalId: string;
+  replaceKeys: string[];
+  replacementKey: string;
+  replacementTitle: string;
+  replacementContent: string;
+  replacementReason: string;
+  replacementTags: string[];
+}): JsonRecord {
+  return {
+    goal_id: input.goalId,
+    replace_keys: input.replaceKeys,
+    replacement_key: input.replacementKey.trim() || null,
+    replacement_episode: {
+      title: input.replacementTitle.trim(),
+      content: input.replacementContent.trim(),
+      source: {
+        source_type: "human",
+        uri: null,
+        actor: "operator",
+      },
+      artifacts: [],
+      tags: input.replacementTags,
+    },
+    reason: input.replacementReason.trim(),
+  };
+}
+
+function tokenList(value: string): string[] {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function PreviewStatus({ value }: { value: unknown }) {
+  if (!value) {
+    return <span className="status-pill muted">No preview</span>;
+  }
+  return (
+    <span className={clsx("status-pill", previewReady(value) ? "status-done" : "status-blocked")}>
+      {previewReady(value) ? "Ready" : "Blocked"}
+    </span>
+  );
+}
+
+function previewReady(value: unknown): boolean {
+  const record = previewRecord(value);
+  return Boolean(record?.ready_to_edit);
+}
+
+function previewRecord(value: unknown): JsonRecord | null {
+  const data = at(value, ["data"]);
+  if (isRecord(data)) {
+    return data;
+  }
+  return isRecord(value) ? value : null;
+}
+
+function MemoryDiffTable({ value }: { value: unknown }) {
+  const record = previewRecord(value);
+  if (!record) {
+    return <EmptyState title="No replacement preview" detail="Preview a memory edit." />;
+  }
+  const diffs = rowsFrom(record.diffs);
+  const missingKeys = arrayStrings(record.missing_keys);
+  return (
+    <>
+      <div className="summary-row">
+        <span className="status-pill">Replacement {String(record.replacement_key ?? "auto key")}</span>
+        {missingKeys.length > 0 && <span className="status-pill status-blocked">Missing {missingKeys.join(", ")}</span>}
+      </div>
+      <SimpleTable
+        empty="No diff rows."
+        headers={["Key", "Before", "After"]}
+        rows={diffs.map((row) => [
+          String(row.key ?? ""),
+          titledExcerpt(row.before_title, row.before_excerpt),
+          titledExcerpt(row.after_title, row.after_excerpt),
+        ])}
+      />
+      <div className="summary-row">
+        <InspectButton title="Memory edit preview" payload={record} buttonLabel="Inspect preview" />
+      </div>
+    </>
+  );
+}
+
+function MemoryEventsTable({ selectedGoalId, value, loading }: { selectedGoalId: string; value: unknown; loading: boolean }) {
+  if (!selectedGoalId) {
+    return <EmptyState title="No goal selected" detail="Choose a goal to inspect memory events." />;
+  }
+  if (loading && !value) {
+    return <EmptyState title="Loading memory events" detail="Fetching memory event history." />;
+  }
+  const rows = rowsFrom(at(value, ["events"]) ?? value).slice(-10).reverse();
+  return (
+    <SimpleTable
+      empty="No memory events projected."
+      headers={["Action", "Key", "Scope", "Summary"]}
+      rows={rows.map((row) => [
+        String(row.action ?? ""),
+        String(row.key ?? ""),
+        String(row.scope ?? ""),
+        excerpt(row.summary),
+      ])}
+    />
+  );
+}
+
+function titledExcerpt(title: unknown, body: unknown): string {
+  return [String(title ?? "").trim(), excerpt(body)].filter(Boolean).join(": ");
+}
+
+function excerpt(value: unknown): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+function arrayStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
 function PlansView() {

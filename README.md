@@ -366,6 +366,8 @@ coat runner register --file examples/runner-bedrock-provider.json
 coat runner list
 coat runner status
 coat runner dispatch --file examples/dispatch-smoke.json
+coat tool list
+coat tool web-search --file examples/web-search-request.json
 ```
 
 The bundled Codex and staff-engineer sidecars auto-register when `RUNNER_REGISTRY_URL` and `RUNNER_ENDPOINT` are set, which Compose and Kubernetes do by default.
@@ -402,7 +404,7 @@ MCP auth is passed by reference, not by value. Runners resolve `SecretRef` entri
 
 The default MCP access mode is `single_user`. Multi-user OIDC is opt-in: set `McpContextRef.access_mode=multi_user_oidc`, include a `UserPrincipalRef`, configure `OidcDelegationPolicy`, and route only to runners advertising `oidc_user_delegation` plus tenant/user labels. MCP servers authenticate as the user through short-lived brokered OIDC access tokens or leases; raw user tokens never enter task state. See `docs/design-docs/130-multi-user-oidc-mcp.md` and `examples/mcp-context-multi-user-oidc.json`.
 
-The tool registry exposes `/mcp` and requires `Authorization: Bearer ...` whenever `MCP_TOOL_TOKEN` is configured. Its `subagent_policy` tool returns the same durable-child-task rule for MCP clients. The control gateway exposes `coat_subagent_policy` for chat and dashboard surfaces.
+The tool registry exposes `/tools/list` and `/mcp`. Use `coat tool list`, `coat tool call --name subagent_policy --file examples/tool-subagent-policy-request.json`, and `coat tool web-search --file examples/web-search-request.json` for operator smoke calls without hand-written JSON-RPC. It requires `Authorization: Bearer ...` whenever `COAT_TOOL_REGISTRY_TOKEN` or the shared `MCP_TOOL_TOKEN` is configured. Its `subagent_policy` tool returns the same durable-child-task rule for MCP clients. The control gateway exposes `coat_subagent_policy` for chat and dashboard surfaces.
 
 The notifier records local in-memory feedback threads. Operators can inspect them with:
 

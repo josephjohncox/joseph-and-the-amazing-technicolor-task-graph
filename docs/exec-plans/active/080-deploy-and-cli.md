@@ -12,7 +12,9 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 - Release packaging publishes `jattg-agent-toolbox` from the `agent-toolbox` Docker target while normal services keep the slim `service` target.
 - CLI supports `coat deploy cluster ephemeral-jobs render` and `coat deploy cluster ephemeral-jobs apply` as fixture and emergency manifest paths, while the backend provisioner is the normal capacity path.
 - CLI supports `coat deploy cluster executor-job render/apply` as an operator inspection path; `coat-sandbox-runner` owns the Rust Kubernetes API provisioning path for per-task executor Jobs.
-- CLI uses a canonical workflow hierarchy: `plan`, `goal`, `human`, `deploy`, `runner`, `memory`, `event`, `store`, `sandbox`, `release`, and `setup`.
+- CLI uses a canonical workflow hierarchy: `plan`, `goal`, `human`, `deploy`, `runner`, `tool`, `memory`, `event`, `store`, `sandbox`, `release`, and `setup`.
+- CLI exposes `coat tool list`, `coat tool call`, and `coat tool web-search` for first-class tool-registry and MCP smoke calls without hand-authored JSON-RPC.
+- Release runbooks separate published binary smoke from published Helm chart smoke, using installed `coat` commands for release planning, chart rendering, chart install, rollout status, and rollback validation.
 - Bare `coat` prints root help; `coat guide` is limited to setup, human queue, approval, chat-client, and follow-up workflows where dialogue is useful.
 - `coat human approve/notify` owns human feedback; `coat deploy local/cluster/chart/restate` owns Compose, Kubernetes, Helm, and Restate Cloud operations without duplicate top-level command groups.
 - The optional control gateway exposes SPA and MCP views for goals, agent progress, prompts, human queues, events, runners, and memory without owning durable state.
@@ -35,12 +37,14 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 - `coat setup login` and `coat setup sso` run provider login/setup flows and optional Compose preflight without making operators copy raw provider commands from docs.
 - `coat setup chat-client` starts an interactive MCP/skill setup wizard, while explicit install/write/print flags stay non-interactive for automation.
 - Bare `coat` shows root help, and `coat guide --print` shows the canonical command map.
+- Tool CLI tests cover command help, parsing, profile endpoint wiring, and a valid structured `WebSearchRequest` example.
+- Release smoke docs cover published binary checksum/unpack checks and Helm chart release install, rollout status, and rollback checks without relying on `cargo run`.
 - `coat deploy local preflight` blocks uninitialized or accidentally all-stub runs unless the operator passes the explicit allow flag.
 
 ## Follow-Ups
 
 - Keep Compose, Kubernetes, Helm, and release workflows aligned when service names, ports, secrets, or image names change.
-- Add published binary and Helm chart smoke installs after the first GitHub Release is created.
+- After the first GitHub Release is created, run the published binary and Helm chart smoke commands from `docs/operations/releases.md` and record the evidence.
 - Add a production controller/provisioner loop that submits per-task executor Jobs from coordinator-approved state and records completion attestations.
 
 ## Acceptance

@@ -90,7 +90,6 @@ Binary releases are handled by `.github/workflows/release-binaries.yml`.
 Trigger it manually only when the release was already cut locally:
 
 ```sh
-git tag v0.2.0
 git push origin v0.2.0
 ```
 
@@ -133,6 +132,56 @@ cargo build --workspace --release
 VERSION=0.2.0 scripts/package-binaries.sh
 ```
 
+## Published Binary Smoke
+
+After the `vX.Y.Z` GitHub Release is published, smoke the release assets
+separately from the Helm chart. Pick the target that matches the operator
+machine or CI runner: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+or `aarch64-apple-darwin`.
+
+```sh
+VERSION=0.2.0
+TARGET=aarch64-apple-darwin
+RELEASE_URL="https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v${VERSION}"
+ARCHIVE="jattg-binaries-${VERSION}-${TARGET}.tar.gz"
+
+mkdir -p /tmp/jattg-binary-release-smoke
+cd /tmp/jattg-binary-release-smoke
+curl -fsSLO "${RELEASE_URL}/${ARCHIVE}"
+curl -fsSLO "${RELEASE_URL}/${ARCHIVE}.sha256"
+EXPECTED_SHA="$(cut -d ' ' -f 1 "${ARCHIVE}.sha256")"
+printf '%s  %s\n' "${EXPECTED_SHA}" "${ARCHIVE}" | shasum -a 256 -c -
+tar -xzf "${ARCHIVE}"
+
+EXTRACTED="./jattg-binaries-${VERSION}-${TARGET}"
+python3 -m json.tool "${EXTRACTED}/manifest.json" >/dev/null
+for binary in \
+  coat \
+  coat-coordinator \
+  coat-event-gateway \
+  coat-goal-store \
+  coat-memory-gateway \
+  coat-notifier \
+  coat-runner-registry \
+  coat-sandbox-runner \
+  coat-tool-registry \
+  coat-validator
+do
+  test -x "${EXTRACTED}/bin/${binary}"
+done
+
+"${EXTRACTED}/bin/coat" --help
+"${EXTRACTED}/bin/coat" guide --print
+"${EXTRACTED}/bin/coat" release plan --version "${VERSION}"
+```
+
+The smoke passes when the checksum verifies, the archive expands, the released
+manifest parses, every shipped binary is executable, and the extracted `coat`
+CLI can print its operator surface and plan the same release version. Do not run
+service binaries in this smoke; without a dedicated help/version flag they start
+listeners. This does not validate the Helm install path and does not require
+local Rust builds.
+
 ## Helm Chart Release
 
 Helm chart releases are handled by `.github/workflows/release-helm.yml`.
@@ -141,7 +190,6 @@ When the workflow runs from a `chart-v*` tag, it packages the chart with the `ap
 Trigger it manually only when the release was already cut locally:
 
 ```sh
-git tag chart-v0.2.0
 git push origin chart-v0.2.0
 ```
 
@@ -160,6 +208,70 @@ coat deploy chart upgrade \
   --chart https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.2.0/jattg-0.2.0.tgz \
   --wait
 ```
+
+## Published Helm Chart Smoke
+
+After the `chart-vX.Y.Z` GitHub Release is published, smoke the packaged chart
+against a disposable namespace or an existing smoke release. Keep this separate
+from binary release validation because it proves Helm consumption, image tag
+selection, rollout behavior, and rollback mechanics.
+
+```sh
+CHART_VERSION=0.2.0
+APP_VERSION=0.2.0
+RELEASE=jattg-smoke
+NAMESPACE=jattg-smoke
+CHART_URL="https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${CHART_VERSION}/jattg-${CHART_VERSION}.tgz"
+
+coat deploy chart template \
+  --release "${RELEASE}" \
+  --namespace "${NAMESPACE}" \
+  --chart "${CHART_URL}" \
+  --set "global.imageTag=${APP_VERSION}" \
+  --output /tmp/jattg-chart-release-smoke.yaml
+
+coat deploy chart upgrade \
+  --release "${RELEASE}" \
+  --namespace "${NAMESPACE}" \
+  --chart "${CHART_URL}" \
+  --set "global.imageTag=${APP_VERSION}" \
+  --dry-run
+
+coat deploy chart upgrade \
+  --release "${RELEASE}" \
+  --namespace "${NAMESPACE}" \
+  --chart "${CHART_URL}" \
+  --set "global.imageTag=${APP_VERSION}" \
+  --wait \
+  --timeout 5m
+
+coat deploy cluster status --namespace "${NAMESPACE}" --timeout 180s
+```
+
+For an upgrade smoke with a previous Helm revision, validate rollback before
+promoting the chart:
+
+```sh
+coat deploy chart rollback \
+  --release "${RELEASE}" \
+  --namespace "${NAMESPACE}" \
+  --wait \
+  --timeout 5m
+
+coat deploy cluster status --namespace "${NAMESPACE}" --timeout 180s
+
+coat deploy chart upgrade \
+  --release "${RELEASE}" \
+  --namespace "${NAMESPACE}" \
+  --chart "${CHART_URL}" \
+  --set "global.imageTag=${APP_VERSION}" \
+  --wait \
+  --timeout 5m
+```
+
+Fresh installs have no prior revision to roll back to. Treat a failed first
+install as a failed chart smoke, fix the release, and cut a retry tag instead of
+marking the release healthy.
 
 ## Guardrails
 

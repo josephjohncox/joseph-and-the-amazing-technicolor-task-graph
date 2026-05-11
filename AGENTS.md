@@ -221,6 +221,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Personal Restate Cloud env bootstrap: `coat deploy local up --restate-cloud --init-env`
 - Personal Restate Cloud stack and registration: `coat deploy local up --restate-cloud --register-cloud --allow-stub-runners`
 - Model index refresh: `coat setup model-index refresh`
+- Tool registry smoke: `coat tool list` and `coat tool web-search --file examples/web-search-request.json`
 - Local provider auth setup wizard: `coat setup local-auth`
 - Provider device/browser login helper: `coat setup login --codex --claude --preflight`
 - AWS SSO helper: `coat setup sso --profile <profile> --write-env --bedrock-live --preflight`
@@ -234,6 +235,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Helm chart install or upgrade: `coat deploy chart upgrade --values path/to/operator-values.yaml --wait`
 - Restate ingress defaults to `http://localhost:8080`.
 - Coordinator service listens on `:9080`.
+- Tool registry listens on `:9084`.
 - Runner registry listens on `:9085`.
 - Notifier listens on `:9086`.
 - Goal store listens on `:9088`.

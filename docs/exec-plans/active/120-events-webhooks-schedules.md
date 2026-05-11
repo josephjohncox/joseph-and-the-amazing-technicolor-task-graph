@@ -26,6 +26,7 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 - Routes support record-only, create-goal, create-research-goal, steer-goal, and human-review modes.
 - `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` blocks activation of risky enabled sources unless `x-coat-approval-id` is supplied.
 - Accepted event-source activation approval references are projected into the goal store as ingress-scoped `EventSourceApprovalRecord`s when `COAT_GOAL_STORE_URL` is configured.
+- `make event-gateway-smoke` runs a no-Docker local smoke that starts `coat-goal-store` and `coat-event-gateway` on ephemeral localhost ports, registers an approved risky generic CI source, verifies the activation approval projection, emits and dedupes a generic event, checks normalized gateway event/trigger state, and skips clearly when localhost port binding is unavailable.
 - Postgres inbox/outbox migrations are scaffolded under `infra/db/migrations/`.
 - `COAT_EVENT_GATEWAY_BACKEND=postgres` writes and reads event sources, external events, and triggered-goal responses through the Postgres event tables.
 - AsyncAPI docs live at `docs/api/event-gateway.asyncapi.yaml`.
@@ -35,4 +36,4 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 
 - Add Google Calendar and Outlook source adapters using MCP or provider APIs.
 - Add OpenTelemetry log/metric/trace and additional provider adapters after the generic `open_telemetry_signal` shape stabilizes.
-- Add an end-to-end gateway-to-goal-store projection smoke test once the Compose harness can run in CI.
+- Add Compose or cluster CI coverage that exercises event gateway projection against the same service topology operators run outside local smoke tests.

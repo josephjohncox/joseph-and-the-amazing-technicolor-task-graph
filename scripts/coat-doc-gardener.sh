@@ -37,6 +37,37 @@ for path in $required_paths; do
   fi
 done
 
+agents_source_paths="$(
+  awk '
+    /^## Source Of Truth$/ { in_section = 1; next }
+    in_section && /^Update docs/ { exit }
+    in_section {
+      line = $0
+      while (match(line, /`[^`]+`/)) {
+        print substr(line, RSTART + 1, RLENGTH - 2)
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$root/AGENTS.md"
+)"
+
+for path in $agents_source_paths; do
+  case "$path" in
+    */)
+      if [ ! -d "$root/${path%/}" ]; then
+        printf 'AGENTS.md Source Of Truth directory does not exist: %s\n' "$path" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      if [ ! -e "$root/$path" ]; then
+        printf 'AGENTS.md Source Of Truth path does not exist: %s\n' "$path" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+
 if rg -n "infra/helm/coat|coat-agent-toolbox|coat/agent-toolbox|coat-config|coat-agent-secrets|coat-sandboxes|coat-ephemeral|coat-models|coat\.dev/" "$root" \
   --glob '!target/**' \
   --glob '!sidecars/**/node_modules/**' \
@@ -49,7 +80,7 @@ if rg -n "infra/helm/coat|coat-agent-toolbox|coat/agent-toolbox|coat-config|coat
   exit 1
 fi
 
-if rg -n "coat (compose|k8s|approve|notify|follow-ups)\b|cargo run -p (coat-cli|jattg-cli)|jattg-cli|JATTG_" "$root" \
+if rg -n "coat (compose|k8s|approve|notify|follow-ups)\b|cargo run -p (coat-cli|jattg-cli)|jattg-cli|JATTG_|COAT_RUNNER_REGISTRY\b" "$root" \
   --glob '!target/**' \
   --glob '!sidecars/**/node_modules/**' \
   --glob '!ui/control-plane-web/node_modules/**' \
@@ -61,6 +92,32 @@ if rg -n "coat (compose|k8s|approve|notify|follow-ups)\b|cargo run -p (coat-cli|
   printf 'stale COAT command hierarchy, package, or env-var references found\n' >&2
   exit 1
 fi
+
+check_command_line() {
+  command_line="$1"
+  if ! grep -Fq "$command_line" "$root/crates/cli/src/main.rs"; then
+    printf 'canonical command missing from CLI command map: %s\n' "$command_line" >&2
+    exit 1
+  fi
+  if ! grep -Fq "$command_line" "$root/docs/operations/cli.md"; then
+    printf 'canonical command missing from docs/operations/cli.md: %s\n' "$command_line" >&2
+    exit 1
+  fi
+}
+
+check_command_line 'coat plan <draft|list|show|revise|compile|follow-ups>'
+check_command_line 'coat goal <draft|lint|submit|list|progress|tasks|steer|branch|restart|cancel>'
+check_command_line 'coat human <approve|notify>'
+check_command_line 'coat deploy local <preflight|up|config|down>'
+check_command_line 'coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>'
+check_command_line 'coat deploy chart <lint|template|upgrade|rollback|package>'
+check_command_line 'coat deploy restate <cloud-env|tunnel-docker|register-cloud>'
+check_command_line 'coat runner <list|status|register|dispatch|capacity-plan>'
+check_command_line 'coat tool <list|call|web-search>'
+check_command_line 'coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>'
+check_command_line 'coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>'
+check_command_line 'coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>'
+check_command_line 'coat setup <login|sso|model-index|config|local-auth|chat-client>'
 
 if rg -n '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_STORE|EVENT|CONTROL)_' "$root/.envrc" >/tmp/coat-doc-gardener-direnv.txt; then
   cat /tmp/coat-doc-gardener-direnv.txt >&2

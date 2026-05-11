@@ -244,6 +244,8 @@ impl GoalWorkflowImpl {
         state: &GoalState,
         reason: &'static str,
     ) -> HandlerResult<()> {
+        let observation = observe_transition(state, reason);
+        emit_transition_observation(&observation);
         let Some(goal_store_url) = self.goal_store_url.clone() else {
             return Ok(());
         };
@@ -269,6 +271,78 @@ impl GoalWorkflowImpl {
         .await?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CoordinatorTransitionObservation {
+    goal_id: coat_domain::GoalId,
+    reason: &'static str,
+    status: coat_domain::GoalStatus,
+    total_tasks: usize,
+    runnable_tasks: usize,
+    waiting_approval_tasks: usize,
+    blocked_tasks: usize,
+    failed_tasks: usize,
+    done_tasks: usize,
+    pending_approvals: usize,
+    event_count: usize,
+}
+
+fn observe_transition(state: &GoalState, reason: &'static str) -> CoordinatorTransitionObservation {
+    CoordinatorTransitionObservation {
+        goal_id: state.goal.id,
+        reason,
+        status: state.status.clone(),
+        total_tasks: state.tasks.len(),
+        runnable_tasks: state
+            .tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::Runnable)
+            .count(),
+        waiting_approval_tasks: state
+            .tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::WaitingApproval)
+            .count(),
+        blocked_tasks: state
+            .tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::Blocked)
+            .count(),
+        failed_tasks: state
+            .tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::Failed)
+            .count(),
+        done_tasks: state
+            .tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::Done)
+            .count(),
+        pending_approvals: state
+            .approvals
+            .iter()
+            .filter(|approval| approval.status == coat_domain::ApprovalStatus::Pending)
+            .count(),
+        event_count: state.events.len(),
+    }
+}
+
+fn emit_transition_observation(observation: &CoordinatorTransitionObservation) {
+    tracing::info!(
+        goal_id = %observation.goal_id,
+        reason = observation.reason,
+        status = ?observation.status,
+        total_tasks = observation.total_tasks,
+        runnable_tasks = observation.runnable_tasks,
+        waiting_approval_tasks = observation.waiting_approval_tasks,
+        blocked_tasks = observation.blocked_tasks,
+        failed_tasks = observation.failed_tasks,
+        done_tasks = observation.done_tasks,
+        pending_approvals = observation.pending_approvals,
+        event_count = observation.event_count,
+        "coordinator state transition"
+    );
 }
 
 impl GoalWorkflow for GoalWorkflowImpl {
@@ -448,7 +522,7 @@ impl Default for AgentRunnerImpl {
     fn default() -> Self {
         Self {
             client: reqwest::Client::new(),
-            registry_url: std::env::var("COAT_RUNNER_REGISTRY")
+            registry_url: std::env::var("COAT_RUNNER_REGISTRY_URL")
                 .unwrap_or_else(|_| "http://localhost:9085".to_string()),
             notifier_url: std::env::var("COAT_NOTIFIER_URL")
                 .unwrap_or_else(|_| "http://localhost:9086".to_string()),
@@ -907,6 +981,68 @@ fn restate_identity_keys() -> Vec<String> {
     keys.sort();
     keys.dedup();
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transition_observation_captures_approval_pause() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "approval observation",
+            "prove approval pauses are observable",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let sandbox = state.tasks[&task_id].sandbox.clone();
+        state.tasks.get_mut(&task_id).expect("task").status = TaskStatus::WaitingApproval;
+        state.status = coat_domain::GoalStatus::WaitingApproval;
+        state.approvals.push(ApprovalRequest {
+            id: state.goal.id,
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            attempt: 0,
+            reason: "network open".to_string(),
+            status: coat_domain::ApprovalStatus::Pending,
+            risk: coat_domain::ApprovalRisk::High,
+            reason_codes: vec![coat_domain::ApprovalReasonCode::NetworkOpen],
+            sandbox,
+            requested_action: "run networked task".to_string(),
+            notification_reports: Vec::new(),
+        });
+
+        let observation = observe_transition(&state, "approval_requested");
+
+        assert_eq!(observation.reason, "approval_requested");
+        assert_eq!(observation.status, coat_domain::GoalStatus::WaitingApproval);
+        assert_eq!(observation.total_tasks, 1);
+        assert_eq!(observation.runnable_tasks, 0);
+        assert_eq!(observation.waiting_approval_tasks, 1);
+        assert_eq!(observation.pending_approvals, 1);
+    }
+
+    #[test]
+    fn transition_observation_captures_terminal_mix() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "terminal observation",
+            "prove final task outcomes are observable",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        state.tasks.get_mut(&task_id).expect("task").status = TaskStatus::Done;
+        state.status = coat_domain::GoalStatus::Done;
+        let initial_event_count = state.events.len();
+        state
+            .events
+            .push(coat_domain::StateEvent::new("validation_applied"));
+
+        let observation = observe_transition(&state, "done");
+
+        assert_eq!(observation.status, coat_domain::GoalStatus::Done);
+        assert_eq!(observation.done_tasks, 1);
+        assert_eq!(observation.blocked_tasks, 0);
+        assert_eq!(observation.failed_tasks, 0);
+        assert_eq!(observation.event_count, initial_event_count + 1);
+    }
 }
 
 #[tokio::main]

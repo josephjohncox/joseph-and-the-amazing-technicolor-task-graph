@@ -1,0 +1,201 @@
+{
+  "status": "routed",
+  "request": {
+    "query": "Which purpose-built memory database or graph memory layer should COAT use for durable agent memories across distributed fork/join workflows?",
+    "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+    "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756650",
+    "limit": 3,
+    "allowed_providers": ["web", "docs", "mcp"],
+    "source_quality_order": ["official_docs", "primary", "peer_reviewed"],
+    "context": [
+      "Replay fixture: validate stored source capture and ResearchOutput shape without live web access.",
+      "Captured source timestamps are evidence timestamps, not a freshness guarantee."
+    ],
+    "route": "runner_registry",
+    "require_sources": true,
+    "require_use_plan": true
+  },
+  "result": {
+    "task_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756650",
+    "status": "done",
+    "summary": "Replay fixture research capture normalized into ResearchOutput with source artifacts and an InformationUsePlan.",
+    "research": {
+      "question": "Which purpose-built memory database or graph memory layer should COAT use for durable agent memories across distributed fork/join workflows?",
+      "answer": "The captured source set supports using Zep/Graphiti over MCP as the default temporal graph memory layer, with Qdrant as the embedded retrieval mirror and Restate remaining the execution journal. This replay fixture validates the parser and validator contract only; it does not refresh source freshness.",
+      "sources": [
+        {
+          "title": "Zep Key Concepts",
+          "uri": "https://help.getzep.com/concepts",
+          "quality": "official_docs",
+          "captured_at": "2026-05-05",
+          "quote": "Graph RAG, agent memory, and context assembly",
+          "summary": "Zep documents a knowledge graph, context block, fact invalidation, graph search, and agentic tool use for memory retrieval.",
+          "confidence": 0.9
+        },
+        {
+          "title": "Graphiti MCP Server",
+          "uri": "https://github.com/getzep/graphiti/tree/main/mcp_server",
+          "quality": "primary",
+          "captured_at": "2026-05-05",
+          "quote": "temporally-aware knowledge graphs",
+          "summary": "Graphiti exposes temporal graph memory over MCP with HTTP transport and supports FalkorDB or Neo4j backends.",
+          "confidence": 0.9
+        },
+        {
+          "title": "Qdrant API and SDKs",
+          "uri": "https://qdrant.tech/documentation/interfaces/",
+          "quality": "official_docs",
+          "captured_at": "2026-05-06",
+          "quote": "official clients",
+          "summary": "Qdrant documents official SDKs, REST and gRPC APIs, and Rust client support for production vector memory.",
+          "confidence": 0.88
+        }
+      ],
+      "confidence": 0.86,
+      "use_plan": {
+        "facts_to_use": [
+          "Default memory_policy.store.kind should be zep_graphiti when temporal graph memory is enabled.",
+          "Default memory_policy.vector.store.kind should be qdrant for embedded retrieval.",
+          "Expose Graphiti as an MCP memory server rather than embedding memory logic inside the coordinator."
+        ],
+        "facts_to_avoid": [
+          "Do not treat vector-only storage as sufficient for temporal fork/join agent memory.",
+          "Do not treat this replay fixture as proof that sources are still current."
+        ],
+        "proposed_goal_updates": [
+          {
+            "target": "memory_policy",
+            "path": "/memory_policy/store/kind",
+            "recommendation": "Set the default memory store kind to zep_graphiti for semantic agent memory.",
+            "reason": "The captured sources favor a temporal graph memory layer for fork/join context rather than vector-only retrieval."
+          }
+        ],
+        "validation_checks": [
+          "Replay validators must inspect stored SourceArtifact entries instead of opening the network.",
+          "A research task must include source artifacts, confidence, and a non-empty InformationUsePlan before it can satisfy validation."
+        ]
+      },
+      "open_questions": [
+        "Should production use Graphiti with FalkorDB for simple local deployment or Neo4j for a more full-featured graph backend?"
+      ]
+    },
+    "runner_id": "research-runner-replay",
+    "artifacts": [
+      {
+        "kind": "report",
+        "uri": "artifact://research-replay/memory-substrate/report.json",
+        "description": "Replayable captured research report for offline validator tests",
+        "sha256": null
+      }
+    ],
+    "object_artifacts": [
+      {
+        "store": {
+          "kind": "s3_compatible",
+          "bucket": "jattg-replay-artifacts",
+          "prefix": "research-replay",
+          "endpoint": "http://object-store:9000",
+          "region": "us-east-1",
+          "force_path_style": true,
+          "secret_ref": null
+        },
+        "key": "research-replay/memory-substrate/raw-source-snapshots.jsonl",
+        "uri": "s3://jattg-replay-artifacts/research-replay/memory-substrate/raw-source-snapshots.jsonl",
+        "content_type": "application/jsonl",
+        "size_bytes": null,
+        "sha256": null,
+        "description": "Raw captured source snapshot pointers for replay reviewers; fixture does not require live object-store access"
+      },
+      {
+        "store": {
+          "kind": "s3_compatible",
+          "bucket": "jattg-replay-artifacts",
+          "prefix": "research-replay",
+          "endpoint": "http://object-store:9000",
+          "region": "us-east-1",
+          "force_path_style": true,
+          "secret_ref": null
+        },
+        "key": "research-replay/memory-substrate/source-fetch-metadata.json",
+        "uri": "s3://jattg-replay-artifacts/research-replay/memory-substrate/source-fetch-metadata.json",
+        "content_type": "application/json",
+        "size_bytes": null,
+        "sha256": null,
+        "description": "Replay metadata for source fetch timestamps, provider route, and citation normalization"
+      }
+    ],
+    "confidence": 0.86,
+    "next_actions": [
+      "Validate this fixture with coat-domain tests before enabling live adapters."
+    ],
+    "diagnostics": [
+      "Replay fixture; validation must not perform live network access.",
+      "Captured source timestamps are evidence timestamps, not freshness guarantees."
+    ]
+  },
+  "research": {
+    "question": "Which purpose-built memory database or graph memory layer should COAT use for durable agent memories across distributed fork/join workflows?",
+    "answer": "The captured source set supports using Zep/Graphiti over MCP as the default temporal graph memory layer, with Qdrant as the embedded retrieval mirror and Restate remaining the execution journal. This replay fixture validates the parser and validator contract only; it does not refresh source freshness.",
+    "sources": [
+      {
+        "title": "Zep Key Concepts",
+        "uri": "https://help.getzep.com/concepts",
+        "quality": "official_docs",
+        "captured_at": "2026-05-05",
+        "quote": "Graph RAG, agent memory, and context assembly",
+        "summary": "Zep documents a knowledge graph, context block, fact invalidation, graph search, and agentic tool use for memory retrieval.",
+        "confidence": 0.9
+      },
+      {
+        "title": "Graphiti MCP Server",
+        "uri": "https://github.com/getzep/graphiti/tree/main/mcp_server",
+        "quality": "primary",
+        "captured_at": "2026-05-05",
+        "quote": "temporally-aware knowledge graphs",
+        "summary": "Graphiti exposes temporal graph memory over MCP with HTTP transport and supports FalkorDB or Neo4j backends.",
+        "confidence": 0.9
+      },
+      {
+        "title": "Qdrant API and SDKs",
+        "uri": "https://qdrant.tech/documentation/interfaces/",
+        "quality": "official_docs",
+        "captured_at": "2026-05-06",
+        "quote": "official clients",
+        "summary": "Qdrant documents official SDKs, REST and gRPC APIs, and Rust client support for production vector memory.",
+        "confidence": 0.88
+      }
+    ],
+    "confidence": 0.86,
+    "use_plan": {
+      "facts_to_use": [
+        "Default memory_policy.store.kind should be zep_graphiti when temporal graph memory is enabled.",
+        "Default memory_policy.vector.store.kind should be qdrant for embedded retrieval.",
+        "Expose Graphiti as an MCP memory server rather than embedding memory logic inside the coordinator."
+      ],
+      "facts_to_avoid": [
+        "Do not treat vector-only storage as sufficient for temporal fork/join agent memory.",
+        "Do not treat this replay fixture as proof that sources are still current."
+      ],
+      "proposed_goal_updates": [
+        {
+          "target": "memory_policy",
+          "path": "/memory_policy/store/kind",
+          "recommendation": "Set the default memory store kind to zep_graphiti for semantic agent memory.",
+          "reason": "The captured sources favor a temporal graph memory layer for fork/join context rather than vector-only retrieval."
+        }
+      ],
+      "validation_checks": [
+        "Replay validators must inspect stored SourceArtifact entries instead of opening the network.",
+        "A research task must include source artifacts, confidence, and a non-empty InformationUsePlan before it can satisfy validation."
+      ]
+    },
+    "open_questions": [
+      "Should production use Graphiti with FalkorDB for simple local deployment or Neo4j for a more full-featured graph backend?"
+    ]
+  },
+  "diagnostics": [
+    "Replay fixture captured after routed research and committed for offline validation.",
+    "The top-level research field mirrors result.research so tool responses can be replayed directly.",
+    "object_artifacts point at raw capture locations for reviewer inspection; this fixture does not require live object-store access."
+  ]
+}

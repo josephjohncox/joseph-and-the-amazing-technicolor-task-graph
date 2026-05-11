@@ -29,6 +29,12 @@ Initial DDL lives in `infra/db/migrations/001_goal_store.sql` and `infra/db/migr
 
 Local JSONL replay mirrors the Postgres event idempotency rule: appending the same goal event sequence or idempotency key replaces the existing projected event instead of duplicating it. This keeps Restate replay-safe projection behavior consistent across local and Postgres backends.
 
+## Local Schema And Protobuf Drift Discipline
+
+`make proto-check` is the local and CI gate for protocol drift. It snapshots the current `schemas/` tree, regenerates JSON schemas from the Rust domain contracts, fails when regeneration changes that snapshot, runs `buf lint`, and verifies protobuf formatting with Buf's diff-only format check. That catches stale generation without requiring a clean local worktree when schema changes are intentionally part of the current patch.
+
+CI now calls the same `make proto-check` target so protobuf linting, protobuf formatting, and JSON schema freshness stay together. Generated SDKs remain out of the repository until the final Rust and TypeScript SDK targets are selected.
+
 ## Follow-Ups
 
 - Add generated Rust/TypeScript SDKs from Buf once the final SDK target is selected.

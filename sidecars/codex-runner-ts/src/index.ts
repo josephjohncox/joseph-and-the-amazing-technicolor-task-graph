@@ -933,8 +933,19 @@ function buildCodexAppServerResult(
   const objectArtifacts = buildObjectArtifactsFromTrace(request, trace);
   const checkpoints = buildCheckpoints(request, gitResult, objectArtifacts, trace);
   const patchStatus = normalizeResultStatus(resultPatch.patch.status);
-  const traceStatus = statusFromTrace(trace);
-  const status = patchStatus ?? traceStatus;
+  if (!resultPatch.parsed || !patchStatus) {
+    return invalidCodexAppServerStructuredResult(
+      request,
+      trace,
+      memoryContext,
+      memoryContextError,
+      gitResult,
+      objectArtifacts,
+      checkpoints,
+      resultPatch.parsed,
+    );
+  }
+  const status = patchStatus;
   const summary =
     typeof resultPatch.patch.summary === "string" && resultPatch.patch.summary.trim()
       ? resultPatch.patch.summary.trim()
@@ -992,7 +1003,10 @@ function buildCodexMcpFallbackResult(request: AgentRunRequest, trace: McpFallbac
   const objectArtifacts = buildObjectArtifactsFromMcpTrace(request);
   const checkpoints = buildCheckpoints(request, gitResult, objectArtifacts, trace);
   const patchStatus = normalizeResultStatus(resultPatch.patch.status);
-  const status = patchStatus ?? statusFromMcpTrace(trace);
+  if (!resultPatch.parsed || !patchStatus) {
+    return invalidCodexMcpStructuredResult(request, trace, gitResult, objectArtifacts, checkpoints, resultPatch.parsed);
+  }
+  const status = patchStatus;
   const summary =
     typeof resultPatch.patch.summary === "string" && resultPatch.patch.summary.trim()
       ? resultPatch.patch.summary.trim()
@@ -1040,6 +1054,109 @@ function buildCodexMcpFallbackResult(request: AgentRunRequest, trace: McpFallbac
   };
 }
 
+function invalidCodexAppServerStructuredResult(
+  request: AgentRunRequest,
+  trace: AppServerRunTrace,
+  memoryContext: MemoryContextResponse | null,
+  memoryContextError: string | null,
+  gitResult: Record<string, unknown> | null,
+  objectArtifacts: Record<string, unknown>[],
+  checkpoints: unknown[],
+  parsed: boolean,
+): AgentRunResult {
+  return {
+    task_id: request.task.id,
+    status: "failed",
+    summary: `Codex App Server ${trace.source} did not return a valid structured AgentRunResult payload.`,
+    review: null,
+    research: null,
+    branch_vote: null,
+    runner_id: runnerId,
+    model_used: request.task.execution?.model?.candidates?.[0] ?? null,
+    mcp_context_used: request.task.execution?.mcp ?? null,
+    sandbox_attestation: sandboxAttestation(request, false, false, "codex_app_server"),
+    artifacts: [
+      {
+        kind: "report",
+        uri: codexThreadUri(trace),
+        description: "Codex App Server thread and turn transcript reference for invalid structured output",
+        sha256: null,
+      },
+      ...resultChannelArtifacts(request, gitResult, objectArtifacts),
+      ...memoryContextArtifacts(request, memoryContext),
+    ],
+    git_result: gitResult,
+    object_artifacts: objectArtifacts,
+    checkpoints,
+    test_evidence: commandEvidenceFromTrace(request, trace),
+    child_requests: [],
+    confidence: 0,
+    next_actions: ["Retry with a runner prompt that MUST emit a valid structured AgentRunResult JSON payload."],
+    diagnostics: [
+      `mode=${trace.source === "live" ? "live" : "replay"}`,
+      `codex_app_server_source=${trace.source}`,
+      `codex_app_server_thread_id=${stringValue(trace.thread.id) ?? "unknown"}`,
+      `codex_app_server_turn_id=${stringValue(trace.turn.id) ?? "unknown"}`,
+      `codex_app_server_final_json=${parsed}`,
+      "codex_app_server_final_status_valid=false",
+      ...trace.diagnostics,
+      ...memoryContextDiagnostics(memoryContext, memoryContextError),
+      ...subagentDiagnostics(request.task.execution?.subagents),
+      ...mcpDiagnostics(request.task.execution?.mcp),
+    ],
+    notification_reports: [],
+  };
+}
+
+function invalidCodexMcpStructuredResult(
+  request: AgentRunRequest,
+  trace: McpFallbackRunTrace,
+  gitResult: Record<string, unknown> | null,
+  objectArtifacts: Record<string, unknown>[],
+  checkpoints: unknown[],
+  parsed: boolean,
+): AgentRunResult {
+  return {
+    task_id: request.task.id,
+    status: "failed",
+    summary: "Codex MCP fallback replay did not return a valid structured AgentRunResult payload.",
+    review: null,
+    research: null,
+    branch_vote: null,
+    runner_id: runnerId,
+    model_used: request.task.execution?.model?.candidates?.[0] ?? null,
+    mcp_context_used: request.task.execution?.mcp ?? null,
+    sandbox_attestation: sandboxAttestation(request, false, false, "codex_mcp_fallback_replay"),
+    artifacts: [
+      {
+        kind: "report",
+        uri: codexMcpFallbackUri(request),
+        description: "Codex MCP fallback replay transcript reference for invalid structured output",
+        sha256: null,
+      },
+      ...resultChannelArtifacts(request, gitResult, objectArtifacts),
+    ],
+    git_result: gitResult,
+    object_artifacts: objectArtifacts,
+    checkpoints,
+    test_evidence: commandEvidenceFromMcpTrace(request, trace),
+    child_requests: [],
+    confidence: 0,
+    next_actions: ["Retry through a runner path that MUST emit a valid structured AgentRunResult JSON payload."],
+    diagnostics: [
+      "mode=mcp-replay",
+      `codex_mcp_source=${trace.source}`,
+      `codex_mcp_tool_calls=${trace.tool_calls.length}`,
+      `codex_mcp_final_json=${parsed}`,
+      "codex_mcp_final_status_valid=false",
+      ...trace.diagnostics,
+      ...subagentDiagnostics(request.task.execution?.subagents),
+      ...mcpDiagnostics(request.task.execution?.mcp),
+    ],
+    notification_reports: [],
+  };
+}
+
 export function loadReplayFixture(path = process.env.CODEX_REPLAY_FIXTURE ?? "examples/codex-app-server-replay.json"): unknown {
   return JSON.parse(readFileSync(path, "utf8")) as unknown;
 }
@@ -1053,11 +1170,10 @@ export function traceFromReplayFixture(fixture: unknown): AppServerRunTrace {
     (isRecord(appServer.thread) ? appServer.thread : null) ??
     firstNotificationRecord(events, "thread/started", "thread") ??
     {};
-  const turn =
-    (isRecord(appServer.turn) ? appServer.turn : null) ??
-    firstNotificationRecord(events, "turn/completed", "turn") ??
-    firstNotificationRecord(events, "turn/started", "turn") ??
-    {};
+  const turnSnapshot = isRecord(appServer.turn) ? appServer.turn : null;
+  const completedTurn = firstNotificationRecord(events, "turn/completed", "turn");
+  const startedTurn = firstNotificationRecord(events, "turn/started", "turn");
+  const turn = { ...(turnSnapshot ?? startedTurn ?? {}), ...(completedTurn ?? {}) };
   return {
     source: "replay",
     app_server_url: typeof appServer.url === "string" ? appServer.url : null,
@@ -1609,19 +1725,6 @@ function normalizeResultStatus(status: unknown): AgentRunResult["status"] | null
   return null;
 }
 
-function statusFromTrace(trace: AppServerRunTrace): AgentRunResult["status"] {
-  const status = stringValue(trace.turn.status)?.toLowerCase();
-  if (status === "completed" || status === "done") return "done";
-  if (status === "failed" || trace.items.some((item) => item.type === "error")) return "failed";
-  if (status === "interrupted" || status === "canceled" || status === "cancelled") return "partial";
-  return "partial";
-}
-
-function statusFromMcpTrace(trace: McpFallbackRunTrace): AgentRunResult["status"] {
-  if (trace.tool_calls.some((call) => mcpToolCallPassed(call) === false)) return "failed";
-  return "done";
-}
-
 function commandEvidenceFromTrace(request: AgentRunRequest, trace: AppServerRunTrace): TestCommandEvidence[] {
   return trace.items.filter(isCommandExecutionItem).map((item) => {
     const id = stringValue(item.id) ?? deterministicUuid(`${request.task.id}:command`);
@@ -2050,8 +2153,34 @@ async function providerVerificationProfile(
     });
   }
 
-  const probe = await checkHttp(lane.endpoint as string, 1000);
+  const probe = await checkProviderHttp(lane, 1000);
   const available = probe.available === true;
+  const reachableButNotVerified = probe.reachable === true && probe.available !== true && probe.server_error !== true;
+  if (reachableButNotVerified) {
+    return providerProfile(lane, {
+      status: "skipped",
+      attempted: true,
+      available: null,
+      configured: true,
+      skipped_reason: String(probe.classification ?? "provider endpoint reachable but verifier probe was not authoritative"),
+      error: null,
+      auth,
+      checks: [
+        {
+          name: "configuration",
+          attempted: true,
+          passed: true,
+          evidence: ["required endpoint/auth setup is present or not required"],
+        },
+        {
+          name: "live_provider_probe",
+          attempted: true,
+          passed: null,
+          evidence: [probe],
+        },
+      ],
+    });
+  }
   return providerProfile(lane, {
     status: available ? "verified" : "failed",
     attempted: true,
@@ -2375,6 +2504,79 @@ async function checkHttp(url: string, timeoutMs: number): Promise<Record<string,
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function checkProviderHttp(lane: ProviderVerificationLane, timeoutMs: number): Promise<Record<string, unknown>> {
+  const endpoint = lane.endpoint;
+  if (!endpoint) return { attempted: false, configured: false, available: null, error: "missing endpoint" };
+  const url = providerProbeUrl(lane.provider, endpoint);
+  const headers = providerProbeHeaders(lane.provider);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal, headers });
+    const classification = classifyProviderProbeStatus(response.status);
+    return {
+      attempted: true,
+      configured: true,
+      available: response.ok,
+      reachable: true,
+      status: response.status,
+      server_error: response.status >= 500,
+      probe_url: redactUrl(url),
+      classification,
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      configured: true,
+      available: false,
+      reachable: false,
+      probe_url: redactUrl(url),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function providerProbeUrl(provider: string, endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    if (provider === "ollama") {
+      url.pathname = `${url.pathname.replace(/\/+$/g, "")}/api/tags`.replace(/\/api\/tags\/api\/tags$/, "/api/tags");
+      return url.toString();
+    }
+    if (provider === "open_ai" || provider === "open_ai_compatible" || provider === "vllm") {
+      const path = url.pathname.replace(/\/+$/g, "");
+      if (path.endsWith("/models")) return url.toString();
+      url.pathname = path.endsWith("/v1") ? `${path}/models` : `${path}/v1/models`;
+      return url.toString();
+    }
+    return url.toString();
+  } catch {
+    return endpoint;
+  }
+}
+
+function providerProbeHeaders(provider: string): HeadersInit {
+  const token =
+    provider === "hugging_face"
+      ? process.env.HF_TOKEN || process.env.HUGGING_FACE_HUB_TOKEN
+      : provider === "open_ai_compatible"
+        ? process.env.COAT_LLM_GATEWAY_API_KEY || process.env.OPENAI_COMPATIBLE_API_KEY || process.env.OPENAI_API_KEY
+        : provider === "open_ai"
+          ? process.env.OPENAI_API_KEY
+          : null;
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+function classifyProviderProbeStatus(status: number): string {
+  if (status >= 200 && status < 300) return "verified";
+  if (status === 401 || status === 403) return "provider endpoint reachable but authentication was rejected";
+  if (status === 404 || status === 405) return "provider endpoint reachable but probe route was not supported";
+  if (status >= 500) return "provider endpoint returned a server error";
+  return `provider endpoint returned HTTP ${status}`;
 }
 
 async function checkAppServer(url: string, timeoutMs: number): Promise<Record<string, unknown>> {

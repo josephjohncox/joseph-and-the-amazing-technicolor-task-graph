@@ -64,7 +64,9 @@ The current scaffold uses Buf remote plugins for `community/neoeinstein-prost`,
 access to the Buf Schema Registry the first time the plugins are resolved. The
 Makefile runs generation with an isolated `BUF_GENERATE_HOME` under `target/` by
 default, so a stale or invalid machine-level Buf token does not affect public
-plugin resolution. Do not add generated files to source control until
+plugin resolution. Because this target resolves remote plugins, it is an
+explicit ProtocolSDK validation step rather than part of the offline default
+`make ci` path. Do not add generated files to source control until
 compatibility rules, package metadata, and publish targets are selected.
 
 ## Local Deploy
@@ -594,7 +596,7 @@ Review output examples live under `examples/`. Runner implementations should ret
 
 Tester and code-worker results should include `test_evidence` entries with command, exit code, pass/fail, duration, and stdout/stderr or artifact URIs whenever `done_criteria.tests_pass=true`. The validator treats missing or all-failing test evidence as incomplete for work-like and tester tasks.
 
-Research output examples live under `examples/research-output-memory-substrate.json`. The proposed memory write in that fixture carries source-capture object refs for raw snapshots and fetch metadata, so reviewers can verify provenance without opening the network. `examples/web-search-response-replay.json` is the offline replay fixture for a routed research capture: it stores the original `WebSearchRequest`, the structured `AgentRunResult`, mirrored `ResearchOutput`, source artifacts, diagnostics, and the information-use plan so validators can exercise sourced research without live web access.
+Research output examples live under `examples/research-output-memory-substrate.json`. The proposed memory write in that fixture carries source-capture object refs for raw snapshots and fetch metadata, with SHA-256 digests, so reviewers can verify provenance without opening the network. `examples/web-search-response-replay.json` is the offline replay fixture for a routed research capture: it stores the original `WebSearchRequest`, the structured `AgentRunResult`, mirrored `ResearchOutput`, source artifacts, diagnostics, and the information-use plan so validators can exercise sourced research without live web access.
 
 Validate replay capture locally with:
 
@@ -615,7 +617,7 @@ Set `MEMORY_GATEWAY_GRAPHITI_MCP_URL=http://localhost:8000/mcp/` when a Graphiti
 
 Compose runs Qdrant on `http://localhost:6333`, but `MEMORY_GATEWAY_QDRANT_URL` is blank until an operator enables the vector store. This keeps local smoke stacks on the JSONL journal unless the `coat setup local-auth` memory-store flow selects Qdrant. When Qdrant and an embedding endpoint/model are both configured, the gateway mirrors memory writes and joins into Qdrant, then merges vector hits into `memory_search`.
 
-Live memory adapter tests are explicit opt-ins. `cargo test -p coat-memory-gateway live_qdrant_adapter_round_trips_when_enabled` runs only when `COAT_LIVE_QDRANT_MEMORY_TEST=true` and `MEMORY_GATEWAY_QDRANT_URL`, `MEMORY_GATEWAY_EMBEDDING_URL`, `MEMORY_GATEWAY_EMBEDDING_MODEL`, and `MEMORY_GATEWAY_EMBEDDING_DIMENSIONS` are set. `cargo test -p coat-memory-gateway live_graphiti_adapter_round_trips_when_enabled` runs only when `COAT_LIVE_GRAPHITI_MEMORY_TEST=true`, `COAT_LIVE_ZEP_GRAPHITI_MEMORY_TEST=true`, or `COAT_LIVE_ZEP_MEMORY_TEST=true` and `MEMORY_GATEWAY_GRAPHITI_MCP_URL` is set. Without those gates, the deterministic replay and JSONL tests pass without credentials.
+Live memory adapter tests are explicit opt-ins. `cargo test -p coat-memory-gateway live_qdrant_adapter_round_trips_when_enabled` runs only when `COAT_LIVE_QDRANT_MEMORY_TEST=true` and `MEMORY_GATEWAY_QDRANT_URL`, `MEMORY_GATEWAY_EMBEDDING_URL`, and `MEMORY_GATEWAY_EMBEDDING_MODEL` are set. `MEMORY_GATEWAY_EMBEDDING_DIMENSIONS` is required only when `MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS=true`; otherwise the live test uses the embedding vector length returned by the provider. `cargo test -p coat-memory-gateway live_graphiti_adapter_round_trips_when_enabled` runs only when `COAT_LIVE_GRAPHITI_MEMORY_TEST=true`, `COAT_LIVE_ZEP_GRAPHITI_MEMORY_TEST=true`, or `COAT_LIVE_ZEP_MEMORY_TEST=true` and `MEMORY_GATEWAY_GRAPHITI_MCP_URL` is set. Without those gates, the deterministic replay and JSONL tests pass without credentials.
 
 Build a bounded worker context pack with:
 

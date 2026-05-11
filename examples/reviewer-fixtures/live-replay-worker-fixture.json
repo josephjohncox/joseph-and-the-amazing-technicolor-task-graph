@@ -125,6 +125,39 @@
           ]
         },
         {
+          "objective_id": "quality.maintainability",
+          "decision": "pass",
+          "score": 0.9,
+          "evidence": [
+            "git+diff://thr_codex_replay_001/turn_codex_replay_001.patch"
+          ],
+          "notes": [
+            "The change is scoped to runner contract behavior and replay fixtures."
+          ]
+        },
+        {
+          "objective_id": "abstraction.future_time",
+          "decision": "pass",
+          "score": 0.89,
+          "evidence": [
+            "artifact://codex-app-server-replay/artifact-manifest.json"
+          ],
+          "notes": [
+            "Structured replay evidence keeps future live worker validation reusable."
+          ]
+        },
+        {
+          "objective_id": "testing.regression",
+          "decision": "pass",
+          "score": 0.93,
+          "evidence": [
+            "artifact://codex-app-server-replay/command/cmd_build_001"
+          ],
+          "notes": [
+            "The fixture is tied to a deterministic regression path."
+          ]
+        },
+        {
           "objective_id": "testing.behavioral_end_to_end",
           "decision": "pass",
           "score": 0.92,
@@ -134,6 +167,84 @@
           ],
           "notes": [
             "The fixture exercises the replay-to-review validation path and would fail if checkpoint branch evidence is replaced with metadata-only evidence."
+          ]
+        },
+        {
+          "objective_id": "testing.hypothesis",
+          "decision": "pass",
+          "score": 0.88,
+          "evidence": [
+            "artifact://reviewer-fixtures/live-replay-worker-fixture.json"
+          ],
+          "notes": [
+            "The negative metadata-only checkpoint case falsifies the main bad implementation."
+          ]
+        },
+        {
+          "objective_id": "formal.type_soundness",
+          "decision": "pass",
+          "score": 0.9,
+          "evidence": [
+            "cargo test -p coat-domain live_replay_worker_fixture_feeds_reviewer_and_validator_checkpoint_evidence"
+          ],
+          "notes": [
+            "The domain contract requires typed git checkpoint evidence for code tasks."
+          ]
+        },
+        {
+          "objective_id": "formal.verification",
+          "decision": "pass",
+          "score": 0.85,
+          "evidence": [
+            "ValidationReport::from_result"
+          ],
+          "notes": [
+            "Risk is covered by executable contract tests rather than a separate mechanized proof."
+          ]
+        },
+        {
+          "objective_id": "ddd.ubiquitous_language",
+          "decision": "pass",
+          "score": 0.88,
+          "evidence": [
+            "AgentRunResult.child_requests",
+            "CheckpointRef"
+          ],
+          "notes": [
+            "Fixture terms align with actor, tester, reviewer, checkpoint, and goal-store projection language."
+          ]
+        },
+        {
+          "objective_id": "functional.core",
+          "decision": "pass",
+          "score": 0.87,
+          "evidence": [
+            "ValidationReport::from_result"
+          ],
+          "notes": [
+            "Validation remains a deterministic domain transformation over task and result evidence."
+          ]
+        },
+        {
+          "objective_id": "semantics.denotational",
+          "decision": "pass",
+          "score": 0.87,
+          "evidence": [
+            "CheckpointKind::GitBranch"
+          ],
+          "notes": [
+            "Checkpoint meaning is explicit in the data model rather than inferred from prose."
+          ]
+        },
+        {
+          "objective_id": "simplicity.negative_code",
+          "decision": "pass",
+          "score": 0.86,
+          "evidence": [
+            "examples/reviewer-fixtures/live-replay-worker-fixture.json"
+          ],
+          "notes": [
+            "The fixture adds a focused executable evidence path without broad new framework machinery."
           ]
         }
       ],
@@ -150,6 +261,17 @@
           ]
         },
         {
+          "gate_id": "gate.tests",
+          "passed": true,
+          "score": 0.93,
+          "evidence": [
+            "cargo test -p coat-domain live_replay_worker_fixture_feeds_reviewer_and_validator_checkpoint_evidence"
+          ],
+          "notes": [
+            "Focused domain regression test validates the replay reviewer contract."
+          ]
+        },
+        {
           "gate_id": "gate.behavioral_coverage",
           "passed": true,
           "score": 0.91,
@@ -158,6 +280,41 @@
           ],
           "notes": [
             "Reviewer fixture requires a git checkpoint branch, not only an artifact presence marker."
+          ]
+        },
+        {
+          "gate_id": "gate.type_soundness",
+          "passed": true,
+          "score": 0.9,
+          "evidence": [
+            "cargo test -p coat-domain"
+          ],
+          "notes": [
+            "Rust type checks and domain tests exercise the checkpoint validation contract."
+          ]
+        },
+        {
+          "gate_id": "gate.domain_model",
+          "passed": true,
+          "score": 0.88,
+          "evidence": [
+            "AgentRunResult",
+            "CheckpointRef",
+            "GoalStoreSnapshot"
+          ],
+          "notes": [
+            "The fixture maps durable task evidence into goal-store artifact records."
+          ]
+        },
+        {
+          "gate_id": "gate.simplicity",
+          "passed": true,
+          "score": 0.86,
+          "evidence": [
+            "examples/reviewer-fixtures/live-replay-worker-fixture.json"
+          ],
+          "notes": [
+            "The review path adds one fixture and focused validation rather than a parallel review engine."
           ]
         }
       ],

@@ -332,9 +332,10 @@ require(
 
 duplicate = load("emit-duplicate-response.json")
 require(duplicate["accepted"] is True, duplicate)
-require(duplicate["status"] == "deduped", duplicate)
+require(duplicate["status"] == "recorded", duplicate)
 require(duplicate["event_id"] == "ci-run-12345", duplicate)
 require(duplicate["deduped"] is True, duplicate)
+require(duplicate["goal_id"] == goal_id, duplicate)
 
 events = load("events.json")
 require(len(events) == 1, events)
@@ -349,10 +350,9 @@ require(event["occurred_at"] == "2026-05-06T22:15:00Z", event)
 require(event["payload"]["workflow"] == "cargo-test", event)
 
 triggers = load("triggers.json")
-require([trigger["status"] for trigger in triggers] == ["recorded", "deduped"], triggers)
-require([trigger["event_id"] for trigger in triggers] == ["ci-run-12345", "ci-run-12345"], triggers)
+require([trigger["status"] for trigger in triggers] == ["recorded"], triggers)
+require([trigger["event_id"] for trigger in triggers] == ["ci-run-12345"], triggers)
 require(triggers[0]["goal_id"] == goal_id, triggers)
-require(triggers[1]["goal_id"] is None, triggers)
 
 goal_events = load("goal-events.json")
 require(goal_events["goal_id"] == goal_id, goal_events)
@@ -374,11 +374,10 @@ gateway_entries = [
     for line in event_gateway_journal.read_text().splitlines()
     if line.strip()
 ]
-require([entry["type"] for entry in gateway_entries] == ["source", "event", "trigger", "trigger"], gateway_entries)
+require([entry["type"] for entry in gateway_entries] == ["source", "event", "trigger"], gateway_entries)
 require(gateway_entries[1]["id"] == "ci-run-12345", gateway_entries[1])
 require(gateway_entries[2]["status"] == "recorded", gateway_entries[2])
 require(gateway_entries[2]["goal_id"] == goal_id, gateway_entries[2])
-require(gateway_entries[3]["status"] == "deduped", gateway_entries[3])
 
 store_entries = [
     json.loads(line)

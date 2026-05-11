@@ -14,6 +14,10 @@ on:
         description: "Application version without v prefix"
         required: false
         type: string
+      ref:
+        description: "Git tag or ref to package, for example chart-v0.2.0 or chart-v0.2.0-ghcr.1"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -24,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 

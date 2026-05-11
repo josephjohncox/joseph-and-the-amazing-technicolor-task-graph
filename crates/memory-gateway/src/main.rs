@@ -2366,6 +2366,10 @@ mod tests {
                 && artifact.uri.starts_with("s3://jattg-replay-artifacts/")
                 && artifact.uri.contains("research-replay/memory-substrate/")
                 && artifact.description.contains("Replay")
+                && artifact
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|sha| sha.len() == 64)
         }));
         assert!(
             artifact_uris
@@ -2877,9 +2881,18 @@ mod tests {
         if !env_flag("COAT_LIVE_QDRANT_MEMORY_TEST") {
             return None;
         }
-        let embedding_dimensions = env_value("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")?
-            .parse()
-            .ok()?;
+        let embedding_send_dimensions = env_flag("MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS");
+        let embedding_dimensions = if embedding_send_dimensions {
+            env_value("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")?
+                .parse()
+                .ok()?
+        } else {
+            std::env::var("MEMORY_GATEWAY_EMBEDDING_DIMENSIONS")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_default()
+        };
         Some(AppState {
             memory: Arc::new(RwLock::new(MemoryStore::default())),
             config: AppConfig {
@@ -2907,7 +2920,7 @@ mod tests {
                             .ok()
                             .filter(|value| !value.trim().is_empty())
                     }),
-                embedding_send_dimensions: env_flag("MEMORY_GATEWAY_EMBEDDING_SEND_DIMENSIONS"),
+                embedding_send_dimensions,
             },
             client: live_test_client(),
         })

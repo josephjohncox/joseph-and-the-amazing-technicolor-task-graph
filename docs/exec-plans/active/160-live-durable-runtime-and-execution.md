@@ -4,7 +4,7 @@
 
 Coordinate the remaining live-runtime work across Restate durability, live workers, Kubernetes executors, memory, research, events, notifications, UI, release proof, and generated protocols.
 
-This is the cross-cutting execution plan for the high-value follow-ups in the existing active plans. It does not replace those plans; it sequences them so the system moves from scaffold to proven durable runtime without duplicating subsystem ownership.
+This is the cross-cutting execution plan for the high-value follow-ups preserved from the completed subsystem plans. It does not reopen those plans; it sequences their residual proof work so the system moves from scaffold to proven durable runtime without duplicating subsystem ownership.
 
 ## Defaults
 
@@ -17,7 +17,7 @@ This is the cross-cutting execution plan for the high-value follow-ups in the ex
 
 ## Subsumed Plans
 
-The completed plans under `docs/exec-plans/completed/` remain the subsystem evidence record. Their residual live-runtime follow-ups are preserved here so `docs/exec-plans/active/` can stay focused on one coordination plan.
+The completed plans under `docs/exec-plans/completed/` remain the subsystem evidence record. Their residual live-runtime follow-ups are preserved here so `docs/exec-plans/active/` can stay focused on this single coordination plan.
 
 - `000-bootstrap-harness`: repo and doc harness are complete; ongoing doc gardening stays as normal maintenance.
 - `010-domain-task-tree`: core domain contracts are complete; future lifecycle contract growth is handled through this plan's protocol and test gates.
@@ -73,8 +73,10 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Evidence 2026-05-11: `sidecars/codex-runner-ts` now has explicit `stub`, `replay`, `live`, and `mcp-healthcheck` modes; live App Server mode blocks rather than fabricating work when auth, URL, sandbox, or workspace gates are missing; replay mode consumes `examples/codex-app-server-replay.json`.
 - Preserve sandbox profile, memory context refs, thread/session IDs, child-task requests, git refs, checkpoints, object refs, and artifact manifests in `AgentRunResult`.
 - Add Codex MCP as the fallback callable-tool path after App Server behavior is proven.
+- Evidence 2026-05-11: `sidecars/codex-runner-ts` now has `mcp-replay` mode and `examples/codex-mcp-fallback-replay.json`, so Codex MCP fallback parsing, diagnostics, and structured result extraction are covered by deterministic CI tests.
 - Capture replay fixtures with thread IDs, checkpoint refs, git refs, artifact manifests, structured results, and diagnostics.
 - Verify live provider profiles after auth setup is exercised on real nodes, including Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face, and OpenAI-compatible gateways.
+- Evidence 2026-05-11: `/verify` now returns provider-profile entries with explicit `verified`, `skipped`, or `failed` state so unavailable live lanes produce reviewable skipped evidence instead of silent absence.
 - Keep staff-engineer live execution second-phase until current `@ctxr/kit` and `@ctxr/agent-staff-engineer` behavior, isolated target repo install, tracker auth, and Claude Code auth distribution are verified.
 - Add a live staff-engineer issue-to-PR smoke test only after those staff-engineer gates pass.
 
@@ -96,15 +98,19 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Capture raw source snapshots, fetch metadata, and large artifacts into MinIO/S3-compatible storage.
 - Promote local object refs to real uploaded snapshots once the uploader path is live.
 - Preserve memory context by reference; do not dump large memory payloads into task prompts.
+- Evidence 2026-05-11: `coat-memory-gateway` now preserves research source/object artifact refs in Qdrant payloads and Graphiti source descriptions, and `examples/research-output-memory-substrate.json` carries raw source snapshot and fetch metadata object refs for replay review.
+- Evidence 2026-05-11: live Qdrant, Graphiti, and Zep tests are explicitly env-gated while replay fixture coverage remains deterministic in normal CI.
 
 ### Events And Notifications
 
 - Add SQS LocalStack inbound event-source and outbound notification smoke tests. First proof slice: `make eventops-sqs-smoke` starts LocalStack when Docker is available, reuses the SQS event-source and notification examples with local queue URLs, proves inbound poll/delete through `coat-event-gateway`, and proves outbound SQS delivery through `coat-notifier`.
 - Evidence 2026-05-11: `coat-notifier` now has a journaled outbox with `pending`, `delivered`, `awaiting_ack`, `acknowledged`, `retry_scheduled`, and `dead_lettered` states plus `/outbox`, `/outbox/{id}/ack`, `/outbox/{id}/retry`, `/outbox/retry-due`, and `/dlq` endpoints.
 - Evidence 2026-05-11: `make eventops-sqs-smoke` passed against `localstack/localstack:3.8.1`, proving inbound SQS poll/delete, outbound SQS delivery, notifier journal replay shape, and an `awaiting_ack` outbox entry.
+- Closure 2026-05-11: the SQS/LocalStack residuals inherited from the distributed-runners and events plans are satisfied by the smoke above; remaining EventOps work is topology proof plus additional provider adapters.
 - Normalize recurrent observability events into durable gateway events before creating or steering goals.
 - Keep event activation behind coordinator policy and human approval when sources add external callbacks, cost-bearing polling, or broad network access.
 - Prove event-gateway projection against the same Compose or cluster topology operators run, not only isolated local smoke scripts.
+- Evidence 2026-05-11: `coat-event-gateway` now projects create-goal trigger decisions with concrete `goal_id` values into `coat-goal-store`; `make event-gateway-smoke` verifies source registration, normalized event ingestion, trigger creation, goal-store projection, and dedupe behavior.
 - Add Slack, PagerDuty, Google Calendar, Outlook, and OpenTelemetry provider adapters after the SQS proof is stable and credentials are approved.
 
 ### Operator UI And MCP
@@ -120,6 +126,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Fix release workflow command drift whenever CLI hierarchy changes.
 - Evidence 2026-05-11: `.github/workflows/release-helm.yml` now uses `coat deploy chart package` for chart release packaging.
 - Run published binary smoke and Helm chart smoke after the first GitHub Release and record evidence in `docs/operations/releases.md`.
+- Evidence 2026-05-11: `.github/workflows/release-binaries.yml` and `.github/workflows/release-helm.yml` now include published-asset smoke jobs; `Makefile` exposes `release-binary-smoke` and `release-helm-smoke` for local/operator replay of those checks.
 - Promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
 - Add provider overlays after the first target is chosen; the first executor proof remains kind/k3d.
 - Add Restate Cloud journal encryption guidance when the Rust service path and provider documentation support it.
@@ -128,8 +135,14 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 
 - Keep protobuf, JSON schemas, docs, and Rust domain contracts aligned through `make proto-check`.
 - Add generated Rust and TypeScript SDKs from Buf only after package names, output locations, and compatibility rules are selected.
+- Evidence 2026-05-11: Buf SDK generation is scaffolded through `buf.gen.yaml`, `make proto-sdk-generate`, and `make proto-sdk-check`, generating Rust and TypeScript outputs under `target/generated-sdks` without committing generated artifacts.
 - Add or change public types only where needed for Kubernetes provision/result records, executor attestations, object upload status, retryable event delivery, and observability correlation.
 - Before moving any linked plan to completed, preserve every remaining follow-up here, record direct evidence, or write an explicit supersession note.
+
+### Reviewer And Satisfaction Gates
+
+- Evidence 2026-05-11: `examples/reviewer-fixtures/live-replay-worker-fixture.json` now consumes accepted Codex replay output as a reviewer/validator fixture with command evidence, child tester requests, git refs, worktree paths, and reviewer checkpoint branch evidence.
+- Evidence 2026-05-11: `crates/domain` now rejects metadata-only checkpoints for code tasks that require git checkpointing, and the behavioral fixture proves actor output, reviewer output, tester child requests, and checkpoint branch projection into the goal-store snapshot.
 
 ## Tests
 
@@ -146,17 +159,22 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 ## Follow-Ups
 
 - `RuntimeVerifier`: replace the ignored entrypoint's deterministic scaffold with a Docker Testcontainers Restate harness and restart/resume proof.
+- `RuntimeVerifier`: add metrics and trace assertions for transition counters, replay/idempotency observations, projection attempts, and approval pause/resume spans.
 - `CodexWorker`: run an env-gated live Codex App Server smoke with real thread/turn IDs, then capture the live result as a replay fixture.
-- `CodexWorker`: add Codex MCP fallback replay coverage after App Server live smoke is stable.
-- `CodexWorker`: record one live provider verification profile per enabled provider lane, including explicit skipped evidence when auth or setup is unavailable.
+- `CodexWorker`: run live provider verification on real configured nodes and archive one profile result per enabled lane.
 - `CodexWorker`: verify `@ctxr/kit` and `@ctxr/agent-staff-engineer` before staff-engineer live smoke work.
 - `Provisioner`: run kind/k3d watch proof from sandbox-runner provision request through result ingestion, failure taxonomy, cleanup, and attestation projection.
-- `ResearchMemory`: promote live research source capture and memory adapters behind env-gated tests.
-- `EventOps`: run event-gateway projection proof against Compose or cluster topology.
+- `Provisioner`: add provider-backed sandbox adapters only when they return validator-reviewable attestations, or write a supersession note if provider sandboxes remain out of scope.
+- `ResearchMemory`: run live Qdrant, Graphiti, Zep, and object-store adapter smoke with approved credentials, then capture replayable fixture evidence.
+- `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
+- `EventOps`: run event-gateway projection proof against full Compose or cluster topology, reusing the local projection smoke as the fast path.
+- `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
 - `UIE2E`: upgrade gateway fixture smoke into full Compose browser workflows for goals, memory, approvals, runners, and events.
+- `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.
 - `ReleaseHardening`: run the first published binary and Helm chart smoke and record evidence.
-- `ProtocolSDK`: add Buf-generated Rust and TypeScript SDKs after package targets are selected.
-- `Reviewer`: turn accepted live worker outputs into reviewer/validator fixtures with checkpoint branch evidence.
+- `ReleaseHardening`: promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
+- `ReleaseHardening`: add provider-specific deploy overlays and Restate Cloud journal-encryption guidance once the first cloud target and supported SDK path are selected.
+- `ProtocolSDK`: decide whether generated SDK package wrappers are published artifacts, then add package metadata or keep generation as an internal validation target.
 
 ## Acceptance
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -29,6 +31,13 @@ afterEach(() => {
 
 function agentRunRequest(): Parameters<typeof runTask>[0] {
   return JSON.parse(readFileSync(requestPath, "utf8")) as Parameters<typeof runTask>[0];
+}
+
+function tempFixtureFile(prefix: string, fixture: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const path = join(dir, "fixture.json");
+  writeFileSync(path, JSON.stringify(fixture), "utf8");
+  return path;
 }
 
 test("replay mode deterministically returns structured Codex App Server evidence", async () => {
@@ -74,6 +83,29 @@ test("replay fixture parser extracts thread, turn, items, and final structured o
   assert.match(trace.final_response, /structured code-worker evidence/);
 });
 
+test("replay fixture parser prefers completed turn event over stale snapshot", () => {
+  const fixture = loadReplayFixture(fixturePath) as { app_server: { turn: { status: string } } };
+  fixture.app_server.turn.status = "inProgress";
+
+  const trace = traceFromReplayFixture(fixture);
+
+  assert.equal(trace.turn.status, "completed");
+});
+
+test("replay mode fails when final response is not structured AgentRunResult JSON", async () => {
+  const fixture = loadReplayFixture(fixturePath) as { app_server: { final_response: string } };
+  fixture.app_server.final_response = "completed the work without structured json";
+  process.env.CODEX_RUNNER_MODE = "replay";
+  process.env.CODEX_REPLAY_FIXTURE = tempFixtureFile("coat-codex-bad-app-", fixture);
+
+  const result = await runTask(agentRunRequest());
+
+  assert.equal(result.status, "failed");
+  assert.match(result.summary, /valid structured AgentRunResult/);
+  assert.equal(result.diagnostics.includes("codex_app_server_final_json=false"), true);
+  assert.equal(result.diagnostics.includes("codex_app_server_final_status_valid=false"), true);
+});
+
 test("MCP fallback replay mode returns structured callable-tool evidence", async () => {
   process.env.CODEX_RUNNER_MODE = "mcp-replay";
   process.env.CODEX_MCP_REPLAY_FIXTURE = mcpFixturePath;
@@ -102,6 +134,20 @@ test("MCP fallback fixture parser extracts server, tool calls, and final output"
   assert.equal(trace.server.command, "codex mcp-server");
   assert.equal(trace.tool_calls.length, 1);
   assert.match(trace.final_response, /MCP fallback produced structured/);
+});
+
+test("MCP fallback replay fails when final response omits a valid status", async () => {
+  const fixture = loadMcpReplayFixture(mcpFixturePath) as { codex_mcp: { final_response: string } };
+  fixture.codex_mcp.final_response = JSON.stringify({ summary: "missing required status" });
+  process.env.CODEX_RUNNER_MODE = "mcp-replay";
+  process.env.CODEX_MCP_REPLAY_FIXTURE = tempFixtureFile("coat-codex-bad-mcp-", fixture);
+
+  const result = await runTask(agentRunRequest());
+
+  assert.equal(result.status, "failed");
+  assert.match(result.summary, /valid structured AgentRunResult/);
+  assert.equal(result.diagnostics.includes("codex_mcp_final_json=true"), true);
+  assert.equal(result.diagnostics.includes("codex_mcp_final_status_valid=false"), true);
 });
 
 test("live mode blocks instead of fabricating work when App Server gates are missing", async () => {

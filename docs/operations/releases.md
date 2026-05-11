@@ -87,7 +87,7 @@ Use `--dry-run` to print the release shape without modifying files. Use `--no-ve
 
 Binary releases are handled by `.github/workflows/release-binaries.yml`.
 
-Trigger it manually only when the release was already cut locally:
+Trigger it manually only when the release was already cut locally, and pass the exact release tag or ref as the workflow `ref` input. Manual dispatches must build from the intended release tag, not from the branch tip that happens to be selected in GitHub Actions.
 
 ```sh
 git push origin v0.2.0
@@ -147,6 +147,12 @@ published. Operators can repeat the same proof locally for any supported target:
 make release-binary-smoke VERSION=0.2.0 TARGET=aarch64-apple-darwin
 ```
 
+Retry tags with suffixes are supported. The smoke target downloads the suffixed release asset but calls `coat release plan` with the base semantic version and `--tag-suffix` internally:
+
+```sh
+make release-binary-smoke VERSION=0.2.0-ghcr.1 TARGET=aarch64-apple-darwin
+```
+
 Set `RELEASE_URL` only when validating a fork, mirror, or retry location.
 
 ```sh
@@ -182,7 +188,16 @@ done
 
 "${EXTRACTED}/bin/coat" --help
 "${EXTRACTED}/bin/coat" guide --print
-"${EXTRACTED}/bin/coat" release plan --version "${VERSION}"
+BASE_VERSION="${VERSION%%-*}"
+TAG_SUFFIX=""
+if [ "${BASE_VERSION}" != "${VERSION}" ]; then
+  TAG_SUFFIX="${VERSION#*-}"
+fi
+if [ -n "${TAG_SUFFIX}" ]; then
+  "${EXTRACTED}/bin/coat" release plan --version "${BASE_VERSION}" --tag-suffix "${TAG_SUFFIX}"
+else
+  "${EXTRACTED}/bin/coat" release plan --version "${BASE_VERSION}"
+fi
 ```
 
 The smoke passes when the checksum verifies, the archive expands, the released
@@ -197,7 +212,7 @@ local Rust builds.
 Helm chart releases are handled by `.github/workflows/release-helm.yml`.
 When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/jattg/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`.
 
-Trigger it manually only when the release was already cut locally:
+Trigger it manually only when the release was already cut locally, and pass the exact chart tag or ref as the workflow `ref` input. Manual dispatches must package from the intended chart release tag, not from the selected branch tip.
 
 ```sh
 git push origin chart-v0.2.0
@@ -228,7 +243,9 @@ selection, rollout behavior, and rollback mechanics.
 
 The chart release workflow downloads the just-published `jattg` chart asset,
 verifies its checksum, runs `coat deploy chart lint`, and renders a smoke
-manifest. Operators can repeat the local no-cluster smoke with:
+manifest. Operators can repeat the local no-cluster smoke with one command; the
+target builds `target/debug/coat` first and uses that binary for chart lint,
+template, and dry-run upgrade checks:
 
 ```sh
 make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0

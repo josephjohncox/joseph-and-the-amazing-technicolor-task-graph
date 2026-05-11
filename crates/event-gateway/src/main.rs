@@ -546,11 +546,24 @@ async fn trigger_goal_inner(
     deduped: bool,
 ) -> Result<TriggeredGoalResponse, GatewayError> {
     if deduped {
+        if let Some(mut response) = find_trigger_for_event(state, &request.event.id).await {
+            response.deduped = true;
+            response.diagnostics.push(
+                "event dedupe key was already processed; replaying original trigger projection"
+                    .to_string(),
+            );
+            if !trigger_projection_delivered(&response) {
+                project_trigger_to_goal_store(state, &response).await?;
+                mark_trigger_projected(state, &response).await;
+            }
+            return Ok(response);
+        }
         let response = TriggeredGoalResponse {
             accepted: true,
             status: TriggeredGoalStatus::Deduped,
             event_id: request.event.id,
             goal_id: None,
+            route_mode: Some(request.route.mode.clone()),
             deduped: true,
             diagnostics: vec!["event dedupe key was already processed".to_string()],
         };
@@ -564,6 +577,7 @@ async fn trigger_goal_inner(
             status: TriggeredGoalStatus::AwaitingHumanReview,
             event_id: request.event.id,
             goal_id: request.goal.as_ref().map(|goal| goal.id),
+            route_mode: Some(request.route.mode.clone()),
             deduped: false,
             diagnostics: vec!["event route requires human review before goal submit".to_string()],
         };
@@ -577,6 +591,7 @@ async fn trigger_goal_inner(
             status: TriggeredGoalStatus::Recorded,
             event_id: request.event.id,
             goal_id: None,
+            route_mode: Some(request.route.mode.clone()),
             deduped: false,
             diagnostics: vec!["event route is record_only".to_string()],
         };
@@ -592,6 +607,7 @@ async fn trigger_goal_inner(
                 status: TriggeredGoalStatus::Failed,
                 event_id: request.event.id,
                 goal_id: None,
+                route_mode: Some(request.route.mode.clone()),
                 deduped: false,
                 diagnostics: vec!["steer_goal route requires target_goal_id".to_string()],
             };
@@ -604,6 +620,7 @@ async fn trigger_goal_inner(
                 status: TriggeredGoalStatus::Failed,
                 event_id: request.event.id,
                 goal_id: Some(goal_id),
+                route_mode: Some(request.route.mode.clone()),
                 deduped: false,
                 diagnostics: vec!["steer_goal route requires steering_directive".to_string()],
             };
@@ -629,6 +646,7 @@ async fn trigger_goal_inner(
             status,
             event_id: request.event.id,
             goal_id: Some(goal_id),
+            route_mode: Some(request.route.mode.clone()),
             deduped: false,
             diagnostics,
         };
@@ -652,6 +670,7 @@ async fn trigger_goal_inner(
             status: TriggeredGoalStatus::Recorded,
             event_id: request.event.id,
             goal_id: None,
+            route_mode: Some(request.route.mode.clone()),
             deduped: false,
             diagnostics: vec!["event recorded without a goal template".to_string()],
         };
@@ -677,6 +696,7 @@ async fn trigger_goal_inner(
         status,
         event_id: request.event.id,
         goal_id: Some(goal.id),
+        route_mode: Some(request.route.mode.clone()),
         deduped: false,
         diagnostics,
     };
@@ -1832,7 +1852,52 @@ async fn append_trigger(
     }
     state.state.write().await.triggered_goals.push(response);
     project_trigger_to_goal_store(state, &projection).await?;
+    mark_trigger_projected(state, &projection).await;
     Ok(())
+}
+
+async fn find_trigger_for_event(state: &AppState, event_id: &str) -> Option<TriggeredGoalResponse> {
+    state
+        .state
+        .read()
+        .await
+        .triggered_goals
+        .iter()
+        .rev()
+        .find(|trigger| trigger.event_id == event_id && trigger.goal_id.is_some())
+        .cloned()
+}
+
+fn trigger_projection_delivered(response: &TriggeredGoalResponse) -> bool {
+    response
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic == "goal_store_projection=delivered")
+}
+
+async fn mark_trigger_projected(state: &AppState, response: &TriggeredGoalResponse) {
+    if response.goal_id.is_none() || state.goal_store_url.is_none() {
+        return;
+    }
+    if let Some(trigger) = state
+        .state
+        .write()
+        .await
+        .triggered_goals
+        .iter_mut()
+        .rev()
+        .find(|trigger| {
+            trigger.event_id == response.event_id
+                && trigger.goal_id == response.goal_id
+                && trigger.status == response.status
+        })
+    {
+        if !trigger_projection_delivered(trigger) {
+            trigger
+                .diagnostics
+                .push("goal_store_projection=delivered".to_string());
+        }
+    }
 }
 
 fn require_gateway_auth(state: &AppState, headers: &HeaderMap) -> Result<(), GatewayError> {
@@ -1979,7 +2044,7 @@ fn trigger_goal_event_record(response: &TriggeredGoalResponse, goal_id: Uuid) ->
         goal_id,
         task_id: None,
         sequence: trigger_projection_sequence(event_id),
-        kind: trigger_projection_kind(&response.status),
+        kind: trigger_projection_kind(response),
         message: format!(
             "event_gateway_trigger_{}:{}",
             trigger_status_label(&response.status),
@@ -2002,8 +2067,13 @@ fn trigger_projection_sequence(event_id: Uuid) -> u64 {
     u64::from_be_bytes(tail).max(1)
 }
 
-fn trigger_projection_kind(status: &TriggeredGoalStatus) -> GoalEventKind {
-    match status {
+fn trigger_projection_kind(response: &TriggeredGoalResponse) -> GoalEventKind {
+    match response.status {
+        TriggeredGoalStatus::Submitted
+            if response.route_mode.as_ref() == Some(&EventRouteMode::SteerGoal) =>
+        {
+            GoalEventKind::SteeringApplied
+        }
         TriggeredGoalStatus::Submitted => GoalEventKind::Submitted,
         TriggeredGoalStatus::AwaitingHumanReview => GoalEventKind::ApprovalRequested,
         TriggeredGoalStatus::Failed => GoalEventKind::Failed,
@@ -2577,14 +2647,23 @@ fn trigger_record_id(response: &TriggeredGoalResponse) -> Uuid {
     Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
         format!(
-            "coat://event/{}/trigger/{:?}/{:?}",
-            response.event_id, response.status, response.goal_id
+            "coat://event/{}/trigger/{:?}/{:?}/{:?}",
+            response.event_id, response.status, response.goal_id, response.route_mode
         )
         .as_bytes(),
     )
 }
 
 fn route_mode_for_trigger(response: &TriggeredGoalResponse) -> &'static str {
+    if let Some(mode) = &response.route_mode {
+        return match mode {
+            EventRouteMode::RecordOnly => "record_only",
+            EventRouteMode::CreateGoal => "create_goal",
+            EventRouteMode::CreateResearchGoal => "create_research_goal",
+            EventRouteMode::SteerGoal => "steer_goal",
+            EventRouteMode::HumanReview => "human_review",
+        };
+    }
     match response.status {
         TriggeredGoalStatus::AwaitingHumanReview => "human_review",
         TriggeredGoalStatus::Recorded | TriggeredGoalStatus::Deduped => "record_only",
@@ -2683,17 +2762,19 @@ mod tests {
     use aws_sdk_sqs::types::Message as SqsMessage;
     use axum::http::{HeaderMap, HeaderValue};
     use coat_domain::{
-        EventGoalRoute, EventSourceKind, ExternalEvent, GenericEventSource, GoalTriggerTemplate,
-        SqsEventSource, WebhookAuthKind, WebhookAuthPolicy,
+        EventGoalRoute, EventSourceKind, ExternalEvent, GenericEventSource, GoalEventKind,
+        GoalTriggerTemplate, SqsEventSource, TriggeredGoalRequest, TriggeredGoalResponse,
+        TriggeredGoalStatus, WebhookAuthKind, WebhookAuthPolicy,
     };
     use hmac::Mac;
+    use uuid::Uuid;
 
     use super::{
         AppState, WebhookSignatureStyle, enforce_event_source_activation_policy,
         event_source_approval_record, event_source_is_risky, goal_from_template,
         normalize_generic_event, normalize_sqs_message, normalize_webhook_event,
-        provider_webhook_defaults, render_template, verify_hmac_sha256,
-        verify_provider_hmac_sha256,
+        provider_webhook_defaults, render_template, trigger_goal_event_record, trigger_goal_inner,
+        verify_hmac_sha256, verify_provider_hmac_sha256,
     };
 
     fn event() -> ExternalEvent {
@@ -2902,6 +2983,86 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn deduped_trigger_replays_original_goal_linked_response() {
+        let goal_id = Uuid::new_v4();
+        let event = event();
+        let state = AppState {
+            state: Default::default(),
+            journal_path: None,
+            restate_ingress: None,
+            goal_store_url: None,
+            gateway_token: None,
+            require_event_source_approval: false,
+            backend: super::EventGatewayBackend::Memory,
+            postgres: None,
+            client: reqwest::Client::new(),
+        };
+        state
+            .state
+            .write()
+            .await
+            .triggered_goals
+            .push(TriggeredGoalResponse {
+                accepted: true,
+                status: TriggeredGoalStatus::Recorded,
+                event_id: event.id.clone(),
+                goal_id: Some(goal_id),
+                route_mode: Some(coat_domain::EventRouteMode::CreateGoal),
+                deduped: false,
+                diagnostics: vec!["original trigger".to_string()],
+            });
+
+        let response = trigger_goal_inner(
+            &state,
+            TriggeredGoalRequest {
+                event: event.clone(),
+                route: EventGoalRoute {
+                    mode: coat_domain::EventRouteMode::CreateGoal,
+                    goal_template: Some(GoalTriggerTemplate::default()),
+                    target_goal_id: None,
+                    steering_directive: None,
+                    require_approval: false,
+                    dedupe_window_seconds: 3600,
+                },
+                goal: None,
+                idempotency_key: event.dedupe_key.clone(),
+            },
+            true,
+        )
+        .await
+        .expect("deduped trigger replays original");
+
+        assert_eq!(response.goal_id, Some(goal_id));
+        assert_eq!(response.status, TriggeredGoalStatus::Recorded);
+        assert!(response.deduped);
+        assert!(
+            response
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("replaying original"))
+        );
+        assert_eq!(state.state.read().await.triggered_goals.len(), 1);
+    }
+
+    #[test]
+    fn steer_goal_projection_uses_steering_event_kind() {
+        let goal_id = Uuid::new_v4();
+        let response = TriggeredGoalResponse {
+            accepted: true,
+            status: TriggeredGoalStatus::Submitted,
+            event_id: "event-1".to_string(),
+            goal_id: Some(goal_id),
+            route_mode: Some(coat_domain::EventRouteMode::SteerGoal),
+            deduped: false,
+            diagnostics: Vec::new(),
+        };
+
+        let event = trigger_goal_event_record(&response, goal_id);
+
+        assert_eq!(event.kind, GoalEventKind::SteeringApplied);
+    }
+
     #[test]
     fn verifies_slack_v0_signature_base_string() {
         let timestamp = unix_now_string();
@@ -3008,6 +3169,63 @@ mod tests {
         assert_eq!(event.subject.as_deref(), Some("tests failed"));
         assert_eq!(event.dedupe_key, "delivery-1");
         assert_eq!(event.source_kind, EventSourceKind::Ci);
+    }
+
+    #[test]
+    fn generic_event_dedupe_header_overrides_json_pointer() {
+        let source = coat_domain::EventSource {
+            id: "ci-events".to_string(),
+            kind: EventSourceKind::Ci,
+            enabled: true,
+            description: "CI events".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 1024,
+                allowed_event_types: vec!["ci.workflow.failed".to_string()],
+                id_json_pointer: Some("/id".to_string()),
+                type_json_pointer: Some("/type".to_string()),
+                subject_json_pointer: Some("/subject".to_string()),
+                dedupe_json_pointer: Some("/delivery_id".to_string()),
+                dedupe_header: Some("ce-id".to_string()),
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            sqs: None,
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::HumanReview,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: true,
+                dedupe_window_seconds: 3600,
+            },
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("ce-id", HeaderValue::from_static("delivery-from-header"));
+
+        let event = normalize_generic_event(
+            Some(&source),
+            "ci-events".to_string(),
+            &headers,
+            br#"{
+                "id": "run-1",
+                "type": "ci.workflow.failed",
+                "subject": "tests failed",
+                "delivery_id": "delivery-from-json"
+            }"#,
+        )
+        .expect("generic event normalizes");
+
+        assert_eq!(event.dedupe_key, "delivery-from-header");
     }
 
     #[test]

@@ -26,6 +26,16 @@
       ],
       "format": "uuid"
     },
+    "route_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventRouteMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "status": {
       "$ref": "#/$defs/TriggeredGoalStatus"
     }
@@ -37,6 +47,16 @@
     "deduped"
   ],
   "$defs": {
+    "EventRouteMode": {
+      "type": "string",
+      "enum": [
+        "record_only",
+        "create_goal",
+        "create_research_goal",
+        "steer_goal",
+        "human_review"
+      ]
+    },
     "TriggeredGoalStatus": {
       "type": "string",
       "enum": [

@@ -167,10 +167,17 @@ release-binary-smoke:
 	done; \
 	"$$extracted/bin/coat" --help >/dev/null; \
 	"$$extracted/bin/coat" guide --print >/dev/null; \
-	"$$extracted/bin/coat" release plan --version "$(VERSION)" >/dev/null; \
+	base_version="$(VERSION)"; \
+	tag_suffix=""; \
+	case "$$base_version" in *-*) tag_suffix="$${base_version#*-}"; base_version="$${base_version%%-*}";; esac; \
+	if [ -n "$$tag_suffix" ]; then \
+		"$$extracted/bin/coat" release plan --version "$$base_version" --tag-suffix "$$tag_suffix" >/dev/null; \
+	else \
+		"$$extracted/bin/coat" release plan --version "$$base_version" >/dev/null; \
+	fi; \
 	echo "smoked published binary release v$(VERSION) for $$target"
 
-release-helm-smoke:
+release-helm-smoke: coat-cli
 	@test -n "$(CHART_VERSION)" || { echo "CHART_VERSION is required, for example: make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0"; exit 2; }
 	@app_version="$(APP_VERSION)"; \
 	if [ -z "$$app_version" ]; then app_version="$(CHART_VERSION)"; fi; \
@@ -189,13 +196,13 @@ release-helm-smoke:
 	curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "$$chart_url.sha256" -o "$$chart.sha256"; \
 	expected_sha="$$(cut -d ' ' -f 1 "$$chart.sha256")"; \
 	printf '%s  %s\n' "$$expected_sha" "$$chart" | shasum -a 256 -c -; \
-	$(COAT) deploy chart lint --chart "$$chart"; \
-	$(COAT) deploy chart template --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --output "$$tmp_dir/rendered.yaml"; \
+	$(COAT_BIN_DIR)/coat deploy chart lint --chart "$$chart"; \
+	$(COAT_BIN_DIR)/coat deploy chart template --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --output "$$tmp_dir/rendered.yaml"; \
 	test -s "$$tmp_dir/rendered.yaml"; \
-	$(COAT) deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --dry-run; \
+	$(COAT_BIN_DIR)/coat deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --dry-run; \
 	if [ "$${HELM_SMOKE_APPLY:-false}" = "true" ]; then \
-		$(COAT) deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --wait --timeout "$${HELM_SMOKE_TIMEOUT:-5m}"; \
-		$(COAT) deploy cluster status --namespace "$$namespace" --timeout "$${CLUSTER_SMOKE_TIMEOUT:-180s}"; \
+		$(COAT_BIN_DIR)/coat deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --wait --timeout "$${HELM_SMOKE_TIMEOUT:-5m}"; \
+		$(COAT_BIN_DIR)/coat deploy cluster status --namespace "$$namespace" --timeout "$${CLUSTER_SMOKE_TIMEOUT:-180s}"; \
 	fi; \
 	echo "smoked published Helm chart $(CHART_VERSION) with image tag $$app_version"
 

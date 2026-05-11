@@ -10,6 +10,10 @@ on:
         description: "Release version without v prefix"
         required: true
         type: string
+      ref:
+        description: "Git tag or ref to build, for example v0.2.0 or v0.2.0-ghcr.1"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -30,6 +34,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
@@ -87,7 +93,14 @@ jobs:
         run: |
           raw="${{ inputs.version || github.ref_name }}"
           version="${raw#v}"
+          base_version="${version%%-*}"
+          tag_suffix=""
+          if [ "$base_version" != "$version" ]; then
+            tag_suffix="${version#*-}"
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${base_version}" >> "$GITHUB_OUTPUT"
+          echo "tag_suffix=${tag_suffix}" >> "$GITHUB_OUTPUT"
           echo "tag=v${version}" >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
@@ -111,12 +124,21 @@ jobs:
         run: |
           raw="${{ inputs.version || github.ref_name }}"
           version="${raw#v}"
+          base_version="${version%%-*}"
+          tag_suffix=""
+          if [ "$base_version" != "$version" ]; then
+            tag_suffix="${version#*-}"
+          fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${base_version}" >> "$GITHUB_OUTPUT"
+          echo "tag_suffix=${tag_suffix}" >> "$GITHUB_OUTPUT"
 
       - name: Download and smoke x86_64 Linux binary asset
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          BASE_VERSION: ${{ steps.version.outputs.base_version }}
+          TAG_SUFFIX: ${{ steps.version.outputs.tag_suffix }}
           TARGET: x86_64-unknown-linux-gnu
           RELEASE_URL: https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v${{ steps.version.outputs.version }}
         run: |
@@ -150,7 +172,11 @@ jobs:
 
           "${extracted}/bin/coat" --help >/dev/null
           "${extracted}/bin/coat" guide --print >/dev/null
-          "${extracted}/bin/coat" release plan --version "${VERSION}" >/dev/null
+          if [ -n "${TAG_SUFFIX}" ]; then
+            "${extracted}/bin/coat" release plan --version "${BASE_VERSION}" --tag-suffix "${TAG_SUFFIX}" >/dev/null
+          else
+            "${extracted}/bin/coat" release plan --version "${BASE_VERSION}" >/dev/null
+          fi
 
   publish-images:
     name: Publish GHCR service images
@@ -164,6 +190,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: docker/setup-qemu-action@v3
 

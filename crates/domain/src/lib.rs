@@ -11321,6 +11321,9 @@ fn collect_stub_truthfulness_missing(
     if task.purpose.is_work_like() && result_has_stub_marker(result) {
         push_unique(missing_criteria, "stub_actor_output".to_string());
     }
+    if task_requires_live_execution(task) && result_has_replay_marker(result) {
+        push_unique(missing_criteria, "live_runner_required".to_string());
+    }
     if task.purpose.is_research()
         && (result_has_stub_marker(result)
             || result
@@ -11375,6 +11378,14 @@ fn task_requires_non_stub_execution(task: &TaskNode) -> bool {
         .any(|(key, value)| non_stub_runner_label(key, value))
 }
 
+fn task_requires_live_execution(task: &TaskNode) -> bool {
+    task.execution
+        .runner
+        .required_labels
+        .iter()
+        .any(|(key, value)| live_runner_label(key, value))
+}
+
 fn non_stub_runner_label(key: &str, value: &str) -> bool {
     let key = key.trim().to_ascii_lowercase();
     let value = value.trim().to_ascii_lowercase();
@@ -11392,6 +11403,23 @@ fn non_stub_runner_label(key: &str, value: &str) -> bool {
             | ("stub", "false")
             | ("allow_stub", "false")
             | ("allow_stub_runners", "false")
+    )
+}
+
+fn live_runner_label(key: &str, value: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    let value = value.trim().to_ascii_lowercase();
+    matches!(
+        (key.as_str(), value.as_str()),
+        ("mode", "live")
+            | ("mode", "real")
+            | ("mode", "production")
+            | ("runner.mode", "live")
+            | ("runner.mode", "real")
+            | ("runner.mode", "production")
+            | ("execution.mode", "live")
+            | ("execution.mode", "real")
+            | ("execution.mode", "production")
     )
 }
 
@@ -11414,6 +11442,28 @@ fn result_has_stub_marker(result: &AgentRunResult) -> bool {
             .test_evidence
             .iter()
             .any(test_evidence_has_stub_marker)
+}
+
+fn result_has_replay_marker(result: &AgentRunResult) -> bool {
+    result.runner_id.as_deref().is_some_and(is_replayish_text)
+        || is_replayish_text(&result.summary)
+        || result.diagnostics.iter().any(|line| {
+            let normalized = line.trim().to_ascii_lowercase();
+            normalized == "mode=replay"
+                || normalized == "mode=mcp-replay"
+                || normalized == "runner_mode=replay"
+                || is_replayish_text(line)
+        })
+        || result.artifacts.iter().any(|artifact| {
+            is_replayish_text(&artifact.description) || is_replayish_text(&artifact.uri)
+        })
+        || result.checkpoints.iter().any(|checkpoint| {
+            is_replayish_text(&checkpoint.label) || is_replayish_text(&checkpoint.summary)
+        })
+        || result.test_evidence.iter().any(|evidence| {
+            is_replayish_text(&evidence.command)
+                || evidence.notes.iter().any(|note| is_replayish_text(note))
+        })
 }
 
 fn test_evidence_has_stub_marker(evidence: &TestCommandEvidence) -> bool {
@@ -11468,6 +11518,17 @@ fn is_stubish_text(text: &str) -> bool {
         || normalized.contains("/stub")
         || normalized.contains("stub/")
         || normalized.contains("://stub")
+}
+
+fn is_replayish_text(text: &str) -> bool {
+    let normalized = text.trim().to_ascii_lowercase();
+    normalized == "replay"
+        || normalized.contains("mode=replay")
+        || normalized.contains("mode=mcp-replay")
+        || normalized.contains("-replay")
+        || normalized.contains("_replay")
+        || normalized.contains(" replay ")
+        || normalized.contains("://replay")
 }
 
 fn branch_candidate_ids(purpose: &TaskPurpose) -> Option<&[TaskId]> {
@@ -11994,6 +12055,8 @@ pub struct TriggeredGoalResponse {
     pub status: TriggeredGoalStatus,
     pub event_id: String,
     pub goal_id: Option<GoalId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_mode: Option<EventRouteMode>,
     pub deduped: bool,
     #[serde(default)]
     pub diagnostics: Vec<String>,
@@ -16236,7 +16299,7 @@ mod tests {
         goal.default_execution
             .runner
             .required_labels
-            .insert("runner.mode".to_string(), "live".to_string());
+            .insert("allow_stub_runners".to_string(), "false".to_string());
         goal.default_execution.runner.worker = Some(WorkerKind::Codex);
         goal.default_execution.results.git.enabled = true;
         goal.default_execution
@@ -16257,6 +16320,30 @@ mod tests {
         let actor_task = state.task(root_id).expect("actor task").clone();
         let actor_result =
             rebind_result_to_task(fixture.accepted_worker_result.clone(), &actor_task);
+
+        let mut live_required_task = actor_task.clone();
+        live_required_task.execution.runner.required_labels.clear();
+        live_required_task
+            .execution
+            .runner
+            .required_labels
+            .insert("runner.mode".to_string(), "live".to_string());
+        let live_replay_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: live_required_task.goal_id,
+            task: live_required_task.clone(),
+            result: rebind_result_to_task(
+                fixture.accepted_worker_result.clone(),
+                &live_required_task,
+            ),
+        });
+        assert!(!live_replay_report.passed);
+        assert!(
+            live_replay_report
+                .missing_criteria
+                .contains(&"live_runner_required".to_string()),
+            "{:?}",
+            live_replay_report.missing_criteria
+        );
 
         let mut metadata_only_result = actor_result.clone();
         metadata_only_result.checkpoints[0].kind = CheckpointKind::Metadata;
@@ -16359,16 +16446,45 @@ mod tests {
                 .expect("review frontier"),
             "accepted actor result should spawn a reviewer"
         );
-        let review_task = state
+        let mut review_task = state
             .tasks
             .values()
             .find(|task| task.purpose.is_review())
             .cloned()
             .expect("review task");
+        review_task.review_doctrine = ReviewDoctrine::strict_engineering();
         let review_result = rebind_result_to_task(fixture.reviewer_result.clone(), &review_task);
         assert_eq!(
             review_result.review.as_ref().map(|review| &review.decision),
             Some(&fixture.expected.review_decision)
+        );
+
+        let mut missing_behavioral_review = review_result.clone();
+        let review = missing_behavioral_review
+            .review
+            .as_mut()
+            .expect("review output");
+        review
+            .objective_results
+            .retain(|result| result.objective_id != "testing.behavioral_end_to_end");
+        review
+            .gate_results
+            .retain(|result| result.gate_id != "gate.behavioral_coverage");
+        let missing_behavioral_report = ValidationReport::from_result(ValidationRequest {
+            goal_id: review_task.goal_id,
+            task: review_task.clone(),
+            result: missing_behavioral_review,
+        });
+        assert!(!missing_behavioral_report.passed);
+        assert!(
+            missing_behavioral_report
+                .missing_criteria
+                .contains(&"review_objective_missing:testing.behavioral_end_to_end".to_string())
+        );
+        assert!(
+            missing_behavioral_report
+                .missing_criteria
+                .contains(&"validation_gate_missing:gate.behavioral_coverage".to_string())
         );
 
         state

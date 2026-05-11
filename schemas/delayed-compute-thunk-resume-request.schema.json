@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DelayedComputeThunkResumeRequest",
+  "type": "object",
+  "properties": {
+    "artifact_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      }
+    },
+    "responder": {
+      "type": "string"
+    },
+    "response_summary": {
+      "type": "string"
+    },
+    "thunk_id": {
+      "type": "string",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "thunk_id",
+    "responder",
+    "response_summary"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    }
+  }
+}

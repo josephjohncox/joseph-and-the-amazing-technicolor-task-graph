@@ -137,6 +137,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Add generated Rust and TypeScript SDKs from Buf only after package names, output locations, and compatibility rules are selected.
 - Evidence 2026-05-11: Buf SDK generation is scaffolded through `buf.gen.yaml`, `make proto-sdk-generate`, and `make proto-sdk-check`, generating Rust and TypeScript outputs under `target/generated-sdks` without committing generated artifacts.
 - Add or change public types only where needed for Kubernetes provision/result records, executor attestations, object upload status, retryable event delivery, and observability correlation.
+- Evidence 2026-05-11: `crates/domain` now models goal ranking votes as an opt-in extension with upvote/downvote promotion or demotion decisions, plus delayed compute thunks for human input, approvals, timers, callbacks, resource waits, and resumable continuation refs; `coat-coordinator` exposes `vote` and `resume_thunk`, and the CLI exposes `coat goal vote` plus `coat human resume-thunk`.
 - Before moving any linked plan to completed, preserve every remaining follow-up here, record direct evidence, or write an explicit supersession note.
 
 ### Reviewer And Satisfaction Gates
@@ -147,6 +148,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 ## Tests
 
 - Unit tests cover task lifecycle, restart policy, projection idempotency, attestation validation, event retry states, object artifact refs, stub-output rejection, and public-contract serialization.
+- Unit tests cover opt-in goal ranking vote promotion/demotion and delayed compute thunk pause/resume behavior.
 - Restate integration tests cover coordinator restart, Restate journal recovery, durable projection replay, approval pause/resume, and timeout restart.
 - Worker tests cover Codex App Server live execution behind env gates, Codex MCP replay, structured result extraction, and stub mode as an explicit smoke path only.
 - Reviewer tests consume accepted live worker outputs as real-world fixtures and include git checkpoint branch/worktree coverage where branch workflows are involved.

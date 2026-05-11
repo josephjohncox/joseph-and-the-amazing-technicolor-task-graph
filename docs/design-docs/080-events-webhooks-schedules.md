@@ -215,10 +215,12 @@ For Google Calendar or Outlook:
 Use three layers:
 
 - Cluster schedules: Kubernetes CronJobs for detached scheduled triggers.
-- Durable waits: Restate timers and workflow state for "wake this goal later" behavior.
+- Durable waits: Restate timers, delayed compute thunks, and workflow state for "wake this goal later" or "resume this suspended continuation after input" behavior.
 - Operator automations: local Codex thread heartbeats/reminders only when the request is specifically about this interactive thread.
 
-Do not create a long-lived agent process that sleeps and wakes itself forever. Every wakeup must become an `ExternalEvent`, `TriggeredGoalRequest`, steering directive, or bounded task.
+Do not create a long-lived agent process that sleeps and wakes itself forever. Every wakeup must become an `ExternalEvent`, `TriggeredGoalRequest`, steering directive, delayed compute thunk resume, or bounded task.
+
+Delayed compute thunks are the local workflow representation for suspended work. Use them when the coordinator has already reached a task boundary but needs a human answer, approval, external callback, resource slot, model route, or timer before continuing. The thunk carries a wait reference and a delimited continuation reference; the worker is released, and the coordinator resumes the continuation after the input arrives.
 
 ## Agent-Generated Topologies
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WaitRefKind",
+  "type": "string",
+  "enum": [
+    "human_thread",
+    "notification_outbox",
+    "sqs_message",
+    "webhook_correlation",
+    "calendar_event",
+    "durable_timer",
+    "runner_capacity",
+    "model_route"
+  ]
+}

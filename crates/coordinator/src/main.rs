@@ -11,11 +11,12 @@
 
 use coat_domain::{
     AgentRunRequest, AgentRunResult, ApprovalRequest, BranchRequest, BranchSelectionRequest,
-    ControlLoopMode, DomainError, GoalProgress, GoalSpec, GoalState,
-    GoalStoreSnapshotUpsertRequest, HumanApproval, HumanFeedback, NotificationDeliveryReport,
-    NotificationEvent, NotificationRequest, RestartRequest, RunnerDispatchDecision,
-    RunnerDispatchRequest, RunnerDispatchStatus, SpawnPolicy, SteeringDirective, TaskList,
-    TaskQuery, TaskStatus, ValidationReport, ValidationRequest, WorkerRunStatus,
+    ControlLoopMode, DelayedComputeThunkResumeRequest, DomainError, GoalPriorityVoteRequest,
+    GoalProgress, GoalSpec, GoalState, GoalStoreSnapshotUpsertRequest, HumanApproval,
+    HumanFeedback, NotificationDeliveryReport, NotificationEvent, NotificationRequest,
+    RestartRequest, RunnerDispatchDecision, RunnerDispatchRequest, RunnerDispatchStatus,
+    SpawnPolicy, SteeringDirective, TaskList, TaskQuery, TaskStatus, ValidationReport,
+    ValidationRequest, WorkerRunStatus,
 };
 use restate_sdk::{prelude::*, serde::Json};
 
@@ -42,6 +43,13 @@ pub trait GoalWorkflow {
 
     async fn select_branch(
         request: Json<BranchSelectionRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>>;
+
+    async fn vote(request: Json<GoalPriorityVoteRequest>)
+    -> HandlerResult<Json<Option<GoalState>>>;
+
+    async fn resume_thunk(
+        request: Json<DelayedComputeThunkResumeRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>>;
 
     #[shared]
@@ -464,6 +472,38 @@ impl GoalWorkflow for GoalWorkflowImpl {
         };
         state
             .apply_branch_selection(request.into_inner())
+            .map_err(domain_error)?;
+        let state = self.drive_state(&ctx, state).await?;
+        Ok(Json(Some(state)))
+    }
+
+    async fn vote(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<GoalPriorityVoteRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .record_goal_priority_vote(request.into_inner())
+            .map_err(domain_error)?;
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "goal_priority_vote_recorded")
+            .await?;
+        Ok(Json(Some(state)))
+    }
+
+    async fn resume_thunk(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<DelayedComputeThunkResumeRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .resume_delayed_compute_thunk(request.into_inner())
             .map_err(domain_error)?;
         let state = self.drive_state(&ctx, state).await?;
         Ok(Json(Some(state)))

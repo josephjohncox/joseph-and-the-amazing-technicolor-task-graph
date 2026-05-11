@@ -847,6 +847,8 @@ pub struct GoalSpec {
     #[serde(default)]
     pub color_policy: GraphColorPolicy,
     #[serde(default)]
+    pub ranking_policy: GoalRankingPolicy,
+    #[serde(default)]
     pub default_execution: ExecutionProfile,
     #[serde(default)]
     pub initial_tasks: Vec<ChildTaskRequest>,
@@ -880,6 +882,7 @@ impl GoalSpec {
             timeout_policy: TimeoutPolicy::default(),
             branching_policy: BranchingPolicy::default(),
             color_policy: GraphColorPolicy::default(),
+            ranking_policy: GoalRankingPolicy::default(),
             default_execution: ExecutionProfile::default(),
             initial_tasks: Vec::new(),
         }
@@ -928,6 +931,9 @@ impl GoalSpec {
             && self.branching_policy.voting.min_votes == 0
         {
             warnings.push("branch voting is enabled but min_votes is zero".to_string());
+        }
+        if self.ranking_policy.enabled && self.ranking_policy.min_votes == 0 {
+            warnings.push("goal ranking is enabled but min_votes is zero".to_string());
         }
         if self.review_policy.enabled && self.review_policy.min_reviews == 0 {
             warnings.push("review policy is enabled but min_reviews is zero".to_string());
@@ -1055,6 +1061,135 @@ impl GoalSpec {
             suggested_next_actions,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Optional extension for human/coordinator voting over goal priority.
+///
+/// Ranking votes are durable coordinator state. They can promote a goal into an
+/// overarching initiative, demote it into a subgoal, or leave it as a peer goal
+/// for frontier ordering and operator views.
+pub struct GoalRankingPolicy {
+    pub enabled: bool,
+    pub allow_human_votes: bool,
+    pub allow_coordinator_votes: bool,
+    pub allow_agent_votes: bool,
+    pub min_votes: u32,
+    pub promotion_score: i32,
+    pub demotion_score: i32,
+    pub max_vote_weight: u32,
+}
+
+impl Default for GoalRankingPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_human_votes: true,
+            allow_coordinator_votes: true,
+            allow_agent_votes: false,
+            min_votes: 2,
+            promotion_score: 2,
+            demotion_score: -2,
+            max_vote_weight: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalVoteDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalVoteSource {
+    Human,
+    Coordinator,
+    Agent,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalHierarchyRole {
+    OverarchingGoal,
+    PeerGoal,
+    Subgoal,
+}
+
+impl Default for GoalHierarchyRole {
+    fn default() -> Self {
+        Self::PeerGoal
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalRankingOutcome {
+    Pending,
+    Promoted,
+    Demoted,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalPriorityVoteRequest {
+    pub goal_id: GoalId,
+    pub voter: String,
+    pub source: GoalVoteSource,
+    pub direction: GoalVoteDirection,
+    #[serde(default)]
+    pub weight: u32,
+    pub reason: String,
+    #[serde(default)]
+    pub suggested_role: Option<GoalHierarchyRole>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalPriorityVote {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub voter: String,
+    pub source: GoalVoteSource,
+    pub direction: GoalVoteDirection,
+    pub weight: u32,
+    pub signed_weight: i32,
+    pub reason: String,
+    #[serde(default)]
+    pub suggested_role: Option<GoalHierarchyRole>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalRankingDecision {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub score: i32,
+    pub upvotes: u32,
+    pub downvotes: u32,
+    pub vote_count: u32,
+    pub effective_priority: TaskPriority,
+    pub hierarchy_role: GoalHierarchyRole,
+    pub outcome: GoalRankingOutcome,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalRankingSummary {
+    pub score: i32,
+    pub upvotes: u32,
+    pub downvotes: u32,
+    pub vote_count: u32,
+    pub effective_priority: TaskPriority,
+    pub hierarchy_role: GoalHierarchyRole,
+    #[serde(default)]
+    pub latest_decision: Option<GoalRankingDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
@@ -1217,6 +1352,12 @@ impl GraphColorRef {
                 "Waiting Approval",
                 "#d97706",
                 "paused for human approval",
+            ),
+            TaskStatus::WaitingInput => Self::new(
+                "status_waiting_input",
+                "Waiting Input",
+                "#0f766e",
+                "paused on a delayed compute thunk",
             ),
             TaskStatus::Done => Self::new("status_done", "Done", "#16a34a", "accepted work"),
             TaskStatus::Blocked => {
@@ -1826,6 +1967,12 @@ pub struct GoalState {
     #[serde(default)]
     pub approvals: Vec<ApprovalRequest>,
     #[serde(default)]
+    pub delayed_compute_thunks: Vec<DelayedComputeThunk>,
+    #[serde(default)]
+    pub goal_priority_votes: Vec<GoalPriorityVote>,
+    #[serde(default)]
+    pub goal_ranking_decisions: Vec<GoalRankingDecision>,
+    #[serde(default)]
     pub final_artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub checkpoints: Vec<CheckpointRef>,
@@ -1888,6 +2035,9 @@ impl GoalState {
             tasks: BTreeMap::from([(root_id, root)]),
             status: GoalStatus::Running,
             approvals: Vec::new(),
+            delayed_compute_thunks: Vec::new(),
+            goal_priority_votes: Vec::new(),
+            goal_ranking_decisions: Vec::new(),
             final_artifacts: Vec::new(),
             checkpoints: Vec::new(),
             review_rounds: Vec::new(),
@@ -1996,6 +2146,7 @@ impl GoalState {
         let blocked_tasks = *by_status.get(&TaskStatus::Blocked).unwrap_or(&0);
         let failed_tasks = *by_status.get(&TaskStatus::Failed).unwrap_or(&0);
         let waiting_approval_tasks = *by_status.get(&TaskStatus::WaitingApproval).unwrap_or(&0);
+        let waiting_input_tasks = *by_status.get(&TaskStatus::WaitingInput).unwrap_or(&0);
         let runnable_tasks = task_progress
             .iter()
             .filter(|task| task.runnable)
@@ -2017,9 +2168,16 @@ impl GoalState {
             blocked_tasks,
             failed_tasks,
             waiting_approval_tasks,
+            waiting_input_tasks,
             percent_done,
             by_status,
             subgoals: self.subgoal_progress(),
+            ranking: self.goal_ranking_summary(),
+            pending_delayed_compute_thunks: self
+                .delayed_compute_thunks
+                .iter()
+                .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+                .count() as u32,
             runnable_tasks,
             next_tasks: task_progress.into_iter().take(10).collect(),
             satisfaction: self.satisfaction.clone(),
@@ -2451,6 +2609,263 @@ impl GoalState {
                 "rejected"
             },
             approval.approval_id
+        )));
+        Ok(updated)
+    }
+
+    pub fn record_goal_priority_vote(
+        &mut self,
+        request: GoalPriorityVoteRequest,
+    ) -> Result<GoalRankingDecision, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::SteeringDenied(
+                "goal priority vote goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        let policy = &self.goal.ranking_policy;
+        if !policy.enabled {
+            return Err(DomainError::SteeringDenied(
+                "goal ranking votes are disabled for this goal".to_string(),
+            ));
+        }
+        let source_allowed = match request.source {
+            GoalVoteSource::Human => policy.allow_human_votes,
+            GoalVoteSource::Coordinator | GoalVoteSource::System => policy.allow_coordinator_votes,
+            GoalVoteSource::Agent => policy.allow_agent_votes,
+        };
+        if !source_allowed {
+            return Err(DomainError::SteeringDenied(format!(
+                "{:?} goal ranking votes are disabled for this goal",
+                request.source
+            )));
+        }
+
+        let weight = request.weight.max(1).min(policy.max_vote_weight.max(1));
+        let signed_weight = match request.direction {
+            GoalVoteDirection::Up => weight as i32,
+            GoalVoteDirection::Down => -(weight as i32),
+        };
+        let vote = GoalPriorityVote {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            voter: request.voter,
+            source: request.source,
+            direction: request.direction,
+            weight,
+            signed_weight,
+            reason: request.reason,
+            suggested_role: request.suggested_role,
+        };
+        self.goal_priority_votes.push(vote);
+        let decision = self.compute_goal_ranking_decision();
+        self.apply_goal_ranking_decision(&decision);
+        self.goal_ranking_decisions.push(decision.clone());
+        self.events.push(StateEvent::new(format!(
+            "goal_priority_vote_recorded:{}:{}:{}",
+            decision.id, decision.score, decision.reason
+        )));
+        Ok(decision)
+    }
+
+    pub fn goal_ranking_summary(&self) -> GoalRankingSummary {
+        let score: i32 = self
+            .goal_priority_votes
+            .iter()
+            .map(|vote| vote.signed_weight)
+            .sum();
+        let upvotes = self
+            .goal_priority_votes
+            .iter()
+            .filter(|vote| vote.direction == GoalVoteDirection::Up)
+            .count() as u32;
+        let downvotes = self
+            .goal_priority_votes
+            .iter()
+            .filter(|vote| vote.direction == GoalVoteDirection::Down)
+            .count() as u32;
+        let latest_decision = self.goal_ranking_decisions.last().cloned();
+        let (effective_priority, hierarchy_role) = latest_decision
+            .as_ref()
+            .map(|decision| {
+                (
+                    decision.effective_priority.clone(),
+                    decision.hierarchy_role.clone(),
+                )
+            })
+            .unwrap_or((TaskPriority::High, GoalHierarchyRole::PeerGoal));
+
+        GoalRankingSummary {
+            score,
+            upvotes,
+            downvotes,
+            vote_count: self.goal_priority_votes.len() as u32,
+            effective_priority,
+            hierarchy_role,
+            latest_decision,
+        }
+    }
+
+    fn compute_goal_ranking_decision(&self) -> GoalRankingDecision {
+        let summary = self.goal_ranking_summary();
+        let policy = &self.goal.ranking_policy;
+        let (outcome, effective_priority, hierarchy_role, reason) =
+            if summary.vote_count < policy.min_votes {
+                (
+                    GoalRankingOutcome::Pending,
+                    summary.effective_priority,
+                    summary.hierarchy_role,
+                    format!("waiting for {} total ranking votes", policy.min_votes),
+                )
+            } else if summary.score >= policy.promotion_score {
+                (
+                    GoalRankingOutcome::Promoted,
+                    TaskPriority::Critical,
+                    GoalHierarchyRole::OverarchingGoal,
+                    "ranking votes promoted this goal".to_string(),
+                )
+            } else if summary.score <= policy.demotion_score {
+                (
+                    GoalRankingOutcome::Demoted,
+                    TaskPriority::Low,
+                    GoalHierarchyRole::Subgoal,
+                    "ranking votes demoted this goal".to_string(),
+                )
+            } else {
+                (
+                    GoalRankingOutcome::Unchanged,
+                    TaskPriority::High,
+                    GoalHierarchyRole::PeerGoal,
+                    "ranking votes left this goal at peer priority".to_string(),
+                )
+            };
+
+        GoalRankingDecision {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            score: summary.score,
+            upvotes: summary.upvotes,
+            downvotes: summary.downvotes,
+            vote_count: summary.vote_count,
+            effective_priority,
+            hierarchy_role,
+            outcome,
+            reason,
+        }
+    }
+
+    fn apply_goal_ranking_decision(&mut self, decision: &GoalRankingDecision) {
+        if decision.outcome == GoalRankingOutcome::Pending {
+            return;
+        }
+        if let Some(root_id) = self
+            .tasks
+            .values()
+            .find(|task| task.parent_id.is_none())
+            .map(|task| task.id)
+        {
+            if let Ok(root) = self.task_mut(root_id) {
+                root.priority = decision.effective_priority.clone();
+                let role_tag = match decision.hierarchy_role {
+                    GoalHierarchyRole::OverarchingGoal => "goal:overarching",
+                    GoalHierarchyRole::PeerGoal => "goal:peer",
+                    GoalHierarchyRole::Subgoal => "goal:subgoal",
+                };
+                root.tags.retain(|tag| {
+                    !matches!(
+                        tag.as_str(),
+                        "goal:overarching" | "goal:peer" | "goal:subgoal"
+                    )
+                });
+                if !root.tags.iter().any(|tag| tag == role_tag) {
+                    root.tags.push(role_tag.to_string());
+                }
+            }
+        }
+    }
+
+    pub fn create_delayed_compute_thunk(
+        &mut self,
+        request: DelayedComputeThunkRequest,
+    ) -> Result<DelayedComputeThunk, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::SteeringDenied(
+                "delayed compute thunk goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        if let Some(task_id) = request.task_id {
+            let task = self.task_mut(task_id)?;
+            task.status = if request.kind == DelayedComputeThunkKind::Approval {
+                TaskStatus::WaitingApproval
+            } else {
+                TaskStatus::WaitingInput
+            };
+        }
+        let thunk = DelayedComputeThunk {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            task_id: request.task_id,
+            kind: request.kind,
+            status: DelayedComputeThunkStatus::Pending,
+            reason: request.reason,
+            requested_input: request.requested_input,
+            wait_ref: request.wait_ref,
+            continuation: request.continuation,
+            timeout_seconds: request.timeout_seconds,
+            created_at: now_unix_timestamp_string(),
+            resumed_at: None,
+            resume_record: None,
+        };
+        self.delayed_compute_thunks.push(thunk.clone());
+        self.refresh_goal_status();
+        self.events.push(StateEvent::new(format!(
+            "delayed_compute_thunk_created:{}",
+            thunk.id
+        )));
+        Ok(thunk)
+    }
+
+    pub fn resume_delayed_compute_thunk(
+        &mut self,
+        request: DelayedComputeThunkResumeRequest,
+    ) -> Result<DelayedComputeThunk, DomainError> {
+        let index = self
+            .delayed_compute_thunks
+            .iter()
+            .position(|thunk| thunk.id == request.thunk_id)
+            .ok_or(DomainError::InvariantViolation(format!(
+                "delayed compute thunk not found: {}",
+                request.thunk_id
+            )))?;
+        if self.delayed_compute_thunks[index].status != DelayedComputeThunkStatus::Pending {
+            return Err(DomainError::SteeringDenied(format!(
+                "delayed compute thunk {} is not pending",
+                request.thunk_id
+            )));
+        }
+
+        let task_id = self.delayed_compute_thunks[index].task_id;
+        let record = DelayedComputeThunkResumeRecord {
+            responder: request.responder,
+            response_summary: request.response_summary,
+            artifact_refs: request.artifact_refs,
+        };
+        self.delayed_compute_thunks[index].status = DelayedComputeThunkStatus::Resumed;
+        self.delayed_compute_thunks[index].resumed_at = Some(now_unix_timestamp_string());
+        self.delayed_compute_thunks[index].resume_record = Some(record);
+        let updated = self.delayed_compute_thunks[index].clone();
+        if let Some(task_id) = task_id {
+            let task = self.task_mut(task_id)?;
+            if matches!(
+                task.status,
+                TaskStatus::Blocked | TaskStatus::WaitingApproval | TaskStatus::WaitingInput
+            ) {
+                task.status = TaskStatus::Runnable;
+            }
+        }
+        self.refresh_goal_status();
+        self.events.push(StateEvent::new(format!(
+            "delayed_compute_thunk_resumed:{}",
+            request.thunk_id
         )));
         Ok(updated)
     }
@@ -3698,6 +4113,7 @@ impl GoalState {
                             | TaskStatus::Failed
                             | TaskStatus::Cancelled
                             | TaskStatus::WaitingApproval
+                            | TaskStatus::WaitingInput
                             | TaskStatus::Running
                     )
                 })
@@ -4069,6 +4485,12 @@ impl GoalState {
             .any(|task| task.status == TaskStatus::WaitingApproval)
         {
             GoalStatus::WaitingApproval
+        } else if self
+            .tasks
+            .values()
+            .any(|task| task.status == TaskStatus::WaitingInput)
+        {
+            GoalStatus::Paused
         } else if report.satisfied {
             GoalStatus::Done
         } else {
@@ -4263,6 +4685,7 @@ pub enum TaskStatus {
     Running,
     NeedsValidation,
     WaitingApproval,
+    WaitingInput,
     Done,
     Blocked,
     Failed,
@@ -4457,11 +4880,14 @@ pub struct GoalProgress {
     pub blocked_tasks: u32,
     pub failed_tasks: u32,
     pub waiting_approval_tasks: u32,
+    pub waiting_input_tasks: u32,
     pub percent_done: f32,
     #[serde(default)]
     pub by_status: BTreeMap<TaskStatus, u32>,
     #[serde(default)]
     pub subgoals: Vec<SubgoalProgress>,
+    pub ranking: GoalRankingSummary,
+    pub pending_delayed_compute_thunks: u32,
     #[serde(default)]
     pub runnable_tasks: Vec<TaskId>,
     #[serde(default)]
@@ -11744,6 +12170,134 @@ pub struct HumanApproval {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Coordinator-owned placeholder for paused work.
+///
+/// A delayed compute thunk captures the suspended continuation when a task needs
+/// human input, external events, time, resources, or another bounded signal
+/// before computation can continue. It is deliberately state, not a sleeping
+/// worker loop.
+pub struct DelayedComputeThunk {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub task_id: Option<TaskId>,
+    pub kind: DelayedComputeThunkKind,
+    pub status: DelayedComputeThunkStatus,
+    pub reason: String,
+    pub requested_input: Option<String>,
+    pub wait_ref: Option<WaitRef>,
+    pub continuation: ContinuationRef,
+    pub timeout_seconds: Option<u64>,
+    pub created_at: String,
+    pub resumed_at: Option<String>,
+    pub resume_record: Option<DelayedComputeThunkResumeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct DelayedComputeThunkRequest {
+    pub goal_id: GoalId,
+    pub task_id: Option<TaskId>,
+    pub kind: DelayedComputeThunkKind,
+    pub reason: String,
+    pub requested_input: Option<String>,
+    pub wait_ref: Option<WaitRef>,
+    pub continuation: ContinuationRef,
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct DelayedComputeThunkResumeRequest {
+    pub thunk_id: Uuid,
+    pub responder: String,
+    pub response_summary: String,
+    #[serde(default)]
+    pub artifact_refs: Vec<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct DelayedComputeThunkResumeRecord {
+    pub responder: String,
+    pub response_summary: String,
+    #[serde(default)]
+    pub artifact_refs: Vec<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayedComputeThunkKind {
+    HumanInput,
+    Approval,
+    ExternalEvent,
+    Timer,
+    ResourceAvailability,
+    ModelAvailability,
+    WebhookCallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayedComputeThunkStatus {
+    Pending,
+    Resumed,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ContinuationRef {
+    pub continuation_id: String,
+    pub boundary: ContinuationBoundary,
+    pub state_ref: String,
+    #[serde(default)]
+    pub resume_actions: Vec<ContinuationResumeAction>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationBoundary {
+    GoalWorkflow,
+    TaskDispatch,
+    ApprovalGate,
+    EventWait,
+    ExternalCallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationResumeAction {
+    MarkRunnable,
+    ApplyFeedback,
+    ApplyApproval,
+    InjectTask,
+    Replan,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct WaitRef {
+    pub kind: WaitRefKind,
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitRefKind {
+    HumanThread,
+    NotificationOutbox,
+    SqsMessage,
+    WebhookCorrelation,
+    CalendarEvent,
+    DurableTimer,
+    RunnerCapacity,
+    ModelRoute,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub struct StateEvent {
     pub sequence: u64,
     pub message: String,
@@ -15555,6 +16109,158 @@ mod tests {
             state.task(task_id).expect("task").status,
             TaskStatus::Runnable
         );
+    }
+
+    #[test]
+    fn goal_priority_votes_promote_and_demote_goal_ranking() {
+        let mut goal = GoalSpec::new(
+            "rank me",
+            "ranking votes should promote or demote durable goals",
+        );
+        goal.ranking_policy.enabled = true;
+        goal.ranking_policy.min_votes = 2;
+        goal.ranking_policy.promotion_score = 2;
+        goal.ranking_policy.demotion_score = -2;
+        let mut state = GoalState::new(goal);
+
+        let pending = state
+            .record_goal_priority_vote(GoalPriorityVoteRequest {
+                goal_id: state.goal.id,
+                voter: "operator".to_string(),
+                source: GoalVoteSource::Human,
+                direction: GoalVoteDirection::Up,
+                weight: 1,
+                reason: "this is an umbrella objective".to_string(),
+                suggested_role: Some(GoalHierarchyRole::OverarchingGoal),
+            })
+            .expect("first vote records");
+        assert_eq!(pending.outcome, GoalRankingOutcome::Pending);
+
+        let promoted = state
+            .record_goal_priority_vote(GoalPriorityVoteRequest {
+                goal_id: state.goal.id,
+                voter: "coordinator".to_string(),
+                source: GoalVoteSource::Coordinator,
+                direction: GoalVoteDirection::Up,
+                weight: 1,
+                reason: "many subgoals depend on this".to_string(),
+                suggested_role: Some(GoalHierarchyRole::OverarchingGoal),
+            })
+            .expect("second vote promotes");
+        assert_eq!(promoted.outcome, GoalRankingOutcome::Promoted);
+        assert_eq!(promoted.hierarchy_role, GoalHierarchyRole::OverarchingGoal);
+        assert_eq!(
+            state.progress().ranking.effective_priority,
+            TaskPriority::Critical
+        );
+
+        let mut demotion_goal = GoalSpec::new(
+            "demote me",
+            "ranking votes should demote goals into subgoals when appropriate",
+        );
+        demotion_goal.ranking_policy.enabled = true;
+        demotion_goal.ranking_policy.min_votes = 2;
+        let mut demotion_state = GoalState::new(demotion_goal);
+        for voter in ["operator", "coordinator"] {
+            demotion_state
+                .record_goal_priority_vote(GoalPriorityVoteRequest {
+                    goal_id: demotion_state.goal.id,
+                    voter: voter.to_string(),
+                    source: if voter == "operator" {
+                        GoalVoteSource::Human
+                    } else {
+                        GoalVoteSource::Coordinator
+                    },
+                    direction: GoalVoteDirection::Down,
+                    weight: 1,
+                    reason: "this belongs under another initiative".to_string(),
+                    suggested_role: Some(GoalHierarchyRole::Subgoal),
+                })
+                .expect("demotion vote records");
+        }
+        let demoted = demotion_state.progress().ranking.latest_decision.unwrap();
+        assert_eq!(demoted.outcome, GoalRankingOutcome::Demoted);
+        assert_eq!(demoted.hierarchy_role, GoalHierarchyRole::Subgoal);
+        assert_eq!(
+            demotion_state.progress().ranking.effective_priority,
+            TaskPriority::Low
+        );
+    }
+
+    #[test]
+    fn goal_priority_votes_are_disabled_until_policy_opts_in() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "ranking disabled",
+            "ranking votes must be explicit extension behavior",
+        ));
+
+        let err = state
+            .record_goal_priority_vote(GoalPriorityVoteRequest {
+                goal_id: state.goal.id,
+                voter: "operator".to_string(),
+                source: GoalVoteSource::Human,
+                direction: GoalVoteDirection::Up,
+                weight: 1,
+                reason: "not opted in".to_string(),
+                suggested_role: None,
+            })
+            .expect_err("ranking votes are disabled by default");
+        assert!(matches!(err, DomainError::SteeringDenied(_)));
+    }
+
+    #[test]
+    fn delayed_compute_thunk_pauses_and_resumes_task_continuation() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "input needed",
+            "human input should pause and resume durable computation",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+
+        let thunk = state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need product owner decision".to_string(),
+                requested_input: Some("choose release lane".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/release-lane".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/input-needed".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![
+                        ContinuationResumeAction::ApplyFeedback,
+                        ContinuationResumeAction::MarkRunnable,
+                    ],
+                },
+                timeout_seconds: Some(3600),
+            })
+            .expect("thunk created");
+
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 1);
+
+        let resumed = state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id: thunk.id,
+                responder: "operator".to_string(),
+                response_summary: "ship through local smoke first".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect("thunk resumes");
+
+        assert_eq!(resumed.status, DelayedComputeThunkStatus::Resumed);
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
     }
 
     #[test]

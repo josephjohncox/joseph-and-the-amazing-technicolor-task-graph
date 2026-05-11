@@ -1328,6 +1328,52 @@
         "score"
       ]
     },
+    "GoalRankingPolicy": {
+      "description": "Optional extension for human/coordinator voting over goal priority.\n\nRanking votes are durable coordinator state. They can promote a goal into an\noverarching initiative, demote it into a subgoal, or leave it as a peer goal\nfor frontier ordering and operator views.",
+      "type": "object",
+      "properties": {
+        "allow_agent_votes": {
+          "type": "boolean"
+        },
+        "allow_coordinator_votes": {
+          "type": "boolean"
+        },
+        "allow_human_votes": {
+          "type": "boolean"
+        },
+        "demotion_score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_vote_weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_votes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "promotion_score": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "enabled",
+        "allow_human_votes",
+        "allow_coordinator_votes",
+        "allow_agent_votes",
+        "min_votes",
+        "promotion_score",
+        "demotion_score",
+        "max_vote_weight"
+      ]
+    },
     "GoalSpec": {
       "description": "User-authored executable contract for a durable goal.\n\nA `GoalSpec` is not just a prompt. It carries the objective, budget,\nacceptance criteria, review policy, memory/research policy, approval policy,\ndefault execution profile, and optional initial tasks that seed the durable\ntask tree. See `docs/operations/goal-authoring.md`.",
       "type": "object",
@@ -1723,6 +1769,19 @@
             "distribution_notes": [],
             "subgoals": [],
             "summary": ""
+          }
+        },
+        "ranking_policy": {
+          "$ref": "#/$defs/GoalRankingPolicy",
+          "default": {
+            "allow_agent_votes": false,
+            "allow_coordinator_votes": true,
+            "allow_human_votes": true,
+            "demotion_score": -2,
+            "enabled": false,
+            "max_vote_weight": 3,
+            "min_votes": 2,
+            "promotion_score": 2
           }
         },
         "repo": {

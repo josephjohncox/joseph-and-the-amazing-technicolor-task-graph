@@ -173,8 +173,9 @@ User-facing continuation work comes from standard backend records:
 
 - durable plans and plan-continuity `next_actions`;
 - goal progress and task state;
+- goal ranking summaries, upvote/downvote actions, and promotion/demotion history;
 - event and trigger projections;
-- human queue approvals, blocked tasks, feedback requests, and async-response requests.
+- human queue approvals, blocked tasks, feedback requests, delayed compute thunks, and async-response requests.
 
 Repo markdown `## Follow-Ups` remains a developer doc-gardening convention for active execution plans. It is not the product queue.
 
@@ -188,6 +189,7 @@ Supported local queue items:
 
 - approval requests;
 - feedback requests;
+- delayed compute thunks for suspended human input, callbacks, timers, resource waits, or model availability;
 - blocked tasks;
 - failures;
 - completion notifications;

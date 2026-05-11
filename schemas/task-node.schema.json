@@ -3007,6 +3007,7 @@
         "running",
         "needs_validation",
         "waiting_approval",
+        "waiting_input",
         "done",
         "blocked",
         "failed",

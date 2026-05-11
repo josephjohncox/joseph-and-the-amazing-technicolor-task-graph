@@ -133,7 +133,9 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Every `TaskNode` has an `execution` profile.
 - Every `TaskNode` also has a `purpose`: work, review, unification, or actor retry.
 - Every `TaskNode` may carry a `color` from `GoalSpec.color_policy`, subgoal metadata, or explicit child-task metadata; use stable color keys as semantic graph labels, not one-off UI decoration.
-- Goals have `control_policy`, `research_policy`, `memory_policy`, and `approval_policy`; preserve them when editing contracts.
+- Goals have `control_policy`, `research_policy`, `memory_policy`, `approval_policy`, and optional `ranking_policy`; preserve them when editing contracts.
+- Goal ranking votes are extension state. Humans and the coordinator may upvote/downvote goals for priority, promotion into overarching initiatives, or demotion into subgoals only when `ranking_policy.enabled` allows it.
+- Ranking votes must be durable coordinator state, not hidden worker preferences; workers may propose ranking changes only as structured requests that the coordinator or human can accept.
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
 - `GoalSpec.id` is optional in normal authored JSON; the CLI/deserializer assigns a durable workflow key unless an operator intentionally supplies one for idempotency.
 - Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.
@@ -168,6 +170,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Device/browser auth for Codex or Claude Code is runner-local unless `AuthDistributionPolicy` explicitly allows brokered user auth or secret sync.
 - Brokered user auth requires a human approval gate and short-lived leases; never place raw user tokens in task state, diagnostics, artifacts, or memory.
 - Notifications are task-local and should be emitted for approval, feedback, blocked, failed, and completed events.
+- Delayed compute thunks are the durable representation for human input, external callbacks, timers, resource waits, model availability, and other suspended continuations.
+- A delayed compute thunk pauses task dispatch through coordinator state and resumes through an explicit continuation reference; do not model waits as sleeping agents or free-running polling loops.
 - Durable notification fanout and event fan-in should use stable infrastructure targets such as SQS when operators need replay, dead-letter queues, external automations, or bounded queue polling.
 - Local notification threads are for operator visibility; Restate workflow state remains the source of truth.
 - Web UI edits are steering, approval, goal, event, or memory commands against backend APIs; never mutate projections as if they were source-of-truth state.
@@ -227,6 +231,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - AWS SSO helper: `coat setup sso --profile <profile> --write-env --bedrock-live --preflight`
 - Chat client MCP/skill setup wizard: `coat setup chat-client`
 - Restate Cloud registration only: `coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
+- Goal ranking vote: `coat goal vote --goal-id <goal-id> --direction up --reason "promote umbrella work"`
+- Resume delayed compute thunk: `coat human resume-thunk --goal-id <goal-id> --thunk-id <thunk-id> --response-summary "approved path"`
 - Kubernetes render: `coat deploy cluster render --output infra/k8s/rendered.yaml`
 - Kubernetes apply or dry-run: `coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client`
 - Kubernetes rollout status: `coat deploy cluster status --timeout 120s`

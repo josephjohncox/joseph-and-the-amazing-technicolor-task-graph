@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContinuationResumeAction",
+  "type": "string",
+  "enum": [
+    "mark_runnable",
+    "apply_feedback",
+    "apply_approval",
+    "inject_task",
+    "replan",
+    "cancel"
+  ]
+}

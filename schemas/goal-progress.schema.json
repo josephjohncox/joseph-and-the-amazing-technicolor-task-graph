@@ -55,6 +55,11 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "waiting_input": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
@@ -81,9 +86,17 @@
       "format": "uint32",
       "minimum": 0
     },
+    "pending_delayed_compute_thunks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
     "percent_done": {
       "type": "number",
       "format": "float"
+    },
+    "ranking": {
+      "$ref": "#/$defs/GoalRankingSummary"
     },
     "runnable_tasks": {
       "type": "array",
@@ -130,6 +143,11 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0
+    },
+    "waiting_input_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
     }
   },
   "required": [
@@ -142,7 +160,10 @@
     "blocked_tasks",
     "failed_tasks",
     "waiting_approval_tasks",
-    "percent_done"
+    "waiting_input_tasks",
+    "percent_done",
+    "ranking",
+    "pending_delayed_compute_thunks"
   ],
   "$defs": {
     "ArtifactKind": {
@@ -187,6 +208,128 @@
         "kind",
         "uri",
         "description"
+      ]
+    },
+    "GoalHierarchyRole": {
+      "type": "string",
+      "enum": [
+        "overarching_goal",
+        "peer_goal",
+        "subgoal"
+      ]
+    },
+    "GoalRankingDecision": {
+      "type": "object",
+      "properties": {
+        "downvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effective_priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "hierarchy_role": {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "outcome": {
+          "$ref": "#/$defs/GoalRankingOutcome"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "upvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vote_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "score",
+        "upvotes",
+        "downvotes",
+        "vote_count",
+        "effective_priority",
+        "hierarchy_role",
+        "outcome",
+        "reason"
+      ]
+    },
+    "GoalRankingOutcome": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "promoted",
+        "demoted",
+        "unchanged"
+      ]
+    },
+    "GoalRankingSummary": {
+      "type": "object",
+      "properties": {
+        "downvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effective_priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "hierarchy_role": {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        "latest_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalRankingDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "upvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vote_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "score",
+        "upvotes",
+        "downvotes",
+        "vote_count",
+        "effective_priority",
+        "hierarchy_role"
       ]
     },
     "GoalStatus": {
@@ -529,6 +672,7 @@
         "running",
         "needs_validation",
         "waiting_approval",
+        "waiting_input",
         "done",
         "blocked",
         "failed",

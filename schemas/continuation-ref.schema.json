@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContinuationRef",
+  "type": "object",
+  "properties": {
+    "boundary": {
+      "$ref": "#/$defs/ContinuationBoundary"
+    },
+    "continuation_id": {
+      "type": "string"
+    },
+    "resume_actions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ContinuationResumeAction"
+      }
+    },
+    "state_ref": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "continuation_id",
+    "boundary",
+    "state_ref"
+  ],
+  "$defs": {
+    "ContinuationBoundary": {
+      "type": "string",
+      "enum": [
+        "goal_workflow",
+        "task_dispatch",
+        "approval_gate",
+        "event_wait",
+        "external_callback"
+      ]
+    },
+    "ContinuationResumeAction": {
+      "type": "string",
+      "enum": [
+        "mark_runnable",
+        "apply_feedback",
+        "apply_approval",
+        "inject_task",
+        "replan",
+        "cancel"
+      ]
+    }
+  }
+}

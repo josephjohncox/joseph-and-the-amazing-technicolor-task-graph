@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WaitRef",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "$ref": "#/$defs/WaitRefKind"
+    },
+    "reference": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "reference"
+  ],
+  "$defs": {
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
+      ]
+    }
+  }
+}

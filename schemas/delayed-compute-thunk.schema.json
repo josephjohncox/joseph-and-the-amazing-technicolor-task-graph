@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DelayedComputeThunk",
+  "description": "Coordinator-owned placeholder for paused work.\n\nA delayed compute thunk captures the suspended continuation when a task needs\nhuman input, external events, time, resources, or another bounded signal\nbefore computation can continue. It is deliberately state, not a sleeping\nworker loop.",
+  "type": "object",
+  "properties": {
+    "continuation": {
+      "$ref": "#/$defs/ContinuationRef"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "$ref": "#/$defs/DelayedComputeThunkKind"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "requested_input": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resume_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DelayedComputeThunkResumeRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resumed_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "$ref": "#/$defs/DelayedComputeThunkStatus"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "timeout_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "wait_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WaitRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "kind",
+    "status",
+    "reason",
+    "continuation",
+    "created_at"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "ContinuationBoundary": {
+      "type": "string",
+      "enum": [
+        "goal_workflow",
+        "task_dispatch",
+        "approval_gate",
+        "event_wait",
+        "external_callback"
+      ]
+    },
+    "ContinuationRef": {
+      "type": "object",
+      "properties": {
+        "boundary": {
+          "$ref": "#/$defs/ContinuationBoundary"
+        },
+        "continuation_id": {
+          "type": "string"
+        },
+        "resume_actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContinuationResumeAction"
+          }
+        },
+        "state_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "continuation_id",
+        "boundary",
+        "state_ref"
+      ]
+    },
+    "ContinuationResumeAction": {
+      "type": "string",
+      "enum": [
+        "mark_runnable",
+        "apply_feedback",
+        "apply_approval",
+        "inject_task",
+        "replan",
+        "cancel"
+      ]
+    },
+    "DelayedComputeThunkKind": {
+      "type": "string",
+      "enum": [
+        "human_input",
+        "approval",
+        "external_event",
+        "timer",
+        "resource_availability",
+        "model_availability",
+        "webhook_callback"
+      ]
+    },
+    "DelayedComputeThunkResumeRecord": {
+      "type": "object",
+      "properties": {
+        "artifact_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "responder": {
+          "type": "string"
+        },
+        "response_summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "responder",
+        "response_summary"
+      ]
+    },
+    "DelayedComputeThunkStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "resumed",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "WaitRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WaitRefKind"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
+      ]
+    }
+  }
+}

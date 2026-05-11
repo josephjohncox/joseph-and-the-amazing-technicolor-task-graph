@@ -136,6 +136,7 @@ The same tab renders a continuity view for the loaded plan:
 - open and authoring questions;
 - stable subgoals;
 - coordinator-owned initial task seeds;
+- priority/ranking intent when a plan should be promoted into an overarching goal or demoted under another goal;
 - planning decisions;
 - revision history.
 
@@ -153,8 +154,10 @@ Plan editing through the SPA or MCP still calls backend APIs. The browser does n
 - Use durable plans for ambiguous, multi-step, high-risk, or collaborative requests.
 - Keep open questions explicit instead of hiding them inside a prompt.
 - Record decisions and rationale when steering changes direction.
+- Use goal ranking votes for promotion/demotion decisions after execution starts; do not encode global priority changes as hidden prompt text.
 - Branch competing plans with a new `plan_id` plus `source_plan_id`; do not revise
   the source plan just to explore an alternate implementation path.
 - Keep stable subgoal IDs once other artifacts refer to them.
 - Compile to `GoalSpec` only when the plan has enough evidence, constraints, and first-frontier routing.
 - Do not ask workers to infer subgoals from plan prose after compilation.
+- If the plan needs a human decision or an external signal before it can continue, compile that pause into a delayed compute thunk or an explicit event/approval path rather than leaving a worker to wait.

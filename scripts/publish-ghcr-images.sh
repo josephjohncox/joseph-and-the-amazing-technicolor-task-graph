@@ -11,6 +11,7 @@ BUILDX_PROGRESS="${BUILDX_PROGRESS:-plain}"
 BUILDX_CACHE="${BUILDX_CACHE:-auto}"
 BUILDX_REGISTRY_CACHE="${BUILDX_REGISTRY_CACHE:-auto}"
 PUSH_IMAGES="${PUSH_IMAGES:-true}"
+IMAGE_FILTERS=("$@")
 
 if [[ -z "${VERSION}" ]]; then
   echo "VERSION is required" >&2
@@ -62,6 +63,46 @@ build_image() {
     .
 }
 
+should_build_image() {
+  local image_name="$1"
+  local group_name="$2"
+
+  if [[ "${#IMAGE_FILTERS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  local filter
+  for filter in "${IMAGE_FILTERS[@]}"; do
+    case "${filter}" in
+      all)
+        return 0
+        ;;
+      rust)
+        if [[ "${group_name}" == "rust-service" || "${group_name}" == "agent-toolbox" ]]; then
+          return 0
+        fi
+        ;;
+      rust-services)
+        if [[ "${group_name}" == "rust-service" ]]; then
+          return 0
+        fi
+        ;;
+      agent-toolbox|node-sidecars)
+        if [[ "${group_name}" == "${filter}" ]]; then
+          return 0
+        fi
+        ;;
+      *)
+        if [[ "${image_name}" == "${filter}" ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+
+  return 1
+}
+
 rust_images=(
   jattg-coordinator=coat-coordinator
   jattg-event-gateway=coat-event-gateway
@@ -77,17 +118,21 @@ rust_images=(
 for spec in "${rust_images[@]}"; do
   image_name="${spec%%=*}"
   bin="${spec#*=}"
-  build_image "${image_name}" rust-services \
-    -f infra/containers/rust-service.Dockerfile \
-    --target service \
-    --build-arg "BIN=${bin}" \
-    --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+  if should_build_image "${image_name}" rust-service; then
+    build_image "${image_name}" rust-services \
+      -f infra/containers/rust-service.Dockerfile \
+      --target service \
+      --build-arg "BIN=${bin}" \
+      --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+  fi
 done
 
-build_image "jattg-agent-toolbox" agent-toolbox \
-  -f infra/containers/rust-service.Dockerfile \
-  --target agent-toolbox \
-  --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+if should_build_image "jattg-agent-toolbox" agent-toolbox; then
+  build_image "jattg-agent-toolbox" agent-toolbox \
+    -f infra/containers/rust-service.Dockerfile \
+    --target agent-toolbox \
+    --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+fi
 
 sidecars=(
   jattg-control-web=ui/control-plane-web
@@ -100,7 +145,9 @@ sidecars=(
 for spec in "${sidecars[@]}"; do
   image_name="${spec%%=*}"
   sidecar_dir="${spec#*=}"
-  build_image "${image_name}" "${image_name}" \
-    -f infra/containers/node-sidecar.Dockerfile \
-    --build-arg "SIDECAR_DIR=${sidecar_dir}"
+  if should_build_image "${image_name}" node-sidecars; then
+    build_image "${image_name}" "${image_name}" \
+      -f infra/containers/node-sidecar.Dockerfile \
+      --build-arg "SIDECAR_DIR=${sidecar_dir}"
+  fi
 done

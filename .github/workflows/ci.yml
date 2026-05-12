@@ -45,7 +45,7 @@ jobs:
           cache-on-failure: true
       - uses: bufbuild/buf-setup-action@v1
         with:
-          github_token: ${{ github.token }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

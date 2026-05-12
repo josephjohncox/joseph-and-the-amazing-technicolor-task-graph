@@ -4,7 +4,7 @@ namespace:
 
 global:
   imagePullPolicy: IfNotPresent
-  imageTag: 0.0.2
+  imageTag: 0.0.3
 
 config:
   RUST_LOG: info
@@ -63,7 +63,7 @@ config:
   CLAUDE_CODE_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"secret","auth.mode":"env_api_key"}'
   STAFF_ENGINEER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"secret","auth.mode":"env_api_key"}'
   MODEL_PROVIDER_RUNNER_LABELS_JSON: '{"pool":"default","runtime":"model-provider","provider":"open_ai_compatible"}'
-  COAT_AGENT_TOOLBOX_IMAGE: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:0.0.2
+  COAT_AGENT_TOOLBOX_IMAGE: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox:0.0.3
 
 secrets:
   create: true

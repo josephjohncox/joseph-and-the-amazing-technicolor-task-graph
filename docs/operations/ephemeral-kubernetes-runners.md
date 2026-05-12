@@ -372,7 +372,7 @@ ephemeralJobs:
     kind: model-provider-runner
     image:
       repository: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-agent-toolbox
-      tag: 0.0.2
+      tag: 0.0.3
     activeDeadlineSeconds: 7200
     ttlSecondsAfterFinished: 3600
     service: true

@@ -1222,7 +1222,7 @@ struct ReleaseCutArgs {
 #[derive(Debug, Args)]
 #[command(
     about = "Lint, render, install, rollback, and package the jattg Helm chart",
-    after_help = "Examples:\n  coat deploy chart lint\n  coat deploy chart template --output /tmp/jattg.yaml\n  coat deploy chart upgrade --values path/to/operator-values.yaml --wait\n  coat deploy chart package --chart-version 0.0.2 --app-version 0.0.2"
+    after_help = "Examples:\n  coat deploy chart lint\n  coat deploy chart template --output /tmp/jattg.yaml\n  coat deploy chart upgrade --values path/to/operator-values.yaml --wait\n  coat deploy chart package --chart-version 0.0.3 --app-version 0.0.3"
 )]
 struct HelmCommand {
     #[command(subcommand)]

@@ -50,7 +50,7 @@ spec:
     spec:
       containers:
         - name: coordinator
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR

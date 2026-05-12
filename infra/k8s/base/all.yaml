@@ -167,7 +167,7 @@ spec:
     spec:
       containers:
         - name: coordinator
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-coordinator:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -263,7 +263,7 @@ spec:
     spec:
       containers:
         - name: validator
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-validator:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-validator:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -308,7 +308,7 @@ spec:
     spec:
       containers:
         - name: sandbox-runner
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-sandbox-runner:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-sandbox-runner:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -363,7 +363,7 @@ spec:
     spec:
       containers:
         - name: tool-registry
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-tool-registry:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-tool-registry:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -422,7 +422,7 @@ spec:
     spec:
       containers:
         - name: runner-registry
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-runner-registry:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-runner-registry:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -475,7 +475,7 @@ spec:
     spec:
       containers:
         - name: notifier
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-notifier:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-notifier:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -520,7 +520,7 @@ spec:
     spec:
       containers:
         - name: goal-store
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-goal-store:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-goal-store:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -583,7 +583,7 @@ spec:
     spec:
       containers:
         - name: event-gateway
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-event-gateway:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-event-gateway:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -662,7 +662,7 @@ spec:
     spec:
       containers:
         - name: memory-gateway
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-memory-gateway:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-memory-gateway:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: BIND_ADDR
@@ -772,7 +772,7 @@ spec:
     spec:
       containers:
         - name: control-web
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-control-web:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-control-web:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -1103,7 +1103,7 @@ spec:
     spec:
       containers:
         - name: codex-runner
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-codex-runner:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-codex-runner:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -1192,7 +1192,7 @@ spec:
     spec:
       containers:
         - name: claude-code-runner
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-claude-code-runner:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-claude-code-runner:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -1294,7 +1294,7 @@ spec:
     spec:
       containers:
         - name: model-provider-runner
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-model-provider-runner:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-model-provider-runner:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -1508,7 +1508,7 @@ spec:
     spec:
       containers:
         - name: staff-engineer-runner
-          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-staff-engineer-runner:0.0.2
+          image: ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/jattg-staff-engineer-runner:0.0.3
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT

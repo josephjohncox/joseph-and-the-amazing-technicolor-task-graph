@@ -2,8 +2,8 @@ apiVersion: v2
 name: jattg
 description: Joseph and the Amazing Technicolor Task Graph control plane
 type: application
-version: 0.0.2
-appVersion: 0.0.2
+version: 0.0.3
+appVersion: 0.0.3
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph
 sources:

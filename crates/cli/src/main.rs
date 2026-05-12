@@ -26,9 +26,10 @@ use coat_domain::{
     CoatConfig, CoatConfigPaths, CoatKubernetesConfig, CoatLlmGatewayConfig, CoatLocalDeployConfig,
     CoatModelRoutingConfig, CoatOperatorDefaults, CoatProfileConfig, CoatProjectConfig,
     CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopMode,
-    DelayedComputeThunkResumeRequest, EventSource, ExternalEvent, GoalAuthoringGuidance,
-    GoalHierarchyRole, GoalPlan, GoalPriorityVoteRequest, GoalRecord, GoalSpec, GoalVoteDirection,
-    GoalVoteSource, GraphColorRef, HumanApproval, MemoryContextRequest, MemoryEditPreviewRequest,
+    DelayedComputeThunkRequest, DelayedComputeThunkResumeRequest, EventSource, ExternalEvent,
+    GoalAuthoringGuidance, GoalHierarchyRole, GoalPlan, GoalPriorityVoteRequest, GoalRecord,
+    GoalSpec, GoalVoteDirection, GoalVoteSource, GraphColorRef, HumanApproval,
+    MechanismBallotRequest, MechanismRoundRequest, MemoryContextRequest, MemoryEditPreviewRequest,
     MemoryEditRequest, MemoryJoinRequest, MemoryRepairRequest, MemoryRetractRequest,
     MemorySearchRequest, MemoryWriteRequest, NetworkAccess, NotificationRequest,
     PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest, PlanDraftRequest,
@@ -702,12 +703,15 @@ enum GoalSubcommand {
     Submit(SubmitGoalArgs),
     Status(GoalIdArgs),
     Progress(GoalIdArgs),
+    ComputeGraph(GoalIdArgs),
     Tasks(GoalTasksArgs),
     Lint(GoalLintArgs),
     Steer(SteerGoalArgs),
     SteerStandard(SteerStandardGoalArgs),
     ReviewChecks,
     Vote(GoalVoteArgs),
+    Mechanism(GoalMechanismCommand),
+    Thunk(GoalThunkCommand),
     Restart(RestartGoalArgs),
     Branch(BranchGoalArgs),
     SelectBranch(SelectBranchArgs),
@@ -882,6 +886,57 @@ struct GoalVoteArgs {
     reason: String,
     #[arg(long, value_parser = ["overarching_goal", "peer_goal", "subgoal"])]
     suggested_role: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct GoalMechanismCommand {
+    #[command(subcommand)]
+    command: GoalMechanismSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GoalMechanismSubcommand {
+    Start(GoalMechanismArgs),
+    Ballot(GoalMechanismArgs),
+}
+
+#[derive(Debug, Args)]
+struct GoalThunkCommand {
+    #[command(subcommand)]
+    command: GoalThunkSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GoalThunkSubcommand {
+    Create(GoalThunkArgs),
+}
+
+#[derive(Debug, Args)]
+struct GoalThunkArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct GoalMechanismArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long)]
+    file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -2326,7 +2381,7 @@ fn print_command_map() {
     println!("  coat guide                         guided setup and human-queue picker");
     println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
     println!(
-        "  coat goal <draft|lint|submit|list|progress|tasks|steer|vote|branch|restart|cancel>"
+        "  coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>"
     );
     println!("  coat human <approve|resume-thunk|notify>");
     println!("  coat deploy local <preflight|up|config|down>");
@@ -4033,10 +4088,13 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
             | GoalSubcommand::Submit(_)
             | GoalSubcommand::Status(_)
             | GoalSubcommand::Progress(_)
+            | GoalSubcommand::ComputeGraph(_)
             | GoalSubcommand::Tasks(_)
             | GoalSubcommand::Steer(_)
             | GoalSubcommand::SteerStandard(_)
             | GoalSubcommand::Vote(_)
+            | GoalSubcommand::Mechanism(_)
+            | GoalSubcommand::Thunk(_)
             | GoalSubcommand::Restart(_)
             | GoalSubcommand::Branch(_)
             | GoalSubcommand::SelectBranch(_)
@@ -4631,6 +4689,18 @@ fn effective_goal_vote_args(mut args: GoalVoteArgs) -> anyhow::Result<GoalVoteAr
     Ok(args)
 }
 
+fn effective_goal_mechanism_args(mut args: GoalMechanismArgs) -> anyhow::Result<GoalMechanismArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_goal_thunk_args(mut args: GoalThunkArgs) -> anyhow::Result<GoalThunkArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
 fn effective_restart_goal_args(mut args: RestartGoalArgs) -> anyhow::Result<RestartGoalArgs> {
     args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
     args.selector = effective_goal_selector_args(args.selector)?;
@@ -4739,6 +4809,11 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             let goal_id = resolve_goal_id(&args.selector).await?;
             restate_post_without_body(&args.restate_ingress, goal_id, "progress").await
         }
+        GoalSubcommand::ComputeGraph(args) => {
+            let args = effective_goal_id_args(args)?;
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            restate_post_without_body(&args.restate_ingress, goal_id, "compute_graph").await
+        }
         GoalSubcommand::Tasks(args) => {
             let args = effective_goal_tasks_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
@@ -4763,6 +4838,32 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             let request = goal_priority_vote_request(&args, goal_id)?;
             restate_post_json(&args.restate_ingress, goal_id, "vote", &request).await
         }
+        GoalSubcommand::Mechanism(command) => match command.command {
+            GoalMechanismSubcommand::Start(args) => {
+                let args = effective_goal_mechanism_args(args)?;
+                let goal_id = resolve_goal_id(&args.selector).await?;
+                let request: MechanismRoundRequest =
+                    read_goal_scoped_json_file(&args.file, goal_id, "MechanismRoundRequest")?;
+                restate_post_json(&args.restate_ingress, goal_id, "mechanism_start", &request).await
+            }
+            GoalMechanismSubcommand::Ballot(args) => {
+                let args = effective_goal_mechanism_args(args)?;
+                let goal_id = resolve_goal_id(&args.selector).await?;
+                let request: MechanismBallotRequest =
+                    read_goal_scoped_json_file(&args.file, goal_id, "MechanismBallotRequest")?;
+                restate_post_json(&args.restate_ingress, goal_id, "mechanism_ballot", &request)
+                    .await
+            }
+        },
+        GoalSubcommand::Thunk(command) => match command.command {
+            GoalThunkSubcommand::Create(args) => {
+                let args = effective_goal_thunk_args(args)?;
+                let goal_id = resolve_goal_id(&args.selector).await?;
+                let request: DelayedComputeThunkRequest =
+                    read_goal_scoped_json_file(&args.file, goal_id, "DelayedComputeThunkRequest")?;
+                restate_post_json(&args.restate_ingress, goal_id, "create_thunk", &request).await
+            }
+        },
         GoalSubcommand::Restart(args) => {
             let args = effective_restart_goal_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
@@ -10559,11 +10660,12 @@ mod tests {
     use super::{
         CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs,
         DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs,
-        GoalSubcommand, HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs,
-        KubectlApplySpec, LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex,
-        PlanSubcommand, ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
-        apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
-        bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
+        GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand, HelmTemplateArgs,
+        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec, LocalAuthAction,
+        LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand, ProjectInitAction,
+        ProjectInitCheck, SetupSubcommand, ToolSubcommand, apply_capacity_plan_policy_from_config,
+        apply_config_profile, apply_model_param_values, bump_release_versions,
+        chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
         compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
         compose_up_command_args, default_local_model_provider_index,
         default_model_param_preset_index, default_model_preset_index,
@@ -10908,6 +11010,62 @@ mod tests {
         assert!(matches!(
             goal_vote.command,
             Some(Commands::Goal(ref goal)) if matches!(goal.command, GoalSubcommand::Vote(_))
+        ));
+
+        let compute_graph = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "compute-graph",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+        ])
+        .expect("parse goal compute-graph");
+        assert!(matches!(
+            compute_graph.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(goal.command, GoalSubcommand::ComputeGraph(_))
+        ));
+
+        let mechanism = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "mechanism",
+            "start",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--file",
+            "examples/mechanism-round-consensus.json",
+        ])
+        .expect("parse goal mechanism start");
+        assert!(matches!(
+            mechanism.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(
+                    goal.command,
+                    GoalSubcommand::Mechanism(ref mechanism)
+                        if matches!(mechanism.command, GoalMechanismSubcommand::Start(_))
+                )
+        ));
+
+        let thunk = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "thunk",
+            "create",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--file",
+            "examples/delayed-compute-thunk-human-input.json",
+        ])
+        .expect("parse goal thunk create");
+        assert!(matches!(
+            thunk.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(
+                    goal.command,
+                    GoalSubcommand::Thunk(ref thunk)
+                        if matches!(thunk.command, GoalThunkSubcommand::Create(_))
+                )
         ));
 
         let follow_ups = Cli::try_parse_from(["coat", "plan", "follow-ups", "--json"])

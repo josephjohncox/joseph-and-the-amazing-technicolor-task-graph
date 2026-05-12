@@ -849,6 +849,8 @@ pub struct GoalSpec {
     #[serde(default)]
     pub ranking_policy: GoalRankingPolicy,
     #[serde(default)]
+    pub mechanism_policy: MechanismPolicy,
+    #[serde(default)]
     pub default_execution: ExecutionProfile,
     #[serde(default)]
     pub initial_tasks: Vec<ChildTaskRequest>,
@@ -883,6 +885,7 @@ impl GoalSpec {
             branching_policy: BranchingPolicy::default(),
             color_policy: GraphColorPolicy::default(),
             ranking_policy: GoalRankingPolicy::default(),
+            mechanism_policy: MechanismPolicy::default(),
             default_execution: ExecutionProfile::default(),
             initial_tasks: Vec::new(),
         }
@@ -934,6 +937,9 @@ impl GoalSpec {
         }
         if self.ranking_policy.enabled && self.ranking_policy.min_votes == 0 {
             warnings.push("goal ranking is enabled but min_votes is zero".to_string());
+        }
+        if self.mechanism_policy.enabled && self.mechanism_policy.quorum == 0 {
+            warnings.push("mechanism policy is enabled but quorum is zero".to_string());
         }
         if self.review_policy.enabled && self.review_policy.min_reviews == 0 {
             warnings.push("review policy is enabled but min_reviews is zero".to_string());
@@ -1190,6 +1196,204 @@ pub struct GoalRankingSummary {
     pub hierarchy_role: GoalHierarchyRole,
     #[serde(default)]
     pub latest_decision: Option<GoalRankingDecision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Opt-in protocol layer for distributed agent/human coordination.
+///
+/// This is the extension point for consensus, voting, mechanism design, and
+/// auction rounds. It is disabled by default because the coordinator must own
+/// the protocol, tally, and final decision before any task priority, allocation,
+/// or branch choice changes.
+pub struct MechanismPolicy {
+    pub enabled: bool,
+    pub allow_human_participants: bool,
+    pub allow_agent_participants: bool,
+    pub allow_coordinator_participants: bool,
+    pub default_mechanism: MechanismKind,
+    pub quorum: u32,
+    pub min_participants: u32,
+    pub max_rounds: u32,
+    pub max_ballots_per_participant: u32,
+    pub require_human_ratification: bool,
+}
+
+impl Default for MechanismPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_human_participants: true,
+            allow_agent_participants: true,
+            allow_coordinator_participants: true,
+            default_mechanism: MechanismKind::ApprovalVote,
+            quorum: 2,
+            min_participants: 2,
+            max_rounds: 8,
+            max_ballots_per_participant: 1,
+            require_human_ratification: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismKind {
+    ApprovalVote,
+    MajorityVote,
+    RankedChoice,
+    DelphiRound,
+    SealedBidAuction,
+    VickreyAuction,
+    ContractNet,
+}
+
+impl MechanismKind {
+    fn is_auction(self) -> bool {
+        matches!(
+            self,
+            Self::SealedBidAuction | Self::VickreyAuction | Self::ContractNet
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismTarget {
+    GoalPriority,
+    GoalPromotion,
+    SubgoalSelection,
+    BranchSelection,
+    RunnerAllocation,
+    BudgetAllocation,
+    WorkAuction,
+    ReviewPanel,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismParticipantSource {
+    Human,
+    Coordinator,
+    Agent,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismRoundStatus {
+    Open,
+    QuorumPending,
+    Decided,
+    RatificationRequired,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismRoundRequest {
+    pub goal_id: GoalId,
+    pub title: String,
+    pub mechanism: Option<MechanismKind>,
+    pub target: MechanismTarget,
+    pub reason: String,
+    #[serde(default)]
+    pub proposals: Vec<MechanismProposalRequest>,
+    pub quorum: Option<u32>,
+    pub min_participants: Option<u32>,
+    pub require_human_ratification: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismProposalRequest {
+    pub label: String,
+    pub description: String,
+    pub proposer: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismProposal {
+    pub id: Uuid,
+    pub label: String,
+    pub description: String,
+    pub proposer: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismBallotRequest {
+    pub goal_id: GoalId,
+    pub round_id: Uuid,
+    pub participant: String,
+    pub source: MechanismParticipantSource,
+    #[serde(default)]
+    pub allocations: Vec<MechanismAllocation>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismAllocation {
+    pub proposal_id: Uuid,
+    pub support: i32,
+    pub rank: Option<u32>,
+    pub bid: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismBallot {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub round_id: Uuid,
+    pub participant: String,
+    pub source: MechanismParticipantSource,
+    #[serde(default)]
+    pub allocations: Vec<MechanismAllocation>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismDecision {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub round_id: Uuid,
+    pub selected_proposal_id: Option<Uuid>,
+    pub selected_label: Option<String>,
+    pub score: i64,
+    pub clearing_price: Option<u64>,
+    pub participant_count: u32,
+    pub quorum_met: bool,
+    pub status: MechanismRoundStatus,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismRound {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub title: String,
+    pub mechanism: MechanismKind,
+    pub target: MechanismTarget,
+    pub status: MechanismRoundStatus,
+    pub reason: String,
+    #[serde(default)]
+    pub proposals: Vec<MechanismProposal>,
+    #[serde(default)]
+    pub ballots: Vec<MechanismBallot>,
+    pub quorum: u32,
+    pub min_participants: u32,
+    pub require_human_ratification: bool,
+    pub decision: Option<MechanismDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
@@ -1973,6 +2177,8 @@ pub struct GoalState {
     #[serde(default)]
     pub goal_ranking_decisions: Vec<GoalRankingDecision>,
     #[serde(default)]
+    pub mechanism_rounds: Vec<MechanismRound>,
+    #[serde(default)]
     pub final_artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub checkpoints: Vec<CheckpointRef>,
@@ -2038,6 +2244,7 @@ impl GoalState {
             delayed_compute_thunks: Vec::new(),
             goal_priority_votes: Vec::new(),
             goal_ranking_decisions: Vec::new(),
+            mechanism_rounds: Vec::new(),
             final_artifacts: Vec::new(),
             checkpoints: Vec::new(),
             review_rounds: Vec::new(),
@@ -2173,14 +2380,211 @@ impl GoalState {
             by_status,
             subgoals: self.subgoal_progress(),
             ranking: self.goal_ranking_summary(),
+            open_mechanism_rounds: self
+                .mechanism_rounds
+                .iter()
+                .filter(|round| {
+                    matches!(
+                        round.status,
+                        MechanismRoundStatus::Open | MechanismRoundStatus::QuorumPending
+                    )
+                })
+                .count() as u32,
+            ratification_required_mechanism_rounds: self
+                .mechanism_rounds
+                .iter()
+                .filter(|round| round.status == MechanismRoundStatus::RatificationRequired)
+                .count() as u32,
             pending_delayed_compute_thunks: self
                 .delayed_compute_thunks
                 .iter()
                 .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
                 .count() as u32,
+            compute_graph: self.compute_graph(),
             runnable_tasks,
             next_tasks: task_progress.into_iter().take(10).collect(),
             satisfaction: self.satisfaction.clone(),
+        }
+    }
+
+    pub fn compute_graph(&self) -> ComputeGraphSnapshot {
+        let mut nodes = Vec::new();
+        let mut node_ids = BTreeSet::new();
+        let mut edges = Vec::new();
+        let goal_node_id = compute_graph_goal_node_id(self.goal.id);
+        push_compute_graph_node(
+            &mut nodes,
+            &mut node_ids,
+            ComputeGraphNode {
+                id: goal_node_id.clone(),
+                kind: ComputeGraphNodeKind::Goal,
+                label: self.goal.title.clone(),
+                status: compute_graph_goal_status(&self.status),
+                task_id: None,
+                thunk_id: None,
+                continuation_id: None,
+                wait_ref: None,
+            },
+        );
+
+        for task in self.tasks.values() {
+            let task_node_id = compute_graph_task_node_id(task.id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: task_node_id.clone(),
+                    kind: ComputeGraphNodeKind::Task,
+                    label: task.title.clone(),
+                    status: compute_graph_task_status(&task.status),
+                    task_id: Some(task.id),
+                    thunk_id: None,
+                    continuation_id: None,
+                    wait_ref: None,
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: task
+                    .parent_id
+                    .map(compute_graph_task_node_id)
+                    .unwrap_or_else(|| goal_node_id.clone()),
+                to: task_node_id.clone(),
+                kind: if task.parent_id.is_some() {
+                    ComputeGraphEdgeKind::ParentChild
+                } else {
+                    ComputeGraphEdgeKind::Owns
+                },
+            });
+            for dependency in &task.dependencies {
+                if self.tasks.contains_key(dependency) {
+                    edges.push(ComputeGraphEdge {
+                        from: compute_graph_task_node_id(*dependency),
+                        to: task_node_id.clone(),
+                        kind: ComputeGraphEdgeKind::DependsOn,
+                    });
+                }
+            }
+        }
+
+        for thunk in &self.delayed_compute_thunks {
+            let thunk_node_id = compute_graph_thunk_node_id(thunk.id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: thunk_node_id.clone(),
+                    kind: ComputeGraphNodeKind::DelayedComputeThunk,
+                    label: thunk.reason.clone(),
+                    status: compute_graph_thunk_status(thunk.status),
+                    task_id: thunk.task_id,
+                    thunk_id: Some(thunk.id),
+                    continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                    wait_ref: thunk.wait_ref.clone(),
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: thunk
+                    .task_id
+                    .map(compute_graph_task_node_id)
+                    .unwrap_or_else(|| goal_node_id.clone()),
+                to: thunk_node_id.clone(),
+                kind: ComputeGraphEdgeKind::SuspendsInto,
+            });
+
+            let continuation_node_id =
+                compute_graph_continuation_node_id(&thunk.continuation.continuation_id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: continuation_node_id.clone(),
+                    kind: ComputeGraphNodeKind::Continuation,
+                    label: thunk.continuation.continuation_id.clone(),
+                    status: compute_graph_thunk_status(thunk.status),
+                    task_id: thunk.task_id,
+                    thunk_id: Some(thunk.id),
+                    continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                    wait_ref: None,
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: thunk_node_id.clone(),
+                to: continuation_node_id,
+                kind: ComputeGraphEdgeKind::ResumesWith,
+            });
+
+            if let Some(wait_ref) = &thunk.wait_ref {
+                let wait_node_id = compute_graph_wait_node_id(wait_ref);
+                push_compute_graph_node(
+                    &mut nodes,
+                    &mut node_ids,
+                    ComputeGraphNode {
+                        id: wait_node_id.clone(),
+                        kind: ComputeGraphNodeKind::WaitRef,
+                        label: wait_ref.reference.clone(),
+                        status: compute_graph_thunk_status(thunk.status),
+                        task_id: thunk.task_id,
+                        thunk_id: Some(thunk.id),
+                        continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                        wait_ref: Some(wait_ref.clone()),
+                    },
+                );
+                edges.push(ComputeGraphEdge {
+                    from: thunk_node_id,
+                    to: wait_node_id,
+                    kind: ComputeGraphEdgeKind::WaitsOn,
+                });
+            }
+        }
+
+        for round in &self.mechanism_rounds {
+            let mechanism_node_id = compute_graph_mechanism_node_id(round.id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: mechanism_node_id.clone(),
+                    kind: ComputeGraphNodeKind::MechanismRound,
+                    label: round.title.clone(),
+                    status: compute_graph_mechanism_status(round.status),
+                    task_id: None,
+                    thunk_id: None,
+                    continuation_id: None,
+                    wait_ref: None,
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: goal_node_id.clone(),
+                to: mechanism_node_id,
+                kind: ComputeGraphEdgeKind::MechanismControls,
+            });
+        }
+
+        ComputeGraphSnapshot {
+            goal_id: self.goal.id,
+            nodes,
+            edges,
+            open_thunks: self
+                .delayed_compute_thunks
+                .iter()
+                .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+                .count() as u32,
+            runnable_tasks: self
+                .runnable_tasks()
+                .into_iter()
+                .map(|task| task.id)
+                .collect(),
+            waiting_tasks: self
+                .tasks
+                .values()
+                .filter(|task| {
+                    matches!(
+                        task.status,
+                        TaskStatus::WaitingApproval | TaskStatus::WaitingInput
+                    )
+                })
+                .map(|task| task.id)
+                .collect(),
         }
     }
 
@@ -2870,6 +3274,268 @@ impl GoalState {
         Ok(updated)
     }
 
+    pub fn start_mechanism_round(
+        &mut self,
+        request: MechanismRoundRequest,
+    ) -> Result<MechanismRound, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::MechanismDenied(
+                "mechanism round goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        let policy = &self.goal.mechanism_policy;
+        if !policy.enabled {
+            return Err(DomainError::MechanismDenied(
+                "mechanism policy is disabled for this goal".to_string(),
+            ));
+        }
+        if self.mechanism_rounds.len() as u32 >= policy.max_rounds {
+            return Err(DomainError::MechanismDenied(
+                "mechanism max_rounds exceeded".to_string(),
+            ));
+        }
+
+        let round_id = Uuid::new_v4();
+        let proposals = request
+            .proposals
+            .into_iter()
+            .enumerate()
+            .map(|(index, proposal)| MechanismProposal {
+                id: Uuid::new_v5(
+                    &Uuid::NAMESPACE_URL,
+                    format!(
+                        "coat://goal/{}/mechanism/{round_id}/proposal/{index}",
+                        self.goal.id
+                    )
+                    .as_bytes(),
+                ),
+                label: proposal.label,
+                description: proposal.description,
+                proposer: proposal.proposer,
+                metadata: proposal.metadata,
+            })
+            .collect::<Vec<_>>();
+        if proposals.is_empty() {
+            return Err(DomainError::MechanismDenied(
+                "mechanism round requires at least one proposal".to_string(),
+            ));
+        }
+
+        let round = MechanismRound {
+            id: round_id,
+            goal_id: self.goal.id,
+            title: request.title,
+            mechanism: request.mechanism.unwrap_or(policy.default_mechanism),
+            target: request.target,
+            status: MechanismRoundStatus::Open,
+            reason: request.reason,
+            proposals,
+            ballots: Vec::new(),
+            quorum: request.quorum.unwrap_or(policy.quorum).max(1),
+            min_participants: request
+                .min_participants
+                .unwrap_or(policy.min_participants)
+                .max(1),
+            require_human_ratification: request
+                .require_human_ratification
+                .unwrap_or(policy.require_human_ratification),
+            decision: None,
+        };
+        self.mechanism_rounds.push(round.clone());
+        self.events.push(StateEvent::new(format!(
+            "mechanism_round_started:{}:{:?}:{:?}",
+            round.id, round.mechanism, round.target
+        )));
+        Ok(round)
+    }
+
+    pub fn record_mechanism_ballot(
+        &mut self,
+        request: MechanismBallotRequest,
+    ) -> Result<MechanismDecision, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::MechanismDenied(
+                "mechanism ballot goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        let policy = &self.goal.mechanism_policy;
+        if !policy.enabled {
+            return Err(DomainError::MechanismDenied(
+                "mechanism policy is disabled for this goal".to_string(),
+            ));
+        }
+        let source_allowed = match request.source {
+            MechanismParticipantSource::Human => policy.allow_human_participants,
+            MechanismParticipantSource::Coordinator | MechanismParticipantSource::System => {
+                policy.allow_coordinator_participants
+            }
+            MechanismParticipantSource::Agent => policy.allow_agent_participants,
+        };
+        if !source_allowed {
+            return Err(DomainError::MechanismDenied(format!(
+                "{:?} participants are disabled for this goal",
+                request.source
+            )));
+        }
+
+        let round_index = self
+            .mechanism_rounds
+            .iter()
+            .position(|round| round.id == request.round_id)
+            .ok_or(DomainError::MechanismRoundNotFound(request.round_id))?;
+        if matches!(
+            self.mechanism_rounds[round_index].status,
+            MechanismRoundStatus::Decided
+                | MechanismRoundStatus::RatificationRequired
+                | MechanismRoundStatus::Cancelled
+        ) {
+            return Err(DomainError::MechanismDenied(format!(
+                "mechanism round {} is not open",
+                request.round_id
+            )));
+        }
+        let proposal_ids = self.mechanism_rounds[round_index]
+            .proposals
+            .iter()
+            .map(|proposal| proposal.id)
+            .collect::<BTreeSet<_>>();
+        for allocation in &request.allocations {
+            if !proposal_ids.contains(&allocation.proposal_id) {
+                return Err(DomainError::MechanismDenied(format!(
+                    "unknown mechanism proposal: {}",
+                    allocation.proposal_id
+                )));
+            }
+        }
+        if self.mechanism_rounds[round_index].mechanism.is_auction()
+            && request
+                .allocations
+                .iter()
+                .all(|allocation| allocation.bid.is_none())
+        {
+            return Err(DomainError::MechanismDenied(
+                "auction mechanism ballots require at least one bid".to_string(),
+            ));
+        }
+
+        let participant = request.participant.clone();
+        let ballot = MechanismBallot {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            round_id: request.round_id,
+            participant: request.participant,
+            source: request.source,
+            allocations: request.allocations,
+            rationale: request.rationale,
+        };
+        let round = &mut self.mechanism_rounds[round_index];
+        round
+            .ballots
+            .retain(|existing| existing.participant != participant);
+        round.ballots.push(ballot);
+        let decision = Self::tally_mechanism_round(round);
+        round.status = decision.status;
+        round.decision = Some(decision.clone());
+        self.events.push(StateEvent::new(format!(
+            "mechanism_ballot_recorded:{}:{}:{:?}",
+            request.round_id, participant, decision.status
+        )));
+        Ok(decision)
+    }
+
+    fn tally_mechanism_round(round: &MechanismRound) -> MechanismDecision {
+        let participant_count = round.ballots.len() as u32;
+        let quorum_met =
+            participant_count >= round.quorum && participant_count >= round.min_participants;
+        if !quorum_met {
+            return MechanismDecision {
+                id: Uuid::new_v4(),
+                goal_id: round.goal_id,
+                round_id: round.id,
+                selected_proposal_id: None,
+                selected_label: None,
+                score: 0,
+                clearing_price: None,
+                participant_count,
+                quorum_met: false,
+                status: MechanismRoundStatus::QuorumPending,
+                reason: format!(
+                    "waiting for quorum: {} of {} participants",
+                    participant_count,
+                    round.quorum.max(round.min_participants)
+                ),
+            };
+        }
+
+        let mut scores: BTreeMap<Uuid, i64> = BTreeMap::new();
+        let mut bids: BTreeMap<Uuid, Vec<u64>> = BTreeMap::new();
+        for ballot in &round.ballots {
+            for allocation in &ballot.allocations {
+                if round.mechanism.is_auction() {
+                    if let Some(bid) = allocation.bid {
+                        bids.entry(allocation.proposal_id).or_default().push(bid);
+                        *scores.entry(allocation.proposal_id).or_default() += bid as i64;
+                    }
+                } else {
+                    let rank_bonus = allocation
+                        .rank
+                        .map(|rank| 1_000_i64 / rank.max(1) as i64)
+                        .unwrap_or(0);
+                    *scores.entry(allocation.proposal_id).or_default() +=
+                        allocation.support as i64 + rank_bonus;
+                }
+            }
+        }
+
+        let selected = scores
+            .iter()
+            .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
+            .map(|(proposal_id, score)| (*proposal_id, *score));
+        let (selected_proposal_id, score) = selected
+            .map(|(proposal_id, score)| (Some(proposal_id), score))
+            .unwrap_or((None, 0));
+        let selected_label = selected_proposal_id.and_then(|id| {
+            round
+                .proposals
+                .iter()
+                .find(|proposal| proposal.id == id)
+                .map(|proposal| proposal.label.clone())
+        });
+        let clearing_price = if round.mechanism == MechanismKind::VickreyAuction {
+            let mut all_bids = bids
+                .values()
+                .flat_map(|proposal_bids| proposal_bids.iter().copied())
+                .collect::<Vec<_>>();
+            all_bids.sort_by(|left, right| right.cmp(left));
+            all_bids.get(1).copied()
+        } else {
+            None
+        };
+        let status = if round.require_human_ratification {
+            MechanismRoundStatus::RatificationRequired
+        } else {
+            MechanismRoundStatus::Decided
+        };
+
+        MechanismDecision {
+            id: Uuid::new_v4(),
+            goal_id: round.goal_id,
+            round_id: round.id,
+            selected_proposal_id,
+            selected_label,
+            score,
+            clearing_price,
+            participant_count,
+            quorum_met,
+            status,
+            reason: if round.mechanism.is_auction() {
+                "auction tally selected the highest bid proposal".to_string()
+            } else {
+                "consensus tally selected the highest scoring proposal".to_string()
+            },
+        }
+    }
+
     pub fn apply_agent_result(
         &mut self,
         result: AgentRunResult,
@@ -2882,12 +3548,24 @@ impl GoalState {
             task.status = match result.status {
                 WorkerRunStatus::Done => TaskStatus::NeedsValidation,
                 WorkerRunStatus::Partial => TaskStatus::Runnable,
+                WorkerRunStatus::Waiting => TaskStatus::WaitingInput,
                 WorkerRunStatus::Blocked => TaskStatus::Blocked,
                 WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => TaskStatus::Failed,
             };
         }
 
         let parent_snapshot = self.task(result.task_id)?.clone();
+        for mut thunk_request in result.delayed_compute_thunks.clone() {
+            if thunk_request.goal_id != self.goal.id {
+                return Err(DomainError::SteeringDenied(
+                    "worker delayed compute thunk goal_id does not match workflow goal".to_string(),
+                ));
+            }
+            if thunk_request.task_id.is_none() {
+                thunk_request.task_id = Some(result.task_id);
+            }
+            self.create_delayed_compute_thunk(thunk_request)?;
+        }
         let mut child_requests = result.child_requests.clone();
         if result.status == WorkerRunStatus::Done {
             child_requests.extend(self.executor_guardrail_child_requests(&parent_snapshot));
@@ -4887,12 +5565,178 @@ pub struct GoalProgress {
     #[serde(default)]
     pub subgoals: Vec<SubgoalProgress>,
     pub ranking: GoalRankingSummary,
+    pub open_mechanism_rounds: u32,
+    pub ratification_required_mechanism_rounds: u32,
     pub pending_delayed_compute_thunks: u32,
+    pub compute_graph: ComputeGraphSnapshot,
     #[serde(default)]
     pub runnable_tasks: Vec<TaskId>,
     #[serde(default)]
     pub next_tasks: Vec<TaskProgress>,
     pub satisfaction: Option<SatisfactionReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Read-only projection of the current durable compute graph.
+///
+/// The graph makes delayed computation, delimited continuations, waits, task
+/// dependencies, and coordinator-owned mechanism rounds inspectable without
+/// letting a worker own those decisions. It is derived from `GoalState`, so it
+/// can be rebuilt after Restate replay.
+pub struct ComputeGraphSnapshot {
+    pub goal_id: GoalId,
+    #[serde(default)]
+    pub nodes: Vec<ComputeGraphNode>,
+    #[serde(default)]
+    pub edges: Vec<ComputeGraphEdge>,
+    pub open_thunks: u32,
+    #[serde(default)]
+    pub runnable_tasks: Vec<TaskId>,
+    #[serde(default)]
+    pub waiting_tasks: Vec<TaskId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ComputeGraphNode {
+    pub id: String,
+    pub kind: ComputeGraphNodeKind,
+    pub label: String,
+    pub status: ComputeGraphNodeStatus,
+    pub task_id: Option<TaskId>,
+    pub thunk_id: Option<Uuid>,
+    pub continuation_id: Option<String>,
+    pub wait_ref: Option<WaitRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ComputeGraphEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: ComputeGraphEdgeKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeGraphNodeKind {
+    Goal,
+    Task,
+    DelayedComputeThunk,
+    Continuation,
+    WaitRef,
+    MechanismRound,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeGraphNodeStatus {
+    Pending,
+    Runnable,
+    Running,
+    Waiting,
+    NeedsValidation,
+    Done,
+    Blocked,
+    Failed,
+    Cancelled,
+    Paused,
+    Resumed,
+    Expired,
+    RatificationRequired,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeGraphEdgeKind {
+    Owns,
+    ParentChild,
+    DependsOn,
+    SuspendsInto,
+    ResumesWith,
+    WaitsOn,
+    MechanismControls,
+}
+
+fn push_compute_graph_node(
+    nodes: &mut Vec<ComputeGraphNode>,
+    seen: &mut BTreeSet<String>,
+    node: ComputeGraphNode,
+) {
+    if seen.insert(node.id.clone()) {
+        nodes.push(node);
+    }
+}
+
+fn compute_graph_goal_node_id(goal_id: GoalId) -> String {
+    format!("goal:{goal_id}")
+}
+
+fn compute_graph_task_node_id(task_id: TaskId) -> String {
+    format!("task:{task_id}")
+}
+
+fn compute_graph_thunk_node_id(thunk_id: Uuid) -> String {
+    format!("thunk:{thunk_id}")
+}
+
+fn compute_graph_continuation_node_id(continuation_id: &str) -> String {
+    format!("continuation:{continuation_id}")
+}
+
+fn compute_graph_wait_node_id(wait_ref: &WaitRef) -> String {
+    format!("wait:{:?}:{}", wait_ref.kind, wait_ref.reference)
+}
+
+fn compute_graph_mechanism_node_id(round_id: Uuid) -> String {
+    format!("mechanism:{round_id}")
+}
+
+fn compute_graph_goal_status(status: &GoalStatus) -> ComputeGraphNodeStatus {
+    match status {
+        GoalStatus::Running => ComputeGraphNodeStatus::Running,
+        GoalStatus::WaitingApproval => ComputeGraphNodeStatus::Waiting,
+        GoalStatus::Paused => ComputeGraphNodeStatus::Paused,
+        GoalStatus::Done => ComputeGraphNodeStatus::Done,
+        GoalStatus::Blocked => ComputeGraphNodeStatus::Blocked,
+        GoalStatus::Failed => ComputeGraphNodeStatus::Failed,
+        GoalStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+    }
+}
+
+fn compute_graph_task_status(status: &TaskStatus) -> ComputeGraphNodeStatus {
+    match status {
+        TaskStatus::Pending => ComputeGraphNodeStatus::Pending,
+        TaskStatus::Runnable => ComputeGraphNodeStatus::Runnable,
+        TaskStatus::Running => ComputeGraphNodeStatus::Running,
+        TaskStatus::NeedsValidation => ComputeGraphNodeStatus::NeedsValidation,
+        TaskStatus::WaitingApproval | TaskStatus::WaitingInput => ComputeGraphNodeStatus::Waiting,
+        TaskStatus::Done => ComputeGraphNodeStatus::Done,
+        TaskStatus::Blocked => ComputeGraphNodeStatus::Blocked,
+        TaskStatus::Failed => ComputeGraphNodeStatus::Failed,
+        TaskStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+    }
+}
+
+fn compute_graph_thunk_status(status: DelayedComputeThunkStatus) -> ComputeGraphNodeStatus {
+    match status {
+        DelayedComputeThunkStatus::Pending => ComputeGraphNodeStatus::Waiting,
+        DelayedComputeThunkStatus::Resumed => ComputeGraphNodeStatus::Resumed,
+        DelayedComputeThunkStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+        DelayedComputeThunkStatus::Expired => ComputeGraphNodeStatus::Expired,
+    }
+}
+
+fn compute_graph_mechanism_status(status: MechanismRoundStatus) -> ComputeGraphNodeStatus {
+    match status {
+        MechanismRoundStatus::Open | MechanismRoundStatus::QuorumPending => {
+            ComputeGraphNodeStatus::Waiting
+        }
+        MechanismRoundStatus::Decided => ComputeGraphNodeStatus::Done,
+        MechanismRoundStatus::RatificationRequired => ComputeGraphNodeStatus::RatificationRequired,
+        MechanismRoundStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -11215,6 +12059,8 @@ pub struct AgentRunResult {
     pub test_evidence: Vec<TestCommandEvidence>,
     #[serde(default)]
     pub child_requests: Vec<ChildTaskRequest>,
+    #[serde(default)]
+    pub delayed_compute_thunks: Vec<DelayedComputeThunkRequest>,
     pub confidence: f32,
     #[serde(default)]
     pub next_actions: Vec<String>,
@@ -11287,6 +12133,7 @@ impl AgentRunResult {
                 Vec::new()
             },
             child_requests: Vec::new(),
+            delayed_compute_thunks: Vec::new(),
             confidence: 0.9,
             next_actions: Vec::new(),
             diagnostics: Vec::new(),
@@ -11433,6 +12280,7 @@ pub enum ReviewSeverity {
 pub enum WorkerRunStatus {
     Done,
     Partial,
+    Waiting,
     Blocked,
     Failed,
     TimedOut,
@@ -11531,6 +12379,7 @@ impl ValidationReport {
             .or_else(|| research.as_ref().map(|research| research.confidence))
             .unwrap_or(req.result.confidence);
         let status_after_validation = match req.result.status {
+            WorkerRunStatus::Waiting => TaskStatus::WaitingInput,
             WorkerRunStatus::Blocked => TaskStatus::Blocked,
             WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => TaskStatus::Failed,
             WorkerRunStatus::Partial => TaskStatus::Runnable,
@@ -11539,7 +12388,10 @@ impl ValidationReport {
 
         if matches!(
             req.result.status,
-            WorkerRunStatus::Blocked | WorkerRunStatus::Failed | WorkerRunStatus::TimedOut
+            WorkerRunStatus::Waiting
+                | WorkerRunStatus::Blocked
+                | WorkerRunStatus::Failed
+                | WorkerRunStatus::TimedOut
         ) {
             let artifacts = result_artifacts(&req.result);
             return Self {
@@ -12388,6 +13240,11 @@ pub enum EventSourceKind {
     BranchActivity,
     PullRequest,
     PullRequestReview,
+    PullRequestCheck,
+    #[serde(rename = "github_actions_check", alias = "git_hub_actions_check")]
+    GitHubActionsCheck,
+    #[serde(rename = "gitlab_pipeline_check", alias = "git_lab_pipeline_check")]
+    GitLabPipelineCheck,
     IssueTracker,
     IdeLsp,
     IdeDiagnostics,
@@ -12849,6 +13706,7 @@ pub struct GoalArtifactRecord {
 #[serde(rename_all = "snake_case")]
 pub struct GoalStoreSnapshot {
     pub goal: GoalRecord,
+    pub compute_graph: ComputeGraphSnapshot,
     #[serde(default)]
     pub tasks: Vec<TaskRecord>,
     #[serde(default)]
@@ -13109,6 +13967,7 @@ impl GoalStoreSnapshot {
                 updated_at: None,
                 payload_json: to_json_value(&state.goal),
             },
+            compute_graph: progress.compute_graph,
             tasks: state
                 .tasks
                 .values()
@@ -13298,6 +14157,10 @@ pub enum DomainError {
     BranchDenied(String),
     #[error("branch group not found: {0}")]
     BranchGroupNotFound(Uuid),
+    #[error("mechanism denied: {0}")]
+    MechanismDenied(String),
+    #[error("mechanism round not found: {0}")]
+    MechanismRoundNotFound(Uuid),
     #[error("approval not found: {0}")]
     ApprovalNotFound(Uuid),
     #[error("approval denied: {0}")]
@@ -16264,6 +17127,297 @@ mod tests {
     }
 
     #[test]
+    fn compute_graph_projects_tasks_thunks_continuations_and_wait_refs() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "compute graph",
+            "delayed computation should be visible as graph state",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+        let thunk = state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::ExternalEvent,
+                reason: "wait for webhook payload".to_string(),
+                requested_input: Some("external service callback".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::WebhookCorrelation,
+                    reference: "webhook://deploy/123".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/webhook-callback".to_string(),
+                    boundary: ContinuationBoundary::ExternalCallback,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(900),
+            })
+            .expect("thunk created");
+
+        let graph = state.compute_graph();
+        assert_eq!(graph.goal_id, state.goal.id);
+        assert_eq!(graph.open_thunks, 1);
+        assert_eq!(graph.waiting_tasks, vec![task_id]);
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == ComputeGraphNodeKind::DelayedComputeThunk
+                && node.thunk_id == Some(thunk.id)
+                && node.status == ComputeGraphNodeStatus::Waiting
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == ComputeGraphNodeKind::Continuation
+                && node.continuation_id.as_deref() == Some("goal/root/webhook-callback")
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == ComputeGraphNodeKind::WaitRef
+                && node
+                    .wait_ref
+                    .as_ref()
+                    .is_some_and(|wait| wait.kind == WaitRefKind::WebhookCorrelation)
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == compute_graph_task_node_id(task_id)
+                && edge.to == compute_graph_thunk_node_id(thunk.id)
+                && edge.kind == ComputeGraphEdgeKind::SuspendsInto
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == compute_graph_thunk_node_id(thunk.id)
+                && edge.kind == ComputeGraphEdgeKind::ResumesWith
+        }));
+        assert_eq!(state.progress().compute_graph.open_thunks, 1);
+    }
+
+    #[test]
+    fn worker_waiting_result_materializes_delayed_compute_thunk() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "worker wait",
+            "worker waiting output should become a delayed compute thunk",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Waiting,
+            summary: "waiting for model route capacity".to_string(),
+            delayed_compute_thunks: vec![DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: None,
+                kind: DelayedComputeThunkKind::ModelAvailability,
+                reason: "deep-review model is not registered yet".to_string(),
+                requested_input: Some(
+                    "register a deep-review route or pick an alternate".to_string(),
+                ),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::ModelRoute,
+                    reference: "model://deep-review".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "task/model-route-wait".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{}", state.goal.id, task.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(1800),
+            }],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("waiting result applies");
+
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        assert_eq!(state.delayed_compute_thunks[0].task_id, Some(task.id));
+        assert_eq!(state.compute_graph().open_thunks, 1);
+    }
+
+    #[test]
+    fn mechanism_policy_runs_consensus_round_when_enabled() {
+        let mut goal = GoalSpec::new(
+            "consensus",
+            "agents should run a durable consensus protocol when enabled",
+        );
+        goal.mechanism_policy.enabled = true;
+        goal.mechanism_policy.quorum = 2;
+        goal.mechanism_policy.min_participants = 2;
+        let mut state = GoalState::new(goal);
+        let round = state
+            .start_mechanism_round(MechanismRoundRequest {
+                goal_id: state.goal.id,
+                title: "Choose implementation lane".to_string(),
+                mechanism: Some(MechanismKind::ApprovalVote),
+                target: MechanismTarget::SubgoalSelection,
+                reason: "two candidate lanes need a coordinator-owned vote".to_string(),
+                proposals: vec![
+                    MechanismProposalRequest {
+                        label: "codex-fast".to_string(),
+                        description: "Use fast Codex worker for bounded patch".to_string(),
+                        proposer: "planner".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                    MechanismProposalRequest {
+                        label: "review-first".to_string(),
+                        description: "Run reviewer before implementation".to_string(),
+                        proposer: "critic".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                ],
+                quorum: None,
+                min_participants: None,
+                require_human_ratification: None,
+            })
+            .expect("round starts");
+        let winner = round.proposals[0].id;
+        let other = round.proposals[1].id;
+
+        let pending = state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "agent-a".to_string(),
+                source: MechanismParticipantSource::Agent,
+                allocations: vec![
+                    MechanismAllocation {
+                        proposal_id: winner,
+                        support: 3,
+                        rank: Some(1),
+                        bid: None,
+                    },
+                    MechanismAllocation {
+                        proposal_id: other,
+                        support: 1,
+                        rank: Some(2),
+                        bid: None,
+                    },
+                ],
+                rationale: "bounded patch is enough".to_string(),
+            })
+            .expect("first ballot records");
+        assert_eq!(pending.status, MechanismRoundStatus::QuorumPending);
+
+        let decision = state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "coordinator".to_string(),
+                source: MechanismParticipantSource::Coordinator,
+                allocations: vec![MechanismAllocation {
+                    proposal_id: winner,
+                    support: 2,
+                    rank: Some(1),
+                    bid: None,
+                }],
+                rationale: "frontier pressure favors the bounded patch".to_string(),
+            })
+            .expect("second ballot reaches quorum");
+
+        assert_eq!(decision.status, MechanismRoundStatus::Decided);
+        assert_eq!(decision.selected_proposal_id, Some(winner));
+        assert_eq!(state.progress().open_mechanism_rounds, 0);
+    }
+
+    #[test]
+    fn mechanism_policy_runs_vickrey_auction_and_requires_opt_in() {
+        let mut disabled = GoalState::new(GoalSpec::new(
+            "disabled auction",
+            "mechanism design extension should require opt in",
+        ));
+        let denied = disabled
+            .start_mechanism_round(MechanismRoundRequest {
+                goal_id: disabled.goal.id,
+                title: "Auction work".to_string(),
+                mechanism: Some(MechanismKind::VickreyAuction),
+                target: MechanismTarget::WorkAuction,
+                reason: "not enabled".to_string(),
+                proposals: vec![MechanismProposalRequest {
+                    label: "runner-a".to_string(),
+                    description: "runner bid".to_string(),
+                    proposer: "runner-a".to_string(),
+                    metadata: BTreeMap::new(),
+                }],
+                quorum: None,
+                min_participants: None,
+                require_human_ratification: None,
+            })
+            .expect_err("mechanism policy disabled by default");
+        assert!(matches!(denied, DomainError::MechanismDenied(_)));
+
+        let mut goal = GoalSpec::new(
+            "auction",
+            "agents should bid through a durable auction protocol when enabled",
+        );
+        goal.mechanism_policy.enabled = true;
+        goal.mechanism_policy.quorum = 2;
+        goal.mechanism_policy.min_participants = 2;
+        let mut state = GoalState::new(goal);
+        let round = state
+            .start_mechanism_round(MechanismRoundRequest {
+                goal_id: state.goal.id,
+                title: "Allocate runner slot".to_string(),
+                mechanism: Some(MechanismKind::VickreyAuction),
+                target: MechanismTarget::RunnerAllocation,
+                reason: "runners bid for the task slot".to_string(),
+                proposals: vec![
+                    MechanismProposalRequest {
+                        label: "runner-a".to_string(),
+                        description: "fast local runner".to_string(),
+                        proposer: "runner-a".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                    MechanismProposalRequest {
+                        label: "runner-b".to_string(),
+                        description: "deep review runner".to_string(),
+                        proposer: "runner-b".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                ],
+                quorum: None,
+                min_participants: None,
+                require_human_ratification: Some(true),
+            })
+            .expect("auction starts");
+        let runner_a = round.proposals[0].id;
+        let runner_b = round.proposals[1].id;
+
+        state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "runner-a".to_string(),
+                source: MechanismParticipantSource::Agent,
+                allocations: vec![MechanismAllocation {
+                    proposal_id: runner_a,
+                    support: 0,
+                    rank: None,
+                    bid: Some(7),
+                }],
+                rationale: "low cost fast execution".to_string(),
+            })
+            .expect("runner a bid");
+        let decision = state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "runner-b".to_string(),
+                source: MechanismParticipantSource::Agent,
+                allocations: vec![MechanismAllocation {
+                    proposal_id: runner_b,
+                    support: 0,
+                    rank: None,
+                    bid: Some(11),
+                }],
+                rationale: "higher value deep review".to_string(),
+            })
+            .expect("runner b bid reaches quorum");
+
+        assert_eq!(decision.status, MechanismRoundStatus::RatificationRequired);
+        assert_eq!(decision.selected_proposal_id, Some(runner_b));
+        assert_eq!(decision.clearing_price, Some(7));
+        assert_eq!(state.progress().ratification_required_mechanism_rounds, 1);
+    }
+
+    #[test]
     fn default_subagent_policy_routes_through_durable_child_requests() {
         let state = GoalState::new(GoalSpec::new("subagents", "route subagents through COAT"));
         let task = state.tasks.values().next().expect("root task");
@@ -17123,6 +18277,7 @@ mod tests {
             checkpoints: Vec::new(),
             test_evidence: fixture.accepted_worker_result.test_evidence.clone(),
             child_requests: Vec::new(),
+            delayed_compute_thunks: Vec::new(),
             confidence: 0.93,
             next_actions: Vec::new(),
             diagnostics: vec!["mode=replay".to_string()],
@@ -17569,6 +18724,18 @@ mod tests {
             "../../../examples/event-source-generic-ci.json"
         ))
         .expect("generic ci event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-pr-checks.json"
+        ))
+        .expect("pr checks event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-github-actions-checks.json"
+        ))
+        .expect("github actions checks event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-gitlab-pipeline-checks.json"
+        ))
+        .expect("gitlab pipeline checks event-source example parses");
         serde_json::from_str::<EventSource>(include_str!(
             "../../../examples/event-source-sqs-notifications.json"
         ))

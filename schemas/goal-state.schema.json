@@ -77,6 +77,13 @@
         "$ref": "#/$defs/LearningSignal"
       }
     },
+    "mechanism_rounds": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MechanismRound"
+      }
+    },
     "memory_events": {
       "type": "array",
       "default": [],
@@ -2463,6 +2470,21 @@
             "$ref": "#/$defs/ChildTaskRequest"
           }
         },
+        "mechanism_policy": {
+          "$ref": "#/$defs/MechanismPolicy",
+          "default": {
+            "allow_agent_participants": true,
+            "allow_coordinator_participants": true,
+            "allow_human_participants": true,
+            "default_mechanism": "approval_vote",
+            "enabled": false,
+            "max_ballots_per_participant": 1,
+            "max_rounds": 8,
+            "min_participants": 2,
+            "quorum": 2,
+            "require_human_ratification": false
+          }
+        },
         "memory_policy": {
           "$ref": "#/$defs/MemoryPolicy",
           "default": {
@@ -3278,6 +3300,355 @@
         "stdio",
         "http",
         "sse"
+      ]
+    },
+    "MechanismAllocation": {
+      "type": "object",
+      "properties": {
+        "bid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "proposal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rank": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "support": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "support"
+      ]
+    },
+    "MechanismBallot": {
+      "type": "object",
+      "properties": {
+        "allocations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismAllocation"
+          }
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "round_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source": {
+          "$ref": "#/$defs/MechanismParticipantSource"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "round_id",
+        "participant",
+        "source",
+        "rationale"
+      ]
+    },
+    "MechanismDecision": {
+      "type": "object",
+      "properties": {
+        "clearing_price": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quorum_met": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "round_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "selected_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selected_proposal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/MechanismRoundStatus"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "round_id",
+        "score",
+        "participant_count",
+        "quorum_met",
+        "status",
+        "reason"
+      ]
+    },
+    "MechanismKind": {
+      "type": "string",
+      "enum": [
+        "approval_vote",
+        "majority_vote",
+        "ranked_choice",
+        "delphi_round",
+        "sealed_bid_auction",
+        "vickrey_auction",
+        "contract_net"
+      ]
+    },
+    "MechanismParticipantSource": {
+      "type": "string",
+      "enum": [
+        "human",
+        "coordinator",
+        "agent",
+        "system"
+      ]
+    },
+    "MechanismPolicy": {
+      "description": "Opt-in protocol layer for distributed agent/human coordination.\n\nThis is the extension point for consensus, voting, mechanism design, and\nauction rounds. It is disabled by default because the coordinator must own\nthe protocol, tally, and final decision before any task priority, allocation,\nor branch choice changes.",
+      "type": "object",
+      "properties": {
+        "allow_agent_participants": {
+          "type": "boolean"
+        },
+        "allow_coordinator_participants": {
+          "type": "boolean"
+        },
+        "allow_human_participants": {
+          "type": "boolean"
+        },
+        "default_mechanism": {
+          "$ref": "#/$defs/MechanismKind"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_ballots_per_participant": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_participants": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quorum": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "require_human_ratification": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "allow_human_participants",
+        "allow_agent_participants",
+        "allow_coordinator_participants",
+        "default_mechanism",
+        "quorum",
+        "min_participants",
+        "max_rounds",
+        "max_ballots_per_participant",
+        "require_human_ratification"
+      ]
+    },
+    "MechanismProposal": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "label": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "proposer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "proposer"
+      ]
+    },
+    "MechanismRound": {
+      "type": "object",
+      "properties": {
+        "ballots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismBallot"
+          }
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MechanismDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mechanism": {
+          "$ref": "#/$defs/MechanismKind"
+        },
+        "min_participants": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "proposals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismProposal"
+          }
+        },
+        "quorum": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        },
+        "require_human_ratification": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/MechanismRoundStatus"
+        },
+        "target": {
+          "$ref": "#/$defs/MechanismTarget"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "title",
+        "mechanism",
+        "target",
+        "status",
+        "reason",
+        "quorum",
+        "min_participants",
+        "require_human_ratification"
+      ]
+    },
+    "MechanismRoundStatus": {
+      "type": "string",
+      "enum": [
+        "open",
+        "quorum_pending",
+        "decided",
+        "ratification_required",
+        "cancelled"
+      ]
+    },
+    "MechanismTarget": {
+      "type": "string",
+      "enum": [
+        "goal_priority",
+        "goal_promotion",
+        "subgoal_selection",
+        "branch_selection",
+        "runner_allocation",
+        "budget_allocation",
+        "work_auction",
+        "review_panel",
+        "custom"
       ]
     },
     "MemoryEvent": {

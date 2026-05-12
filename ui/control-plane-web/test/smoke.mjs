@@ -148,7 +148,7 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Start work", "Plan first", "Goal draft", "Search request", "Chat activity", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "No urgent task states", "Attention", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Start work", "Plan first", "Goal draft", "Search request", "Chat activity", "Flow Control", "Compiler controls", "Upvote", "Mechanism round", "Create wait state", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "No urgent task states", "Continuations", "Response summary", "Resume", "Attention", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
 }
@@ -160,7 +160,7 @@ async function assertStylesheet() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "stylesheet returns ok");
   const css = await response.text();
-  for (const expected of ["data-theme=dark", "--status-running", ".theme-control", ".mode-toggle", ".coat-chat-container", ".outcome-list", ".graph-filter", ".graph-status-panel", ".react-flow__node.task-node"]) {
+  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", ".theme-control", ".mode-toggle", ".quick-prompts", ".coat-chat-container", ".outcome-list", ".graph-filter", ".graph-status-panel", ".compiler-control-panel", ".control-grid", ".continuation-card", ".react-flow__node.task-node"]) {
     assert(css.includes(expected), `stylesheet includes ${expected}`);
   }
 }
@@ -295,7 +295,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ApprovalList, Dashboard, EventSourcesPanel, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, eventSourceTableRow, runnerTableRow, taskMatchesGraphFilter, taskStatusCounts };`;
+            return `${code}\nexport { ApprovalList, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, EventSourcesPanel, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, runnerTableRow, taskMatchesGraphFilter, taskStatusCounts };`;
           }
           return null;
         },
@@ -309,17 +309,25 @@ async function assertOperatorWorkflowRender() {
   try {
     const {
       ApprovalList,
+      CompilerControlPanel,
+      ComputeGraphDetails,
+      ContinuationQueue,
       Dashboard,
       EventSourcesPanel,
       GoalList,
       GraphStatusPanel,
       MemoryEventsTable,
       RunnersView,
+      TaskSummary,
+      computeGraphNodes,
+      computeNodeMatchesGraphFilter,
+      continuationRowsFromSnapshot,
       eventSourceTableRow,
       runnerTableRow,
       taskMatchesGraphFilter,
       taskStatusCounts,
     } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+    const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 
     const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
     const goals = [
@@ -424,25 +432,192 @@ async function assertOperatorWorkflowRender() {
       { task_id: "task-failed", status: "failed" },
       { task_id: "task-blocked", status: "blocked" },
       { task_id: "task-approval", status: "waiting_approval" },
+      { task_id: "task-continuation", status: "waiting_input" },
       { task_id: "task-running", status: "running" },
       { task_id: "task-done", status: "done" },
     ];
     const counts = taskStatusCounts(taskRows);
     assertEqual(counts.get("waiting_approval"), 1, "task status counts preserve raw status spelling");
+    assertEqual(counts.get("waiting_input"), 1, "task status counts preserve waiting-input status");
     assertEqual(taskMatchesGraphFilter(taskRows[0], "attention"), true, "failed task matches attention filter");
-    assertEqual(taskMatchesGraphFilter(taskRows[3], "active"), true, "running task matches active filter");
-    assertEqual(taskMatchesGraphFilter(taskRows[4], "completed"), true, "done task matches completed filter");
-    assertEqual(taskMatchesGraphFilter(taskRows[4], "attention"), false, "done task does not match attention filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[3], "attention"), true, "waiting-input task matches attention filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[4], "active"), true, "running task matches active filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[5], "completed"), true, "done task matches completed filter");
+    assertEqual(taskMatchesGraphFilter(taskRows[5], "attention"), false, "done task does not match attention filter");
     const graphStatusMarkup = renderToStaticMarkup(React.createElement(GraphStatusPanel, { counts, taskCount: taskRows.length }));
     for (const expected of [
-      "3 need attention",
-      "5 tasks · 1 running · 1 done",
+      "4 need attention",
+      "6 tasks · 1 running · 1 done",
       "Graph legend",
       "Approval",
+      "Continuation",
       "human gate open",
+      "delayed compute thunk",
     ]) {
       assert(graphStatusMarkup.includes(expected), `graph status markup includes ${expected}`);
     }
+
+    const taskSummaryMarkup = renderToStaticMarkup(React.createElement(TaskSummary, {
+      counts,
+      snapshot: {
+        workflow_progress: {
+          data: {
+            ranking: {
+              score: 2,
+              upvotes: 2,
+              downvotes: 0,
+              vote_count: 2,
+              latest_decision: { outcome: "promoted", effective_priority: "critical" },
+            },
+            open_mechanism_rounds: 1,
+            ratification_required_mechanism_rounds: 1,
+          },
+        },
+        workflow_compute_graph: {
+          data: {
+            nodes: [{ id: "goal:smoke" }, { id: "task:task-plan" }, { id: "thunk:operator" }],
+            edges: [{ from: "goal:smoke", to: "task:task-plan" }, { from: "task:task-plan", to: "thunk:operator" }],
+            open_thunks: 1,
+          },
+        },
+      },
+    }));
+    assert(taskSummaryMarkup.includes("waiting_input: 1"), "task summary renders waiting input status");
+    assert(taskSummaryMarkup.includes("ranking: +2 · 2 up · 0 down · promoted"), "task summary renders ranking vote state");
+    assert(taskSummaryMarkup.includes("mechanisms: 1 open · 1 ratify"), "task summary renders mechanism round state");
+    assert(taskSummaryMarkup.includes("compute graph: 3 nodes · 2 edges · 1 thunks"), "task summary renders compute graph counters");
+
+    const computeGraphSnapshot = {
+      workflow_compute_graph: {
+        data: {
+          nodes: [
+            { id: "goal:smoke", kind: "goal", label: "Goal root", status: "running" },
+            { id: "task:review", kind: "task", label: "Review branch", status: "needs_validation", task_id: "task-review" },
+            {
+              id: "thunk:human",
+              kind: "delayed_compute_thunk",
+              label: "Await operator input",
+              status: "waiting_input",
+              task_id: "task-review",
+              thunk_id: "018f8f2f-1fd8-7688-bb12-8bfb6b756777",
+              continuation_id: "operator-answer",
+              wait_ref: { kind: "human_thread", reference: "thread://operator/review" },
+            },
+          ],
+          edges: [
+            { from: "goal:smoke", to: "task:review", kind: "spawned" },
+            { from: "task:review", to: "thunk:human", kind: "waits_for" },
+          ],
+          open_thunks: 1,
+        },
+      },
+      agent_activity: [
+        { task_id: "task-review", status: "needs_validation", role: "reviewer", title: "Review branch" },
+      ],
+    };
+    const computeNodes = computeGraphNodes(computeGraphSnapshot.workflow_compute_graph.data);
+    assertEqual(computeNodes.length, 3, "compute graph helper loads projected nodes");
+    assertEqual(computeNodeMatchesGraphFilter(computeNodes[2], "attention"), true, "waiting thunk matches attention filter");
+    const computeMarkup = renderToStaticMarkup(React.createElement(ComputeGraphDetails, { snapshot: computeGraphSnapshot }));
+    for (const expected of [
+      "Compute graph",
+      "Await operator input",
+      "delayed_compute_thunk",
+      "waiting_input",
+      "human_thread · thread://operator/review · operator-answer",
+    ]) {
+      assert(computeMarkup.includes(expected), `compute graph details markup includes ${expected}`);
+    }
+    const controlMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(CompilerControlPanel, { goalId, snapshot: computeGraphSnapshot }),
+      ),
+    );
+    for (const expected of [
+      "Compiler controls",
+      "Vote",
+      "Upvote",
+      "Downvote",
+      "Steer",
+      "Apply steering",
+      "Flow",
+      "Run flow action",
+      "Thunk",
+      "Create wait state",
+      "Mechanism round",
+      "Start round",
+      "Ballot",
+      "Cast ballot",
+    ]) {
+      assert(controlMarkup.includes(expected), `compiler control markup includes ${expected}`);
+    }
+
+    const continuationSnapshot = {
+      workflow_compute_graph: {
+        data: {
+          nodes: [
+            {
+              id: "thunk:operator",
+              kind: "delayed_compute_thunk",
+              label: "Need operator answer",
+              status: "waiting",
+              task_id: "task-plan",
+              thunk_id: "018f8f2f-1fd8-7688-bb12-8bfb6b756777",
+              continuation_id: "operator-answer",
+              wait_ref: { kind: "webhook_correlation", reference: "webhook://operator/input" },
+            },
+            {
+              id: "thunk:done",
+              kind: "delayed_compute_thunk",
+              label: "Already resumed",
+              status: "resumed",
+              task_id: "task-plan",
+              thunk_id: "018f8f2f-1fd8-7688-bb12-8bfb6b756778",
+              continuation_id: "done-answer",
+            },
+            {
+              id: "thunk:cancelled",
+              kind: "delayed_compute_thunk",
+              label: "Cancelled input",
+              status: "cancelled",
+              task_id: "task-plan",
+              thunk_id: "018f8f2f-1fd8-7688-bb12-8bfb6b756779",
+              continuation_id: "cancelled-answer",
+            },
+          ],
+          edges: [],
+          open_thunks: 1,
+        },
+      },
+    };
+    const continuationRows = continuationRowsFromSnapshot(continuationSnapshot);
+    assertEqual(continuationRows.length, 1, "only open continuation thunks are actionable");
+    assertEqual(continuationRows[0].reason, "Need operator answer", "continuation row preserves reason");
+    assertEqual(continuationRows[0].taskId, "task-plan", "continuation row preserves task id");
+    assertEqual(continuationRows[0].continuationId, "operator-answer", "continuation row preserves continuation id");
+    assertEqual(continuationRows[0].waitReference, "webhook://operator/input", "continuation row preserves wait ref");
+    const continuationMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(ContinuationQueue, { goalId, snapshot: continuationSnapshot }),
+      ),
+    );
+    for (const expected of [
+      "Continuations",
+      "Need operator answer",
+      "task task-plan",
+      "continuation operator-answer",
+      "webhook://operator/input",
+      "Response summary",
+      "Resume",
+    ]) {
+      assert(continuationMarkup.includes(expected), `continuation queue markup includes ${expected}`);
+    }
+    const emptyContinuationMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(ContinuationQueue, { goalId, snapshot: { workflow_compute_graph: { data: { nodes: [], edges: [], open_thunks: 0 } } } }),
+      ),
+    );
+    assert(emptyContinuationMarkup.includes("No open continuations"), "empty continuation queue renders stable empty state");
 
     const approvalMarkup = renderToStaticMarkup(
       React.createElement(ApprovalList, {
@@ -875,6 +1050,7 @@ async function assertUnsupportedWorkflowHandlerGuard() {
 async function assertBackendBackedControlSurfaces() {
   const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
   const compiledGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756603";
+  const thunkId = "018f8f2f-1fd8-7688-bb12-8bfb6b756777";
   const planId = "plan-smoke-compile";
   const approvalId = "approval-prod-deploy";
   const calls = {
@@ -1055,8 +1231,71 @@ async function assertBackendBackedControlSurfaces() {
       });
       return;
     }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/compute_graph`) {
+      respondJson(res, 200, {
+        goal_id: goalId,
+        nodes: [
+          { id: `goal:${goalId}`, kind: "goal", status: "running" },
+          { id: "task:task-plan", kind: "task", status: "running", task_id: "task-plan" },
+          {
+            id: `thunk:${thunkId}`,
+            kind: "delayed_compute_thunk",
+            label: "Need operator callback before continuing",
+            status: "waiting",
+            task_id: "task-plan",
+            thunk_id: thunkId,
+            continuation_id: "operator-callback",
+            wait_ref: { kind: "webhook_correlation", reference: "webhook://operator/callback" },
+          },
+        ],
+        edges: [
+          { from: `goal:${goalId}`, to: "task:task-plan", kind: "owns" },
+          { from: "task:task-plan", to: `thunk:${thunkId}`, kind: "suspends_into" },
+        ],
+        open_thunks: 1,
+        runnable_tasks: [],
+        waiting_tasks: ["task-plan"],
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/resume_thunk`) {
+      respondJson(res, 200, { accepted: true, handler: "resume_thunk", resume: request.body });
+      return;
+    }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/steer`) {
       respondJson(res, 200, { accepted: true, handler: "steer", directive: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/vote`) {
+      respondJson(res, 200, { accepted: true, handler: "vote", vote: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/restart`) {
+      respondJson(res, 200, { accepted: true, handler: "restart", restart: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/branch`) {
+      respondJson(res, 200, { accepted: true, handler: "branch", branch: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/select_branch`) {
+      respondJson(res, 200, { accepted: true, handler: "select_branch", selection: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/create_thunk`) {
+      respondJson(res, 200, { accepted: true, handler: "create_thunk", thunk: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/mechanism_start`) {
+      respondJson(res, 200, { accepted: true, handler: "mechanism_start", round: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/mechanism_ballot`) {
+      respondJson(res, 200, { accepted: true, handler: "mechanism_ballot", ballot: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/cancel`) {
+      respondJson(res, 200, { accepted: true, handler: "cancel", reason: request.body });
       return;
     }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/approve`) {
@@ -1210,6 +1449,9 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(snapshot.goal_store_goal.data.objective, "Exercise real control-plane projections", "goal snapshot preserves backend objective");
     assertEqual(snapshot.workflow_status.data.durable_owner, "restate", "goal snapshot includes Restate workflow status");
     assertEqual(snapshot.workflow_progress.data.satisfaction_score, 0.42, "goal snapshot includes workflow progress score");
+    assertEqual(snapshot.workflow_compute_graph.data.open_thunks, 1, "goal snapshot includes live compute graph thunk count");
+    assertEqual(snapshot.workflow_compute_graph.data.nodes.length, 3, "goal snapshot includes live compute graph nodes");
+    assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "goal snapshot includes actionable continuation thunk id");
     assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "goal snapshot includes checkpoint refs");
     assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "goal snapshot includes human approval gates");
     assertEqual(snapshot.agent_activity.length, 1, "goal snapshot derives one agent activity row from projected tasks");
@@ -1227,6 +1469,7 @@ async function assertBackendBackedControlSurfaces() {
 
     const mcpSnapshot = await callMcpAt(backendBaseUrl, "coat_goal_snapshot", { goal_id: goalId });
     assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp goal snapshot uses the same backend aggregation path");
+    assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp goal snapshot includes compute graph continuation edge");
 
     const checkpointHistory = await callMcpAt(backendBaseUrl, "coat_checkpoint_history", { goal_id: goalId });
     assertEqual(checkpointHistory.data.checkpoints[0].git.commit, "abc1234", "checkpoint history returns git checkpoint commit");
@@ -1285,6 +1528,181 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(steerBody.data.directive.kind.kind, "add_constraint", "goal steering forwards directive kind");
     const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer`);
     assertEqual(steerCall?.body?.message, "Pin behavioral smoke coverage.", "goal steering forwards operator message");
+
+    const voteResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/vote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        voter: "operator",
+        source: "human",
+        direction: "up",
+        weight: 2,
+        reason: "Promote the overarching goal.",
+        suggested_role: "overarching_goal",
+      }),
+    });
+    assert(voteResponse.ok, "goal vote api returns ok");
+    const voteBody = await voteResponse.json();
+    assertEqual(voteBody.data.handler, "vote", "goal vote routes through workflow vote handler");
+    const voteCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/vote`);
+    assertEqual(voteCall?.body?.direction, "up", "goal vote forwards vote direction");
+    assertEqual(voteCall?.body?.suggested_role, "overarching_goal", "goal vote forwards promotion role");
+
+    const restartResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/restart`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        scope: "task",
+        reason: "operator_requested",
+        message: "Retry task after operator review.",
+        task_id: "task-plan",
+        reset_attempts: false,
+        preserve_artifacts: true,
+        operator: "operator",
+      }),
+    });
+    assert(restartResponse.ok, "goal restart api returns ok");
+    const restartBody = await restartResponse.json();
+    assertEqual(restartBody.data.handler, "restart", "goal restart routes through workflow restart handler");
+    const restartCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/restart`);
+    assertEqual(restartCall?.body?.task_id, "task-plan", "goal restart forwards target task");
+
+    const branchResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/branch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        target_task_id: "task-plan",
+        subgoal_id: null,
+        reason: "Compare two implementation candidates.",
+        candidate_count: 2,
+        candidate_roles: ["codex", "reviewer"],
+        candidate_executions: [],
+        prompt_overrides: [],
+        selection_strategy: "voter_quorum",
+        operator: "operator",
+      }),
+    });
+    assert(branchResponse.ok, "goal branch api returns ok");
+    const branchBody = await branchResponse.json();
+    assertEqual(branchBody.data.handler, "branch", "goal branch routes through workflow branch handler");
+    const branchCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/branch`);
+    assertEqual(branchCall?.body?.candidate_count, 2, "goal branch forwards candidate count");
+
+    const groupId = "018f8f2f-1fd8-7688-bb12-8bfb6b756888";
+    const selectBranchResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/select_branch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        group_id: groupId,
+        selected_task_id: "task-plan",
+        selector: "human",
+        reason: "Human selected the validated branch.",
+      }),
+    });
+    assert(selectBranchResponse.ok, "goal select-branch api returns ok");
+    const selectBranchBody = await selectBranchResponse.json();
+    assertEqual(selectBranchBody.data.handler, "select_branch", "goal branch selection routes through workflow handler");
+    const selectBranchCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/select_branch`);
+    assertEqual(selectBranchCall?.body?.group_id, groupId, "goal branch selection forwards group id");
+
+    const thunkCreateResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/create_thunk`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        kind: "human_input",
+        reason: "Need operator input before resuming.",
+        requested_input: "Pick the validated branch.",
+        wait_ref: { kind: "human_thread", reference: "thread://operator/smoke" },
+        continuation: {
+          continuation_id: "operator/smoke",
+          boundary: "task_dispatch",
+          state_ref: "goal/smoke/task/task-plan",
+          resume_actions: ["apply_feedback", "mark_runnable"],
+        },
+        timeout_seconds: 3600,
+      }),
+    });
+    assert(thunkCreateResponse.ok, "goal thunk create api returns ok");
+    const thunkCreateBody = await thunkCreateResponse.json();
+    assertEqual(thunkCreateBody.data.handler, "create_thunk", "goal thunk create routes through workflow handler");
+    const thunkCreateCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/create_thunk`);
+    assertEqual(thunkCreateCall?.body?.continuation?.boundary, "task_dispatch", "goal thunk create forwards continuation boundary");
+
+    const mechanismResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/mechanism_start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        title: "Choose implementation lane",
+        mechanism: "approval_vote",
+        target: "branch_selection",
+        reason: "Coordinate branch selection through a durable vote.",
+        proposals: [{ label: "codex", description: "Codex branch", proposer: "planner", metadata: {} }],
+        quorum: 1,
+        min_participants: 1,
+        require_human_ratification: false,
+      }),
+    });
+    assert(mechanismResponse.ok, "goal mechanism start api returns ok");
+    const mechanismBody = await mechanismResponse.json();
+    assertEqual(mechanismBody.data.handler, "mechanism_start", "goal mechanism start routes through workflow handler");
+    const mechanismCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/mechanism_start`);
+    assertEqual(mechanismCall?.body?.target, "branch_selection", "goal mechanism start forwards target");
+
+    const ballotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/mechanism_ballot`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        round_id: groupId,
+        participant: "operator",
+        source: "human",
+        allocations: [{ proposal_id: groupId, support: 1, rank: 1, bid: null }],
+        rationale: "Best evidence.",
+      }),
+    });
+    assert(ballotResponse.ok, "goal mechanism ballot api returns ok");
+    const ballotBody = await ballotResponse.json();
+    assertEqual(ballotBody.data.handler, "mechanism_ballot", "goal mechanism ballot routes through workflow handler");
+    const ballotCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/mechanism_ballot`);
+    assertEqual(ballotCall?.body?.allocations?.[0]?.support, 1, "goal mechanism ballot forwards allocation support");
+
+    const resumeResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/resume_thunk`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        thunk_id: thunkId,
+        responder: "operator",
+        response_summary: "Smoke continuation can resume.",
+        artifact_refs: [],
+      }),
+    });
+    assert(resumeResponse.ok, "goal thunk resume api returns ok");
+    const resumeBody = await resumeResponse.json();
+    assertEqual(resumeBody.data.handler, "resume_thunk", "goal thunk resume routes through workflow resume handler");
+    const resumeCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/resume_thunk`);
+    assertEqual(resumeCall?.body?.thunk_id, thunkId, "goal thunk resume forwards thunk id");
+    assertEqual(resumeCall?.body?.responder, "operator", "goal thunk resume forwards responder");
+
+    const cancelResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify("Cancel from control surface smoke."),
+    });
+    assert(cancelResponse.ok, "goal cancel api returns ok");
+    const cancelBody = await cancelResponse.json();
+    assertEqual(cancelBody.data.handler, "cancel", "goal cancel routes through workflow cancel handler");
+    const cancelCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/cancel`);
+    assertEqual(cancelCall?.body, "Cancel from control surface smoke.", "goal cancel forwards string reason");
+
+    assertEqual(resumeCall?.body?.response_summary, "Smoke continuation can resume.", "goal thunk resume forwards response summary");
+    assertEqual(Array.isArray(resumeCall?.body?.artifact_refs), true, "goal thunk resume forwards artifact refs");
 
     const memorySearchResponse = await fetch(`${backendBaseUrl}/api/memory/search`, {
       method: "POST",

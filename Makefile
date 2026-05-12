@@ -24,15 +24,21 @@ SIDECAR_DIRS := \
 	sidecars/staff-engineer-runner-ts \
 	sidecars/model-provider-runner-ts
 
+TS_DIRS := \
+	$(SIDECAR_DIRS) \
+	ui/control-plane-web
+
+NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
+
 .DEFAULT_GOAL := build
 
 .PHONY: \
 	build coat-cli coat-cli-release coat-path \
-	ci fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
+	ci ci-rust fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
 	proto-sdk-generate proto-sdk-check \
 	event-gateway-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
 	release-binary-smoke release-helm-smoke \
-	sidecars-build control-web-build control-web-smoke ts-build \
+	ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
 	compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down \
 	k8s-render
@@ -74,6 +80,12 @@ test:
 check:
 	$(CARGO) check --workspace
 
+ci-rust: fmt-check
+	$(CARGO) test --workspace --all-targets
+	$(CARGO) build -p coat-cli -p coat-event-gateway -p coat-goal-store -p coat-runner-registry $(COAT_BUILD_ARGS)
+	COAT_EVENT_GATEWAY_SMOKE_SKIP_BUILD=1 COAT_BUILD_PROFILE=$(COAT_BUILD_PROFILE) sh scripts/coat-event-gateway-smoke.sh
+	COAT_RUNNER_REGISTRY_SMOKE_SKIP_BUILD=1 COAT_BUILD_PROFILE=$(COAT_BUILD_PROFILE) sh scripts/coat-runner-registry-smoke.sh
+
 schemas:
 	$(CARGO) run -p coat-domain --bin generate-schemas -- schemas
 
@@ -107,6 +119,13 @@ proto-sdk-check: proto-sdk-generate
 docs-check:
 	sh scripts/coat-doc-gardener.sh
 
+ts-install:
+	@set -eu; \
+	for dir in $(TS_DIRS); do \
+		echo "installing $$dir"; \
+		$(NPM) ci --prefix "$$dir" $(NPM_CI_FLAGS); \
+	done
+
 sidecars-build:
 	@set -eu; \
 	for dir in $(SIDECAR_DIRS); do \
@@ -116,7 +135,7 @@ sidecars-build:
 		elif [ -f "$$dir/node_modules/typescript/bin/tsc" ]; then \
 			$(NODE) "$$dir/node_modules/typescript/bin/tsc" -p "$$dir/tsconfig.json"; \
 		else \
-			$(NPM) ci --prefix "$$dir"; \
+			$(NPM) ci --prefix "$$dir" $(NPM_CI_FLAGS); \
 			$(NPM) run --prefix "$$dir" build; \
 		fi; \
 	done
@@ -126,7 +145,7 @@ control-web-build:
 	dir=ui/control-plane-web; \
 	echo "building $$dir"; \
 	if [ ! -d "$$dir/node_modules" ]; then \
-		$(NPM) install --prefix "$$dir"; \
+		$(NPM) ci --prefix "$$dir" $(NPM_CI_FLAGS); \
 	fi; \
 	$(NPM) run --prefix "$$dir" build
 
@@ -206,7 +225,7 @@ release-helm-smoke: coat-cli
 	fi; \
 	echo "smoked published Helm chart $(CHART_VERSION) with image tag $$app_version"
 
-ci: fmt-check check test event-gateway-smoke runner-smoke proto-check docs-check ts-build control-web-smoke
+ci: ci-rust proto-check docs-check ts-install ts-build control-web-smoke
 	git diff --check
 
 compose-config:

@@ -59,6 +59,14 @@ image. Use `coat-protocol-sdk` for the eventual Rust crate and
 publishing decision supersedes the local scaffold. Keep `jattg` for Helm chart
 names, Kubernetes objects, release archives, and published service images.
 
+Decision 2026-05-11: generated SDK package wrappers are not published artifacts
+yet. The Buf outputs remain internal validation artifacts under
+`target/generated-sdks/` until protocol compatibility, semver policy, and
+external consumer expectations are stable. Reserve `coat-protocol-sdk` and
+`@coat/protocol-sdk` as the package names, but do not add checked-in package
+metadata or release jobs until the protocol reaches an explicit published-SDK
+milestone.
+
 The current scaffold uses Buf remote plugins for `community/neoeinstein-prost`,
 `community/neoeinstein-tonic`, and `bufbuild/es`. Generation may need network
 access to the Buf Schema Registry the first time the plugins are resolved. The
@@ -205,6 +213,9 @@ coat event register --file examples/event-source-generic-ci.json
 coat event register --file examples/event-source-ide-lsp.json
 coat event register --file examples/event-source-branch-activity.json
 coat event register --file examples/event-source-pr-ci-failure.json
+coat event register --file examples/event-source-pr-checks.json
+coat event register --file examples/event-source-github-actions-checks.json
+coat event register --file examples/event-source-gitlab-pipeline-checks.json
 coat event register --file examples/event-source-sqs-notifications.json
 coat event register --file examples/event-source-prometheus-alertmanager.json
 coat event register --file examples/event-source-datadog-monitor.json
@@ -227,6 +238,15 @@ coat event emit \
 coat event emit \
   --source-id pr-ci-failures \
   --file examples/generic-event-pr-ci-failed.json
+coat event emit \
+  --source-id pr-checks \
+  --file examples/generic-event-pr-check-failed.json
+coat event emit \
+  --source-id github-actions-checks \
+  --file examples/generic-event-github-actions-failed.json
+coat event emit \
+  --source-id gitlab-pipeline-checks \
+  --file examples/generic-event-gitlab-pipeline-failed.json
 coat event webhook \
   --source-id prometheus-alertmanager \
   --file examples/prometheus-alertmanager-firing.json
@@ -414,7 +434,7 @@ Prometheus Alertmanager and Datadog monitor examples are disabled by default but
 
 Local Compose defaults the event gateway to `COAT_EVENT_GATEWAY_BACKEND=jsonl`. To exercise the SQL event inbox/outbox path, start the database profile and set `COAT_EVENT_GATEWAY_BACKEND=postgres`; the service uses `COAT_EVENT_GATEWAY_DATABASE_URL`, falling back to the same Postgres database used by the goal store.
 
-Generic sources use `GenericEventSource` to normalize arbitrary JSON or CloudEvents-compatible payloads. Register `examples/event-source-generic-ci.json`, then emit `examples/generic-event-ci-failed.json` with `coat event emit --source-id ci-events --file ...`. This is the default adapter for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before a provider-specific adapter exists.
+Generic sources use `GenericEventSource` to normalize arbitrary JSON or CloudEvents-compatible payloads. Register `examples/event-source-generic-ci.json`, then emit `examples/generic-event-ci-failed.json` with `coat event emit --source-id ci-events --file ...`. For repository checks, use `examples/event-source-pr-checks.json`, `examples/event-source-github-actions-checks.json`, and `examples/event-source-gitlab-pipeline-checks.json` so PR required checks, GitHub Actions runs, and GitLab pipelines all normalize into `payload._coat_change_activity`. This is the default adapter for CI, git, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before a provider-specific adapter exists.
 
 Webhook source auth is separate from gateway admin auth. Register a `WebhookAuthPolicy` with `kind=shared_secret_header`, `bearer_token`, or `hmac_sha256`, point `secret_ref` at an environment variable or local secret file for local smoke tests, and keep production secret providers behind Kubernetes, Vault, cloud secret stores, or workload identity. The example `examples/event-source-webhook-hmac.json` expects `COAT_GITHUB_WEBHOOK_SECRET`.
 Provider presets cover GitHub HMAC, Slack Events API HMAC, and Stripe-style HMAC canonicalization. The Slack example expects `COAT_SLACK_SIGNING_SECRET`; the Stripe example expects `COAT_STRIPE_WEBHOOK_SECRET`.

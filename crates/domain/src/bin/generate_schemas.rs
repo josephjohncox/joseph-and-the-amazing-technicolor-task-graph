@@ -22,19 +22,20 @@ use coat_domain::{
     CoatKubernetesDistribution, CoatLocalDeployConfig, CoatOperatorDefaults, CoatProfileConfig,
     CoatProfileKind, CoatProjectConfig, CoatRestateCloudConfig, CoatRunnerCapacityConfig,
     CoatServiceEndpoints, CoatToolRoutingConfig, CoatUserConfig, CoatWebSearchRoutingConfig,
-    ContinuationBoundary, ContinuationRef, ContinuationResumeAction, ControlLoopPolicy,
-    DelayedComputeThunk, DelayedComputeThunkKind, DelayedComputeThunkRequest,
-    DelayedComputeThunkResumeRecord, DelayedComputeThunkResumeRequest, DelayedComputeThunkStatus,
-    DeviceAuthProvider, DurablePlan, DurablePlanListResponse, DurablePlanResponse,
-    DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind, EphemeralRunnerTemplateRef,
-    EventGoalRoute, EventRouteMode, EventSource, EventSourceApprovalListResponse,
-    EventSourceApprovalRecord, EventSourceApprovalRecordRequest, EventSourceApprovalRecordResponse,
-    EventSourceApprovalStatus, EventSourceKind, ExecutionProfile, ExecutorGuardrailPolicy,
-    ExternalEvent, GenericEventSource, GitResultPolicy, GitResultRef, GoalArtifactRecord,
-    GoalAuthoringGuidance, GoalEventBackend, GoalEventKind, GoalEventRecord, GoalHierarchyRole,
-    GoalPlan, GoalPriorityVote, GoalPriorityVoteRequest, GoalProgress, GoalQualityReport,
-    GoalRankingDecision, GoalRankingOutcome, GoalRankingPolicy, GoalRankingSummary,
-    GoalReadModelBackend, GoalRecord, GoalSpec, GoalState, GoalStateAuthority,
+    ComputeGraphEdge, ComputeGraphEdgeKind, ComputeGraphNode, ComputeGraphNodeKind,
+    ComputeGraphNodeStatus, ComputeGraphSnapshot, ContinuationBoundary, ContinuationRef,
+    ContinuationResumeAction, ControlLoopPolicy, DelayedComputeThunk, DelayedComputeThunkKind,
+    DelayedComputeThunkRequest, DelayedComputeThunkResumeRecord, DelayedComputeThunkResumeRequest,
+    DelayedComputeThunkStatus, DeviceAuthProvider, DurablePlan, DurablePlanListResponse,
+    DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind,
+    EphemeralRunnerTemplateRef, EventGoalRoute, EventRouteMode, EventSource,
+    EventSourceApprovalListResponse, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
+    EventSourceApprovalRecordResponse, EventSourceApprovalStatus, EventSourceKind,
+    ExecutionProfile, ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy,
+    GitResultRef, GoalArtifactRecord, GoalAuthoringGuidance, GoalEventBackend, GoalEventKind,
+    GoalEventRecord, GoalHierarchyRole, GoalPlan, GoalPriorityVote, GoalPriorityVoteRequest,
+    GoalProgress, GoalQualityReport, GoalRankingDecision, GoalRankingOutcome, GoalRankingPolicy,
+    GoalRankingSummary, GoalReadModelBackend, GoalRecord, GoalSpec, GoalState, GoalStateAuthority,
     GoalStoreApprovalListResponse, GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest,
     GoalStoreArtifactRecordResponse, GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest,
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
@@ -44,6 +45,9 @@ use coat_domain::{
     HumanApproval, HumanFeedback, InformationUsePlan, KubernetesExecutorJobProvisionRequest,
     KubernetesExecutorJobProvisionResponse, KubernetesObjectRef, KubernetesProvisionMode,
     KubernetesProvisionStatus, LearningSignal, McpAccessMode, McpAuthRef, McpContextRef,
+    MechanismAllocation, MechanismBallot, MechanismBallotRequest, MechanismDecision, MechanismKind,
+    MechanismParticipantSource, MechanismPolicy, MechanismProposal, MechanismProposalRequest,
+    MechanismRound, MechanismRoundRequest, MechanismRoundStatus, MechanismTarget,
     MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse, MemoryEditPreviewRequest,
     MemoryEditPreviewResponse, MemoryEditRequest, MemoryEditResponse, MemoryEpisode, MemoryEvent,
     MemoryJoinRequest, MemoryJoinResponse, MemoryPolicy, MemoryRepairRequest, MemoryRepairResponse,
@@ -314,6 +318,36 @@ fn main() -> anyhow::Result<()> {
     )?;
     write_schema(
         &out_dir,
+        "compute-graph-snapshot.schema.json",
+        schema_for!(ComputeGraphSnapshot),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-node.schema.json",
+        schema_for!(ComputeGraphNode),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-edge.schema.json",
+        schema_for!(ComputeGraphEdge),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-node-kind.schema.json",
+        schema_for!(ComputeGraphNodeKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-node-status.schema.json",
+        schema_for!(ComputeGraphNodeStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-edge-kind.schema.json",
+        schema_for!(ComputeGraphEdgeKind),
+    )?;
+    write_schema(
+        &out_dir,
         "goal-ranking-policy.schema.json",
         schema_for!(GoalRankingPolicy),
     )?;
@@ -356,6 +390,71 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "goal-ranking-outcome.schema.json",
         schema_for!(GoalRankingOutcome),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-policy.schema.json",
+        schema_for!(MechanismPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-round-request.schema.json",
+        schema_for!(MechanismRoundRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-round.schema.json",
+        schema_for!(MechanismRound),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-proposal-request.schema.json",
+        schema_for!(MechanismProposalRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-proposal.schema.json",
+        schema_for!(MechanismProposal),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-ballot-request.schema.json",
+        schema_for!(MechanismBallotRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-ballot.schema.json",
+        schema_for!(MechanismBallot),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-allocation.schema.json",
+        schema_for!(MechanismAllocation),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-decision.schema.json",
+        schema_for!(MechanismDecision),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-kind.schema.json",
+        schema_for!(MechanismKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-target.schema.json",
+        schema_for!(MechanismTarget),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-participant-source.schema.json",
+        schema_for!(MechanismParticipantSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-round-status.schema.json",
+        schema_for!(MechanismRoundStatus),
     )?;
     write_schema(
         &out_dir,

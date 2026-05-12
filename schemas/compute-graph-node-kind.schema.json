@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ComputeGraphNodeKind",
+  "type": "string",
+  "enum": [
+    "goal",
+    "task",
+    "delayed_compute_thunk",
+    "continuation",
+    "wait_ref",
+    "mechanism_round"
+  ]
+}

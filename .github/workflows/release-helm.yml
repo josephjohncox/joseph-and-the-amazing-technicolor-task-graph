@@ -22,6 +22,11 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
 jobs:
   package:
     name: Package Helm chart
@@ -36,6 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-helm-rust
+          cache-on-failure: true
 
       - uses: azure/setup-helm@v4
 

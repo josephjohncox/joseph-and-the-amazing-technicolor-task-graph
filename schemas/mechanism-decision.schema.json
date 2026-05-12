@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismDecision",
+  "type": "object",
+  "properties": {
+    "clearing_price": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "participant_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "quorum_met": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "round_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "score": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "selected_label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selected_proposal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "status": {
+      "$ref": "#/$defs/MechanismRoundStatus"
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "round_id",
+    "score",
+    "participant_count",
+    "quorum_met",
+    "status",
+    "reason"
+  ],
+  "$defs": {
+    "MechanismRoundStatus": {
+      "type": "string",
+      "enum": [
+        "open",
+        "quorum_pending",
+        "decided",
+        "ratification_required",
+        "cancelled"
+      ]
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismProposal",
+  "type": "object",
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "label": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    },
+    "proposer": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "label",
+    "description",
+    "proposer"
+  ]
+}

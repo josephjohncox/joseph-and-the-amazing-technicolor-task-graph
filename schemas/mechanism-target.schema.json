@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismTarget",
+  "type": "string",
+  "enum": [
+    "goal_priority",
+    "goal_promotion",
+    "subgoal_selection",
+    "branch_selection",
+    "runner_allocation",
+    "budget_allocation",
+    "work_auction",
+    "review_panel",
+    "custom"
+  ]
+}

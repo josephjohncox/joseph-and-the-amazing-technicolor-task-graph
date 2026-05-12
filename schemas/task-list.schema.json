@@ -71,6 +71,168 @@
         "description"
       ]
     },
+    "ComputeGraphEdge": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComputeGraphEdgeKind"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind"
+      ]
+    },
+    "ComputeGraphEdgeKind": {
+      "type": "string",
+      "enum": [
+        "owns",
+        "parent_child",
+        "depends_on",
+        "suspends_into",
+        "resumes_with",
+        "waits_on",
+        "mechanism_controls"
+      ]
+    },
+    "ComputeGraphNode": {
+      "type": "object",
+      "properties": {
+        "continuation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComputeGraphNodeKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ComputeGraphNodeStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "thunk_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "wait_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "status"
+      ]
+    },
+    "ComputeGraphNodeKind": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "delayed_compute_thunk",
+        "continuation",
+        "wait_ref",
+        "mechanism_round"
+      ]
+    },
+    "ComputeGraphNodeStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "waiting",
+        "needs_validation",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled",
+        "paused",
+        "resumed",
+        "expired",
+        "ratification_required"
+      ]
+    },
+    "ComputeGraphSnapshot": {
+      "description": "Read-only projection of the current durable compute graph.\n\nThe graph makes delayed computation, delimited continuations, waits, task\ndependencies, and coordinator-owned mechanism rounds inspectable without\nletting a worker own those decisions. It is derived from `GoalState`, so it\ncan be rebuilt after Restate replay.",
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComputeGraphEdge"
+          }
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "nodes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComputeGraphNode"
+          }
+        },
+        "open_thunks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "runnable_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "waiting_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "required": [
+        "goal_id",
+        "open_thunks"
+      ]
+    },
     "GoalHierarchyRole": {
       "type": "string",
       "enum": [
@@ -144,6 +306,9 @@
           "additionalProperties": false,
           "default": {}
         },
+        "compute_graph": {
+          "$ref": "#/$defs/ComputeGraphSnapshot"
+        },
         "failed_tasks": {
           "type": "integer",
           "format": "uint32",
@@ -159,6 +324,11 @@
           "items": {
             "$ref": "#/$defs/TaskProgress"
           }
+        },
+        "open_mechanism_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         },
         "open_tasks": {
           "type": "integer",
@@ -176,6 +346,11 @@
         },
         "ranking": {
           "$ref": "#/$defs/GoalRankingSummary"
+        },
+        "ratification_required_mechanism_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         },
         "runnable_tasks": {
           "type": "array",
@@ -242,7 +417,10 @@
         "waiting_input_tasks",
         "percent_done",
         "ranking",
-        "pending_delayed_compute_thunks"
+        "open_mechanism_rounds",
+        "ratification_required_mechanism_rounds",
+        "pending_delayed_compute_thunks",
+        "compute_graph"
       ]
     },
     "GoalRankingDecision": {
@@ -763,6 +941,34 @@
         "blocked",
         "failed",
         "cancelled"
+      ]
+    },
+    "WaitRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WaitRefKind"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
       ]
     },
     "WorkerKind": {

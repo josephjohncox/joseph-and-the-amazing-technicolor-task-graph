@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismPolicy",
+  "description": "Opt-in protocol layer for distributed agent/human coordination.\n\nThis is the extension point for consensus, voting, mechanism design, and\nauction rounds. It is disabled by default because the coordinator must own\nthe protocol, tally, and final decision before any task priority, allocation,\nor branch choice changes.",
+  "type": "object",
+  "properties": {
+    "allow_agent_participants": {
+      "type": "boolean"
+    },
+    "allow_coordinator_participants": {
+      "type": "boolean"
+    },
+    "allow_human_participants": {
+      "type": "boolean"
+    },
+    "default_mechanism": {
+      "$ref": "#/$defs/MechanismKind"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "max_ballots_per_participant": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "max_rounds": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "min_participants": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "quorum": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "require_human_ratification": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "enabled",
+    "allow_human_participants",
+    "allow_agent_participants",
+    "allow_coordinator_participants",
+    "default_mechanism",
+    "quorum",
+    "min_participants",
+    "max_rounds",
+    "max_ballots_per_participant",
+    "require_human_ratification"
+  ],
+  "$defs": {
+    "MechanismKind": {
+      "type": "string",
+      "enum": [
+        "approval_vote",
+        "majority_vote",
+        "ranked_choice",
+        "delphi_round",
+        "sealed_bid_auction",
+        "vickrey_auction",
+        "contract_net"
+      ]
+    }
+  }
+}

@@ -71,4 +71,4 @@ Update docs when behavior, service boundaries, public contracts, deployment knob
 
 Active execution plans must include a `## Follow-Ups` section for developer doc gardening. Treat those bullets as repo-maintenance notes, not product workflow truth.
 
-User-facing continuation work belongs in durable plans, goal/task state, event projections, or human queue records. Use `coat plan follow-ups` when maintaining active execution-plan markdown; use the SPA, gateway APIs, or MCP tools for durable operator queues.
+User-facing continuation work belongs in durable plans, goal/task state, compute graph snapshots, delayed compute thunks, event projections, or human queue records. Use `coat plan follow-ups` when maintaining active execution-plan markdown; use the SPA, gateway APIs, or MCP tools for durable operator queues.

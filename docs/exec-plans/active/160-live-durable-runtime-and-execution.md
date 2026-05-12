@@ -58,6 +58,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Add a Docker Testcontainers-based Restate integration harness for `coat-coordinator`.
 - Scaffold the ignored `coat-coordinator` RuntimeVerifier entrypoint at `crates/coordinator/tests/restate_restart_resume.rs`; normal CI only compiles gate/default tests, while the live proof requires `COAT_RESTATE_RESTART_RESUME_TEST=1`, Docker availability, and a pinned `COAT_RESTATE_TESTCONTAINERS_IMAGE`.
 - Evidence 2026-05-11: `crates/coordinator/tests/restate_restart_resume.rs` now has deterministic config, harness-step ordering, projection idempotency, and transition-counter assertions around the live proof gate.
+- Evidence 2026-05-11: coordinator transition observations now include waiting-input counts, pending delayed thunks, mechanism-round counts, compute-graph node/edge counts, and a `coordinator.transition` tracing span; RuntimeVerifier projection counters now assert persisted compute-graph nodes, edges, open thunks, and waiting tasks.
 - Start Restate with persistent data, start coordinator on a dynamic local port, register the deployment, and drive workflow calls through Restate ingress.
 - Prove coordinator restart against existing workflow state.
 - Prove Restate process restart with persisted journal data.
@@ -106,6 +107,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Add SQS LocalStack inbound event-source and outbound notification smoke tests. First proof slice: `make eventops-sqs-smoke` starts LocalStack when Docker is available, reuses the SQS event-source and notification examples with local queue URLs, proves inbound poll/delete through `coat-event-gateway`, and proves outbound SQS delivery through `coat-notifier`.
 - Evidence 2026-05-11: `coat-notifier` now has a journaled outbox with `pending`, `delivered`, `awaiting_ack`, `acknowledged`, `retry_scheduled`, and `dead_lettered` states plus `/outbox`, `/outbox/{id}/ack`, `/outbox/{id}/retry`, `/outbox/retry-due`, and `/dlq` endpoints.
 - Evidence 2026-05-11: `make eventops-sqs-smoke` passed against `localstack/localstack:3.8.1`, proving inbound SQS poll/delete, outbound SQS delivery, notifier journal replay shape, and an `awaiting_ack` outbox entry.
+- Evidence 2026-05-11: event sources now include explicit `pull_request_check`, `github_actions_check`, and `gitlab_pipeline_check` kinds with examples and normalization tests, so PR required checks, GitHub Actions runs, and GitLab pipelines all project provider-neutral `_coat_change_activity` metadata before routing durable goals.
 - Closure 2026-05-11: the SQS/LocalStack residuals inherited from the distributed-runners and events plans are satisfied by the smoke above; remaining EventOps work is topology proof plus additional provider adapters.
 - Normalize recurrent observability events into durable gateway events before creating or steering goals.
 - Keep event activation behind coordinator policy and human approval when sources add external callbacks, cost-bearing polling, or broad network access.
@@ -117,6 +119,8 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 
 - Add browser E2E over the full Compose stack for goal selection, task graph inspection, memory preview/apply, approval/reject/comment, runner status, and event source management.
 - Evidence 2026-05-11: `ui/control-plane-web` smoke coverage now renders event-source activation, approval queues, runner capacity, memory events, goal progress, and task graph filters against gateway-backed fixtures.
+- Evidence 2026-05-11: gateway goal snapshots now read `GoalWorkflow/compute_graph`, expose `workflow_compute_graph` through `/api/goals/{goal_id}` and MCP `coat_goal_snapshot`, and the SPA renders `waiting_input` continuation state plus compute-graph node/edge/thunk counters in task summaries.
+- Evidence 2026-05-11: operator continuations are now actionable in the SPA: open delayed-compute thunk nodes render reason, task ID, thunk ID, continuation ID, wait ref, response-summary input, and a guarded `resume_thunk` backend mutation; resumed/cancelled thunks are filtered out of the actionable queue.
 - Verify UI mutations use backend APIs only and never mutate goal-store projections directly.
 - Keep existing gateway contract smoke tests as the fast CI path.
 - Add token-broker-backed multi-user MCP smoke only after a broker implementation is selected.
@@ -136,8 +140,10 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Keep protobuf, JSON schemas, docs, and Rust domain contracts aligned through `make proto-check`.
 - Add generated Rust and TypeScript SDKs from Buf only after package names, output locations, and compatibility rules are selected.
 - Evidence 2026-05-11: Buf SDK generation is scaffolded through `buf.gen.yaml`, `make proto-sdk-generate`, and `make proto-sdk-check`, generating Rust and TypeScript outputs under `target/generated-sdks` without committing generated artifacts.
+- Decision 2026-05-11: generated SDK wrappers are internal validation artifacts for now, not published packages. Reserve `coat-protocol-sdk` and `@coat/protocol-sdk`, keep generation under `target/generated-sdks/`, and defer package metadata/release jobs until a published-SDK compatibility milestone is selected.
 - Add or change public types only where needed for Kubernetes provision/result records, executor attestations, object upload status, retryable event delivery, and observability correlation.
-- Evidence 2026-05-11: `crates/domain` now models goal ranking votes as an opt-in extension with upvote/downvote promotion or demotion decisions, plus delayed compute thunks for human input, approvals, timers, callbacks, resource waits, and resumable continuation refs; `coat-coordinator` exposes `vote` and `resume_thunk`, and the CLI exposes `coat goal vote` plus `coat human resume-thunk`.
+- Evidence 2026-05-11: `crates/domain` now models goal ranking votes as an opt-in extension with upvote/downvote promotion or demotion decisions, plus first-class delayed compute thunks for human input, approvals, timers, callbacks, resource waits, model availability, delimited continuation refs, worker `waiting` results, and derived compute graph snapshots; `coat-coordinator` exposes `vote`, `create_thunk`, `resume_thunk`, and `compute_graph`, and the CLI exposes `coat goal vote`, `coat goal thunk create`, `coat goal compute-graph`, and `coat human resume-thunk`.
+- Evidence 2026-05-11: `crates/domain` now includes opt-in `mechanism_policy` and `MechanismRound` state for distributed consensus, voting, Delphi-style rounds, sealed-bid/Vickrey auctions, and contract-net allocation; `coat-coordinator` exposes `mechanism_start` and `mechanism_ballot`, and the CLI exposes `coat goal mechanism start|ballot`.
 - Before moving any linked plan to completed, preserve every remaining follow-up here, record direct evidence, or write an explicit supersession note.
 
 ### Reviewer And Satisfaction Gates
@@ -148,7 +154,8 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 ## Tests
 
 - Unit tests cover task lifecycle, restart policy, projection idempotency, attestation validation, event retry states, object artifact refs, stub-output rejection, and public-contract serialization.
-- Unit tests cover opt-in goal ranking vote promotion/demotion and delayed compute thunk pause/resume behavior.
+- Unit tests cover opt-in goal ranking vote promotion/demotion, delayed compute thunk pause/resume behavior, worker waiting-result thunk materialization, and compute graph projection of tasks, thunks, wait refs, and continuations.
+- Unit tests cover opt-in mechanism rounds for consensus tallies and Vickrey auction decisions with human-ratification state.
 - Restate integration tests cover coordinator restart, Restate journal recovery, durable projection replay, approval pause/resume, and timeout restart.
 - Worker tests cover Codex App Server live execution behind env gates, Codex MCP replay, structured result extraction, and stub mode as an explicit smoke path only.
 - Reviewer tests consume accepted live worker outputs as real-world fixtures and include git checkpoint branch/worktree coverage where branch workflows are involved.
@@ -160,8 +167,8 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 
 ## Follow-Ups
 
-- `RuntimeVerifier`: replace the ignored entrypoint's deterministic scaffold with a Docker Testcontainers Restate harness and restart/resume proof.
-- `RuntimeVerifier`: add metrics and trace assertions for transition counters, replay/idempotency observations, projection attempts, and approval pause/resume spans.
+- `RuntimeVerifier`: complete the ignored entrypoint's deterministic scaffold with a Docker Testcontainers Restate harness and restart/resume proof.
+- `RuntimeVerifier`: wire the deterministic transition/projection observation assertions into the live Docker Testcontainers harness and, once an OpenTelemetry sink is selected, assert exported spans instead of only local tracing fields.
 - `CodexWorker`: run an env-gated live Codex App Server smoke with real thread/turn IDs, then capture the live result as a replay fixture.
 - `CodexWorker`: run live provider verification on real configured nodes and archive one profile result per enabled lane.
 - `CodexWorker`: verify `@ctxr/kit` and `@ctxr/agent-staff-engineer` before staff-engineer live smoke work.
@@ -176,7 +183,6 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - `ReleaseHardening`: run the first published binary and Helm chart smoke and record evidence.
 - `ReleaseHardening`: promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
 - `ReleaseHardening`: add provider-specific deploy overlays and Restate Cloud journal-encryption guidance once the first cloud target and supported SDK path are selected.
-- `ProtocolSDK`: decide whether generated SDK package wrappers are published artifacts, then add package metadata or keep generation as an internal validation target.
 
 ## Acceptance
 

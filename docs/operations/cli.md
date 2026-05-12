@@ -23,7 +23,7 @@ not in the committed `.envrc`.
 
 ```text
 coat plan <draft|list|show|revise|compile|follow-ups>
-coat goal <draft|lint|submit|list|progress|tasks|steer|vote|branch|restart|cancel>
+coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>
 coat human <approve|resume-thunk|notify>
 coat deploy local <preflight|up|config|down>
 coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>

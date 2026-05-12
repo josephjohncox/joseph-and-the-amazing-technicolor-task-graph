@@ -1,0 +1,57 @@
+{
+  "id": "pr-checks",
+  "kind": "pull_request_check",
+  "enabled": true,
+  "description": "Provider-neutral pull request check status events from a CI bus, SCM webhook normalizer, or repository automation.",
+  "namespace": "coat",
+  "webhook": null,
+  "generic": {
+    "auth": {
+      "kind": "bearer_token",
+      "secret_ref": {
+        "provider": "env",
+        "name": "COAT_PR_CHECK_SIGNAL_TOKEN",
+        "key": null,
+        "namespace": null,
+        "audience": "coat-event-gateway"
+      },
+      "header_name": "authorization"
+    },
+    "accepts_cloudevents": true,
+    "max_payload_bytes": 1048576,
+    "allowed_event_types": [
+      "pr.check.failed",
+      "pr.check.completed",
+      "pr.required_check.failed"
+    ],
+    "id_json_pointer": "/check_id",
+    "type_json_pointer": "/type",
+    "subject_json_pointer": "/subject",
+    "dedupe_json_pointer": "/dedupe_key",
+    "dedupe_header": "ce-id",
+    "payload_schema": null,
+    "mcp_context": null
+  },
+  "sqs": null,
+  "schedule": null,
+  "calendar": null,
+  "route": {
+    "mode": "create_goal",
+    "goal_template": {
+      "title_template": "Fix PR check failure for {{subject}}",
+      "objective_template": "Investigate failed pull request check {{event_id}} for {{subject}}. Use payload._coat_change_activity for repo, branch, PR, workflow, run URL, commit SHA, conclusion, and failed-test count. Search durable memory for recurring failures on this branch, reproduce or explain the check failure, and return a bounded fix or reviewed no-action decision with test evidence.",
+      "repo": "example/repo",
+      "worker_role": "tester",
+      "tags": [
+        "pull-request",
+        "required-check",
+        "ci",
+        "test-failure"
+      ]
+    },
+    "target_goal_id": null,
+    "steering_directive": null,
+    "require_approval": false,
+    "dedupe_window_seconds": 3600
+  }
+}

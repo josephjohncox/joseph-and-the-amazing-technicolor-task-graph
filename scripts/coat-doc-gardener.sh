@@ -3,6 +3,63 @@ set -eu
 
 root="${1:-.}"
 
+search_repo() {
+  pattern="$1"
+  output="$2"
+  mode="${3:-default}"
+
+  if command -v rg >/dev/null 2>&1; then
+    case "$mode" in
+      include-schemas)
+        rg -n "$pattern" "$root" \
+          --hidden \
+          --glob '!target/**' \
+          --glob '!.git/**' \
+          --glob '!sidecars/**/node_modules/**' \
+          --glob '!ui/control-plane-web/node_modules/**' \
+          --glob '!ui/control-plane-web/dist/**' \
+          --glob '!infra/k8s/rendered.yaml' \
+          --glob '!scripts/coat-doc-gardener.sh' >"$output"
+        ;;
+      *)
+        rg -n "$pattern" "$root" \
+          --hidden \
+          --glob '!target/**' \
+          --glob '!.git/**' \
+          --glob '!sidecars/**/node_modules/**' \
+          --glob '!ui/control-plane-web/node_modules/**' \
+          --glob '!ui/control-plane-web/dist/**' \
+          --glob '!schemas/**' \
+          --glob '!infra/k8s/rendered.yaml' \
+          --glob '!scripts/coat-doc-gardener.sh' >"$output"
+        ;;
+    esac
+    return $?
+  fi
+
+  case "$mode" in
+    include-schemas)
+      git -C "$root" grep -n -E "$pattern" -- . \
+        ':(exclude)target/**' \
+        ':(exclude)sidecars/**/node_modules/**' \
+        ':(exclude)ui/control-plane-web/node_modules/**' \
+        ':(exclude)ui/control-plane-web/dist/**' \
+        ':(exclude)infra/k8s/rendered.yaml' \
+        ':(exclude)scripts/coat-doc-gardener.sh' >"$output"
+      ;;
+    *)
+      git -C "$root" grep -n -E "$pattern" -- . \
+        ':(exclude)target/**' \
+        ':(exclude)sidecars/**/node_modules/**' \
+        ':(exclude)ui/control-plane-web/node_modules/**' \
+        ':(exclude)ui/control-plane-web/dist/**' \
+        ':(exclude)schemas/**' \
+        ':(exclude)infra/k8s/rendered.yaml' \
+        ':(exclude)scripts/coat-doc-gardener.sh' >"$output"
+      ;;
+  esac
+}
+
 required_paths="
 AGENTS.md
 Agent.md
@@ -68,26 +125,13 @@ for path in $agents_source_paths; do
   esac
 done
 
-if rg -n "infra/helm/coat|coat-agent-toolbox|coat/agent-toolbox|coat-config|coat-agent-secrets|coat-sandboxes|coat-ephemeral|coat-models|coat\.dev/" "$root" \
-  --glob '!target/**' \
-  --glob '!sidecars/**/node_modules/**' \
-  --glob '!ui/control-plane-web/node_modules/**' \
-  --glob '!ui/control-plane-web/dist/**' \
-  --glob '!infra/k8s/rendered.yaml' \
-  --glob '!scripts/coat-doc-gardener.sh' >/tmp/coat-doc-gardener-stale.txt; then
+if search_repo "infra/helm/coat|coat-agent-toolbox|coat/agent-toolbox|coat-config|coat-agent-secrets|coat-sandboxes|coat-ephemeral|coat-models|coat\.dev/" /tmp/coat-doc-gardener-stale.txt include-schemas; then
   cat /tmp/coat-doc-gardener-stale.txt >&2
   printf 'stale deployment-surface coat slug references found\n' >&2
   exit 1
 fi
 
-if rg -n "coat (compose|k8s|approve|notify|follow-ups)\b|cargo run -p (coat-cli|jattg-cli)|jattg-cli|JATTG_|COAT_RUNNER_REGISTRY\b" "$root" \
-  --glob '!target/**' \
-  --glob '!sidecars/**/node_modules/**' \
-  --glob '!ui/control-plane-web/node_modules/**' \
-  --glob '!ui/control-plane-web/dist/**' \
-  --glob '!schemas/**' \
-  --glob '!infra/k8s/rendered.yaml' \
-  --glob '!scripts/coat-doc-gardener.sh' >/tmp/coat-doc-gardener-commands.txt; then
+if search_repo "coat (compose|k8s|approve|notify|follow-ups)([^[:alnum:]_-]|$)|cargo run -p (coat-cli|jattg-cli)|jattg-cli|JATTG_|COAT_RUNNER_REGISTRY([^[:alnum:]_-]|$)" /tmp/coat-doc-gardener-commands.txt; then
   cat /tmp/coat-doc-gardener-commands.txt >&2
   printf 'stale COAT command hierarchy, package, or env-var references found\n' >&2
   exit 1
@@ -106,8 +150,8 @@ check_command_line() {
 }
 
 check_command_line 'coat plan <draft|list|show|revise|compile|follow-ups>'
-check_command_line 'coat goal <draft|lint|submit|list|progress|tasks|steer|branch|restart|cancel>'
-check_command_line 'coat human <approve|notify>'
+check_command_line 'coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>'
+check_command_line 'coat human <approve|resume-thunk|notify>'
 check_command_line 'coat deploy local <preflight|up|config|down>'
 check_command_line 'coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>'
 check_command_line 'coat deploy chart <lint|template|upgrade|rollback|package>'
@@ -119,7 +163,7 @@ check_command_line 'coat event <sources|register|ingest|emit|webhook|poll-sqs|tr
 check_command_line 'coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>'
 check_command_line 'coat setup <login|sso|model-index|config|local-auth|chat-client>'
 
-if rg -n '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_STORE|EVENT|CONTROL)_' "$root/.envrc" >/tmp/coat-doc-gardener-direnv.txt; then
+if [ -f "$root/.envrc" ] && grep -nE '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_STORE|EVENT|CONTROL)_' "$root/.envrc" >/tmp/coat-doc-gardener-direnv.txt; then
   cat /tmp/coat-doc-gardener-direnv.txt >&2
   printf 'direnv must not duplicate COAT service endpoint defaults; use .coat/project.json or ~/.coat/config.json\n' >&2
   exit 1

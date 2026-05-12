@@ -1,0 +1,20 @@
+{
+  "type": "gitlab.pipeline.failed",
+  "delivery_id": "gitlab:group/project:555",
+  "project": {
+    "path_with_namespace": "group/project"
+  },
+  "object_attributes": {
+    "id": 555,
+    "ref": "feature/event-sources",
+    "sha": "def456",
+    "status": "failed",
+    "url": "https://gitlab.example/group/project/-/pipelines/555"
+  },
+  "merge_request": {
+    "iid": 12,
+    "url": "https://gitlab.example/group/project/-/merge_requests/12",
+    "source_branch": "feature/event-sources",
+    "target_branch": "main"
+  }
+}

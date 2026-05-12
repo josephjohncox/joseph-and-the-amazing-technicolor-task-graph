@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismBallot",
+  "type": "object",
+  "properties": {
+    "allocations": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MechanismAllocation"
+      }
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "participant": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "round_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "$ref": "#/$defs/MechanismParticipantSource"
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "round_id",
+    "participant",
+    "source",
+    "rationale"
+  ],
+  "$defs": {
+    "MechanismAllocation": {
+      "type": "object",
+      "properties": {
+        "bid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "proposal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rank": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "support": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "support"
+      ]
+    },
+    "MechanismParticipantSource": {
+      "type": "string",
+      "enum": [
+        "human",
+        "coordinator",
+        "agent",
+        "system"
+      ]
+    }
+  }
+}

@@ -27,6 +27,7 @@
   --status-running: #b17812;
   --status-needs-validation: #7c3aed;
   --status-waiting-approval: #be4b8b;
+  --status-waiting-input: #0f766e;
   --status-done: #24714a;
   --status-blocked: #b45309;
   --status-failed: #a13a2f;
@@ -84,6 +85,7 @@
   --status-running: #f0bf61;
   --status-needs-validation: #c4a4ff;
   --status-waiting-approval: #f087ad;
+  --status-waiting-input: #5eead4;
   --status-done: #80dea9;
   --status-blocked: #f6a05c;
   --status-failed: #ff9a8f;
@@ -418,6 +420,7 @@ label {
 .status-pill.status-running,
 .status-pill.status-needs-validation,
 .status-pill.status-waiting-approval,
+.status-pill.status-waiting-input,
 .status-pill.status-done,
 .status-pill.status-blocked,
 .status-pill.status-failed,
@@ -445,6 +448,10 @@ label {
 
 .status-pill.status-waiting-approval {
   color: var(--status-waiting-approval);
+}
+
+.status-pill.status-waiting-input {
+  color: var(--status-waiting-input);
 }
 
 .status-pill.status-done {
@@ -566,6 +573,13 @@ label {
   margin-top: 10px;
 }
 
+.quick-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
 .error-text {
   margin-right: auto;
   color: var(--bad);
@@ -663,6 +677,126 @@ label {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+}
+
+.continuation-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.continuation-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.4fr) auto;
+  align-items: end;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 14px;
+}
+
+.continuation-card label {
+  margin: 0;
+}
+
+.continuation-card textarea {
+  min-height: 64px;
+}
+
+.continuation-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.continuation-copy span,
+.continuation-copy small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.compute-details,
+.compiler-control-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.compiler-control-panel.compact {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.compiler-control-panel h3,
+.compiler-control-panel h4,
+.compute-details h3 {
+  margin: 0;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.control-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.control-card.span-2 {
+  grid-column: span 2;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid var(--bad);
+  border-radius: 7px;
+  background: var(--bad);
+  color: #fff;
+  padding: 8px 11px;
+}
+
+.danger-button:hover {
+  border-color: var(--status-failed);
+}
+
+@media (max-width: 900px) {
+  .continuation-card {
+    grid-template-columns: 1fr;
+  }
+
+  .control-grid,
+  .form-grid.two,
+  .form-grid.three {
+    grid-template-columns: 1fr;
+  }
+
+  .control-card.span-2 {
+    grid-column: auto;
+  }
 }
 
 .goal-card p,
@@ -824,6 +958,10 @@ label {
 
 .legend-swatch.status-waiting-approval {
   background: var(--status-waiting-approval);
+}
+
+.legend-swatch.status-waiting-input {
+  background: var(--status-waiting-input);
 }
 
 .legend-swatch.status-done {

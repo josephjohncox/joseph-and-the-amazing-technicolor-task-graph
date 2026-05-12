@@ -37,7 +37,7 @@ Add durable planning-mode artifacts so operators can draft, revise, review, and 
 
 ## Follow-Ups
 
-- None currently.
+None currently.
 
 ## Acceptance
 

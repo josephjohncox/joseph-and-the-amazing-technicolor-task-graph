@@ -37,6 +37,5 @@ CI now calls the same `make proto-check` target so protobuf linting, protobuf fo
 
 ## Follow-Ups
 
-- Coordinate generated SDK timing and Restate restart proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Add generated Rust/TypeScript SDKs from Buf once the final SDK target is selected.
-- Add a real Restate restart integration test once the Restate test harness is selected.
+- Coordinate remaining Restate restart proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`; SDK generation is scaffolded as an internal validation target and publishing is deferred by the active-plan SDK decision.
+- Run the real Docker Testcontainers Restate restart/resume proof through the active `RuntimeVerifier` follow-up; keep it env-gated until Docker availability and the pinned Restate test image are in place.

@@ -89,8 +89,8 @@ Use these defaults:
 
 - local personal stack: `enabled=false` or `recommend_only`;
 - trusted development cluster: `recommend_only` plus manual approval;
-- production ephemeral burst lanes: `provision_ephemeral`, small
-  `max_scale_up_step`, finite `max_runners`, and human approval unless the lane
+- production ephemeral runner pools: `provision_ephemeral`, small
+  `max_scale_up_step`, finite `max_runners`, and human approval unless the pool
   is low-risk and fully sandboxed;
 - event processors: scale from event backlog only for approved event-source
   routes, with small headroom and dead-letter queues.

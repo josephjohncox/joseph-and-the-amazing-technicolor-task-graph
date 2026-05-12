@@ -1444,7 +1444,7 @@ struct SsoArgs {
     write_env: bool,
     #[arg(
         long,
-        help = "Also configure the model-provider lane for live Bedrock routing"
+        help = "Also configure the model-provider runner for live Bedrock routing"
     )]
     bedrock_live: bool,
     #[arg(long, help = "Run local Compose preflight after AWS SSO login")]
@@ -2209,7 +2209,7 @@ const MODEL_PARAM_PRESETS: [ModelParamPreset; 9] = [
         custom: false,
     },
     ModelParamPreset {
-        label: "Speed tier / fastest provider lane",
+        label: "Speed tier / fastest provider route",
         latency_class: Some("fast"),
         speed_tier: Some("speed"),
         temperature: Some("0.2"),
@@ -5935,7 +5935,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         "Codex runners",
         "Claude Code and staff-engineer runners",
         "Shared LLM gateway for work, research, chat, and embeddings",
-        "OpenAI hosted model, research, and embedding lanes",
+        "OpenAI hosted model, research, and embedding routes",
         "AWS Bedrock",
         "Host-local Ollama",
         "Host-local vLLM/OpenAI-compatible server",
@@ -6157,7 +6157,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
             "Custom gateway model id",
         )?;
         let work_model = if Confirm::with_theme(&theme)
-            .with_prompt("Use default gateway model for work lane?")
+            .with_prompt("Use default gateway model for the work route?")
             .default(
                 !env_present(&current_values, "COAT_LLM_GATEWAY_WORK_MODEL")
                     || env_value_is_value(
@@ -6181,7 +6181,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
             )?
         };
         let research_model = if Confirm::with_theme(&theme)
-            .with_prompt("Use default gateway model for research/review lane?")
+            .with_prompt("Use default gateway model for the research/review route?")
             .default(
                 !env_present(&current_values, "COAT_LLM_GATEWAY_RESEARCH_MODEL")
                     || env_value_is_value(
@@ -6339,7 +6339,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         primary_model_provider_configured = true;
 
         let enable_research = Confirm::with_theme(&theme)
-            .with_prompt("Use OpenAI hosted model provider for the research lane too?")
+            .with_prompt("Use OpenAI hosted model provider for the research route too?")
             .default(if existing_env_file {
                 env_value_is(&current_values, "MODEL_PROVIDER_RESEARCH_KIND", "open_ai")
                     || env_value_is(
@@ -6552,7 +6552,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         }
         if !primary_model_provider_configured
             && Confirm::with_theme(&theme)
-                .with_prompt("Use this local model for the primary model-provider lane too?")
+                .with_prompt("Use this local model for the primary model-provider runner too?")
                 .default(
                     !existing_env_file
                         || env_value_is(&current_values, "MODEL_PROVIDER_KIND", preset.kind),
@@ -6568,7 +6568,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         }
         if !research_model_provider_configured
             && Confirm::with_theme(&theme)
-                .with_prompt("Use this local model for the research model-provider lane too?")
+                .with_prompt("Use this local model for the research model-provider runner too?")
                 .default(
                     !existing_env_file
                         || env_value_is(
@@ -6944,7 +6944,7 @@ fn configure_web_search_routing(
         ),
     ];
     let selected_runners = MultiSelect::with_theme(theme)
-        .with_prompt("Which runner lanes may advertise web_search?")
+        .with_prompt("Which runners may advertise web_search?")
         .items(&runner_choices)
         .defaults(&runner_defaults)
         .interact()?;
@@ -9299,17 +9299,17 @@ fn compose_model_preflight_findings(
         .map(|(name, key, _)| format!("{name} ({key})"))
         .collect::<Vec<_>>();
     if stub_lanes.len() == runner_modes.len() {
-        let message = format!(
-            "all Compose agent lanes are stubbed: {}",
-            stub_lanes.join(", ")
-        );
+        let message = format!("all Compose runners are stubbed: {}", stub_lanes.join(", "));
         if allow_stub_runners {
             warnings.push(message);
         } else {
             failures.push(message);
         }
     } else if !stub_lanes.is_empty() {
-        warnings.push(format!("stubbed Compose lanes: {}", stub_lanes.join(", ")));
+        warnings.push(format!(
+            "stubbed Compose runners: {}",
+            stub_lanes.join(", ")
+        ));
     }
 
     for (lane, key, mode) in runner_modes {
@@ -9635,7 +9635,7 @@ fn web_search_preflight_findings(values: &BTreeMap<String, String>) -> (Vec<Stri
         .any(|key| env_truthy_value(env_value(values, key).as_deref()))
     {
         warnings.push(
-            "COAT_WEB_SEARCH_ROUTE=runner_registry but no Compose runner lane advertises web_search; external runners may still satisfy it"
+            "COAT_WEB_SEARCH_ROUTE=runner_registry but no Compose runner advertises web_search; external runners may still satisfy it"
                 .to_string(),
         );
     }
@@ -11177,7 +11177,7 @@ mod tests {
             "--thunk-id",
             "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
             "--response-summary",
-            "continue with smoke lane",
+            "continue with smoke runner",
         ])
         .expect("parse human resume-thunk");
         assert!(matches!(
@@ -11449,7 +11449,7 @@ mod tests {
         assert!(
             failures
                 .iter()
-                .any(|failure| failure.contains("all Compose agent lanes are stubbed")),
+                .any(|failure| failure.contains("all Compose runners are stubbed")),
             "all-stub Compose should fail unless explicitly allowed: {failures:?}"
         );
     }
@@ -11467,7 +11467,7 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("all Compose agent lanes are stubbed")),
+                .any(|warning| warning.contains("all Compose runners are stubbed")),
             "allowed stubs should still be visible: {warnings:?}"
         );
     }
@@ -11532,7 +11532,7 @@ mod tests {
 
         assert!(
             failures.is_empty(),
-            "shared gateway model and endpoint refs should satisfy live model-provider lanes: {failures:?}"
+            "shared gateway model and endpoint refs should satisfy live model-provider runners: {failures:?}"
         );
     }
 
@@ -11645,12 +11645,12 @@ mod tests {
 
         assert!(
             failures.is_empty(),
-            "device/browser and brokered auth modes should unblock live runner lanes: {failures:?}"
+            "device/browser and brokered auth modes should unblock live runners: {failures:?}"
         );
     }
 
     #[test]
-    fn compose_preflight_accepts_local_model_reused_for_primary_and_research_lanes() {
+    fn compose_preflight_accepts_local_model_reused_for_primary_and_research_runners() {
         let values = BTreeMap::from([
             ("MODEL_PROVIDER_RUNNER_MODE".to_string(), "live".to_string()),
             ("MODEL_PROVIDER_KIND".to_string(), "ollama".to_string()),
@@ -11709,13 +11709,13 @@ mod tests {
 
         assert!(
             failures.is_empty(),
-            "local model reuse should satisfy all model-provider lanes: {failures:?}"
+            "local model reuse should satisfy all model-provider runners: {failures:?}"
         );
         assert!(
             !warnings
                 .iter()
                 .any(|warning| warning.contains("model-provider")),
-            "all model-provider lanes are live, so preflight should not report model-provider stubs: {warnings:?}"
+            "all model-provider runners are live, so preflight should not report model-provider stubs: {warnings:?}"
         );
     }
 
@@ -12362,11 +12362,11 @@ mod tests {
         let defaults = local_auth_profile_defaults(true, &values);
         assert!(
             defaults[0],
-            "existing live Codex lane should be selected by default"
+            "existing live Codex runner should be selected by default"
         );
         assert!(
             defaults[5],
-            "existing Ollama lane should be selected by default"
+            "existing Ollama runner should be selected by default"
         );
         assert!(
             defaults[8],
@@ -12382,7 +12382,7 @@ mod tests {
         );
         assert!(
             !defaults[3],
-            "OpenAI hosted lane should not be selected when the existing env uses local Ollama"
+            "OpenAI hosted route should not be selected when the existing env uses local Ollama"
         );
 
         let params = model_param_values_from_env(&values, "LOCAL_MODEL_PROVIDER");
@@ -12420,12 +12420,12 @@ mod tests {
         let defaults = local_auth_profile_defaults(true, &values);
         assert!(
             defaults[8],
-            "existing live local model lane should re-open the Control Chat setup surface"
+            "existing live local model runner should re-open the Control Chat setup surface"
         );
         assert_eq!(
             control_chat_default_choice(&values),
             0,
-            "a live local model lane should repair stale stub chat config by default"
+            "a live local model runner should repair stale stub chat config by default"
         );
 
         let mut values_without_stub = values.clone();
@@ -12433,7 +12433,7 @@ mod tests {
         assert_eq!(
             control_chat_default_choice(&values_without_stub),
             0,
-            "a live local model lane should default Control Chat to runner-registry discovery"
+            "a live local model runner should default Control Chat to runner-registry discovery"
         );
         assert_eq!(
             preferred_operator_chat_model(&values_without_stub).as_deref(),
@@ -12615,25 +12615,25 @@ mod tests {
         let labels = model_param_preset_labels();
         assert!(
             labels.iter().any(|label| label.contains("Fast")),
-            "runtime param presets should expose a fast lane: {labels:?}"
+            "runtime param presets should expose a fast option: {labels:?}"
         );
         assert!(
             labels
                 .iter()
                 .any(|label| label.contains("Fast completions")),
-            "runtime param presets should expose a fast completions lane: {labels:?}"
+            "runtime param presets should expose a fast completions option: {labels:?}"
         );
         assert!(
             labels.iter().any(|label| label.contains("Speed tier")),
-            "runtime param presets should expose a provider speed tier lane: {labels:?}"
+            "runtime param presets should expose a provider speed tier option: {labels:?}"
         );
         assert!(
             labels.iter().any(|label| label.contains("Deep review")),
-            "runtime param presets should expose a deep review lane: {labels:?}"
+            "runtime param presets should expose a deep review option: {labels:?}"
         );
         assert!(
             labels.iter().any(|label| label.contains("XHigh")),
-            "runtime param presets should expose an xhigh reasoning lane: {labels:?}"
+            "runtime param presets should expose an xhigh reasoning option: {labels:?}"
         );
 
         let fast = model_param_preset(default_model_param_preset_index("fast"));

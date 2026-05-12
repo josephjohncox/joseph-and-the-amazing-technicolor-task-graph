@@ -49,7 +49,7 @@ import {
   Vote,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   approvals,
@@ -91,7 +91,18 @@ type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type GraphFilter = "all" | "attention" | "active" | "completed";
 type DraftKind = "plan" | "goal" | "search";
+type GoalDraftEditField = "title" | "objective" | "acceptance_evidence" | "constraints";
 type OperatorStateKey = "action-needed" | "running" | "waiting" | "reviewing" | "satisfied";
+type ActiveDraftState = {
+  kind: DraftKind;
+  mode: string;
+  sessionId: string;
+  selectedGoalId: string;
+  savedAt: string;
+  response: ChatResponse;
+  goalDraft: JsonRecord | null;
+  runId: string | null;
+};
 type GoalSummary = {
   id: string;
   title: string;
@@ -175,7 +186,7 @@ const statusLegend = [
   { token: "failed", label: "Action needed", detail: "failed task" },
   { token: "blocked", label: "Action needed", detail: "blocked task" },
   { token: "waiting-approval", label: "Action needed", detail: "approval gate" },
-  { token: "waiting-input", label: "Waiting", detail: "delayed compute thunk" },
+  { token: "waiting-input", label: "Waiting", detail: "waiting continuation" },
   { token: "running", label: "Running", detail: "agent is active" },
   { token: "needs-validation", label: "Reviewing", detail: "evidence check" },
   { token: "runnable", label: "Running", detail: "ready frontier" },
@@ -195,8 +206,8 @@ const graphFilterOptions: Array<{ key: GraphFilter; label: string; detail: strin
 const views: Array<{ key: ViewKey; label: string; icon: typeof Route }> = [
   { key: "dashboard", label: "Dashboard", icon: Route },
   { key: "goals", label: "Goals", icon: ListChecks },
-  { key: "graph", label: "Task Graph", icon: Network },
-  { key: "control", label: "Flow Control", icon: ShieldCheck },
+  { key: "graph", label: "Work Graph", icon: Network },
+  { key: "control", label: "Goal Controls", icon: ShieldCheck },
   { key: "memory", label: "Memory", icon: Brain },
   { key: "plans", label: "Plans", icon: GitBranch },
   { key: "human", label: "Human Queue", icon: Bell },
@@ -218,7 +229,8 @@ export function App() {
   const [goalPickerOpen, setGoalPickerOpen] = useState(false);
   const [submittedGoalDrafts, setSubmittedGoalDrafts] = useState<Record<string, JsonRecord>>({});
   const [token, setToken] = useState(authToken());
-  const [messages, setMessages] = useState<ChatMessage[]>(starterMessages);
+  const [sessionMessages, setSessionMessages] = useState<Record<string, ChatMessage[]>>({});
+  const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [draftKind, setDraftKind] = useState<DraftKind>("plan");
   const [activeChatRunId, setActiveChatRunId] = useState<string | null>(null);
@@ -232,6 +244,7 @@ export function App() {
     queryKey: ["chat-session", chatSessionId],
     queryFn: () => chatSession(chatSessionId),
   });
+  const messages = sessionMessages[chatSessionId] ?? starterMessages;
   const selectedGoalQuery = useQuery({
     queryKey: ["goal", selectedGoalId],
     queryFn: () => goalSnapshot(selectedGoalId),
@@ -250,15 +263,34 @@ export function App() {
       if (!content) {
         throw new Error("Write a request first.");
       }
-      const nextMessages = [...messages, { role: "user" as const, content }];
-      setMessages(nextMessages);
+      const requestSessionId = chatSessionId;
+      const requestGoalId = selectedGoalId;
+      const requestKind = draftKind;
+      const requestMode = modeForDraftKind(requestKind);
+      const currentMessages = sessionMessages[requestSessionId] ?? messages;
+      const nextMessages = [...currentMessages, { role: "user" as const, content }];
+      setSessionMessages((current) => ({ ...current, [requestSessionId]: nextMessages }));
       setChatInput("");
       const runId = createRunId();
       setActiveChatRunId(runId);
-      const response = await chat(chatSessionId, modeForDraftKind(draftKind), selectedGoalId, nextMessages, runId);
+      const response = await chat(requestSessionId, requestMode, requestGoalId, nextMessages, runId);
+      const goalDraft = goalDraftFromChatResponse(response);
       setActiveChatRunId(response.run_id ?? runId);
-      setMessages([...nextMessages, { role: "assistant", content: response.assistant ?? "Response pending." }]);
-      void queryClient.invalidateQueries({ queryKey: ["chat-session", chatSessionId] });
+      setSessionMessages((current) => ({
+        ...current,
+        [requestSessionId]: [...nextMessages, { role: "assistant" as const, content: response.assistant ?? "Response pending." }],
+      }));
+      setActiveDraft({
+        kind: requestKind,
+        mode: requestMode,
+        sessionId: requestSessionId,
+        selectedGoalId: requestGoalId,
+        savedAt: new Date().toISOString(),
+        response,
+        goalDraft,
+        runId: response.run_id ?? runId,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["chat-session", requestSessionId] });
       return response;
     },
   });
@@ -268,10 +300,11 @@ export function App() {
     enabled: Boolean(activeChatRunId && sendChat.isPending),
     refetchInterval: sendChat.isPending ? 750 : false,
   });
-  const latestGoalDraft = useMemo(() => goalDraftFromChatResponse(sendChat.data), [sendChat.data]);
+  const latestResponse = activeDraft?.response;
+  const latestGoalDraft = activeDraft?.goalDraft ?? null;
   const submitGoalDraft = useMutation({
     mutationFn: async () => {
-      const draft = goalDraftFromChatResponse(sendChat.data);
+      const draft = latestGoalDraft;
       if (!draft) {
         throw new Error("Generate a goal draft first.");
       }
@@ -285,8 +318,11 @@ export function App() {
         setSubmittedGoalDrafts((current) => ({ ...current, [goalId]: result.draft }));
         selectGoalId(goalId);
         setActiveView("graph");
+        void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
         void queryClient.refetchQueries({ queryKey: ["goal", goalId] });
       }
+      void queryClient.invalidateQueries({ queryKey: ["goals"] });
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
       void queryClient.refetchQueries({ queryKey: ["goals"] });
       void queryClient.refetchQueries({ queryKey: ["overview"] });
     },
@@ -298,6 +334,32 @@ export function App() {
   const sendChatFromPanel = (content?: string) => {
     submitGoalDraft.reset();
     sendChat.mutate(content);
+  };
+  const discardActiveGoalDraft = () => {
+    setActiveDraft(null);
+    sendChat.reset();
+    submitGoalDraft.reset();
+  };
+  const updateActiveGoalDraftField = (field: GoalDraftEditField, value: string) => {
+    setActiveDraft((current) => {
+      if (!current?.goalDraft) {
+        return current;
+      }
+      const goalDraft = updateGoalDraftField(current.goalDraft, field, value);
+      return {
+        ...current,
+        savedAt: new Date().toISOString(),
+        goalDraft,
+        response: {
+          ...current.response,
+          drafts: {
+            ...(isRecord(current.response.drafts) ? current.response.drafts : {}),
+            goal_spec: goalDraft,
+          },
+        },
+      };
+    });
+    submitGoalDraft.reset();
   };
 
   useEffect(() => {
@@ -335,12 +397,21 @@ export function App() {
   }, [themePreference]);
 
   useEffect(() => {
+    setSessionMessages((current) => current[chatSessionId] ? current : { ...current, [chatSessionId]: starterMessages });
+  }, [chatSessionId]);
+
+  useEffect(() => {
     const persistedMessages = chatSessionQuery.data?.messages ?? [];
-    setMessages(persistedMessages.length ? persistedMessages : starterMessages);
-    setActiveChatRunId(null);
-    sendChat.reset();
-    submitGoalDraft.reset();
-  }, [chatSessionId, chatSessionQuery.dataUpdatedAt]);
+    if (!persistedMessages.length) {
+      return;
+    }
+    setSessionMessages((current) => {
+      if (sameMessages(current[chatSessionId], persistedMessages)) {
+        return current;
+      }
+      return { ...current, [chatSessionId]: persistedMessages };
+    });
+  }, [chatSessionId, chatSessionQuery.data, chatSessionQuery.dataUpdatedAt]);
 
   useEffect(() => {
     if (!selectedGoalId || !submittedGoalDrafts[selectedGoalId] || !goalSnapshotHasProjectedTasks(selectedGoalQuery.data)) {
@@ -448,8 +519,9 @@ export function App() {
             draftKind={draftKind}
             busy={sendChat.isPending}
             error={sendChat.error}
-            latestResponse={sendChat.data}
-            chatRun={(chatRunQuery.data ?? sendChat.data?.chat_run) as ChatRunTrace | undefined}
+            activeDraft={activeDraft}
+            latestResponse={latestResponse}
+            chatRun={(chatRunQuery.data ?? latestResponse?.chat_run) as ChatRunTrace | undefined}
             goalDraft={latestGoalDraft}
             goalSubmitBusy={submitGoalDraft.isPending}
             goalSubmitError={submitGoalDraft.error as Error | null}
@@ -462,11 +534,11 @@ export function App() {
             onInputChange={setChatInput}
             onSend={sendChatFromPanel}
             onSubmitGoalDraft={() => submitGoalDraft.mutate()}
+            onDiscardGoalDraft={discardActiveGoalDraft}
+            onUpdateGoalDraftField={updateActiveGoalDraftField}
             onClear={() => {
-              setMessages(starterMessages);
+              setSessionMessages((current) => ({ ...current, [chatSessionId]: starterMessages }));
               setChatInput("");
-              sendChat.reset();
-              submitGoalDraft.reset();
             }}
           />
 
@@ -515,6 +587,13 @@ function modeForDraftKind(kind: DraftKind): string {
 
 function createRunId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function sameMessages(left: ChatMessage[] | undefined, right: ChatMessage[]): boolean {
+  if (!left || left.length !== right.length) {
+    return false;
+  }
+  return left.every((message, index) => message.role === right[index]?.role && message.content === right[index]?.content);
 }
 
 function selectedGoalIdFromLocation(search: string, storedGoalId?: string | null): string {
@@ -573,6 +652,35 @@ function goalDraftFromChatResponse(response?: ChatResponse): JsonRecord | null {
   return title && objective ? draft : null;
 }
 
+function updateGoalDraftField(draft: JsonRecord, field: GoalDraftEditField, value: string): JsonRecord {
+  if (field === "title" || field === "objective") {
+    return { ...draft, [field]: value };
+  }
+  const authoring = isRecord(draft.authoring) ? draft.authoring : {};
+  return {
+    ...draft,
+    authoring: {
+      ...authoring,
+      [field]: listFromLines(value),
+    },
+  };
+}
+
+function linesFromList(value: unknown): string {
+  const rows = Array.isArray(value) ? value : rowsFrom(value);
+  return rows
+    .map((item) => typeof item === "string" ? item : isRecord(item) ? stringValue(item.title ?? item.value ?? item.summary) : stringValue(item))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function listFromLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 function goalIdFromSubmitResponse(response: unknown): string {
   for (const path of [
     ["goal_id"],
@@ -619,7 +727,7 @@ function goalSummaryFromRow(goal: GoalRow): GoalSummary | null {
   }
   return {
     id,
-    title: stringValue(goal.title) || id,
+    title: stringValue(goal.title) || friendlyRef(id) || "Untitled goal",
     objective: stringValue(goal.objective),
     status: stringValue(goal.status) || "unknown",
     progress: numericProgress(goal.percent_done),
@@ -642,7 +750,7 @@ function selectedGoalSummary(goalId: string, rows: GoalRow[], snapshot?: GoalSna
   const source = isRecord(payload) ? payload : submittedDraft;
   return {
     id: goalId,
-    title: stringValue(source?.title) || goalId,
+    title: stringValue(source?.title) || friendlyRef(goalId) || "Selected goal",
     objective: stringValue(source?.objective),
     status: stringValue(at(snapshot, ["goal_store_goal", "data", "goal", "status"])) || (submittedDraft ? "submitted" : "selected"),
     progress: numericProgress(at(snapshot, ["goal_store_goal", "data", "goal", "percent_done"])),
@@ -684,7 +792,10 @@ function pendingGoalRow(goalId: string, draft: JsonRecord): GoalRow {
 }
 
 function goalSnapshotHasProjectedTasks(snapshot?: GoalSnapshot): boolean {
-  return Boolean(snapshot?.goal_store_goal || snapshot?.workflow_status || snapshot?.agent_activity?.length);
+  const agentRows = snapshot?.agent_activity ?? [];
+  const taskRows = rowsFrom(at(snapshot, ["tasks", "data"]) ?? snapshot?.tasks);
+  const computeNodes = rowsFrom(at(snapshot, ["workflow_compute_graph", "data", "nodes"]) ?? at(snapshot, ["workflow_compute_graph", "nodes"]));
+  return Boolean(agentRows.length || taskRows.length || computeNodes.length);
 }
 
 function taskRowsFromGoalDraft(goalId: string, draft?: JsonRecord | null): TaskRow[] {
@@ -797,8 +908,8 @@ function titleFor(view: ViewKey): string {
   return {
     dashboard: "Overview",
     goals: "Goals",
-    graph: "Technicolor Task Graph",
-    control: "Compiler Controls",
+    graph: "Work Graph",
+    control: "Goal Controls",
     memory: "Shared Memory",
     plans: "Durable Plans",
     human: "Human Queue",
@@ -839,7 +950,13 @@ function GoalContextBar(props: {
     <Popover.Root open={props.open} onOpenChange={props.onOpenChange}>
       <div className="goal-context-bar">
         <Popover.Trigger asChild>
-          <button type="button" className="goal-context-trigger" aria-expanded={props.open}>
+          <button
+            type="button"
+            className="goal-context-trigger"
+            aria-expanded={props.open}
+            aria-label={props.selectedGoal ? `Current goal: ${props.selectedGoal.title}, ${selectedState?.label ?? "state pending"}` : "Select current goal"}
+            data-testid="goal-context-trigger"
+          >
             <div>
               <span className="goal-context-kicker">Current goal</span>
               <strong>{props.selectedGoal?.title || "Select a goal"}</strong>
@@ -857,7 +974,7 @@ function GoalContextBar(props: {
         </Popover.Trigger>
         {props.selectedGoal && (
           <InspectButton
-            title="Current goal identity"
+            title="Current goal details"
             payload={{
               goal_id: props.selectedGoalId,
               title: props.selectedGoal.title,
@@ -865,7 +982,7 @@ function GoalContextBar(props: {
               operator_state: selectedState,
               objective: props.selectedGoal.objective,
             }}
-            buttonLabel="Inspect id"
+            buttonLabel="Details"
           />
         )}
         <Popover.Portal>
@@ -897,10 +1014,10 @@ function GoalContextBar(props: {
                       }}
                     >
                       <span>
-                        <strong>{goal.title || goal.id}</strong>
-                        <small>{goal.objective || goal.id}</small>
+                        <strong>{goal.title || friendlyRef(goal.id) || "Untitled goal"}</strong>
+                        <small>{goal.objective || friendlyRef(goal.id) || "Objective pending"}</small>
                       </span>
-                      <span className={clsx("status-pill", statusTone(goal.status))}>{goal.status}</span>
+                      <span className={clsx("status-pill", statusTone(goal.status))}>{statusLabel(goal.status)}</span>
                     </Command.Item>
                   ))}
                 </Command.Group>
@@ -937,6 +1054,7 @@ function CommandPanel(props: {
   draftKind: DraftKind;
   busy: boolean;
   error: Error | null;
+  activeDraft: ActiveDraftState | null;
   latestResponse?: ChatResponse;
   chatRun?: ChatRunTrace;
   goalDraft: JsonRecord | null;
@@ -951,12 +1069,29 @@ function CommandPanel(props: {
   onInputChange: (value: string) => void;
   onSend: (content?: string) => void;
   onSubmitGoalDraft: () => void;
+  onDiscardGoalDraft: () => void;
+  onUpdateGoalDraftField: (field: GoalDraftEditField, value: string) => void;
   onClear: () => void;
 }) {
   const draftKeys = Object.keys(props.latestResponse?.drafts ?? {});
   const activityPayload = chatActivityPayload(props);
   const activityLabel = props.busy ? "Activity" : "Run details";
   const submittedGoalId = goalIdFromSubmitResponse(props.goalSubmitResult);
+  const chatShellRef = useRef<HTMLDivElement>(null);
+  const latestMessage = props.messages[props.messages.length - 1];
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const root = chatShellRef.current;
+      const scrollBox = root?.querySelector<HTMLElement>(".cs-message-list");
+      if (scrollBox) {
+        scrollBox.scrollTop = scrollBox.scrollHeight;
+      }
+      root?.querySelector<HTMLElement>(".cs-message:last-child")?.scrollIntoView({ block: "end" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.busy, props.sessionId, props.messages.length, latestMessage?.role, latestMessage?.content]);
+
   return (
     <section className="command-panel">
       <div className="section-heading">
@@ -994,29 +1129,47 @@ function CommandPanel(props: {
           </button>
         </div>
       </div>
-      <div className="outcome-meta">
+      <div className="outcome-meta" aria-label="Chat scope">
+        <span className="status-pill muted">Operator workspace</span>
         <span className={clsx("status-pill", props.selectedGoal ? statusTone(props.selectedGoal.status) : "muted")}>
-          {props.selectedGoal ? `${props.selectedGoal.title} · ${props.selectedGoalId.slice(0, 8)}` : "Select a goal"}
+          {props.selectedGoal ? `Selected goal: ${props.selectedGoal.title}` : "Selected goal: none"}
+        </span>
+        <span className={clsx("status-pill", props.activeDraft ? "status-runnable" : "muted")}>
+          {props.activeDraft ? `Active draft: ${draftKindLabel(props.activeDraft.kind)} · ${sessionDisplayLabel(props.activeDraft.sessionId)}` : "Active draft: none"}
         </span>
         <span className={clsx("status-pill", props.busy ? "status-running" : "status-pending")}>
-          {props.busy ? commandBusyLabel(props.draftKind) : `${props.mode} · ${props.sessionId}`}
+          {props.busy ? commandBusyLabel(props.draftKind) : `Session: ${props.mode} · ${sessionDisplayLabel(props.sessionId)}`}
         </span>
         {(props.busy || props.chatRun || props.latestResponse || draftKeys.length > 0) && (
           <InspectButton title="Chat activity" payload={activityPayload} buttonLabel={activityLabel} />
         )}
       </div>
-      {props.goalDraft && (
+      {props.activeDraft && (
         <div className="draft-action-bar">
-          <span className="status-pill status-runnable">Goal draft ready</span>
-          {submittedGoalId && <span className="status-pill status-done">Submitted {submittedGoalId.slice(0, 8)}</span>}
-          <InspectButton title="GoalSpec draft" payload={props.goalDraft} buttonLabel="Review draft" />
-          <button type="button" className="primary-button" disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
-            <ListChecks size={15} />
-            {submittedGoalId ? "Submitted" : props.goalSubmitBusy ? "Submitting" : "Submit goal"}
+          <span className="status-pill status-runnable">Saved {draftKindLabel(props.activeDraft.kind)}</span>
+          {props.goalDraft && <span className="status-pill status-runnable">Goal draft ready</span>}
+          {submittedGoalId && <span className="status-pill status-done">Submitted {friendlyRef(submittedGoalId)}</span>}
+          <InspectButton title={props.goalDraft ? "GoalSpec draft" : "Active draft"} payload={props.goalDraft ?? props.activeDraft.response} buttonLabel="Review draft" />
+          <button type="button" className="secondary-button" disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
+            <XCircle size={15} />
+            Discard draft
           </button>
+          {props.goalDraft && (
+            <button type="button" className="primary-button" disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
+              <ListChecks size={15} />
+              {submittedGoalId ? "Submitted" : props.goalSubmitBusy ? "Submitting" : "Submit goal"}
+            </button>
+          )}
         </div>
       )}
-      <div className="quick-prompts" aria-label="Compiler console prompts">
+      {props.goalDraft && (
+        <GoalDraftEditor
+          draft={props.goalDraft}
+          disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)}
+          onUpdate={props.onUpdateGoalDraftField}
+        />
+      )}
+      <div className="quick-prompts" aria-label="Goal action prompts">
         {compilerPromptTemplates(props.selectedGoalId, props.selectedGoal?.title).map((template) => (
           <button key={template.label} type="button" className="secondary-button" disabled={props.busy} onClick={() => props.onSend(template.prompt)}>
             {template.icon === "graph" && <Network size={15} />}
@@ -1026,7 +1179,7 @@ function CommandPanel(props: {
           </button>
         ))}
       </div>
-      <div className="chat-shell">
+      <div className="chat-shell" ref={chatShellRef}>
         <MainContainer className="coat-chat-container" responsive>
           <ChatContainer>
             <MessageList
@@ -1051,7 +1204,6 @@ function CommandPanel(props: {
               value={props.input}
               attachButton={false}
               autoFocus={false}
-              disabled={props.busy}
               sendDisabled={props.busy || !props.input.trim()}
               placeholder={commandPlaceholder(props.draftKind)}
               onChange={(_html, textContent) => props.onInputChange(textContent)}
@@ -1064,10 +1216,55 @@ function CommandPanel(props: {
         {props.error && <span className="error-text">{props.error.message}</span>}
         {props.goalSubmitError && <span className="error-text">{props.goalSubmitError.message}</span>}
         <button type="button" className="secondary-button" onClick={props.onClear}>
-          Clear
+          Clear chat
         </button>
       </div>
     </section>
+  );
+}
+
+function GoalDraftEditor(props: { draft: JsonRecord; disabled: boolean; onUpdate: (field: GoalDraftEditField, value: string) => void }) {
+  return (
+    <details className="goal-draft-editor" open>
+      <summary>
+        <span>Edit draft</span>
+        <small>Review the fields that will be submitted to the coordinator</small>
+      </summary>
+      <div className="draft-editor-grid">
+        <label>
+          Title
+          <input
+            value={stringValue(props.draft.title)}
+            disabled={props.disabled}
+            onChange={(event) => props.onUpdate("title", event.target.value)}
+          />
+        </label>
+        <label>
+          Objective
+          <textarea
+            value={stringValue(props.draft.objective)}
+            disabled={props.disabled}
+            onChange={(event) => props.onUpdate("objective", event.target.value)}
+          />
+        </label>
+        <label>
+          Evidence requirements
+          <textarea
+            value={linesFromList(at(props.draft, ["authoring", "acceptance_evidence"]))}
+            disabled={props.disabled}
+            onChange={(event) => props.onUpdate("acceptance_evidence", event.target.value)}
+          />
+        </label>
+        <label>
+          Constraints
+          <textarea
+            value={linesFromList(at(props.draft, ["authoring", "constraints"]))}
+            disabled={props.disabled}
+            onChange={(event) => props.onUpdate("constraints", event.target.value)}
+          />
+        </label>
+      </div>
+    </details>
   );
 }
 
@@ -1077,7 +1274,7 @@ function compilerPromptTemplates(goalId: string, goalTitle?: string): Array<{ la
     {
       label: "Explain graph",
       icon: "graph",
-      prompt: `Summarize the current compute graph${goalClause}: runnable work, waiting thunks, blocked tasks, and the next control action.`,
+      prompt: `Summarize the current compute graph${goalClause}: runnable work, waiting continuations, blocked tasks, and the next control action.`,
     },
     {
       label: "Draft steering",
@@ -1098,6 +1295,16 @@ function commandTitle(kind: DraftKind): string {
   return "Plan first";
 }
 
+function draftKindLabel(kind: DraftKind): string {
+  if (kind === "goal") return "Goal draft";
+  if (kind === "search") return "Search request";
+  return "Plan draft";
+}
+
+function sessionDisplayLabel(sessionId: string): string {
+  return sessionId;
+}
+
 function commandPlaceholder(kind: DraftKind): string {
   if (kind === "goal") return "Describe the goal, evidence, constraints, and stop conditions";
   if (kind === "search") return "Ask what to search across memory, references, docs, or web";
@@ -1116,6 +1323,7 @@ function chatActivityPayload(props: {
   selectedGoalId: string;
   sessionId: string;
   mode: string;
+  activeDraft?: ActiveDraftState | null;
   latestResponse?: ChatResponse;
   chatRun?: ChatRunTrace;
   goalDraft?: JsonRecord | null;
@@ -1129,6 +1337,14 @@ function chatActivityPayload(props: {
     mode: props.mode,
     selected_goal_id: props.selectedGoalId || null,
     session_id: props.sessionId,
+    active_draft: props.activeDraft ? {
+      kind: props.activeDraft.kind,
+      mode: props.activeDraft.mode,
+      session_id: props.activeDraft.sessionId,
+      selected_goal_id: props.activeDraft.selectedGoalId || null,
+      saved_at: props.activeDraft.savedAt,
+      run_id: props.activeDraft.runId,
+    } : null,
     run: props.chatRun ?? props.latestResponse?.chat_run ?? null,
     backend: props.latestResponse?.chat_backend ?? props.chatRun?.backend ?? null,
     model_params: props.latestResponse?.model_params ?? props.chatRun?.model_params ?? null,
@@ -1151,14 +1367,14 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
   return (
     <div className="dashboard-grid">
       <MetricCard label="Active goals" value={String(props.goals.length)} detail="in progress" />
-      <MetricCard label="Runner lanes" value={String(runnerRows.length)} detail="available capacity" />
+      <MetricCard label="Runners" value={String(runnerRows.length)} detail="available capacity" />
       <MetricCard label="Human queue" value={String(approvalRows.length)} detail="waiting decisions" />
       <MetricCard label="Events" value={String(eventRows.length)} detail="recent signals" />
       <MetricCard label="Event sources" value={String(eventSourceRows.length)} detail="registered ingress" />
       <section className="panel span-2">
         <div className="section-heading">
           <h2>Recent goals</h2>
-          <span className="muted-small">Task graph</span>
+          <span className="muted-small">Open the work graph</span>
         </div>
         <GoalList goals={props.goals.slice(0, 6)} selectedGoalId={props.selectedGoalId} onSelect={props.onSelectGoal} />
       </section>
@@ -1171,7 +1387,7 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
           <OutcomeRow label="Approvals" value={approvalRows.length} tone={approvalRows.length ? "waiting-approval" : "done"} />
           <OutcomeRow label="Events" value={eventRows.length} tone={eventRows.length ? "runnable" : "done"} />
           <OutcomeRow label="Goal attention" value={attentionGoals} tone={attentionGoals ? "blocked" : "done"} />
-          <OutcomeRow label="Runner lanes" value={runnerRows.length} tone={runnerRows.length ? "running" : "pending"} />
+          <OutcomeRow label="Runners" value={runnerRows.length} tone={runnerRows.length ? "running" : "pending"} />
         </ul>
       </section>
       <EventSourcesPanel rows={eventSourceRows} />
@@ -1250,18 +1466,44 @@ function GoalList({ goals, selectedGoalId, onSelect }: { goals: GoalRow[]; selec
     <div className="goal-list">
       {goals.map((goal) => {
         const goalId = String(goal.goal_id ?? goal.id ?? "");
-        const done = Math.round(Number(goal.percent_done ?? 0) * 100);
+        const done = Math.round(numericProgress(goal.percent_done) * 100);
+        const status = stringValue(goal.status) || "unknown";
+        const state = goalOperatorState(goal);
+        const nextAction = goalNextAction(goal);
+        const openTasks = numberValue(goal.open_tasks) ?? 0;
+        const blockedTasks = numberValue(goal.blocked_tasks) ?? 0;
+        const failedTasks = numberValue(goal.failed_tasks) ?? 0;
+        const title = stringValue(goal.title) || friendlyRef(goalId) || "Untitled goal";
         return (
-          <button key={goalId || goal.title} type="button" className={clsx("goal-card", selectedGoalId === goalId && "active")} onClick={() => goalId && onSelect(goalId)}>
-            <div>
-              <strong>{goal.title || goalId || "Untitled goal"}</strong>
-              <span className={clsx("status-pill", statusTone(goal.status))}>{goal.status ?? "unknown"}</span>
+          <button
+            key={goalId || goal.title}
+            type="button"
+            className={clsx("goal-card", selectedGoalId === goalId && "active")}
+            aria-label={`Open ${title} work graph. ${state.label}. ${nextAction}`}
+            data-testid={`goal-card-${safeTestId(goalId || title)}`}
+            onClick={() => goalId && onSelect(goalId)}
+          >
+            <div className="goal-card-header">
+              <span>
+                <strong>{title}</strong>
+                {goalId && <small>{friendlyRef(goalId)}</small>}
+              </span>
+              <span className={clsx("operator-state-pill", stateTone(state.key))}>{state.label}</span>
             </div>
             <p>{goal.objective || "Objective pending."}</p>
             <div className="progress-line" aria-label={`${done}% complete`}>
               <span style={{ width: `${Math.max(0, Math.min(100, done))}%` }} />
             </div>
-            <small>{done}% complete · {goal.open_tasks ?? 0} open · {goal.blocked_tasks ?? 0} blocked</small>
+            <div className="goal-metrics" aria-label="Goal state summary">
+              <span><strong>{done}%</strong><small>complete</small></span>
+              <span><strong>{openTasks}</strong><small>open</small></span>
+              <span className={blockedTasks || failedTasks ? "attention" : ""}><strong>{blockedTasks + failedTasks}</strong><small>blocked or failed</small></span>
+              <span><strong>{statusLabel(status)}</strong><small>backend status</small></span>
+            </div>
+            <div className="goal-next-row">
+              <span>{nextAction}</span>
+              <strong>Open graph</strong>
+            </div>
           </button>
         );
       })}
@@ -1270,6 +1512,8 @@ function GoalList({ goals, selectedGoalId, onSelect }: { goals: GoalRow[]; selec
 }
 
 function SubgoalPlanPanel({ subgoals, source }: { subgoals: JsonRecord[]; source: string }) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selected = subgoals[selectedIndex] ?? subgoals[0];
   return (
     <section className="subgoal-panel">
       <div className="section-heading">
@@ -1279,15 +1523,67 @@ function SubgoalPlanPanel({ subgoals, source }: { subgoals: JsonRecord[]; source
         </div>
       </div>
       <div className="subgoal-list">
-        {subgoals.map((subgoal, index) => (
-          <article key={stringValue(subgoal.id) || stringValue(subgoal.subgoal_id) || `subgoal-${index}`} className="subgoal-card">
-            <strong>{stringValue(subgoal.title) || `Subgoal ${index + 1}`}</strong>
-            <p>{stringValue(subgoal.objective) || stringValue(subgoal.summary) || "Objective pending."}</p>
-            {(stringValue(subgoal.id) || stringValue(subgoal.subgoal_id)) && <small>{stringValue(subgoal.id) || stringValue(subgoal.subgoal_id)}</small>}
-          </article>
-        ))}
+        {subgoals.map((subgoal, index) => {
+          const id = subgoalId(subgoal);
+          const title = subgoalTitle(subgoal, index);
+          const objective = subgoalObjective(subgoal);
+          const status = stringValue(subgoal.status) || stringValue(subgoal.state) || "planned";
+          return (
+            <button
+              key={id || `subgoal-${index}`}
+              type="button"
+              className={clsx("subgoal-card", selectedIndex === index && "active")}
+              aria-pressed={selectedIndex === index}
+              aria-label={`Inspect subgoal ${title}`}
+              data-testid={`subgoal-card-${safeTestId(id || title)}`}
+              onClick={() => setSelectedIndex(index)}
+            >
+              <span className={clsx("status-pill", statusTone(status))}>{statusLabel(status)}</span>
+              <strong>{title}</strong>
+              <p>{objective}</p>
+              {id && <small>{friendlyRef(id)}</small>}
+            </button>
+          );
+        })}
       </div>
+      {selected && <SubgoalDetail subgoal={selected} index={selectedIndex} />}
     </section>
+  );
+}
+
+function SubgoalDetail({ subgoal, index }: { subgoal: JsonRecord; index: number }) {
+  const id = subgoalId(subgoal);
+  const doneCriteria = textList(subgoal.done_criteria ?? subgoal.acceptance_criteria ?? subgoal.evidence);
+  const constraints = textList(subgoal.constraints);
+  const initialTasks = rowsFrom(subgoal.initial_tasks ?? subgoal.tasks);
+  return (
+    <article className="subgoal-detail" data-testid="subgoal-detail">
+      <div>
+        <span className="goal-context-kicker">Selected subgoal</span>
+        <h4>{subgoalTitle(subgoal, index)}</h4>
+        <p>{subgoalObjective(subgoal)}</p>
+      </div>
+      <div className="subgoal-detail-grid">
+        <DetailList title="Evidence or done criteria" items={doneCriteria.length ? doneCriteria : ["Evidence requirements pending."]} />
+        <DetailList title="Constraints" items={constraints.length ? constraints : ["No explicit constraints projected."]} />
+        <DetailList
+          title="Seed tasks"
+          items={initialTasks.length ? initialTasks.map((task, taskIndex) => stringValue(task.title) || stringValue(task.role) || `Task ${taskIndex + 1}`) : ["No seed tasks projected."]}
+        />
+      </div>
+      {id && <span className="status-pill muted">{friendlyRef(id)}</span>}
+    </article>
+  );
+}
+
+function DetailList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="detail-list">
+      <strong>{title}</strong>
+      <ul>
+        {items.slice(0, 4).map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+      </ul>
+    </div>
   );
 }
 
@@ -1308,17 +1604,18 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
   const visibleCount = computeNodes.length ? filteredComputeNodes.length : filteredTasks.length;
   const totalCount = computeNodes.length ? computeNodes.length : taskCount;
   const graphUnit = computeNodes.length ? "compute nodes" : "tasks";
+  const continuationCount = props.snapshot ? continuationRowsFromSnapshot(props.snapshot).length : 0;
   return (
     <section className="panel graph-panel">
       <div className="section-heading">
         <div>
-          <h2>Technicolor task graph</h2>
-          <span className="muted-small">Workstreams, status, and dependencies</span>
+          <h2>Work graph</h2>
+          <span className="muted-small">Current state, next action, blockers, evidence, and dependencies</span>
         </div>
       </div>
       {props.snapshot && (
         <div className="graph-toolbar">
-          <div className="graph-filter" aria-label="Task graph filter">
+          <div className="graph-filter" aria-label="Work graph filter">
             {graphFilterOptions.map((option) => (
               <button
                 key={option.key}
@@ -1326,6 +1623,7 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
                 className={clsx("graph-filter-button", graphFilter === option.key && "active")}
                 aria-pressed={graphFilter === option.key}
                 title={option.detail}
+                data-testid={`graph-filter-${option.key}`}
                 onClick={() => setGraphFilter(option.key)}
               >
                 {option.label}
@@ -1335,6 +1633,8 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
           <span className="filter-count">Showing {visibleCount} of {totalCount} {graphUnit}</span>
         </div>
       )}
+      {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={taskCount} />}
+      {props.snapshot && <GraphStatusPanel counts={counts} taskCount={taskCount} />}
       {!props.goalId ? (
         <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
       ) : props.loading && !showingSubmittedDraft ? (
@@ -1356,12 +1656,16 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
       {subgoals.length > 0 && <SubgoalPlanPanel subgoals={subgoals} source={showingSubmittedDraft ? "submitted draft" : "goal projection"} />}
       {props.snapshot && (
         <>
-          <GraphStatusPanel counts={counts} taskCount={taskCount} />
-          <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={taskCount} compact />
-          <TaskSummary snapshot={props.snapshot} counts={counts} />
-          <ComputeGraphDetails snapshot={props.snapshot} />
-          <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />
+          {continuationCount > 0 && <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />}
           <CompilerControlPanel goalId={props.goalId} snapshot={props.snapshot} compact />
+          <details className="advanced-details">
+            <summary>
+              <span>Advanced graph details</span>
+              <small>Raw task counts and compute projection</small>
+            </summary>
+            <TaskSummary snapshot={props.snapshot} counts={counts} />
+            <ComputeGraphDetails snapshot={props.snapshot} />
+          </details>
         </>
       )}
     </section>
@@ -1369,12 +1673,15 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
 }
 
 function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onOpenGoalPicker: () => void }) {
+  const tasks = (props.snapshot?.agent_activity ?? []) as TaskRow[];
+  const counts = taskStatusCounts(tasks);
+  const continuationCount = props.snapshot ? continuationRowsFromSnapshot(props.snapshot).length : 0;
   return (
     <section className="panel">
       <div className="section-heading">
         <div>
-          <h2>Flow control</h2>
-          <span className="muted-small">Vote, steer, branch, restart, cancel, and resume durable work</span>
+          <h2>Goal controls</h2>
+          <span className="muted-small">Primary actions first; detailed flow tools are collapsed below</span>
         </div>
       </div>
       {!props.goalId ? (
@@ -1383,11 +1690,20 @@ function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; l
         <EmptyState title="Loading controls" detail="Fetching workflow projection." />
       ) : (
         <>
-          {props.snapshot && <TaskSummary snapshot={props.snapshot} counts={taskStatusCounts((props.snapshot.agent_activity ?? []) as TaskRow[])} />}
-          {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={taskStatusCounts((props.snapshot.agent_activity ?? []) as TaskRow[])} taskCount={((props.snapshot.agent_activity ?? []) as TaskRow[]).length} />}
-          {props.snapshot && <ComputeGraphDetails snapshot={props.snapshot} />}
+          {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={tasks.length} />}
+          {props.snapshot && <GraphStatusPanel counts={counts} taskCount={tasks.length} />}
+          {props.snapshot && continuationCount > 0 && <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />}
           <CompilerControlPanel goalId={props.goalId} snapshot={props.snapshot} />
-          <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />
+          {props.snapshot && (
+            <details className="advanced-details">
+              <summary>
+                <span>Advanced projection details</span>
+                <small>Raw task counts and compute graph rows</small>
+              </summary>
+              <TaskSummary snapshot={props.snapshot} counts={counts} />
+              <ComputeGraphDetails snapshot={props.snapshot} />
+            </details>
+          )}
         </>
       )}
     </section>
@@ -1405,7 +1721,7 @@ function graphFromTasks(tasks: TaskRow[]): { nodes: Node[]; edges: Edge[] } {
       className: clsx("task-node", statusTone(status)),
       position: { x: (Number(taskPayload(task).depth ?? index) % 4) * 280, y: Math.floor(index / 4) * 150 },
       data: {
-        label: `${color?.label ? `${color.label}: ` : ""}${task.title || id}\n${task.role ?? ""} · ${state.label} · ${status}`,
+        label: `${color?.label ? `${color.label}: ` : ""}${stringValue(task.title) || friendlyRef(id) || "Task"}\n${task.role ?? ""} · ${state.label} · ${statusLabel(status)}`,
       },
       style: {
         borderColor: safeHex(color?.hex),
@@ -1450,7 +1766,7 @@ function graphFromComputeGraph(graph: Record<string, unknown> | undefined, nodes
       className: clsx("task-node", statusTone(status)),
       position: { x: (index % 4) * 285, y: Math.floor(index / 4) * 150 },
       data: {
-        label: `${node.label || id}\n${kind} · ${state.label} · ${status}`,
+        label: `${stringValue(node.label) || friendlyRef(id) || "Compute node"}\n${kind} · ${state.label} · ${statusLabel(status)}`,
       },
       style: {
         borderColor: statusColorVar(status),
@@ -1521,10 +1837,10 @@ function ComputeGraphDetails({ snapshot }: { snapshot: GoalSnapshot }) {
         empty="Active nodes pending."
         headers={["Node", "Kind", "Status", "Wait / Continuation"]}
         rows={(openRows.length ? openRows : nodes.slice(0, 8)).map((node) => [
-          stringValue(node.label) || stringValue(node.id) || "node",
+          stringValue(node.label) || friendlyRef(stringValue(node.id)) || "node",
           stringValue(node.kind) || "unknown",
-          stringValue(node.status) || "unknown",
-          [stringValue(node.wait_ref?.kind), stringValue(node.wait_ref?.reference), stringValue(node.continuation_id)].filter(Boolean).join(" · "),
+          statusLabel(stringValue(node.status) || "unknown"),
+          [stringValue(node.wait_ref?.kind), friendlyRef(stringValue(node.wait_ref?.reference)), friendlyRef(stringValue(node.continuation_id))].filter(Boolean).join(" · "),
         ])}
       />
     </div>
@@ -1697,7 +2013,7 @@ function nextActionSummary(counts: Map<string, number>, taskCount: number, snaps
   if (runnable > 0) {
     return {
       title: "Dispatch runnable frontier",
-      detail: `${runnable} tasks are ready for the next runner lane.`,
+      detail: `${runnable} tasks are ready for an available runner.`,
       state: "running",
       stateLabel: "Running",
     };
@@ -1727,23 +2043,26 @@ function GraphStatusPanel({ counts, taskCount }: { counts: Map<string, number>; 
   const done = countForStatusToken(counts, "done");
   const attention = failed + blocked + approvals + continuations;
   return (
-    <div className="graph-status-panel" aria-label="Task graph status legend">
+    <div className="graph-status-panel" aria-label="Work graph status">
       <div className={clsx("graph-attention", attention > 0 ? "needs-attention" : "stable")}>
         <strong>{attention > 0 ? `${attention} need attention` : "All tasks steady"}</strong>
         <span>{taskCount} tasks · {running} running · {done} done</span>
       </div>
       <OperatorStateStrip counts={counts} />
-      <div className="status-legend" aria-label="Graph legend">
-        {statusLegend.map((item) => (
-          <span key={item.token} className="legend-item">
-            <span className={clsx("legend-swatch", `status-${item.token}`)} />
-            <span>
-              <strong>{item.label}</strong>
-              <small>{item.detail}</small>
+      <details className="legend-details">
+        <summary>Status legend</summary>
+        <div className="status-legend" aria-label="Graph legend">
+          {statusLegend.map((item) => (
+            <span key={item.token} className="legend-item">
+              <span className={clsx("legend-swatch", `status-${item.token}`)} />
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </span>
             </span>
-          </span>
-        ))}
-      </div>
+          ))}
+        </div>
+      </details>
     </div>
   );
 }
@@ -1855,10 +2174,10 @@ function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: Go
           <div key={row.key} className="continuation-card">
             <div className="continuation-copy">
               <strong>{row.reason}</strong>
-              <span>{row.status} · thunk {row.thunkId}</span>
-              {row.taskId && <small>task {row.taskId}</small>}
-              {row.continuationId && <small>continuation {row.continuationId}</small>}
-              {row.waitReference && <small>{row.waitKind || "wait_ref"} · {row.waitReference}</small>}
+              <span title={row.thunkId}>{statusLabel(row.status)} · wait {friendlyRef(row.thunkId)}</span>
+              {row.taskId && <small title={row.taskId}>task {friendlyRef(row.taskId)}</small>}
+              {row.continuationId && <small title={row.continuationId}>continuation {friendlyRef(row.continuationId)}</small>}
+              {row.waitReference && <small title={row.waitReference}>{row.waitKind || "wait_ref"} · {friendlyRef(row.waitReference)}</small>}
             </div>
             <label>
               Response summary
@@ -1910,11 +2229,11 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
   const [thunkReason, setThunkReason] = useState("Need an operator decision before resuming the task graph.");
   const [thunkInput, setThunkInput] = useState("Provide the decision or missing input.");
   const [thunkTimeoutSeconds, setThunkTimeoutSeconds] = useState(3600);
-  const [mechanismTitle, setMechanismTitle] = useState("Choose the next implementation lane");
+  const [mechanismTitle, setMechanismTitle] = useState("Choose the next implementation path");
   const [mechanismKind, setMechanismKind] = useState("approval_vote");
   const [mechanismTarget, setMechanismTarget] = useState("subgoal_selection");
   const [mechanismReason, setMechanismReason] = useState("Use a coordinator-owned round to choose the next task graph move.");
-  const [mechanismProposals, setMechanismProposals] = useState("codex-fast | Fast Codex implementation lane | planner\nreview-deep | Deep reviewer-first lane | planner");
+  const [mechanismProposals, setMechanismProposals] = useState("codex-fast | Fast Codex implementation path | planner\nreview-deep | Deep reviewer-first path | planner");
   const [ballotRoundId, setBallotRoundId] = useState("");
   const [ballotProposalId, setBallotProposalId] = useState("");
   const [ballotRationale, setBallotRationale] = useState("Best fit for the current goal evidence.");
@@ -1932,20 +2251,93 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
   });
   const disabled = !goalId || mutation.isPending;
   const run = (label: string, action: () => Promise<unknown>) => mutation.mutate({ label, run: action });
+  const counts = taskStatusCounts(tasks);
+  const nextAction = snapshot ? nextActionSummary(counts, tasks.length, snapshot) : null;
+  const failed = countForStatusToken(counts, "failed");
+  const blocked = countForStatusToken(counts, "blocked");
+  const approvals = countForStatusToken(counts, "waiting-approval");
+  const continuations = snapshot ? continuationRowsFromSnapshot(snapshot).length : 0;
+  const accepted = countForStatusToken(counts, "done");
+  const primaryTaskId = steerTaskId || firstTaskId;
+  const runSteering = (label: string, kind: string, reason: string, topic = "", check = reviewCheck) => run(
+    label,
+    () => steer(goalId, steeringPayload({ goalId, operator, taskId: primaryTaskId, kind, topic, reason, reviewCheck: check })),
+  );
 
   return (
     <div className={clsx("compiler-control-panel", compact && "compact")}>
       <div className="section-heading">
         <div>
-          <h3>Compiler controls</h3>
-          <span className="muted-small">Goal ranking, steering, flow control, thunks, and mechanism rounds</span>
+          <h3>Goal controls</h3>
+          <span className="muted-small">Primary actions first; branching, restart, waits, and decision rounds stay in advanced controls.</span>
         </div>
         {result ? <InspectButton title="Last control action" payload={result} buttonLabel="Inspect result" /> : <span className="status-pill muted">Action result pending</span>}
       </div>
+      <div className="control-primary-grid" aria-label="Primary goal controls">
+        <section className="primary-action-card">
+          <span className="goal-context-kicker">Current state</span>
+          <h4>{nextAction?.stateLabel ?? "Waiting"}</h4>
+          <p>{nextAction?.title ?? "Projection pending"}</p>
+          <small>{nextAction?.detail ?? "The coordinator has not projected task state yet."}</small>
+        </section>
+        <section className="primary-action-card">
+          <span className="goal-context-kicker">Blockers</span>
+          <h4>{failed + blocked + approvals}</h4>
+          <p>{failed} failed · {blocked} blocked · {approvals} approvals</p>
+          <small>{continuations} waiting continuations</small>
+        </section>
+        <section className="primary-action-card">
+          <span className="goal-context-kicker">Evidence</span>
+          <h4>{accepted}/{tasks.length || 0}</h4>
+          <p>accepted task evidence</p>
+          <small>{tasks.length ? "Use review when evidence is ready." : "Task evidence pending."}</small>
+        </section>
+        <section className="primary-action-card action-card">
+          <span className="goal-context-kicker">Primary actions</span>
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={disabled}
+              data-testid="primary-review-evidence"
+              onClick={() => runSteering("review evidence", "evaluate_goal_completion", "Review whether current durable evidence satisfies the goal done criteria.")}
+            >
+              <ShieldCheck size={16} />
+              Review evidence
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={disabled}
+              data-testid="primary-request-review"
+              onClick={() => runSteering("request review", "request_standard_review", "Run a focused standard review against the current task evidence.", "current task evidence")}
+            >
+              <CheckCircle2 size={16} />
+              Request review
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={disabled}
+              data-testid="primary-request-research"
+              onClick={() => runSteering("request research", "request_research", "Find the highest-risk missing information before the next control action.", "highest-risk missing information")}
+            >
+              <Search size={16} />
+              Research gap
+            </button>
+          </div>
+        </section>
+      </div>
       <div className="control-grid">
+        <details className="advanced-control-panel span-2">
+          <summary>
+            <span>Advanced controls</span>
+            <small>Priority, steering fields, restart, branch, wait states, decision rounds, and ballots</small>
+          </summary>
+          <div className="control-grid nested">
         <section className="control-card">
           <div className="section-heading">
-            <h4>Vote</h4>
+            <h4>Goal priority</h4>
             <Vote size={17} />
           </div>
           <div className="form-grid two">
@@ -1984,7 +2376,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
 
         <section className="control-card">
           <div className="section-heading">
-            <h4>Steer</h4>
+            <h4>Steering directive</h4>
             <ShieldCheck size={17} />
           </div>
           <div className="form-grid two">
@@ -2002,7 +2394,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             </label>
             <label>
               Task
-              <input value={steerTaskId} onChange={(event) => setSteerTaskId(event.target.value)} placeholder={firstTaskId || "optional task id"} />
+              <input value={steerTaskId} onChange={(event) => setSteerTaskId(event.target.value)} placeholder="optional task id" title={firstTaskId || undefined} />
             </label>
             <label>
               Review check
@@ -2026,7 +2418,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
 
         <section className="control-card">
           <div className="section-heading">
-            <h4>Flow</h4>
+            <h4>Restart or branch</h4>
             <Split size={17} />
           </div>
           <div className="form-grid two">
@@ -2051,7 +2443,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             </label>
             <label>
               Task / target task
-              <input value={flowMode === "branch" ? branchTargetTaskId : restartTaskId} onChange={(event) => flowMode === "branch" ? setBranchTargetTaskId(event.target.value) : setRestartTaskId(event.target.value)} placeholder={firstTaskId || "optional task id"} />
+              <input value={flowMode === "branch" ? branchTargetTaskId : restartTaskId} onChange={(event) => flowMode === "branch" ? setBranchTargetTaskId(event.target.value) : setRestartTaskId(event.target.value)} placeholder="optional task id" title={firstTaskId || undefined} />
             </label>
             <label>
               Candidates
@@ -2080,14 +2472,14 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
               {flowMode === "branch" && <GitBranch size={16} />}
               {flowMode === "select_branch" && <CheckCircle2 size={16} />}
               {flowMode === "cancel" && <XCircle size={16} />}
-              Run flow action
+              {flowActionButtonLabel(flowMode)}
             </button>
           </div>
         </section>
 
         <section className="control-card">
           <div className="section-heading">
-            <h4>Thunk</h4>
+            <h4>Wait state</h4>
             <PauseCircle size={17} />
           </div>
           <div className="form-grid two">
@@ -2123,7 +2515,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
 
         <section className="control-card span-2">
           <div className="section-heading">
-            <h4>Mechanism round</h4>
+            <h4>Decision round</h4>
             <Vote size={17} />
           </div>
           <div className="form-grid three">
@@ -2132,15 +2524,15 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
               <input value={mechanismTitle} onChange={(event) => setMechanismTitle(event.target.value)} />
             </label>
             <label>
-              Mechanism
+              Decision type
               <select value={mechanismKind} onChange={(event) => setMechanismKind(event.target.value)}>
-                {mechanismKinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+                {mechanismKinds.map((kind) => <option key={kind} value={kind}>{statusLabel(kind)}</option>)}
               </select>
             </label>
             <label>
               Target
               <select value={mechanismTarget} onChange={(event) => setMechanismTarget(event.target.value)}>
-                {mechanismTargets.map((target) => <option key={target} value={target}>{target}</option>)}
+                {mechanismTargets.map((target) => <option key={target} value={target}>{statusLabel(target)}</option>)}
               </select>
             </label>
           </div>
@@ -2156,13 +2548,13 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             <button type="button" className="primary-button" disabled={disabled || !mechanismTitle.trim()} onClick={() => run("start mechanism", () => mechanismStart(goalId, mechanismStartPayload({ goalId, title: mechanismTitle, mechanism: mechanismKind, target: mechanismTarget, reason: mechanismReason, proposals: mechanismProposals })))}>
               Start round
             </button>
-            <InspectButton title="Mechanism proposal format" payload={{ format: "label | description | proposer", example: mechanismProposals }} buttonLabel="Format" />
+            <InspectButton title="Decision proposal format" payload={{ format: "label | description | proposer", example: mechanismProposals }} buttonLabel="Format" />
           </div>
         </section>
 
         <section className="control-card">
           <div className="section-heading">
-            <h4>Ballot</h4>
+            <h4>Decision ballot</h4>
             <FileJson size={17} />
           </div>
           <label>
@@ -2181,6 +2573,8 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             Cast ballot
           </button>
         </section>
+          </div>
+        </details>
       </div>
       {mutation.error && <span className="error-text">{mutation.error.message}</span>}
     </div>
@@ -2263,6 +2657,13 @@ function steeringKindPayload(kind: string, topic: string, reason: string, review
     return { kind, role: "reviewer", prompt: topic || reason, reason };
   }
   return { kind: "evaluate_goal_completion", reason };
+}
+
+function flowActionButtonLabel(flowMode: string): string {
+  if (flowMode === "branch") return "Create branch candidates";
+  if (flowMode === "select_branch") return "Select branch";
+  if (flowMode === "cancel") return "Cancel goal";
+  return "Restart work";
 }
 
 function flowAction(input: {
@@ -2416,6 +2817,90 @@ function normalizeStatus(status: unknown): string {
     .replace(/[^a-z0-9-]/g, "") || "unknown";
 }
 
+function statusLabel(status: unknown): string {
+  return normalizeStatus(status).split("-").map((part) => part ? `${part[0]?.toUpperCase()}${part.slice(1)}` : part).join(" ");
+}
+
+function goalOperatorState(goal: GoalRow): OperatorStateDefinition {
+  const failed = numberValue(goal.failed_tasks) ?? 0;
+  const blocked = numberValue(goal.blocked_tasks) ?? 0;
+  if (failed > 0 || blocked > 0) {
+    return operatorStateDefinitions.find((definition) => definition.key === "action-needed") ?? operatorStateForStatus("blocked");
+  }
+  return operatorStateForStatus(goal.status);
+}
+
+function goalNextAction(goal: GoalRow): string {
+  const failed = numberValue(goal.failed_tasks) ?? 0;
+  const blocked = numberValue(goal.blocked_tasks) ?? 0;
+  const openTasks = numberValue(goal.open_tasks) ?? 0;
+  const state = goalOperatorState(goal);
+  if (failed > 0 || blocked > 0) {
+    return "Review blockers";
+  }
+  if (state.key === "reviewing") {
+    return "Review evidence";
+  }
+  if (state.key === "running") {
+    return "Monitor active work";
+  }
+  if (state.key === "satisfied") {
+    return "Confirm satisfaction";
+  }
+  return openTasks > 0 ? "Dispatch or wait" : "Refresh projection";
+}
+
+function friendlyRef(value: unknown): string {
+  const ref = shortRef(value);
+  return ref ? `Ref ${ref}` : "";
+}
+
+function shortRef(value: unknown): string {
+  const raw = stringValue(value);
+  if (!raw) {
+    return "";
+  }
+  const uuid = raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0];
+  const segments = raw.split(/[/:#?]+/).filter(Boolean);
+  const candidate = uuid ?? segments[segments.length - 1] ?? raw;
+  if (candidate.length <= 16) {
+    return candidate;
+  }
+  return `${candidate.slice(0, 8)}...${candidate.slice(-4)}`;
+}
+
+function safeTestId(value: unknown): string {
+  return (shortRef(value) || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function subgoalId(subgoal: JsonRecord): string {
+  return stringValue(subgoal.id) || stringValue(subgoal.subgoal_id);
+}
+
+function subgoalTitle(subgoal: JsonRecord, index: number): string {
+  return stringValue(subgoal.title) || stringValue(subgoal.name) || friendlyRef(subgoalId(subgoal)) || `Subgoal ${index + 1}`;
+}
+
+function subgoalObjective(subgoal: JsonRecord): string {
+  return stringValue(subgoal.objective) || stringValue(subgoal.summary) || stringValue(subgoal.description) || "Objective pending.";
+}
+
+function textList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === "string") {
+        return item.trim();
+      }
+      if (isRecord(item)) {
+        return stringValue(item.title) || stringValue(item.description) || stringValue(item.summary);
+      }
+      return String(item ?? "").trim();
+    }).filter(Boolean);
+  }
+  const text = stringValue(value);
+  return text ? [text] : [];
+}
+
 function MemoryView({ selectedGoalId }: { selectedGoalId: string }) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
@@ -2529,7 +3014,7 @@ function MemoryView({ selectedGoalId }: { selectedGoalId: string }) {
           <div className="section-heading">
             <h2>Replace memory</h2>
             <span className={clsx("status-pill", selectedGoalId ? "status-running" : "status-pending")}>
-              {selectedGoalId ? selectedGoalId.slice(0, 8) : "Select goal"}
+              {selectedGoalId ? friendlyRef(selectedGoalId) : "Select goal"}
             </span>
           </div>
           <label>
@@ -2856,7 +3341,7 @@ function ApprovalList({
           <div key={id || JSON.stringify(row)} className="approval-card">
             <div>
               <strong>{String(row.risk ?? row.title ?? "Approval")}</strong>
-              <span>{String(row.status ?? "pending")} · {String(row.goal_id ?? "")}</span>
+              <span>{statusLabel(row.status ?? "pending")} · {friendlyRef(row.goal_id ?? goalId)}</span>
             </div>
             <button
               type="button"
@@ -2876,14 +3361,24 @@ function ApprovalList({
 function RunnersView({ overview }: { overview?: Overview }) {
   const rows = rowsFrom(at(overview, ["runner_status", "data"]) ?? overview?.runner_status);
   const tableRows = rows.map(runnerTableRow);
+  const statuses = rows.map(runnerStatusFromRow);
+  const active = statuses.filter((status) => ["active", "running", "dispatchable"].includes(status)).length;
+  const constrained = statuses.filter((status) => ["full", "stale", "unavailable", "offline"].includes(status)).length;
+  const totalCapacity = rows.reduce((sum, row) => sum + (numberValue(row.capacity_remaining) ?? 0), 0);
   return (
     <section className="panel">
       <div className="section-heading">
         <div>
           <h2>Runner fleet</h2>
-          <span className="muted-small">Capacity and endpoints</span>
+          <span className="muted-small">Current runner state, available capacity, and endpoints</span>
         </div>
         <Server size={18} />
+      </div>
+      <div className="runner-state-strip" aria-label="Runner fleet state">
+        <span className="runner-state-card"><strong>{rows.length}</strong><small>registered</small></span>
+        <span className="runner-state-card"><strong>{active}</strong><small>active</small></span>
+        <span className={clsx("runner-state-card", constrained > 0 && "attention")}><strong>{constrained}</strong><small>constrained</small></span>
+        <span className="runner-state-card"><strong>{totalCapacity}</strong><small>free slots</small></span>
       </div>
       <SimpleTable
         empty="Runners pending."
@@ -2892,6 +3387,11 @@ function RunnersView({ overview }: { overview?: Overview }) {
       />
     </section>
   );
+}
+
+function runnerStatusFromRow(row: JsonRecord): string {
+  const registration = isRecord(row.registration) ? row.registration : row;
+  return normalizeStatus(stringValue(row.status) || (row.stale ? "stale" : row.full ? "full" : row.dispatchable === false ? "unavailable" : stringValue(registration.status) || "active"));
 }
 
 function runnerTableRow(row: JsonRecord): string[] {
@@ -2908,7 +3408,7 @@ function runnerTableRow(row: JsonRecord): string[] {
     || runnerId;
   const nodeId = stringValue(row.node_id) || stringValue(registration.node_id) || "unknown node";
   const endpoint = stringValue(row.endpoint) || stringValue(registration.endpoint) || "no endpoint advertised";
-  const status = stringValue(row.status) || (row.stale ? "stale" : row.full ? "full" : row.dispatchable === false ? "unavailable" : "active");
+  const status = runnerStatusFromRow(row);
   const maxConcurrency = numberValue(row.max_concurrency ?? registration.max_concurrency);
   const remaining = numberValue(row.capacity_remaining);
   const running = numberValue(row.running_tasks);
@@ -2920,9 +3420,9 @@ function runnerTableRow(row: JsonRecord): string[] {
         ? `${running} running`
         : "unknown";
   return [
-    displayName === runnerId ? runnerId : `${displayName} (${runnerId})`,
+    displayName === runnerId ? friendlyRef(runnerId) || "Unnamed runner" : `${displayName} (${friendlyRef(runnerId) || runnerId})`,
     nodeId,
-    status,
+    statusLabel(status),
     capacity,
     endpoint,
   ];

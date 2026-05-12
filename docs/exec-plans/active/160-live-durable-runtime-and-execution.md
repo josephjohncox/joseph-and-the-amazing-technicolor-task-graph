@@ -36,7 +36,7 @@ The completed plans under `docs/exec-plans/completed/` remain the subsystem evid
 - `140-control-gateway-spa`: gateway and SPA scaffold are complete; full Compose browser E2E and token-broker smoke move to `UIE2E`.
 - `150-durable-planning-mode`: durable planning mode is complete with no residual follow-ups.
 
-## Subagent Lanes
+## Durable Child Task Workstreams
 
 - `RuntimeVerifier`: owns Restate restart/resume tests, durable projection idempotency, metrics, and traces.
 - `CodexWorker`: owns live Codex App Server execution, Codex MCP fallback, and replayable fixtures.
@@ -46,10 +46,10 @@ The completed plans under `docs/exec-plans/completed/` remain the subsystem evid
 - `UIE2E`: owns browser-level Compose workflows for goals, task graph, memory edits, approvals, runners, and event sources.
 - `ReleaseHardening`: owns GitHub Release, Helm chart, kind/k3d, and published smoke evidence.
 - `ProtocolSDK`: owns Buf-generated Rust and TypeScript SDK target selection and generation.
-- `Reviewer`: reviews each lane for correctness, security, testing depth, and public-contract drift.
+- `Reviewer`: reviews each workstream for correctness, security, testing depth, and public-contract drift.
 - `Unifier`: joins accepted lane outputs and decides whether the master plan can be moved to completed.
 
-Workers in these lanes use COAT durable child tasks. They must not use hidden native Codex, Claude Code, Agents SDK, or MCP subagent spawning. Any request for more work returns `ChildTaskRequest` values for coordinator approval.
+Workers in these workstreams use COAT durable child tasks. They must not use hidden native Codex, Claude Code, Agents SDK, or MCP subagent spawning. Any request for more work returns `ChildTaskRequest` values for coordinator approval.
 
 ## Workstreams
 
@@ -77,7 +77,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Evidence 2026-05-11: `sidecars/codex-runner-ts` now has `mcp-replay` mode and `examples/codex-mcp-fallback-replay.json`, so Codex MCP fallback parsing, diagnostics, and structured result extraction are covered by deterministic CI tests.
 - Capture replay fixtures with thread IDs, checkpoint refs, git refs, artifact manifests, structured results, and diagnostics.
 - Verify live provider profiles after auth setup is exercised on real nodes, including Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face, and OpenAI-compatible gateways.
-- Evidence 2026-05-11: `/verify` now returns provider-profile entries with explicit `verified`, `skipped`, or `failed` state so unavailable live lanes produce reviewable skipped evidence instead of silent absence.
+- Evidence 2026-05-11: `/verify` now returns provider-profile entries with explicit `verified`, `skipped`, or `failed` state so unavailable live provider routes produce reviewable skipped evidence instead of silent absence.
 - Keep staff-engineer live execution second-phase until current `@ctxr/kit` and `@ctxr/agent-staff-engineer` behavior, isolated target repo install, tracker auth, and Claude Code auth distribution are verified.
 - Add a live staff-engineer issue-to-PR smoke test only after those staff-engineer gates pass.
 
@@ -140,8 +140,8 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Run published binary smoke and Helm chart smoke after the first GitHub Release and record evidence in `docs/operations/releases.md`.
 - Evidence 2026-05-11: `.github/workflows/release-binaries.yml` and `.github/workflows/release-helm.yml` now include published-asset smoke jobs; `Makefile` exposes `release-binary-smoke` and `release-helm-smoke` for local/operator replay of those checks.
 - Evidence 2026-05-11: CI, release-binary, and release-Helm workflows now use stable Rust cache keys plus `sccache`; GHCR publishing uses both GitHub Actions BuildKit cache and registry-backed `jattg-build-cache` refs; Rust and Node Dockerfiles use BuildKit cache mounts for target and npm caches.
-- Evidence 2026-05-11: release binaries now build Linux ARM on the native `ubuntu-22.04-arm` runner and macOS ARM on `macos-latest`; CI adds a cached runner-target compatibility lane for `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`.
-- Evidence 2026-05-11: GHCR image publishing can now target a single image or image group; the release workflow keeps Rust service/toolbox publishing in one cache-sharing lane and fans Node sidecar images out into parallel lanes.
+- Evidence 2026-05-11: release binaries now build Linux ARM on the native `ubuntu-22.04-arm` runner and macOS ARM on `macos-latest`; CI adds a cached runner-target compatibility job matrix for `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`.
+- Evidence 2026-05-11: GHCR image publishing can now target a single image or image group; the release workflow keeps Rust service/toolbox publishing in one cache-sharing job and fans Node sidecar images out into parallel jobs.
 - Evidence 2026-05-11: Rust service release tags now share one multi-binary service image build; `COAT_SERVICE_BIN` selects the process, and the entrypoint preserves compatibility by mapping known `BIND_ADDR` ports to service binaries.
 - Promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
 - Add provider overlays after the first target is chosen; the first executor proof remains kind/k3d.
@@ -192,7 +192,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
 - `EventOps`: run event-gateway projection proof against full Compose or cluster topology, reusing the local projection smoke as the fast path.
 - `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
-- `UIE2E`: fill the PR-gated `scenarios/e2e` lane with full Compose browser workflows for goals, memory, approvals, runners, and events.
+- `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events.
 - `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.
 - `ReleaseHardening`: run the first published binary and Helm chart smoke and record evidence.
 - `ReleaseHardening`: promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
@@ -209,7 +209,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - A kind/k3d executor Job runs from coordinator-approved state through the sandbox-runner provision API, is watched to completion, returns structured result and attestation evidence, and is projected into goal-store.
 - SQS LocalStack proves durable inbound and outbound event/notification behavior.
 - Event gateway proof runs against Compose or cluster topology.
-- Live provider verification records one profile result per enabled provider lane.
+- Live provider verification records one profile result per enabled provider route.
 - Staff-engineer remains gated until package behavior, isolated target repo install, tracker auth, and Claude Code auth distribution are verified.
 - Live worker outputs are captured as reviewer/validator fixtures with git checkpoint/worktree evidence where branch workflows are involved.
 - Browser E2E proves operator workflows against backend APIs rather than

@@ -12,6 +12,7 @@ type JsonRecord = Record<string, unknown>;
 type FixtureState = {
   actions: Array<{ handler: string; body: JsonRecord }>;
   freezeChatSession: boolean;
+  requestCounts: Record<string, number>;
   submittedGoalSpec: JsonRecord | null;
 };
 
@@ -24,38 +25,80 @@ test.describe("COAT control-plane browser flows", () => {
     }, [selectedGoalStorageKey, themeStorageKey]);
   });
 
-  test("creates a goal draft, submits it, and shows projected subgoals", async ({ page }) => {
+  test("shows chat scope, reviews or discards goal drafts, submits, and refreshes the selected goal", async ({ page }) => {
     const state = await installGatewayFixtures(page);
 
     await page.goto("/");
+    await expectNoAmbiguousLaneCopy(page);
+    await expect(page.locator(".outcome-meta")).toContainText("Operator workspace");
+    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: none");
+    await expect(page.locator(".outcome-meta")).toContainText("Active draft: none");
+    await expect(page.locator(".outcome-meta")).toContainText("Session: draft_plan · operator:default");
     await expectNoCriticalOrSeriousAxeViolations(page, "initial operator console");
-    await page.getByRole("group", { name: "Draft target" }).getByRole("button", { name: "Goal" }).click();
-    await sendComposerMessage(page, "Submit browser E2E lane with deterministic mocked gateway evidence.");
 
-    await expect(page.getByText("Goal draft ready")).toBeVisible();
+    await page.getByRole("group", { name: "Draft target" }).getByRole("button", { name: "Goal" }).click();
+    await expect(page.locator(".outcome-meta")).toContainText("Session: draft_goal · operator:default");
+
+    await sendComposerMessage(page, "Discard this browser E2E goal draft after review.");
+
+    await expect(page.locator(".outcome-meta")).toContainText("Active draft: Goal draft · operator:default");
+    await expect(page.getByText("Saved Goal draft")).toBeVisible();
+    await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Review draft" }).click();
+    const reviewDialog = page.getByRole("dialog", { name: "GoalSpec draft" });
+    await expect(reviewDialog).toContainText("Submitted browser E2E task");
+    await expect(reviewDialog).toContainText("acceptance_evidence");
+    await reviewDialog.getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Discard draft" }).click();
+    await expect(page.locator(".draft-action-bar")).toBeHidden();
+
+    await sendComposerMessage(page, "Submit browser E2E task with deterministic mocked gateway evidence.");
+    await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
+    const draftEditor = page.locator(".goal-draft-editor");
+    await expect(draftEditor).toContainText("Edit draft");
+    await draftEditor.getByLabel("Objective").fill("Edited browser E2E task with deterministic mocked gateway evidence.");
     await page.getByRole("button", { name: "Submit goal" }).click();
 
     await expect(page).toHaveURL(new RegExp(`goal=${submittedGoal}`));
-    await expect(page.getByRole("heading", { name: "Technicolor task graph", exact: true })).toBeVisible();
-    await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E lane");
-    await expect(page.getByText("Validate mocked gateway fixtures")).toBeVisible();
-    expect(state.submittedGoalSpec?.objective).toContain("Submit browser E2E lane");
+    await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(1);
+    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Submitted browser E2E task");
+    await expect(page.locator(".outcome-meta")).toContainText("Active draft: Goal draft · operator:default");
+    await expect(page.getByText("Saved Goal draft")).toBeVisible();
+    await expect(page.getByText("Submitted Ref 018f8f2f")).toBeVisible();
+    await expect(page.getByText("Submitted goal is syncing")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Work graph", exact: true })).toBeVisible();
+    await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E task");
+    await page.locator(".goal-context-trigger").click();
+    await expect(page.locator(".goal-picker")).toContainText("Submitted browser E2E task");
+    await page.keyboard.press("Escape");
+    await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(3);
+    await openPrimaryNav(page, "Work Graph");
+    await expect(subgoalCard(page, "Validate mocked gateway fixtures")).toBeVisible();
+    await page.locator(".goal-context-trigger").click();
+    await page.getByRole("button", { name: "Clear goal" }).click();
+    await expect(page.locator(".outcome-meta")).toContainText("Session: draft_goal · operator:default");
+    await expect(page.getByText("Edited browser E2E task with deterministic mocked gateway evidence.")).toBeVisible();
+    await expect(page.getByText("Goal draft ready. Review the fields, then submit or discard it.").first()).toBeVisible();
+    expect(state.submittedGoalSpec?.objective).toContain("Edited browser E2E task");
   });
 
   test("switches selected goals from the top bar and updates subgoal visibility", async ({ page }) => {
     await installGatewayFixtures(page);
 
     await page.goto(`/?goal=${goalA}`);
-    await page.getByRole("button", { name: "Task Graph" }).click();
-    await expect(page.getByText("Coordinator truth boundary")).toBeVisible();
+    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Baseline durable goal");
+    await expect(page.locator(".outcome-meta")).toContainText(`Session: draft_plan · goal:${goalA}`);
+    await openPrimaryNav(page, "Work Graph");
+    await expect(subgoalCard(page, "Coordinator truth boundary")).toBeVisible();
 
     await page.locator(".goal-context-trigger").click();
     await page.getByText("Branch visibility goal").click();
 
     await expect(page).toHaveURL(new RegExp(`goal=${goalB}`));
     await expect(page.locator(".goal-context-trigger")).toContainText("Branch visibility goal");
-    await expect(page.getByText("Branch fanout review")).toBeVisible();
-    await expect(page.getByText("Coordinator truth boundary")).toBeHidden();
+    await expect(subgoalCard(page, "Branch fanout review")).toBeVisible();
+    await expect(subgoalCard(page, "Coordinator truth boundary")).toBeHidden();
   });
 
   test("supports keyboard focus for goal picker, chat drafting, and flow controls", async ({ page }) => {
@@ -76,7 +119,7 @@ test.describe("COAT control-plane browser flows", () => {
 
     await expect(page).toHaveURL(new RegExp(`goal=${goalB}`));
     await expect(goalPickerTrigger).toContainText("Branch visibility goal");
-    await expect(page.getByRole("button", { name: /Branch visibility goal waiting-input/ })).toBeVisible();
+    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Branch visibility goal");
 
     const goalDraftButton = page.getByRole("group", { name: "Draft target" }).getByRole("button", { name: "Goal" });
     await goalDraftButton.focus();
@@ -93,20 +136,21 @@ test.describe("COAT control-plane browser flows", () => {
     await sendButton.focus();
     await expect(sendButton).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(page.getByText("Goal draft ready")).toBeVisible();
+    await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "Flow Control" }).focus();
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Goal Controls", exact: true }).focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("heading", { name: "Flow control" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Goal Controls" })).toBeVisible();
+    await page.getByText("Advanced controls", { exact: true }).click();
 
-    const flowCard = page.locator(".control-card").filter({ has: page.getByRole("heading", { name: "Flow", exact: true }) });
+    const flowCard = page.locator(".control-card").filter({ has: page.getByRole("heading", { name: "Restart or branch" }) });
     const flowAction = flowCard.locator("select").first();
     await flowAction.focus();
     await expect(flowAction).toBeFocused();
     await flowAction.selectOption("branch");
     await expect(flowCard.locator('label:has-text("Candidates") input')).toBeEnabled();
 
-    const runFlowAction = flowCard.getByRole("button", { name: "Run flow action" });
+    const runFlowAction = flowCard.getByRole("button", { name: "Create branch candidates" });
     await runFlowAction.focus();
     await expect(runFlowAction).toBeFocused();
     await page.keyboard.press("Enter");
@@ -117,38 +161,74 @@ test.describe("COAT control-plane browser flows", () => {
     const state = await installGatewayFixtures(page);
 
     await page.goto(`/?goal=${goalA}`);
-    await page.getByRole("button", { name: "Task Graph" }).click();
+    await openPrimaryNav(page, "Work Graph");
+    await expectNoAmbiguousLaneCopy(page);
 
     await expect(page.getByTestId("rf__node-thunk-approval-1")).toContainText("Action needed: approve sandbox profile");
     await expect(page.getByTestId("rf__node-fork-reviewer")).toContainText("Forked reviewer branch");
+    await expect(page.locator(".graph-status-panel")).toContainText("need attention");
+    await expect(page.locator(".evidence-next-panel")).toContainText("Evidence");
+    await expect(page.locator(".evidence-next-panel")).toContainText("Next action");
+    await expect(page.locator(".evidence-next-panel")).toContainText("Review action-needed work");
     await expect(page.getByLabel("Continuations")).toContainText("1 waiting");
-    await expect(page.getByText("thunk thunk-approval-1")).toBeVisible();
+    await expect(page.getByLabel("Continuations")).toContainText("wait Ref thunk-approval-1");
 
-    await page.getByRole("button", { name: "Flow Control" }).click();
-    await expect(page.getByRole("heading", { name: "Flow control" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Vote" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Steer" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Flow", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Thunk" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Mechanism round" })).toBeVisible();
+    await openPrimaryNav(page, "Goal Controls");
+    await expect(page.getByRole("heading", { level: 1, name: "Goal Controls" })).toBeVisible();
+    await expect(page.getByText("Advanced controls", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Decision round" })).toBeHidden();
+    await page.getByText("Advanced controls", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Goal priority" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Steering directive" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Restart or branch" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Wait state" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Decision round" })).toBeVisible();
 
-    const flowCard = page.locator(".control-card").filter({ has: page.getByRole("heading", { name: "Flow", exact: true }) });
+    const flowCard = page.locator(".control-card").filter({ has: page.getByRole("heading", { name: "Restart or branch" }) });
     await flowCard.locator("select").first().selectOption("branch");
     await expect(flowCard.locator('label:has-text("Candidates") input')).toBeEnabled();
     await expect(flowCard.locator('label:has-text("Candidate roles") input')).toHaveValue("codex,reviewer");
-    await flowCard.getByRole("button", { name: "Run flow action" }).focus();
+    await flowCard.getByRole("button", { name: "Create branch candidates" }).focus();
     await page.keyboard.press("Enter");
     await expect.poll(() => state.actions.map((action) => action.handler)).toContain("branch");
-
-    const createWaitState = page.getByRole("button", { name: "Create wait state" });
-    await expect(createWaitState).toBeEnabled();
-    await createWaitState.click();
-    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("create_thunk");
     expect(state.actions.find((action) => action.handler === "branch")?.body.candidate_roles).toEqual([
       "codex",
       "reviewer",
     ]);
     await expectNoCriticalOrSeriousAxeViolations(page, "flow control view");
+  });
+
+  test("keeps advanced controls collapsed so core operator controls stay scannable", async ({ page }) => {
+    await installGatewayFixtures(page);
+
+    await page.goto(`/?goal=${goalA}`);
+    await openPrimaryNav(page, "Work Graph");
+
+    const graphControls = page.locator(".graph-panel .compiler-control-panel.compact");
+    await expect(graphControls).toBeVisible();
+    await expect(graphControls.getByText("Advanced controls", { exact: true })).toBeVisible();
+    await expect(graphControls.getByRole("heading", { name: "Restart or branch" })).toBeHidden();
+    await expect(graphControls.getByRole("heading", { name: "Wait state" })).toBeHidden();
+    await expect(graphControls.getByRole("heading", { name: "Decision round" })).toBeHidden();
+    await expect(graphControls.getByRole("heading", { name: "Decision ballot" })).toBeHidden();
+    await graphControls.getByText("Advanced controls", { exact: true }).click();
+    await expect(graphControls.getByRole("heading", { name: "Restart or branch" })).toBeVisible();
+    await expect(graphControls.getByRole("heading", { name: "Wait state" })).toBeVisible();
+    await expect(graphControls.getByRole("heading", { name: "Decision round" })).toBeVisible();
+
+    await openPrimaryNav(page, "Goal Controls");
+    const flowControls = page.locator(".compiler-control-panel").first();
+    await expect(flowControls.getByText("Advanced controls", { exact: true })).toBeVisible();
+    await expect(flowControls.getByRole("heading", { name: "Restart or branch" })).toBeHidden();
+    await expect(flowControls.getByRole("heading", { name: "Wait state" })).toBeHidden();
+    await expect(flowControls.getByRole("heading", { name: "Decision round" })).toBeHidden();
+    await expect(flowControls.getByRole("heading", { name: "Decision ballot" })).toBeHidden();
+
+    await flowControls.getByText("Advanced controls", { exact: true }).click();
+    await expect(flowControls.getByRole("heading", { name: "Restart or branch" })).toBeVisible();
+    await expect(flowControls.getByRole("heading", { name: "Wait state" })).toBeVisible();
+    await expect(flowControls.getByRole("heading", { name: "Decision round" })).toBeVisible();
+    await expect(flowControls.getByRole("heading", { name: "Decision ballot" })).toBeVisible();
   });
 });
 
@@ -160,14 +240,26 @@ async function expectNoCriticalOrSeriousAxeViolations(page: Page, contextLabel: 
   expect(violations, `${contextLabel} has critical or serious accessibility violations`).toEqual([]);
 }
 
+async function openPrimaryNav(page: Page, name: string): Promise<void> {
+  await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name, exact: true }).click();
+}
+
+function subgoalCard(page: Page, text: string) {
+  return page.locator('[data-testid^="subgoal-card-"]').filter({ hasText: text });
+}
+
 async function installGatewayFixtures(page: Page): Promise<FixtureState> {
-  const state: FixtureState = { actions: [], freezeChatSession: false, submittedGoalSpec: null };
+  const state: FixtureState = { actions: [], freezeChatSession: false, requestCounts: {}, submittedGoalSpec: null };
 
   await page.route("**/api/**", async (route) => {
     await fulfillApi(route, state);
   });
 
   return state;
+}
+
+async function expectNoAmbiguousLaneCopy(page: Page): Promise<void> {
+  await expect(page.getByText(/\b(?:runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?\b/i)).toHaveCount(0);
 }
 
 async function sendComposerMessage(page: Page, text: string): Promise<void> {
@@ -184,12 +276,14 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
   const path = url.pathname;
 
   if (method === "GET" && path === "/api/overview") {
-    await json(route, overviewFixture());
+    countRequest(state, "overview");
+    await json(route, overviewFixture(state));
     return;
   }
 
   if (method === "GET" && path === "/api/goals") {
-    await json(route, { ok: true, status: 200, data: { goals: goalRows() } });
+    countRequest(state, "goals");
+    await json(route, { ok: true, status: 200, data: { goals: goalRows(state) } });
     return;
   }
 
@@ -228,7 +322,9 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
 
   const goalMatch = path.match(/^\/api\/goals\/([^/]+)(?:\/([^/]+))?$/);
   if (goalMatch && method === "GET" && !goalMatch[2]) {
-    await json(route, goalSnapshotFixture(decodeURIComponent(goalMatch[1])));
+    const goalId = decodeURIComponent(goalMatch[1]);
+    countRequest(state, `goal:${goalId}`);
+    await json(route, goalSnapshotFixture(goalId, state));
     return;
   }
 
@@ -263,6 +359,10 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
   await json(route, { error: `unhandled e2e fixture route: ${method} ${path}` }, 404);
 }
 
+function countRequest(state: FixtureState, key: string): void {
+  state.requestCounts[key] = (state.requestCounts[key] ?? 0) + 1;
+}
+
 async function requestBody(request: ReturnType<Route["request"]>): Promise<JsonRecord> {
   const text = request.postData() ?? "{}";
   return JSON.parse(text || "{}") as JsonRecord;
@@ -276,7 +376,7 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
   });
 }
 
-function overviewFixture(): JsonRecord {
+function overviewFixture(state?: FixtureState): JsonRecord {
   return {
     generated_at: "2026-05-12T12:00:00.000Z",
     control_surface: "coat-control-plane-web",
@@ -292,7 +392,7 @@ function overviewFixture(): JsonRecord {
         {
           runner_id: "runner-codex-1",
           node_id: "local-e2e",
-          display_name: "Codex fixture lane",
+          display_name: "Codex fixture runner",
           status: "active",
           max_concurrency: 2,
           endpoint: "http://127.0.0.1:19091",
@@ -302,15 +402,15 @@ function overviewFixture(): JsonRecord {
     approvals: { ok: true, status: 200, data: { approvals: approvalsFixture() } },
     recent_events: { ok: true, status: 200, data: { events: [{ event_id: "evt-1", type: "goal.updated" }] } },
     event_sources: { ok: true, status: 200, data: { event_sources: [{ source_id: "fixture", kind: "generic", enabled: true }] } },
-    goals: { ok: true, status: 200, data: { goals: goalRows() } },
+    goals: { ok: true, status: 200, data: { goals: goalRows(state) } },
     agents: { ok: true, status: 200, data: { tasks: goalATasks() } },
     plans: { ok: true, status: 200, data: { plans: [] } },
     follow_ups: { items: [] },
   };
 }
 
-function goalRows(): JsonRecord[] {
-  return [
+function goalRows(state?: FixtureState): JsonRecord[] {
+  const rows: JsonRecord[] = [
     {
       goal_id: goalA,
       title: "Baseline durable goal",
@@ -334,13 +434,30 @@ function goalRows(): JsonRecord[] {
       updated_at: "2026-05-12T12:05:00.000Z",
     },
   ];
+  if (state?.submittedGoalSpec) {
+    rows.unshift({
+      goal_id: submittedGoal,
+      title: String(state.submittedGoalSpec.title ?? "Submitted browser E2E task"),
+      objective: String(state.submittedGoalSpec.objective ?? "Submit browser E2E task with deterministic mocked gateway evidence."),
+      status: "running",
+      percent_done: 0.1,
+      open_tasks: 1,
+      blocked_tasks: 0,
+      failed_tasks: 0,
+      updated_at: "2026-05-12T12:10:00.000Z",
+    });
+  }
+  return rows;
 }
 
-function goalSnapshotFixture(goalId: string): JsonRecord {
+function goalSnapshotFixture(goalId: string, state?: FixtureState): JsonRecord {
   if (goalId === submittedGoal) {
+    if ((state?.requestCounts[`goal:${submittedGoal}`] ?? 0) <= 2) {
+      return submittedProjectionShell();
+    }
     return snapshot(goalId, {
-      title: "Submitted browser E2E lane",
-      objective: "Submit browser E2E lane with deterministic mocked gateway evidence.",
+      title: "Submitted browser E2E task",
+      objective: "Submit browser E2E task with deterministic mocked gateway evidence.",
       status: "running",
       subgoals: [
         {
@@ -353,7 +470,7 @@ function goalSnapshotFixture(goalId: string): JsonRecord {
         {
           goal_id: submittedGoal,
           task_id: "submitted-root",
-          title: "Plan submitted E2E lane",
+          title: "Plan submitted E2E task",
           role: "planner",
           status: "running",
           subgoal_id: "validate-fixtures",
@@ -361,7 +478,7 @@ function goalSnapshotFixture(goalId: string): JsonRecord {
       ],
       computeGraph: {
         nodes: [
-          { id: "submitted-root", kind: "task", label: "Plan submitted E2E lane", status: "running", task_id: "submitted-root" },
+          { id: "submitted-root", kind: "task", label: "Plan submitted E2E task", status: "running", task_id: "submitted-root" },
         ],
         edges: [],
         open_thunks: 0,
@@ -421,7 +538,7 @@ function goalSnapshotFixture(goalId: string): JsonRecord {
     computeGraph: {
       open_thunks: 1,
       nodes: [
-        { id: "root-task", kind: "task", label: "Plan launch lane", status: "running", task_id: "root-task" },
+        { id: "root-task", kind: "task", label: "Plan launch task", status: "running", task_id: "root-task" },
         {
           id: "thunk-approval-1",
           kind: "delayed-compute-thunk",
@@ -433,7 +550,7 @@ function goalSnapshotFixture(goalId: string): JsonRecord {
           wait_ref: { kind: "human_thread", reference: `goal://${goalA}/root-task` },
         },
         { id: "fork-reviewer", kind: "branch-fork", label: "Forked reviewer branch", status: "runnable", task_id: "fork-reviewer" },
-        { id: "branch-codex", kind: "branch-candidate", label: "Branch candidate: codex lane", status: "pending", task_id: "branch-codex" },
+        { id: "branch-codex", kind: "branch-candidate", label: "Branch candidate: Codex path", status: "pending", task_id: "branch-codex" },
       ],
       edges: [
         { from: "root-task", to: "thunk-approval-1", kind: "waits_for" },
@@ -442,6 +559,37 @@ function goalSnapshotFixture(goalId: string): JsonRecord {
       ],
     },
   });
+}
+
+function submittedProjectionShell(): JsonRecord {
+  return {
+    generated_at: "2026-05-12T12:00:00.000Z",
+    goal_id: submittedGoal,
+    goal_store_goal: {
+      ok: true,
+      status: 200,
+      data: {
+        goal: {
+          goal_id: submittedGoal,
+          status: "submitted",
+          percent_done: 0,
+          open_tasks: 0,
+          blocked_tasks: 0,
+          failed_tasks: 0,
+          payload_json: {
+            title: "Submitted browser E2E task",
+            objective: "Submit browser E2E task with deterministic mocked gateway evidence.",
+          },
+        },
+      },
+    },
+    workflow_status: { ok: true, status: 200, data: { status: "submitted" } },
+    workflow_progress: { ok: true, status: 200, data: {} },
+    workflow_compute_graph: { ok: true, status: 200, data: { goal_id: submittedGoal, nodes: [], edges: [], open_thunks: 0 } },
+    tasks: { ok: true, status: 200, data: { tasks: [] } },
+    approvals: { ok: true, status: 200, data: { approvals: [] } },
+    agent_activity: [],
+  };
 }
 
 function snapshot(goalId: string, input: {
@@ -499,7 +647,7 @@ function goalATasks(): JsonRecord[] {
     {
       goal_id: goalA,
       task_id: "root-task",
-      title: "Plan launch lane",
+      title: "Plan launch task",
       role: "planner",
       status: "running",
       subgoal_id: "coordinator-truth-boundary",
@@ -544,15 +692,15 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
   const latest = [...messages].reverse().find((message) => message.role === "user")?.content;
   const objective = typeof latest === "string" && latest.trim()
     ? latest.trim()
-    : "Submit browser E2E lane with deterministic mocked gateway evidence.";
+    : "Submit browser E2E task with deterministic mocked gateway evidence.";
   return {
     provider: "fixture",
     model: null,
     mode: "draft_goal",
-    assistant: "Drafted a goal payload with deterministic E2E evidence and coordinator-owned tasks.",
+    assistant: "Goal draft ready. Review the fields, then submit or discard it.",
     drafts: {
       goal_spec: {
-        title: "Submitted browser E2E lane",
+        title: "Submitted browser E2E task",
         objective,
         authoring: {
           intake_summary: objective,
@@ -563,7 +711,7 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
           open_questions: [],
         },
         plan: {
-          summary: "E2E lane for the control-plane SPA.",
+          summary: "E2E workflow for the control-plane SPA.",
           subgoals: [
             {
               id: "validate-fixtures",
@@ -577,7 +725,7 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
         initial_tasks: [
           {
             role: "planner",
-            title: "Plan submitted E2E lane",
+            title: "Plan submitted E2E task",
             subgoal_id: "validate-fixtures",
             prompt: objective,
           },

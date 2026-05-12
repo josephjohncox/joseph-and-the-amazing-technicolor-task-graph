@@ -492,7 +492,6 @@ label {
 .muted-small,
 .body-copy,
 .metric-card small,
-.goal-card span,
 .goal-card small,
 .compact-list span {
   color: var(--muted);
@@ -706,6 +705,49 @@ label {
   margin: 0 0 10px;
 }
 
+.goal-draft-editor {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px 12px;
+}
+
+.goal-draft-editor summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.goal-draft-editor summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.draft-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.draft-editor-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.draft-editor-grid label:nth-child(n + 3) {
+  grid-column: span 1;
+}
+
+.draft-editor-grid textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
 .chat-shell {
   height: clamp(360px, 44vh, 560px);
   min-height: 0;
@@ -876,6 +918,69 @@ label {
 
 .goal-card.active {
   border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 58%, var(--panel));
+}
+
+.goal-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.goal-card-header > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.goal-card-header strong,
+.goal-card-header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.goal-metrics span,
+.runner-state-card {
+  display: grid;
+  gap: 2px;
+  min-height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 8px;
+}
+
+.goal-metrics span.attention,
+.runner-state-card.attention {
+  border-color: var(--status-failed);
+  background: color-mix(in srgb, var(--status-failed) 10%, var(--panel));
+}
+
+.goal-metrics strong,
+.runner-state-card strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.goal-next-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.goal-next-row strong {
+  color: var(--accent);
 }
 
 .subgoal-panel {
@@ -896,11 +1001,23 @@ label {
 
 .subgoal-card {
   display: grid;
+  align-content: start;
   gap: 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  color: var(--text);
   padding: 12px;
+  text-align: left;
+}
+
+.subgoal-card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.subgoal-card .status-pill {
+  justify-self: start;
 }
 
 .subgoal-card p {
@@ -913,7 +1030,50 @@ label {
   overflow-wrap: anywhere;
 }
 
-.goal-card div,
+.subgoal-detail {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.subgoal-detail h4,
+.subgoal-detail p {
+  margin: 0;
+}
+
+.subgoal-detail p {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.subgoal-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.detail-list {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.detail-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.goal-card-header,
 .approval-card {
   display: flex;
   justify-content: space-between;
@@ -980,6 +1140,38 @@ label {
   gap: 12px;
 }
 
+.control-primary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.primary-action-card {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-height: 126px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.primary-action-card h4,
+.primary-action-card p {
+  margin: 0;
+}
+
+.primary-action-card p,
+.primary-action-card small {
+  color: var(--muted);
+}
+
+.primary-action-card.action-card {
+  grid-column: 1 / -1;
+  min-height: 0;
+}
+
 .control-card {
   display: grid;
   align-content: start;
@@ -992,6 +1184,64 @@ label {
 
 .control-card.span-2 {
   grid-column: span 2;
+}
+
+.advanced-control-panel {
+  grid-column: span 2;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.advanced-control-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.advanced-control-panel summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.advanced-control-panel .control-grid {
+  margin-top: 12px;
+}
+
+.control-grid.nested {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.advanced-details {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.advanced-details summary,
+.legend-details summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 750;
+}
+
+.advanced-details summary span,
+.advanced-details summary small {
+  display: block;
+}
+
+.advanced-details summary small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .form-grid {
@@ -1030,11 +1280,22 @@ label {
   }
 
   .control-grid,
+  .control-primary-grid,
   .evidence-next-panel,
   .form-grid.two,
   .form-grid.three,
-  .graph-status-panel {
+  .graph-status-panel,
+  .runner-state-strip,
+  .subgoal-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .goal-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .primary-action-card.action-card {
+    grid-column: auto;
   }
 
   .control-card.span-2 {
@@ -1161,8 +1422,12 @@ label {
   gap: 8px;
 }
 
-.graph-status-panel .status-legend {
+.legend-details {
   grid-column: 1 / -1;
+}
+
+.legend-details .status-legend {
+  margin-top: 10px;
 }
 
 .evidence-next-panel {
@@ -1340,6 +1605,13 @@ label {
 .react-flow__attribution {
   background: var(--panel-soft);
   color: var(--muted);
+}
+
+.runner-state-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .memory-layout {

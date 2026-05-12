@@ -25,6 +25,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -48,6 +49,60 @@ enum ChatMode {
     Goal,
     Plan,
     Search,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiFocus {
+    Dashboard,
+    Chat,
+    Input,
+}
+
+impl TuiFocus {
+    fn next(self) -> Self {
+        match self {
+            Self::Dashboard => Self::Chat,
+            Self::Chat => Self::Input,
+            Self::Input => Self::Dashboard,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Dashboard => Self::Input,
+            Self::Chat => Self::Dashboard,
+            Self::Input => Self::Chat,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Dashboard => "dashboard",
+            Self::Chat => "chat",
+            Self::Input => "input",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ActiveGoalDraft {
+    goal_spec: Value,
+    summary: GoalDraftSummary,
+}
+
+enum PendingRequestKind {
+    Chat {
+        payload: Value,
+    },
+    GoalSubmit {
+        goal_spec: Value,
+        draft_summary: Option<GoalDraftSummary>,
+    },
+}
+
+struct PendingGatewayRequest {
+    kind: PendingRequestKind,
+    handle: JoinHandle<Result<Value, String>>,
 }
 
 impl ChatMode {
@@ -136,14 +191,18 @@ struct App {
     dashboard: DashboardSummary,
     goals: Vec<GoalSummary>,
     selected_goal_id: Option<String>,
+    selected_goal_outline: Vec<String>,
     messages: Vec<ChatLine>,
     last_chat_response: Option<Value>,
+    active_goal_draft: Option<ActiveGoalDraft>,
     chat_scroll_from_bottom: u16,
     input: String,
     status: String,
     mode: ChatMode,
+    focus: TuiFocus,
     last_refresh: Option<Instant>,
     busy: bool,
+    pending_request: Option<PendingGatewayRequest>,
 }
 
 impl App {
@@ -162,14 +221,18 @@ impl App {
             dashboard: DashboardSummary::default(),
             goals: Vec::new(),
             selected_goal_id,
+            selected_goal_outline: Vec::new(),
             messages: Vec::new(),
             last_chat_response: None,
+            active_goal_draft: None,
             chat_scroll_from_bottom: 0,
             input: String::new(),
             status: "starting".to_string(),
             mode: ChatMode::General,
+            focus: TuiFocus::Input,
             last_refresh: None,
             busy: false,
+            pending_request: None,
             config,
         })
     }
@@ -207,6 +270,7 @@ impl App {
         };
         let path = format!("/api/goals/{}", percent_encode(&goal_id));
         let snapshot = self.get_json(&path).await?;
+        self.selected_goal_outline = goal_outline_from_snapshot(&snapshot);
         if let Some(summary) = goal_summary_from_snapshot(&snapshot, &goal_id) {
             upsert_goal_summary(&mut self.goals, summary);
         }
@@ -231,7 +295,12 @@ impl App {
         Ok(())
     }
 
-    async fn send_chat(&mut self) -> anyhow::Result<()> {
+    fn begin_send_chat(&mut self) -> anyhow::Result<()> {
+        if self.pending_request.is_some() {
+            self.status =
+                "gateway request is still running; input is kept for the next turn".to_string();
+            return Ok(());
+        }
         let content = self.input.trim().to_string();
         if content.is_empty() {
             return Ok(());
@@ -241,7 +310,8 @@ impl App {
             role: "user".to_string(),
             content: content.clone(),
         });
-        self.status = "calling control gateway chat".to_string();
+        self.chat_scroll_from_bottom = 0;
+        self.status = "generating response via control gateway; input remains editable".to_string();
         self.busy = true;
 
         let durable_messages = durable_chat_lines(&self.messages);
@@ -251,9 +321,47 @@ impl App {
             self.mode,
             &durable_messages,
         );
-        let response = self.post_json("/api/chat", &payload).await;
-        self.busy = false;
+        self.pending_request = Some(PendingGatewayRequest {
+            kind: PendingRequestKind::Chat {
+                payload: payload.clone(),
+            },
+            handle: self.spawn_post_json("/api/chat", payload),
+        });
+        Ok(())
+    }
 
+    async fn poll_pending_request(&mut self) -> anyhow::Result<()> {
+        let Some(pending) = self.pending_request.as_ref() else {
+            return Ok(());
+        };
+        if !pending.handle.is_finished() {
+            return Ok(());
+        }
+        let pending = self
+            .pending_request
+            .take()
+            .expect("pending request was checked above");
+        let result = match pending.handle.await {
+            Ok(result) => result,
+            Err(error) => Err(format!("gateway task failed: {error}")),
+        };
+        self.busy = false;
+        match pending.kind {
+            PendingRequestKind::Chat { payload } => {
+                let _session_id = payload.get("session_id").and_then(Value::as_str);
+                self.finish_chat(result)
+            }
+            PendingRequestKind::GoalSubmit {
+                goal_spec,
+                draft_summary,
+            } => {
+                self.finish_goal_submit(result, goal_spec, draft_summary)
+                    .await
+            }
+        }
+    }
+
+    fn finish_chat(&mut self, response: Result<Value, String>) -> anyhow::Result<()> {
         match response {
             Ok(value) => {
                 let assistant = value
@@ -268,13 +376,19 @@ impl App {
                 });
                 self.last_chat_response = Some(value.clone());
                 self.chat_scroll_from_bottom = 0;
-                if let Some(summary) = goal_draft_summary_from_response(&value) {
+                if let Some(draft) = active_goal_draft_from_response(&value) {
+                    self.active_goal_draft = Some(draft.clone());
                     self.messages.push(ChatLine {
                         role: "assistant".to_string(),
-                        content: summary.chat_preview(),
+                        content: draft.summary.chat_preview(),
                     });
                     self.status = format!(
-                        "{}; goal draft ready, review dashboard or chat and press F5 to submit",
+                        "{}; goal draft ready, review dashboard or chat, F5/Ctrl-G submit, Ctrl-D discard",
+                        chat_status(&value)
+                    );
+                } else if self.active_goal_draft.is_some() {
+                    self.status = format!(
+                        "{}; active goal draft still available, F5/Ctrl-G submit, Ctrl-D discard",
                         chat_status(&value)
                     );
                 } else {
@@ -295,26 +409,37 @@ impl App {
         }
     }
 
-    async fn submit_last_goal_draft(&mut self) -> anyhow::Result<()> {
-        let Some(response) = self.last_chat_response.as_ref() else {
+    fn begin_submit_goal_draft(&mut self) -> anyhow::Result<()> {
+        if self.pending_request.is_some() {
+            self.status =
+                "gateway request is still running; wait before submitting the draft".to_string();
+            return Ok(());
+        }
+        let Some(draft) = self.active_goal_draft.clone() else {
             self.status =
                 "no chat goal draft is available; switch to goal mode and send a prompt first"
                     .to_string();
             return Ok(());
         };
-        let Some(goal_spec) = extract_goal_draft(response) else {
-            self.status =
-                "last chat response did not include drafts.goal_spec; switch to goal mode first"
-                    .to_string();
-            return Ok(());
-        };
-        let draft_summary = goal_draft_summary(&goal_spec);
 
-        self.status = "submitting drafted goal to coordinator".to_string();
+        self.status = "submitting active goal draft to coordinator".to_string();
         self.busy = true;
-        let response = self.post_json("/api/goals/submit", &goal_spec).await;
-        self.busy = false;
+        self.pending_request = Some(PendingGatewayRequest {
+            kind: PendingRequestKind::GoalSubmit {
+                goal_spec: draft.goal_spec.clone(),
+                draft_summary: Some(draft.summary),
+            },
+            handle: self.spawn_post_json("/api/goals/submit", draft.goal_spec),
+        });
+        Ok(())
+    }
 
+    async fn finish_goal_submit(
+        &mut self,
+        response: Result<Value, String>,
+        goal_spec: Value,
+        draft_summary: Option<GoalDraftSummary>,
+    ) -> anyhow::Result<()> {
         match response {
             Ok(value) => {
                 let goal_id = submitted_goal_id(&value)
@@ -331,20 +456,22 @@ impl App {
                     .unwrap_or_else(|| {
                         format!("Submitted drafted goal to the coordinator.\ngoal_id: {goal_id}")
                     });
+                if goal_id != "assigned by coordinator" {
+                    self.selected_goal_id = Some(goal_id.clone());
+                }
+                self.active_goal_draft = None;
+                let mut status = format!("goal submitted: {goal_id}");
+                if let Err(error) = self.refresh_dashboard().await {
+                    status = format!("goal submitted, dashboard refresh failed: {error}");
+                } else if let Err(error) = self.load_chat_session().await {
+                    status = format!("goal submitted, chat reload failed: {error}");
+                }
                 self.messages.push(ChatLine {
                     role: "assistant".to_string(),
                     content,
                 });
                 self.chat_scroll_from_bottom = 0;
-                self.status = format!("goal submitted: {goal_id}");
-                if goal_id != "assigned by coordinator" {
-                    self.selected_goal_id = Some(goal_id);
-                }
-                if let Err(error) = self.refresh_dashboard().await {
-                    self.status = format!("goal submitted, dashboard refresh failed: {error}");
-                } else if let Err(error) = self.load_chat_session().await {
-                    self.status = format!("goal submitted, chat reload failed: {error}");
-                }
+                self.status = status;
                 Ok(())
             }
             Err(error) => {
@@ -359,21 +486,45 @@ impl App {
         }
     }
 
+    fn discard_goal_draft(&mut self) {
+        if self.active_goal_draft.take().is_some() {
+            self.messages.push(ChatLine {
+                role: "assistant".to_string(),
+                content: "Active goal draft discarded.".to_string(),
+            });
+            self.chat_scroll_from_bottom = 0;
+            self.status = "active goal draft discarded".to_string();
+        } else {
+            self.status = "no active goal draft to discard".to_string();
+        }
+    }
+
+    fn spawn_post_json(&self, path: &str, payload: Value) -> JoinHandle<Result<Value, String>> {
+        let client = self.client.clone();
+        let token = self.config.token.clone();
+        let url = self.url(path);
+        let endpoint = path.to_string();
+        tokio::spawn(async move {
+            let mut request = client.post(url).json(&payload);
+            if let Some(token) = token.as_deref().filter(|token| !token.is_empty()) {
+                request = request.bearer_auth(token);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| format!("POST {endpoint}: {error}"))?;
+            parse_response(response)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
     async fn get_json(&self, path: &str) -> anyhow::Result<Value> {
         let response = self
             .auth(self.client.get(self.url(path)))
             .send()
             .await
             .with_context(|| format!("GET {path}"))?;
-        parse_response(response).await
-    }
-
-    async fn post_json(&self, path: &str, payload: &Value) -> anyhow::Result<Value> {
-        let response = self
-            .auth(self.client.post(self.url(path)).json(payload))
-            .send()
-            .await
-            .with_context(|| format!("POST {path}"))?;
         parse_response(response).await
     }
 
@@ -448,6 +599,7 @@ impl App {
 
     async fn clear_goal_selection(&mut self) -> anyhow::Result<()> {
         self.selected_goal_id = None;
+        self.selected_goal_outline.clear();
         self.status = "goal selection cleared".to_string();
         self.load_chat_session().await
     }
@@ -469,9 +621,11 @@ async fn run_loop(
 ) -> anyhow::Result<()> {
     loop {
         terminal.draw(|frame| render(frame, app))?;
-        if app
-            .last_refresh
-            .is_none_or(|last_refresh| last_refresh.elapsed() >= app.config.refresh)
+        app.poll_pending_request().await?;
+        if !app.busy
+            && app
+                .last_refresh
+                .is_none_or(|last_refresh| last_refresh.elapsed() >= app.config.refresh)
         {
             if let Err(error) = app.refresh_dashboard().await {
                 app.status = format!("dashboard refresh failed: {error}");
@@ -495,16 +649,37 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         KeyCode::Esc => Ok(true),
         KeyCode::Char('q') if app.input.is_empty() => Ok(true),
         KeyCode::Tab => {
+            app.focus = app.focus.next();
+            app.status = format!("focus: {}", app.focus.label());
+            Ok(false)
+        }
+        KeyCode::BackTab => {
+            app.focus = app.focus.previous();
+            app.status = format!("focus: {}", app.focus.label());
+            Ok(false)
+        }
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.mode = app.mode.next();
             app.status = format!("chat mode: {}", app.mode.label());
             Ok(false)
         }
         KeyCode::Enter => {
-            app.send_chat().await?;
+            if app.focus == TuiFocus::Input {
+                app.begin_send_chat()?;
+            } else {
+                let previous_focus = app.focus.label();
+                app.focus = TuiFocus::Input;
+                app.status = format!(
+                    "input focused from {}; press Enter again to send",
+                    previous_focus
+                );
+            }
             Ok(false)
         }
         KeyCode::Backspace => {
-            app.input.pop();
+            if app.focus == TuiFocus::Input {
+                app.input.pop();
+            }
             Ok(false)
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -512,56 +687,103 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Err(error) = app.refresh_dashboard().await {
+            if app.busy {
+                app.status = "gateway request is running; dashboard refresh deferred".to_string();
+            } else if let Err(error) = app.refresh_dashboard().await {
                 app.status = format!("dashboard refresh failed: {error}");
             }
             Ok(false)
         }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.select_goal_by_step(1).await?;
+            if app.busy {
+                app.status = "gateway request is running; goal selection is unchanged".to_string();
+            } else {
+                app.select_goal_by_step(1).await?;
+            }
             Ok(false)
         }
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.select_goal_by_step(-1).await?;
+            if app.busy {
+                app.status = "gateway request is running; goal selection is unchanged".to_string();
+            } else {
+                app.select_goal_by_step(-1).await?;
+            }
             Ok(false)
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.clear_goal_selection().await?;
+            if app.busy {
+                app.status = "gateway request is running; goal selection is unchanged".to_string();
+            } else {
+                app.clear_goal_selection().await?;
+            }
             Ok(false)
         }
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.submit_last_goal_draft().await?;
+            app.begin_submit_goal_draft()?;
             Ok(false)
         }
         KeyCode::F(5) => {
-            app.submit_last_goal_draft().await?;
+            app.begin_submit_goal_draft()?;
+            Ok(false)
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.discard_goal_draft();
             Ok(false)
         }
         KeyCode::Up => {
-            app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_add(1);
+            if app.focus == TuiFocus::Dashboard {
+                if app.busy {
+                    app.status =
+                        "gateway request is running; goal selection is unchanged".to_string();
+                } else {
+                    app.select_goal_by_step(-1).await?;
+                }
+            } else if app.focus == TuiFocus::Chat {
+                app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_add(1);
+            }
             Ok(false)
         }
         KeyCode::Down => {
-            app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_sub(1);
+            if app.focus == TuiFocus::Dashboard {
+                if app.busy {
+                    app.status =
+                        "gateway request is running; goal selection is unchanged".to_string();
+                } else {
+                    app.select_goal_by_step(1).await?;
+                }
+            } else if app.focus == TuiFocus::Chat {
+                app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_sub(1);
+            }
             Ok(false)
         }
         KeyCode::PageUp => {
-            app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_add(10);
+            if app.focus == TuiFocus::Chat {
+                app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_add(10);
+            }
             Ok(false)
         }
         KeyCode::PageDown => {
-            app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_sub(10);
+            if app.focus == TuiFocus::Chat {
+                app.chat_scroll_from_bottom = app.chat_scroll_from_bottom.saturating_sub(10);
+            }
             Ok(false)
         }
         KeyCode::Home => {
-            app.chat_scroll_from_bottom = u16::MAX;
+            if app.focus == TuiFocus::Chat {
+                app.chat_scroll_from_bottom = u16::MAX;
+            }
             Ok(false)
         }
         KeyCode::End => {
-            app.chat_scroll_from_bottom = 0;
+            if app.focus == TuiFocus::Chat {
+                app.chat_scroll_from_bottom = 0;
+            }
             Ok(false)
         }
-        KeyCode::Char(ch) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
+        KeyCode::Char(ch)
+            if app.focus == TuiFocus::Input
+                && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+        {
             app.input.push(ch);
             Ok(false)
         }
@@ -641,6 +863,8 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let status = Line::from(vec![
         Span::raw("mode "),
         Span::styled(app.mode.label(), Style::default().fg(Color::Yellow)),
+        Span::raw("  focus "),
+        Span::styled(app.focus.label(), Style::default().fg(Color::Magenta)),
         Span::raw("  session "),
         Span::styled(app.display_session_id(), Style::default().fg(Color::Green)),
         Span::raw("  status "),
@@ -695,10 +919,12 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.selected_goal_id.as_deref(),
         area.width,
     ));
-    if let Some(response) = app.last_chat_response.as_ref()
-        && let Some(summary) = goal_draft_summary_from_response(response)
-    {
-        lines.extend(goal_draft_dashboard_lines(&summary, area.width));
+    lines.extend(selected_goal_outline_lines(
+        &app.selected_goal_outline,
+        area.width,
+    ));
+    if let Some(draft) = app.active_goal_draft.as_ref() {
+        lines.extend(goal_draft_dashboard_lines(&draft.summary, area.width));
     }
     lines.extend([
         Line::from(""),
@@ -716,7 +942,13 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(Text::from(lines))
-            .block(Block::default().borders(Borders::ALL).title("Dashboard"))
+            .block(Block::default().borders(Borders::ALL).title(
+                if app.focus == TuiFocus::Dashboard {
+                    "Dashboard *"
+                } else {
+                    "Dashboard"
+                },
+            ))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -741,7 +973,7 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     if app.busy {
         lines.push(Line::from(Span::styled(
-            "calling gateway...",
+            "generating with control gateway... input remains editable",
             Style::default().fg(Color::Magenta),
         )));
     }
@@ -752,7 +984,15 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(Text::from(lines))
-            .block(Block::default().borders(Borders::ALL).title("Gateway Chat"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(if app.focus == TuiFocus::Chat {
+                        "Gateway Chat *"
+                    } else {
+                        "Gateway Chat"
+                    }),
+            )
             .scroll((scroll_y, 0))
             .wrap(Wrap { trim: false }),
         area,
@@ -760,24 +1000,30 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let title = format!("Input [{}]", app.mode.label());
+    let title = if app.focus == TuiFocus::Input {
+        format!("Input [{}] *", app.mode.label())
+    } else {
+        format!("Input [{}]", app.mode.label())
+    };
     frame.render_widget(
         Paragraph::new(app.input.as_str())
             .block(Block::default().borders(Borders::ALL).title(title))
             .style(Style::default().fg(Color::White)),
         area,
     );
-    let cursor_x = area
-        .x
-        .saturating_add(1)
-        .saturating_add(app.input.len().min(area.width.saturating_sub(2) as usize) as u16);
-    frame.set_cursor_position(Position::new(cursor_x, area.y.saturating_add(1)));
+    if app.focus == TuiFocus::Input {
+        let cursor_x = area
+            .x
+            .saturating_add(1)
+            .saturating_add(app.input.len().min(area.width.saturating_sub(2) as usize) as u16);
+        frame.set_cursor_position(Position::new(cursor_x, area.y.saturating_add(1)));
+    }
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Enter send  Tab mode  Ctrl-N/P goals  Ctrl-O clear goal  ↑/↓ PgUp/PgDn scroll  F5/Ctrl-G submit  Ctrl-R refresh  Ctrl-U clear input  Esc/Ctrl-C/q quit",
+            "Tab/Shift-Tab focus  Ctrl-T mode  Enter sends only in input  ↑/↓ scroll chat or goals  F5/Ctrl-G submit draft  Ctrl-D discard  Ctrl-R refresh  Ctrl-U clear  Esc quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -912,12 +1158,114 @@ fn current_goal_lines(
     lines
 }
 
+fn selected_goal_outline_lines(outline: &[String], width: u16) -> Vec<Line<'static>> {
+    if outline.is_empty() {
+        return Vec::new();
+    }
+    let value_width = width.saturating_sub(5).max(18) as usize;
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "goal outline",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    for item in outline.iter().take(8) {
+        lines.push(Line::from(format!(
+            "• {}",
+            truncate_text(item, value_width)
+        )));
+    }
+    if outline.len() > 8 {
+        lines.push(Line::from(format!("  +{} more", outline.len() - 8)));
+    }
+    lines
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct GoalRuntimeSummary {
     current_blocker: Option<String>,
     current_action: Option<String>,
     latest_evidence: Option<String>,
     next_task: Option<String>,
+}
+
+fn goal_outline_from_snapshot(value: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(subgoals) = first_array_at_paths(
+        value,
+        &[
+            &[
+                "goal_store_goal",
+                "data",
+                "goal",
+                "payload_json",
+                "plan",
+                "subgoals",
+            ],
+            &[
+                "goal_store_goal",
+                "goal",
+                "payload_json",
+                "plan",
+                "subgoals",
+            ],
+            &["goal", "payload_json", "plan", "subgoals"],
+            &["plan", "subgoals"],
+        ],
+    ) {
+        for subgoal in subgoals.iter().take(4) {
+            if let Some(title) = compact_string_at_paths(
+                subgoal,
+                &[
+                    &["title"],
+                    &["name"],
+                    &["objective"],
+                    &["summary"],
+                    &["id"],
+                    &["subgoal_id"],
+                ],
+            ) {
+                lines.push(format!("subgoal: {title}"));
+            }
+        }
+    }
+
+    if let Some(tasks) = first_array_at_paths(
+        value,
+        &[
+            &["agent_activity"],
+            &["tasks", "data", "tasks"],
+            &["tasks", "tasks"],
+            &["data", "tasks"],
+        ],
+    ) {
+        for task in tasks.iter().take(4).filter_map(task_summary_line) {
+            lines.push(format!("task: {task}"));
+        }
+    }
+
+    if let Some(nodes) = first_array_at_paths(
+        value,
+        &[
+            &["workflow_compute_graph", "data", "nodes"],
+            &["workflow_compute_graph", "nodes"],
+            &["compute_graph", "nodes"],
+        ],
+    ) {
+        for node in nodes.iter().take(4) {
+            let kind = compact_string_at_paths(node, &[&["kind"]]).unwrap_or_else(|| "node".into());
+            let status =
+                compact_string_at_paths(node, &[&["status"]]).unwrap_or_else(|| "unknown".into());
+            if let Some(label) = compact_string_at_paths(node, &[&["label"], &["id"]]) {
+                lines.push(format!("compute: {label} [{kind} {status}]"));
+            }
+        }
+    }
+
+    lines
 }
 
 fn goal_summary_from_snapshot(value: &Value, fallback_goal_id: &str) -> Option<GoalSummary> {
@@ -1622,9 +1970,16 @@ fn extract_goal_draft(value: &Value) -> Option<Value> {
     None
 }
 
+#[cfg(test)]
 fn goal_draft_summary_from_response(value: &Value) -> Option<GoalDraftSummary> {
     let draft = extract_goal_draft(value)?;
     goal_draft_summary(&draft)
+}
+
+fn active_goal_draft_from_response(value: &Value) -> Option<ActiveGoalDraft> {
+    let goal_spec = extract_goal_draft(value)?;
+    let summary = goal_draft_summary(&goal_spec)?;
+    Some(ActiveGoalDraft { goal_spec, summary })
 }
 
 fn goal_draft_summary(goal_spec: &Value) -> Option<GoalDraftSummary> {
@@ -1791,6 +2146,17 @@ fn percent_encode(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn test_app() -> App {
+        App::new(TuiConfig {
+            control_gateway_url: "http://127.0.0.1:9".to_string(),
+            token: None,
+            session_id: "operator:default".to_string(),
+            goal_id: None,
+            refresh: Duration::from_secs(30),
+        })
+        .expect("app")
+    }
+
     #[test]
     fn dashboard_summary_reads_gateway_proxy_shapes() {
         let config = json!({
@@ -1878,8 +2244,30 @@ mod tests {
                         "status": "running",
                         "percent_done": 0.25,
                         "open_tasks": 4,
-                        "blocked_tasks": 1
+                        "blocked_tasks": 1,
+                        "payload_json": {
+                            "plan": {
+                                "subgoals": [
+                                    {
+                                        "id": "sg-ui",
+                                        "title": "Make chat state visible"
+                                    }
+                                ]
+                            }
+                        }
                     }
+                }
+            },
+            "workflow_compute_graph": {
+                "data": {
+                    "nodes": [
+                        {
+                            "id": "wait-human",
+                            "kind": "delayed_compute_thunk",
+                            "label": "Need operator decision",
+                            "status": "waiting_input"
+                        }
+                    ]
                 }
             },
             "workflow_progress": {
@@ -1965,6 +2353,22 @@ mod tests {
                 .next_task
                 .as_deref()
                 .is_some_and(|value| value.contains("Run the focused TUI regression"))
+        );
+        let outline = goal_outline_from_snapshot(&snapshot);
+        assert!(
+            outline
+                .iter()
+                .any(|line| line.contains("subgoal: Make chat state visible"))
+        );
+        assert!(
+            outline
+                .iter()
+                .any(|line| line.contains("task: Resolve operator approval"))
+        );
+        assert!(
+            outline
+                .iter()
+                .any(|line| line.contains("compute: Need operator decision"))
         );
     }
 
@@ -2143,6 +2547,102 @@ mod tests {
     }
 
     #[test]
+    fn tui_focus_cycles_across_dashboard_chat_and_input() {
+        assert_eq!(TuiFocus::Input.next(), TuiFocus::Dashboard);
+        assert_eq!(TuiFocus::Dashboard.next(), TuiFocus::Chat);
+        assert_eq!(TuiFocus::Chat.next(), TuiFocus::Input);
+        assert_eq!(TuiFocus::Input.previous(), TuiFocus::Chat);
+        assert_eq!(TuiFocus::Chat.previous(), TuiFocus::Dashboard);
+        assert_eq!(TuiFocus::Dashboard.previous(), TuiFocus::Input);
+    }
+
+    #[tokio::test]
+    async fn begin_send_chat_clears_input_and_records_pending_request() {
+        let mut app = test_app();
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string());
+        app.mode = ChatMode::Goal;
+        app.chat_scroll_from_bottom = 4;
+        app.input = "Draft the next usable goal".to_string();
+
+        app.begin_send_chat().expect("begin send");
+
+        assert!(app.input.is_empty());
+        assert!(app.busy);
+        assert_eq!(app.chat_scroll_from_bottom, 0);
+        assert_eq!(
+            app.messages.last(),
+            Some(&ChatLine {
+                role: "user".to_string(),
+                content: "Draft the next usable goal".to_string()
+            })
+        );
+        let pending = app.pending_request.as_ref().expect("pending chat");
+        let PendingRequestKind::Chat { payload } = &pending.kind else {
+            panic!("expected pending chat");
+        };
+        assert_eq!(
+            payload["session_id"],
+            "goal:018f8f2f-1fd8-7688-bb12-8bfb6b756602"
+        );
+        assert_eq!(payload["mode"], "draft_goal");
+        assert_eq!(payload["goal_id"], "018f8f2f-1fd8-7688-bb12-8bfb6b756602");
+        pending.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn input_stays_editable_while_chat_is_pending() {
+        let mut app = test_app();
+        app.input = "send this".to_string();
+        app.begin_send_chat().expect("begin send");
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("handle key");
+
+        assert_eq!(app.input, "n");
+        assert!(app.busy);
+        app.pending_request.as_ref().unwrap().handle.abort();
+    }
+
+    #[tokio::test]
+    async fn enter_focuses_input_without_sending_from_other_panels() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Chat;
+        app.input = "do not send yet".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("handle enter");
+
+        assert_eq!(app.focus, TuiFocus::Input);
+        assert_eq!(app.input, "do not send yet");
+        assert!(app.pending_request.is_none());
+        assert!(app.status.contains("press Enter again"));
+    }
+
+    #[tokio::test]
+    async fn tab_and_backtab_move_panel_focus() {
+        let mut app = test_app();
+        assert_eq!(app.focus, TuiFocus::Input);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .expect("tab");
+        assert_eq!(app.focus, TuiFocus::Dashboard);
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        )
+        .await
+        .expect("backtab");
+        assert_eq!(app.focus, TuiFocus::Input);
+    }
+
+    #[test]
     fn goal_draft_extraction_reads_gateway_drafts() {
         let response = json!({
             "drafts": {
@@ -2201,6 +2701,103 @@ mod tests {
             summary
                 .submit_confirmation("goal-123")
                 .contains("goal_id: goal-123")
+        );
+    }
+
+    #[test]
+    fn finish_chat_tracks_active_draft_for_dashboard_review() {
+        let response = json!({
+            "assistant": "I drafted the goal.",
+            "drafts": {
+                "goal_spec": {
+                    "title": "Review before submit",
+                    "objective": "Keep the exact goal draft visible until the operator submits or discards it.",
+                    "done_criteria": {"tests_pass": true},
+                    "initial_tasks": [{"role": "codex", "prompt": "Patch the TUI."}]
+                }
+            }
+        });
+        let mut app = test_app();
+
+        app.finish_chat(Ok(response)).expect("finish chat");
+
+        let draft = app.active_goal_draft.as_ref().expect("active draft");
+        assert_eq!(draft.summary.title, "Review before submit");
+        assert!(app.status.contains("F5/Ctrl-G"));
+        let rendered = goal_draft_dashboard_lines(&draft.summary, 80)
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("active goal draft"));
+        assert!(rendered.contains("F5 or Ctrl-G"));
+
+        app.finish_chat(Ok(json!({"assistant": "normal follow-up"})))
+            .expect("finish normal chat");
+        assert!(app.active_goal_draft.is_some());
+        assert!(app.status.contains("active goal draft still available"));
+    }
+
+    #[tokio::test]
+    async fn f5_submits_the_active_goal_draft_as_pending_request() {
+        let mut app = test_app();
+        let response = json!({
+            "drafts": {
+                "goal_spec": {
+                    "title": "Submit from TUI",
+                    "objective": "Make F5 and Ctrl-G submit the visible active draft.",
+                    "done_criteria": {"tests_pass": true}
+                }
+            }
+        });
+        app.active_goal_draft = active_goal_draft_from_response(&response);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE))
+            .await
+            .expect("f5");
+
+        assert!(app.busy);
+        let pending = app.pending_request.as_ref().expect("pending submit");
+        let PendingRequestKind::GoalSubmit {
+            goal_spec,
+            draft_summary,
+        } = &pending.kind
+        else {
+            panic!("expected pending submit");
+        };
+        assert_eq!(goal_spec["title"], "Submit from TUI");
+        assert_eq!(
+            draft_summary.as_ref().map(|summary| summary.title.as_str()),
+            Some("Submit from TUI")
+        );
+        pending.handle.abort();
+    }
+
+    #[test]
+    fn discard_goal_draft_clears_visible_draft() {
+        let mut app = test_app();
+        app.active_goal_draft = Some(ActiveGoalDraft {
+            goal_spec: json!({
+                "title": "Discard me",
+                "objective": "This draft should not stay active."
+            }),
+            summary: GoalDraftSummary {
+                title: "Discard me".to_string(),
+                objective: "This draft should not stay active.".to_string(),
+                initial_tasks: 0,
+                done_criteria: "not specified".to_string(),
+            },
+        });
+
+        app.discard_goal_draft();
+
+        assert!(app.active_goal_draft.is_none());
+        assert!(app.status.contains("discarded"));
+        assert!(
+            app.messages
+                .last()
+                .is_some_and(|message| message.content.contains("discarded"))
         );
     }
 

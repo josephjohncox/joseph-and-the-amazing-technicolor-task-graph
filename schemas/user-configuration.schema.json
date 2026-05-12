@@ -490,7 +490,7 @@
       }
     },
     "CoatModelRoutingConfig": {
-      "description": "Non-secret model routing defaults shared by CLI setup, runners, and UI.\n\nStore raw provider tokens in env vars, Kubernetes Secrets, external secret\nstores, or brokered leases. This config only records which env/secret refs\nshould be resolved at runtime and which model lanes should prefer a shared\ngateway versus direct provider credentials.",
+      "description": "Non-secret model routing defaults shared by CLI setup, runners, and UI.\n\nStore raw provider tokens in env vars, Kubernetes Secrets, external secret\nstores, or brokered leases. This config only records which env/secret refs\nshould be resolved at runtime and which model routes should prefer a shared\ngateway versus direct provider credentials.",
       "type": "object",
       "properties": {
         "direct_provider_secret_refs": {

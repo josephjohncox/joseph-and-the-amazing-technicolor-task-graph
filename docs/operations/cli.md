@@ -145,8 +145,10 @@ When a chat turn returns a goal draft, the TUI shows the exact draft summary in
 two places before submission: the chat log receives a `Goal draft ready for
 submission` preview, and the left dashboard shows an `active goal draft`
 section with title, objective, initial task count, done criteria, and the
-submit binding. After submission, the chat log echoes the submitted goal id and
-the same draft summary, selects that goal, and reloads the goal-scoped session.
+submit binding. The draft stays visible until the operator submits it with
+`F5`/`Ctrl-G` or discards it with `Ctrl-D`. After submission, the chat log
+echoes the submitted goal id and the same draft summary, selects that goal, and
+reloads the goal-scoped session.
 
 Goal context is selected in the TUI, not retyped into every prompt. `Ctrl-N`
 and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the selection, and
@@ -155,6 +157,12 @@ a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
 same goal id to `/api/chat`; without a selected goal it uses the operator
 workspace session.
 
+The dashboard also shows a compact outline for the selected goal when the
+gateway projection includes one: projected subgoals, visible tasks, and compute
+graph nodes such as wait states. This is the terminal counterpart to the SPA
+work graph, meant for navigation and status comprehension rather than raw JSON
+inspection.
+
 ```sh
 coat tui
 coat tui --control-gateway-url http://localhost:9090
@@ -162,13 +170,16 @@ coat tui --control-gateway-url http://localhost:9090
 
 Key bindings:
 
-- `Enter`: send the chat input to `/api/chat`.
-- `Tab`: switch chat mode across general, goal, plan, and search.
+- `Tab`, `Shift-Tab`: move focus across dashboard, chat, and input panels.
+- `Enter`: send the chat input to `/api/chat` only when the input panel is focused; from another panel it focuses the input first.
+- `Ctrl-T`: switch chat mode across general, goal, plan, and search.
 - `Ctrl-N`, `Ctrl-P`: cycle to the next or previous projected goal.
 - `Ctrl-O`: clear the selected goal and return chat to the operator workspace session.
 - `Ctrl-R`: refresh the dashboard projection for the current goal.
-- `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: scroll chat history.
+- `Up`, `Down`: scroll chat history when chat is focused, or cycle projected goals when dashboard is focused.
+- `PageUp`, `PageDown`, `Home`, `End`: scroll chat history when chat is focused.
 - `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.
+- `Ctrl-D`: discard the active chat-authored GoalSpec draft.
 - `Ctrl-U`: clear the input.
 - `Esc`, `Ctrl-C`, or `q` with an empty input: quit.
 
@@ -221,7 +232,7 @@ usability rubric for operator comprehension and SPA/TUI coherence.
 
 `coat deploy local preflight` checks project initialization, Compose files,
 Docker availability, Restate Cloud env files when requested, runner modes, and
-model/provider environment. It fails when every agent lane is stubbed unless
+model/provider environment. It fails when every configured Compose runner is stubbed unless
 the operator passes `--allow-stub-runners`.
 
 When `--env-file` is omitted, local deploy commands read configured env files
@@ -237,7 +248,7 @@ coat deploy local up --allow-stub-runners
 coat deploy local logs --follow coordinator runner-registry control-web
 ```
 
-For live model/provider lanes:
+For live model/provider runners:
 
 ```sh
 coat setup local-auth
@@ -258,10 +269,10 @@ embedding choices, the wizard refreshes the models.dev catalog unless
 `coat setup model-index refresh` remains available for explicit cache warm-up,
 and the setup wizard reads that external index for hosted model choices instead
 of compiled-in IDs.
-Local model lanes query the configured OpenAI-compatible/Ollama endpoint for
+Local model setup queries the configured OpenAI-compatible/Ollama endpoint for
 currently served models and use a custom model-id prompt when discovery is
 unavailable; the wizard can reuse that selected local model for the primary and
-research model-provider lanes.
+research model-provider runners.
 The same wizard configures memory stores and embedding models: Qdrant,
 Graphiti/Zep MCP, OpenAI hosted embeddings, Ollama, vLLM, llama.cpp, Hugging
 Face, and custom OpenAI-compatible embedding endpoints are selected through
@@ -274,8 +285,8 @@ completions, balanced, deep review, xhigh reasoning, deterministic JSON/tool
 output, provider defaults, and custom values.
 
 Codex runner setup is not the same as OpenAI hosted model-provider setup;
-selecting the OpenAI hosted surface writes the generic model-provider lane and
-can also write the research lane. `coat setup login` and `coat setup sso` own the provider CLI login steps
+selecting the OpenAI hosted surface writes the generic model-provider runner and
+can also write the research provider runner. `coat setup login` and `coat setup sso` own the provider CLI login steps
 and can run the local preflight themselves, so operators are not left copying
 raw `codex login`, `claude auth login`, or `aws sso login` commands from docs.
 For Claude Code SSO or Console auth, use `coat setup login --claude

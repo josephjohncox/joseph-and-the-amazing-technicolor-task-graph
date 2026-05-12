@@ -75,7 +75,7 @@ scores `0`, even when endpoint or screenshot smoke checks pass.
 ## Deterministic Checks
 
 Run these checks from a clean checkout or a known scenario branch after the
-scenario implementation lane has produced the target artifacts:
+scenario implementation workstream has produced the target artifacts:
 
 ```sh
 make build

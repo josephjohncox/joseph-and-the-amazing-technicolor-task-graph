@@ -138,6 +138,35 @@ if search_repo "coat (compose|k8s|approve|notify|follow-ups)([^[:alnum:]_-]|$)|c
   exit 1
 fi
 
+ambiguous_lane_pattern='(^|[^[:alnum:]_-])((runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?|lanes? (use|uses|selected|stub|stubbed|live|advertise|configured))([^[:alnum:]_-]|$)'
+if command -v rg >/dev/null 2>&1; then
+  if rg -n -i "$ambiguous_lane_pattern" \
+    "$root/AGENTS.md" \
+    "$root/docs" \
+    "$root/crates/cli/src/main.rs" \
+    "$root/ui/control-plane-web/src" \
+    "$root/examples" \
+    --glob '!docs/exec-plans/completed/**' \
+    >/tmp/coat-doc-gardener-lanes.txt; then
+    cat /tmp/coat-doc-gardener-lanes.txt >&2
+    printf 'ambiguous lane terminology found; use runner, model route, task, or workstream in user-facing copy\n' >&2
+    exit 1
+  fi
+else
+  if git -C "$root" grep -n -i -E "$ambiguous_lane_pattern" -- \
+    AGENTS.md \
+    docs \
+    crates/cli/src/main.rs \
+    ui/control-plane-web/src \
+    examples \
+    ':(exclude)docs/exec-plans/completed/**' \
+    >/tmp/coat-doc-gardener-lanes.txt; then
+    cat /tmp/coat-doc-gardener-lanes.txt >&2
+    printf 'ambiguous lane terminology found; use runner, model route, task, or workstream in user-facing copy\n' >&2
+    exit 1
+  fi
+fi
+
 check_command_line() {
   command_line="$1"
   if ! grep -Fq "$command_line" "$root/crates/cli/src/main.rs"; then

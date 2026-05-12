@@ -247,9 +247,10 @@ Example user override:
 
 Fields omitted from a `CapacityScalingPolicy` inherit safe defaults. Use
 `mode=recommend_only` for local and development profiles. Use
-`mode=provision_ephemeral` only for sandboxed lanes with template refs, approval
-policy, cooldowns, and finite `max_runners`. Per-lane policies override the
-default by runner pool key; otherwise the default policy applies.
+`mode=provision_ephemeral` only for sandboxed runner pools with template refs,
+approval policy, cooldowns, and finite `max_runners`. Entries in
+`lane_policies` override the default by runner pool key; otherwise the default
+policy applies.
 
 ## Restate Cloud Defaults
 

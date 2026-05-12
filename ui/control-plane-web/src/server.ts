@@ -1843,7 +1843,7 @@ function stubChatReason(): string {
 
 function stubAssistantText(mode: string): string {
   if (mode === "draft_goal") {
-    return "Drafted a goal payload with coordinator-owned initial work, evidence requirements, and validation gates.";
+    return "Goal draft ready. Review the fields, then submit or discard it.";
   }
   if (mode === "draft_steering") {
     return "Drafted a steering directive that can be reviewed before it changes durable workflow state.";

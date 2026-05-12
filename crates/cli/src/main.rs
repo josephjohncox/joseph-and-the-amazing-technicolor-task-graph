@@ -6585,7 +6585,8 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
     if selections.contains(&8) {
         let current_values = parse_env_file_content(&env_text);
         let chat_choices = [
-            "Use local model endpoint",
+            "Use chat-labeled runner from runner registry",
+            "Use direct OpenAI-compatible chat URL",
             "Use OpenAI hosted chat completions",
             "Leave chat stubbed",
         ];
@@ -6596,12 +6597,36 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
             .interact()?;
         match choice {
             0 => {
+                let preferred_model = Input::<String>::with_theme(&theme)
+                    .with_prompt(
+                        "Preferred chat runner model; blank selects first chat-labeled runner",
+                    )
+                    .default(preferred_operator_chat_model(&current_values).unwrap_or_default())
+                    .allow_empty(true)
+                    .interact_text()?;
+                env_text =
+                    replace_env_line(env_text, "COAT_CONTROL_CHAT_BACKEND", "runner_registry");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_PROVIDER", "");
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_COMPLETIONS_URL", "");
+                env_text =
+                    replace_env_line(env_text, "COAT_CONTROL_CHAT_MODEL", preferred_model.trim());
+                env_text = replace_env_line(env_text, "COAT_CONTROL_CHAT_API_KEY", "");
+                let chat_params = select_model_param_values_with_env(
+                    &theme,
+                    "Runner-discovered Control Chat runtime params",
+                    "fast",
+                    &current_values,
+                    "COAT_CONTROL_CHAT",
+                )?;
+                env_text = apply_model_param_values(env_text, "COAT_CONTROL_CHAT", &chat_params);
+            }
+            1 => {
                 let url: String = Input::with_theme(&theme)
                     .with_prompt("Chat completions URL")
                     .default(env_or_default(
                         &current_values,
                         "COAT_CONTROL_CHAT_COMPLETIONS_URL",
-                        "http://host.docker.internal:8000/v1/chat/completions",
+                        &default_local_chat_completions_url(&current_values),
                     ))
                     .interact_text()?;
                 let live_models = discover_openai_compatible_models(&url).await;
@@ -6639,7 +6664,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
                 )?;
                 env_text = apply_model_param_values(env_text, "COAT_CONTROL_CHAT", &chat_params);
             }
-            1 => {
+            2 => {
                 let openai_presets = model_presets_with_configured(
                     model_index
                         .as_ref()
@@ -7180,7 +7205,10 @@ fn local_auth_profile_defaults(
             }),
         env_value_is(values, "MODEL_PROVIDER_KIND", "hugging_face"),
         env_present(values, "COAT_CONTROL_CHAT_COMPLETIONS_URL")
-            || env_present(values, "COAT_CONTROL_CHAT_MODEL"),
+            || env_present(values, "COAT_CONTROL_CHAT_MODEL")
+            || env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "runner_registry")
+            || env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "auto")
+            || local_chat_runner_available(values),
         memory_surface_configured(values),
         web_search_surface_configured(values),
     ]
@@ -7225,22 +7253,51 @@ fn local_model_provider_index_for_kind(kind: &str) -> Option<usize> {
 }
 
 fn control_chat_default_choice(values: &BTreeMap<String, String>) -> usize {
-    if env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "stub") {
-        return 2;
+    if env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "runner_registry")
+        || env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "auto")
+    {
+        return 0;
     }
     if env_value_is(values, "COAT_CONTROL_CHAT_PROVIDER", "openai") {
-        return 1;
+        return 2;
     }
     let url = env_value(values, "COAT_CONTROL_CHAT_COMPLETIONS_URL").unwrap_or_default();
     if !url.trim().is_empty() {
-        if url.contains("api.openai.com") { 1 } else { 0 }
+        if url.contains("api.openai.com") { 2 } else { 1 }
     } else if env_present(values, "COAT_CONTROL_CHAT_MODEL")
         && env_present(values, "OPENAI_API_KEY")
     {
-        1
-    } else {
         2
+    } else if local_chat_runner_available(values) {
+        0
+    } else if env_value_is(values, "COAT_CONTROL_CHAT_BACKEND", "stub") {
+        3
+    } else {
+        3
     }
+}
+
+fn local_chat_runner_available(values: &BTreeMap<String, String>) -> bool {
+    (env_value_is(values, "MODEL_PROVIDER_LOCAL_RUNNER_MODE", "live")
+        || env_value_is(values, "MODEL_PROVIDER_RUNNER_MODE", "live")
+        || env_value_is(values, "MODEL_PROVIDER_RESEARCH_RUNNER_MODE", "live"))
+        && preferred_operator_chat_model(values).is_some()
+}
+
+fn preferred_operator_chat_model(values: &BTreeMap<String, String>) -> Option<String> {
+    env_value(values, "COAT_CONTROL_CHAT_MODEL")
+        .or_else(|| env_value(values, "LOCAL_MODEL_PROVIDER_MODEL"))
+        .or_else(|| env_value(values, "MODEL_PROVIDER_MODEL"))
+        .or_else(|| env_value(values, "MODEL_PROVIDER_RESEARCH_MODEL"))
+        .filter(|model| !model.trim().is_empty())
+}
+
+fn default_local_chat_completions_url(values: &BTreeMap<String, String>) -> String {
+    env_value(values, "LOCAL_MODEL_PROVIDER_ENDPOINT")
+        .or_else(|| env_value(values, "MODEL_PROVIDER_ENDPOINT"))
+        .or_else(|| env_value(values, "MODEL_PROVIDER_RESEARCH_ENDPOINT"))
+        .map(|endpoint| openai_chat_completions_url(&endpoint))
+        .unwrap_or_else(|| "http://host.docker.internal:8000/v1/chat/completions".to_string())
 }
 
 async fn model_index_setup(args: ModelIndexCommand) -> anyhow::Result<()> {
@@ -7875,6 +7932,22 @@ fn openai_embeddings_url(endpoint: &str) -> String {
         )
     } else {
         format!("{trimmed}/v1/embeddings")
+    }
+}
+
+fn openai_chat_completions_url(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/v1/chat/completions") {
+        trimmed.to_string()
+    } else if trimmed.ends_with("/v1") {
+        format!("{trimmed}/chat/completions")
+    } else if trimmed.ends_with("/v1/embeddings") {
+        format!(
+            "{}/chat/completions",
+            trimmed.trim_end_matches("/embeddings")
+        )
+    } else {
+        format!("{trimmed}/v1/chat/completions")
     }
 }
 
@@ -10667,21 +10740,21 @@ mod tests {
         apply_config_profile, apply_model_param_values, bump_release_versions,
         chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
         compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
-        compose_up_command_args, default_local_model_provider_index,
-        default_model_param_preset_index, default_model_preset_index,
-        endpoint_discovery_candidates, endpoint_from_config, ensure_json_goal_id,
-        executor_job_manifest, extract_follow_ups, helm_template_args, helm_upgrade_args,
-        kubectl_apply_args, kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args,
-        latest_goal_id_from_value, live_model_presets, load_fresh_model_index_from_paths,
-        local_auth_action_command, local_auth_profile_defaults, local_model_provider_preset,
-        local_model_provider_preset_labels, login_actions_from_args, merge_coat_config,
-        model_index_cache_is_fresh, model_param_preset, model_param_preset_labels,
-        model_param_values_from_env, model_param_values_from_preset, model_preset,
-        model_preset_labels, model_presets_with_configured, models_dev_embedding_dimensions,
-        models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
-        parse_env_file_content, project_init_action, read_json_file, release_plan_json,
-        replace_env_line, replace_toml_section_value, replace_yaml_root_value,
-        restate_cloud_env_placeholders,
+        compose_up_command_args, control_chat_default_choice, default_local_chat_completions_url,
+        default_local_model_provider_index, default_model_param_preset_index,
+        default_model_preset_index, endpoint_discovery_candidates, endpoint_from_config,
+        ensure_json_goal_id, executor_job_manifest, extract_follow_ups, helm_template_args,
+        helm_upgrade_args, kubectl_apply_args, kubectl_ephemeral_jobs_apply_args,
+        kubectl_rollout_status_args, latest_goal_id_from_value, live_model_presets,
+        load_fresh_model_index_from_paths, local_auth_action_command, local_auth_profile_defaults,
+        local_model_provider_preset, local_model_provider_preset_labels, login_actions_from_args,
+        merge_coat_config, model_index_cache_is_fresh, model_param_preset,
+        model_param_preset_labels, model_param_values_from_env, model_param_values_from_preset,
+        model_preset, model_preset_labels, model_presets_with_configured,
+        models_dev_embedding_dimensions, models_dev_embedding_presets, models_dev_provider_presets,
+        openai_embeddings_url, parse_env_file_content, preferred_operator_chat_model,
+        project_init_action, read_json_file, release_plan_json, replace_env_line,
+        replace_toml_section_value, replace_yaml_root_value, restate_cloud_env_placeholders,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
@@ -12126,6 +12199,46 @@ mod tests {
         assert_eq!(
             params,
             model_param_values_from_preset(MODEL_PARAM_PRESETS[0])
+        );
+    }
+
+    #[test]
+    fn local_auth_setup_defaults_control_chat_to_local_runner_discovery() {
+        let values = parse_env_file_content(
+            r#"
+            MODEL_PROVIDER_LOCAL_RUNNER_MODE=live
+            LOCAL_MODEL_PROVIDER_KIND=ollama
+            LOCAL_MODEL_PROVIDER_MODEL=llama3.2:latest
+            LOCAL_MODEL_PROVIDER_ENDPOINT=http://host.docker.internal:11434/v1
+            COAT_CONTROL_CHAT_BACKEND=stub
+            "#,
+        );
+
+        let defaults = local_auth_profile_defaults(true, &values);
+        assert!(
+            defaults[8],
+            "existing live local model lane should re-open the Control Chat setup surface"
+        );
+        assert_eq!(
+            control_chat_default_choice(&values),
+            0,
+            "a live local model lane should repair stale stub chat config by default"
+        );
+
+        let mut values_without_stub = values.clone();
+        values_without_stub.remove("COAT_CONTROL_CHAT_BACKEND");
+        assert_eq!(
+            control_chat_default_choice(&values_without_stub),
+            0,
+            "a live local model lane should default Control Chat to runner-registry discovery"
+        );
+        assert_eq!(
+            preferred_operator_chat_model(&values_without_stub).as_deref(),
+            Some("llama3.2:latest")
+        );
+        assert_eq!(
+            default_local_chat_completions_url(&values_without_stub),
+            "http://host.docker.internal:11434/v1/chat/completions"
         );
     }
 

@@ -6,6 +6,9 @@
 FROM rust:1.95.0-slim-bookworm AS builder
 
 ARG CARGO_BUILD_JOBS=8
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
     CARGO_INCREMENTAL=0 \
     RUSTUP_TOOLCHAIN=1.95.0
@@ -18,7 +21,7 @@ RUN apt-get update \
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=coat-target-bookworm,target=/app/target,sharing=locked \
+    --mount=type=cache,id=coat-target-bookworm-${TARGETOS}-${TARGETARCH}${TARGETVARIANT},target=/app/target,sharing=locked \
     cargo build --release --locked -j "${CARGO_BUILD_JOBS}" \
         -p coat-cli \
         -p coat-coordinator \
@@ -46,7 +49,8 @@ FROM node:24-bookworm-slim AS sidecar-builder
 
 WORKDIR /app
 COPY sidecars ./sidecars
-RUN for dir in \
+RUN --mount=type=cache,id=coat-toolbox-sidecars-npm,target=/root/.npm,sharing=locked \
+    for dir in \
       sidecars/codex-runner-ts \
       sidecars/claude-code-runner-ts \
       sidecars/model-provider-runner-ts \

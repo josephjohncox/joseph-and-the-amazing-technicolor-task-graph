@@ -1,10 +1,13 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:24-slim AS builder
 
 ARG SIDECAR_DIR
 WORKDIR /app
 COPY ${SIDECAR_DIR}/ ./
 COPY docs/exec-plans/active ./docs/exec-plans/active
-RUN npm install && npm run build
+RUN --mount=type=cache,id=coat-node-sidecar-npm,target=/root/.npm,sharing=locked \
+    npm ci && npm run build && npm prune --omit=dev
 
 FROM node:24-slim
 

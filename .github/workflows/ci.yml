@@ -24,6 +24,8 @@ env:
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
   RUST_BACKTRACE: short
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   build:
@@ -31,9 +33,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-rust
+          prefix-key: v1-rust-ci
+          shared-key: ci-${{ runner.os }}
+          key: ${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          workspaces: . -> target
+          cache-targets: true
+          cache-all-crates: true
           cache-on-failure: true
       - uses: bufbuild/buf-setup-action@v1
       - uses: actions/setup-node@v4
@@ -59,6 +67,43 @@ jobs:
         run: target/debug/coat deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
       - name: Check generated diffs and whitespace
         run: git diff --check
+      - name: Print Rust compiler cache stats
+        if: always()
+        run: |
+          "${SCCACHE_PATH:-sccache}" --show-stats || true
+
+  runner-targets:
+    name: Runner target check (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - ubuntu-24.04-arm
+          - ubuntu-22.04-arm
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-runner-targets
+          shared-key: runner-targets-${{ matrix.runner }}
+          key: ${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          workspaces: . -> target
+          cache-targets: true
+          cache-all-crates: true
+          cache-on-failure: true
+      - name: Check workspace on hosted runner target
+        run: cargo check --workspace --bins --tests
+      - name: Print Rust compiler cache stats
+        if: always()
+        run: |
+          "${SCCACHE_PATH:-sccache}" --show-stats || true
 
   compose-runner-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs['compose-runner-smoke'] }}

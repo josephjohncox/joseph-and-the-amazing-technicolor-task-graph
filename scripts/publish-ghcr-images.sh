@@ -9,6 +9,7 @@ PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
 BUILDX_PROGRESS="${BUILDX_PROGRESS:-plain}"
 BUILDX_CACHE="${BUILDX_CACHE:-auto}"
+BUILDX_REGISTRY_CACHE="${BUILDX_REGISTRY_CACHE:-auto}"
 PUSH_IMAGES="${PUSH_IMAGES:-true}"
 
 if [[ -z "${VERSION}" ]]; then
@@ -31,12 +32,21 @@ build_image() {
   local cache_scope="$2"
   shift 2
   local image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/${image_name}"
+  local registry_cache_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/jattg-build-cache:${cache_scope}"
   local cache_args=()
 
   if [[ "${BUILDX_CACHE}" == "true" || ( "${BUILDX_CACHE}" == "auto" && "${GITHUB_ACTIONS:-}" == "true" ) ]]; then
     cache_args=(
       --cache-from "type=gha,scope=${cache_scope}"
       --cache-to "type=gha,mode=max,scope=${cache_scope},ignore-error=true"
+    )
+  fi
+
+  if [[ "${PUSH_IMAGES}" == "true" ]] \
+    && [[ "${BUILDX_REGISTRY_CACHE}" == "true" || ( "${BUILDX_REGISTRY_CACHE}" == "auto" && "${GITHUB_ACTIONS:-}" == "true" ) ]]; then
+    cache_args+=(
+      --cache-from "type=registry,ref=${registry_cache_ref}"
+      --cache-to "type=registry,ref=${registry_cache_ref},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true"
     )
   fi
 

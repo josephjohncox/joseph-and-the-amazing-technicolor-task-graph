@@ -22,20 +22,22 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.target }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-15
+          - os: macos-latest
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -46,28 +48,25 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: mozilla-actions/sccache-action@v0.0.10
+
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          prefix-key: v1-rust-release
+          shared-key: release-binaries-${{ runner.os }}-${{ matrix.target }}
+          key: ${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          workspaces: . -> target
+          cache-targets: true
+          cache-all-crates: true
           cache-on-failure: true
-
-      - name: Install Linux cross linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      - name: Configure Linux cross linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml <<'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
-          EOF
 
       - name: Build release binaries
         run: cargo build --workspace --bins --release --target "${{ matrix.target }}"
+
+      - name: Print Rust compiler cache stats
+        if: always()
+        run: |
+          "${SCCACHE_PATH:-sccache}" --show-stats || true
 
       - name: Package binaries
         env:
@@ -226,4 +225,5 @@ jobs:
           VERSION: ${{ steps.image-release.outputs.version }}
           IMAGE_NAMESPACE: ${{ steps.image-release.outputs.namespace }}
           BUILDX_CACHE: true
+          BUILDX_REGISTRY_CACHE: true
         run: scripts/publish-ghcr-images.sh

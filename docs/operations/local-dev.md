@@ -554,7 +554,7 @@ gateway-local fallback for smoke tests or a temporarily unavailable goal-store.
 The browser reads chat history through `/api/chat/session`; it does not own the
 conversation log.
 
-The gateway defaults to configured chat or the local stub so smoke tests do not need model credentials. It does not borrow local Ollama/vLLM runners just because they are registered. Runner lanes are selected by the coordinator from `MODEL_PROVIDER_*` and `LOCAL_MODEL_PROVIDER_*` based on task role, persona, labels, sandbox, and model route; the gateway Chat tab is selected separately from `COAT_CONTROL_CHAT_*`, `COAT_LLM_GATEWAY_*`, or direct OpenAI settings.
+The gateway defaults to configured chat or the local stub so smoke tests do not need model credentials. It does not borrow arbitrary local Ollama/vLLM runners just because they are registered. Runner lanes are selected by the coordinator from `MODEL_PROVIDER_*` and `LOCAL_MODEL_PROVIDER_*` based on task role, persona, labels, sandbox, and model route; the gateway Chat tab is selected separately from `COAT_CONTROL_CHAT_*`, `COAT_LLM_GATEWAY_*`, or direct OpenAI settings. When `coat setup local-auth` configures a host-local model and the Control Chat surface is selected, it writes `COAT_CONTROL_CHAT_BACKEND=runner_registry` so chat can use only runners that advertise operator-chat labels.
 
 To force a specific live OpenAI-compatible chat backend, set:
 

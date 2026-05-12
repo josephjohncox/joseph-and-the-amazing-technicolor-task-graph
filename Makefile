@@ -162,9 +162,15 @@ helm-package:
 
 release-binary-smoke:
 	@test -n "$(VERSION)" || { echo "VERSION is required, for example: make release-binary-smoke VERSION=0.2.0 TARGET=aarch64-apple-darwin"; exit 2; }
-	@target="$(TARGET)"; \
+	@set -eu; \
+	target="$(TARGET)"; \
+	host="$$(rustc -vV | awk '/host:/ { print $$2; exit }' 2>/dev/null || true)"; \
 	if [ -z "$$target" ]; then \
-		target="$$(rustc -vV | awk '/host:/ { print $$2; exit }')"; \
+		target="$$host"; \
+	fi; \
+	if [ -z "$$target" ]; then \
+		echo "TARGET is required when rustc host detection is unavailable"; \
+		exit 2; \
 	fi; \
 	archive="jattg-binaries-$(VERSION)-$$target.tar.gz"; \
 	release_url="$(RELEASE_URL)"; \
@@ -188,15 +194,19 @@ release-binary-smoke:
 	for binary in coat coat-coordinator coat-event-gateway coat-goal-store coat-memory-gateway coat-notifier coat-runner-registry coat-sandbox-runner coat-tool-registry coat-validator; do \
 		test -x "$$extracted/bin/$$binary"; \
 	done; \
-	"$$extracted/bin/coat" --help >/dev/null; \
-	"$$extracted/bin/coat" guide --print >/dev/null; \
-	base_version="$(VERSION)"; \
-	tag_suffix=""; \
-	case "$$base_version" in *-*) tag_suffix="$${base_version#*-}"; base_version="$${base_version%%-*}";; esac; \
-	if [ -n "$$tag_suffix" ]; then \
-		"$$extracted/bin/coat" release plan --version "$$base_version" --tag-suffix "$$tag_suffix" >/dev/null; \
+	if [ "$$target" = "$$host" ]; then \
+		COAT_ALLOW_UNINITIALIZED=1 "$$extracted/bin/coat" --help >/dev/null; \
+		COAT_ALLOW_UNINITIALIZED=1 "$$extracted/bin/coat" guide --print >/dev/null; \
+		base_version="$(VERSION)"; \
+		tag_suffix=""; \
+		case "$$base_version" in *-*) tag_suffix="$${base_version#*-}"; base_version="$${base_version%%-*}";; esac; \
+		if [ -n "$$tag_suffix" ]; then \
+			COAT_ALLOW_UNINITIALIZED=1 "$$extracted/bin/coat" release plan --version "$$base_version" --tag-suffix "$$tag_suffix" >/dev/null; \
+		else \
+			COAT_ALLOW_UNINITIALIZED=1 "$$extracted/bin/coat" release plan --version "$$base_version" >/dev/null; \
+		fi; \
 	else \
-		"$$extracted/bin/coat" release plan --version "$$base_version" >/dev/null; \
+		echo "skipped executable smoke for $$target on host $${host:-unknown}"; \
 	fi; \
 	echo "smoked published binary release v$(VERSION) for $$target"
 

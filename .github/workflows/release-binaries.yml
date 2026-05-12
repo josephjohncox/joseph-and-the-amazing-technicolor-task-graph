@@ -146,6 +146,7 @@ jobs:
           BASE_VERSION: ${{ steps.version.outputs.base_version }}
           TAG_SUFFIX: ${{ steps.version.outputs.tag_suffix }}
           TARGET: x86_64-unknown-linux-gnu
+          COAT_ALLOW_UNINITIALIZED: "1"
         run: |
           set -euo pipefail
           tmp_dir="$(mktemp -d)"

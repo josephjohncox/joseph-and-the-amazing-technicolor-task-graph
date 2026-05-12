@@ -10,6 +10,21 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_PREFER_OFFLINE: "true"
+  RUST_BACKTRACE: short
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,6 +34,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-rust
+          cache-on-failure: true
       - uses: bufbuild/buf-setup-action@v1
       - uses: actions/setup-node@v4
         with:
@@ -26,32 +42,29 @@ jobs:
           cache: npm
           cache-dependency-path: |
             sidecars/*/package-lock.json
-            ui/control-plane-web/package.json
-      - run: cargo fmt --all --check
-      - run: cargo check --workspace
-      - run: cargo test --workspace
-      - run: cargo build -p coat-cli
-      - run: make event-gateway-smoke
-      - run: make runner-smoke
-      - run: make proto-check
-      - run: sh scripts/coat-doc-gardener.sh
-      - run: npm ci --prefix sidecars/codex-runner-ts
-      - run: npm run --prefix sidecars/codex-runner-ts build
-      - run: npm ci --prefix sidecars/claude-code-runner-ts
-      - run: npm run --prefix sidecars/claude-code-runner-ts build
-      - run: npm ci --prefix sidecars/model-provider-runner-ts
-      - run: npm run --prefix sidecars/model-provider-runner-ts build
-      - run: npm ci --prefix sidecars/staff-engineer-runner-ts
-      - run: npm run --prefix sidecars/staff-engineer-runner-ts build
-      - run: npm ci --prefix ui/control-plane-web
-      - run: npm run --prefix ui/control-plane-web build
-      - run: npm run --prefix ui/control-plane-web smoke
-      - run: target/debug/coat compose config
-      - run: target/debug/coat compose config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
+            ui/control-plane-web/package-lock.json
+      - name: Rust compile, tests, and no-Docker smokes
+        run: make ci-rust
+      - name: Protocol and schema checks
+        run: make proto-check
+      - name: Documentation guardrails
+        run: make docs-check
+      - name: Install TypeScript dependencies
+        run: make ts-install
+      - name: Build TypeScript sidecars and control web
+        run: make ts-build control-web-smoke
+      - name: Validate local Compose config
+        run: target/debug/coat deploy local config
+      - name: Validate Restate Cloud Compose config
+        run: target/debug/coat deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
+      - name: Check generated diffs and whitespace
+        run: git diff --check
 
   compose-runner-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs['compose-runner-smoke'] }}
     runs-on: ubuntu-latest
+    env:
+      BUILDKIT_PROGRESS: plain
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3

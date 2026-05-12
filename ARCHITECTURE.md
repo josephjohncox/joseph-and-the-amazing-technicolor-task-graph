@@ -51,8 +51,11 @@ Handlers:
 - `cancel(reason: String) -> String`
 - `inject_feedback(feedback: HumanFeedback) -> String`
 - `approve(approval: HumanApproval) -> String`
+- `create_thunk(request: DelayedComputeThunkRequest) -> Option<GoalState>`
+- `resume_thunk(request: DelayedComputeThunkResumeRequest) -> Option<GoalState>`
 - `status() -> Option<GoalState>`
 - `progress() -> Option<GoalProgress>`
+- `compute_graph() -> Option<ComputeGraphSnapshot>`
 - `tasks(query: TaskQuery) -> Option<TaskList>`
 
 The current implementation executes a bounded durable frontier loop and dispatches agent tasks through the runner registry. Local development can fall back to a stub result when no compatible runner is registered; production should disable that fallback so unmatched work blocks and notifies a human.
@@ -71,6 +74,7 @@ Clean goals include `GoalPlan.subgoals` and `initial_tasks` with stable `subgoal
 - Worker I/O: `AgentRunRequest`, `AgentRunResult`, `ChildTaskRequest`
 - Validation I/O: `ValidationRequest`, `ValidationReport`
 - Human gates: `HumanFeedback`, `HumanApproval`, `ApprovalRequest`
+- Delayed computation: `DelayedComputeThunk`, `DelayedComputeThunkRequest`, `ContinuationRef`, `WaitRef`, `ComputeGraphSnapshot`
 - Distributed execution: `ExecutionProfile`, `RunnerSelector`, `RunnerRegistration`, `ModelRoute`, `PersonaSpec`
 - Result channels: `ResultChannelPolicy`, `GitResultPolicy`, `GitResultRef`, `ObjectStoragePolicy`, `ObjectStoreRef`, `ObjectStorageArtifactRef`
 - Goal store projection: `GoalStorePolicy`, `GoalRecord`, `TaskRecord`, `GoalEventRecord`, `GoalStoreSnapshot`

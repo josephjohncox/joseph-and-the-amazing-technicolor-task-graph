@@ -147,12 +147,12 @@ Goal intake prompt:
   <role>You are the COAT goal intake agent.</role>
   <mission>Turn the operator request into a bounded engineering goal.</mission>
   <must>
-    <rule>You MUST ask only questions needed to define objective, artifacts, acceptance evidence, out-of-scope changes, approval risks, required research, memory context, preferred runners/models, budget, and stop conditions.</rule>
+    <rule>You MUST ask only questions needed to define objective, artifacts, acceptance evidence, out-of-scope changes, approval risks, required research, memory context, preferred runners/models, budget, priority/ranking intent, and stop conditions.</rule>
     <rule>You MUST NOT ask questions when the request is already clear enough to draft a bounded goal.</rule>
     <rule>You MUST produce a concise intake summary and unresolved assumptions.</rule>
     <rule>You MUST treat "subagent" as a COAT durable child task owned by the coordinator.</rule>
   </must>
-  <output>Return structured JSON with keys: intake_summary, missing_questions, unresolved_assumptions, approval_risks, research_needs, memory_queries, runner_preferences, stop_conditions.</output>
+  <output>Return structured JSON with keys: intake_summary, missing_questions, unresolved_assumptions, approval_risks, research_needs, memory_queries, runner_preferences, ranking_intent, stop_conditions.</output>
 </coat_goal_intake>
 ```
 
@@ -182,6 +182,7 @@ GoalSpec compiler prompt:
     <rule>The objective MUST be concrete and testable.</rule>
     <rule>The GoalSpec MUST include authoring guidance, plan subgoals, and initial task routing when the first frontier is known.</rule>
     <rule>The GoalSpec MUST include control_policy, research_policy, memory_policy, approval_policy, and default_execution.</rule>
+    <rule>The GoalSpec SHOULD include ranking_policy only when the operator wants explicit upvote/downvote promotion or demotion behavior.</rule>
     <rule>Auth MUST use SecretRef, auth_distribution, workload identity, runner-local device auth, or brokered user auth. Raw tokens MUST NOT appear.</rule>
     <rule>Budgets MUST be bounded.</rule>
     <rule>Non-trivial work MUST require review and unification evidence.</rule>
@@ -232,6 +233,10 @@ field is missing and prints `goal_id`, `workflow_url`, and an
 
 `color_policy`: Keep the default technicolor purpose palette for most goals. Use `assignment_mode = purpose` when colors should follow work/research/review/validation/unification semantics, `status` when operators mainly need state-oriented dashboards, or `custom` when subgoals and child tasks carry explicit colors. Color keys are durable semantic labels; `hex` is only a display hint.
 
+`ranking_policy`: Leave disabled for ordinary one-off goals. Enable it when operators or the coordinator should upvote/downvote priority, promote a goal into an overarching initiative, or demote it under another goal as a subgoal. Votes are durable state on `GoalState`, and ranking decisions should change scheduling/projection behavior only through the coordinator.
+
+`mechanism_policy`: Leave disabled unless the goal explicitly needs distributed consensus, voting, mechanism design, or auction behavior. Enable it when agents, humans, and the coordinator should participate in structured `MechanismRound`s for subgoal selection, branch selection, runner allocation, budget allocation, review-panel selection, or work auctions. Mechanism outcomes are durable recommendations until the coordinator applies them through normal ranking, branch, task, approval, or capacity state. Require human ratification for high-impact auctions or resource allocation.
+
 `plan.subgoals[].color`: Set this when a subgoal represents a distinct workstream that should stay visually stable across child tasks, branch candidates, reviewer tasks, notifications, and dashboard views. Use keys like `research_green`, `implementation_blue`, `review_purple`, or goal-specific keys such as `parser_gold`.
 
 `initial_tasks`: Add only known first-frontier tasks. Set `title`, `role`, `subgoal_id`, `priority`, `tags`, `done_criteria`, `budget`, `sandbox`, and `execution` enough for a runner to pick up the work without reading the entire goal prose.
@@ -259,6 +264,8 @@ Standard review steering: Use `request_standard_review` to inject bounded checks
 `branching_policy`: Enable when two or more implementations should compete. Use branch groups for high-risk code paths, model bakeoffs, ambiguous designs, or places where you want different personas to solve the same subgoal. Candidate branches should return artifacts; vote tasks return `BranchVoteOutput`; optional unifier tasks turn votes into one selected implementation.
 
 `event_sources`: For recurring or real-world-triggered work, author an event source and route instead of asking an agent to sleep, poll, or watch forever. Event routes can create a new goal, create a research goal, steer an existing goal, or pause for human review. Schedule and webhook activation should go through approval when it introduces external callbacks, calendar access, or recurring spend.
+
+Delayed compute: When work needs a human answer, approval, external callback, timer, resource, or model-route availability before it can continue, represent that pause as a `DelayedComputeThunk`. The thunk stores the wait reference and delimited continuation reference. A worker that discovers a wait returns `status = waiting` plus `AgentRunResult.delayed_compute_thunks`; the coordinator materializes the thunk, marks the task waiting, exposes it in `GoalProgress.compute_graph`, and resumes it only through a coordinator operation. Workers should not sleep, spin, or poll inside a task.
 
 `research_policy`: Enable when answers may change or when external claims affect implementation. Require sources and use plans.
 
@@ -377,12 +384,51 @@ coat goal steer-standard \
   --reason "Tests must prove the goal behavior and fail for meaningful incorrect implementations."
 ```
 
+Vote on goal priority or hierarchy when `ranking_policy.enabled`:
+
+```sh
+coat goal vote \
+  --direction up \
+  --suggested-role overarching_goal \
+  --reason "This is an umbrella objective for several active subgoals."
+coat goal vote \
+  --direction down \
+  --suggested-role subgoal \
+  --reason "This belongs under the platform-hardening initiative."
+```
+
+Start a mechanism-design round and submit a ballot when `mechanism_policy.enabled`:
+
+```sh
+coat goal mechanism start \
+  --file examples/mechanism-round-consensus.json
+coat goal mechanism ballot \
+  --file examples/mechanism-ballot-consensus.json
+```
+
+Create and inspect a delayed compute thunk when an operator, event gateway, or
+worker result needs to suspend a task at a delimited continuation:
+
+```sh
+coat goal thunk create \
+  --file examples/delayed-compute-thunk-human-input.json
+coat goal compute-graph
+```
+
 Approve a waiting task:
 
 ```sh
 coat human approve \
   --approval-id <approval-request-id> \
   --approved true
+```
+
+Resume a delayed compute thunk after human input or an external answer arrives:
+
+```sh
+coat human resume-thunk \
+  --thunk-id <thunk-id> \
+  --response-summary "Use the local smoke lane before live worker execution."
 ```
 
 Follow-up commands resolve the goal from `--goal-id`, `COAT_GOAL_ID`, or

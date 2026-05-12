@@ -34,7 +34,7 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 
 ## Follow-Ups
 
-- Coordinate SQS/LocalStack, OpenTelemetry, and provider adapter proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+- Coordinate remaining OpenTelemetry, provider adapter, and Compose/cluster topology proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`; SQS/LocalStack proof is closed by the active plan's EventOps evidence.
 - Add Google Calendar and Outlook source adapters using MCP or provider APIs.
 - Add OpenTelemetry log/metric/trace and additional provider adapters after the generic `open_telemetry_signal` shape stabilizes.
 - Add Compose or cluster CI coverage that exercises event gateway projection against the same service topology operators run outside local smoke tests.

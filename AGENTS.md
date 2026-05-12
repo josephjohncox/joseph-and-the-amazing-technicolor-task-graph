@@ -133,7 +133,12 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Every `TaskNode` has an `execution` profile.
 - Every `TaskNode` also has a `purpose`: work, review, unification, or actor retry.
 - Every `TaskNode` may carry a `color` from `GoalSpec.color_policy`, subgoal metadata, or explicit child-task metadata; use stable color keys as semantic graph labels, not one-off UI decoration.
-- Goals have `control_policy`, `research_policy`, `memory_policy`, and `approval_policy`; preserve them when editing contracts.
+- Goals have `control_policy`, `research_policy`, `memory_policy`, `approval_policy`, and optional `ranking_policy`; preserve them when editing contracts.
+- Goal ranking votes are extension state. Humans and the coordinator may upvote/downvote goals for priority, promotion into overarching initiatives, or demotion into subgoals only when `ranking_policy.enabled` allows it.
+- Ranking votes must be durable coordinator state, not hidden worker preferences; workers may propose ranking changes only as structured requests that the coordinator or human can accept.
+- Mechanism-design coordination is also opt-in extension state. Consensus rounds, approval votes, ranked-choice votes, Delphi rounds, sealed-bid auctions, Vickrey auctions, and contract-net allocation protocols must run as coordinator-owned `MechanismRound` state when `mechanism_policy.enabled` allows them.
+- Agents may participate in a mechanism round only by returning structured proposals, ballots, bids, or rationale; they do not directly re-rank goals, allocate budgets, select runners, or choose winning branches.
+- Mechanism outcomes are recommendations until the coordinator applies them through normal task, branch, ranking, approval, or capacity state; human ratification should be required for high-impact allocation or auction decisions.
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
 - `GoalSpec.id` is optional in normal authored JSON; the CLI/deserializer assigns a durable workflow key unless an operator intentionally supplies one for idempotency.
 - Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.
@@ -168,6 +173,10 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Device/browser auth for Codex or Claude Code is runner-local unless `AuthDistributionPolicy` explicitly allows brokered user auth or secret sync.
 - Brokered user auth requires a human approval gate and short-lived leases; never place raw user tokens in task state, diagnostics, artifacts, or memory.
 - Notifications are task-local and should be emitted for approval, feedback, blocked, failed, and completed events.
+- Delayed compute thunks are first-class durable nodes for human input, approvals, external callbacks, timers, resource waits, model availability, and any other suspended continuation.
+- A delayed compute thunk pauses task dispatch through coordinator state and resumes through an explicit delimited `ContinuationRef`; do not model waits as sleeping agents or free-running polling loops.
+- Worker status `waiting` means the worker produced a suspended computation, not a failed run. Workers MUST return `AgentRunResult.delayed_compute_thunks` for every required wait; the coordinator materializes those thunks and owns resume.
+- `GoalProgress.compute_graph` and `coat goal compute-graph` are the operator projection for tasks, thunks, wait refs, continuation boundaries, dependency edges, and mechanism rounds.
 - Durable notification fanout and event fan-in should use stable infrastructure targets such as SQS when operators need replay, dead-letter queues, external automations, or bounded queue polling.
 - Local notification threads are for operator visibility; Restate workflow state remains the source of truth.
 - Web UI edits are steering, approval, goal, event, or memory commands against backend APIs; never mutate projections as if they were source-of-truth state.
@@ -195,8 +204,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Postgres is the standard production goal read model. Restate remains authoritative; the goal store is a projection.
 - Use the migration files for dashboard/audit database setup; do not infer database schema from ad hoc JSONL logs.
 - Keep protobuf ID/status/artifact fields typed and put full Rust payloads behind JSON-schema envelopes.
-- External events enter through `coat-event-gateway`; generic events, IDE/LSP diagnostics, branch activity, PR events, CI/test failures, webhooks, cron, calendar checks, and event buses must not invoke workers directly.
-- Use generic JSON or CloudEvents-compatible event sources for IDE/LSP, CI, git, branch, PR, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before adding provider-specific adapters.
+- External events enter through `coat-event-gateway`; generic events, IDE/LSP diagnostics, branch activity, PR events, PR checks, GitHub Actions checks, GitLab pipeline checks, CI/test failures, webhooks, cron, calendar checks, and event buses must not invoke workers directly.
+- Use generic JSON or CloudEvents-compatible event sources for IDE/LSP, CI, git, branch, PR, PR-check, GitHub Actions, GitLab pipeline, issue tracker, chat, monitoring, database-change, memory, runner, and agent-topology events before adding provider-specific adapters.
 - Observability sources such as Prometheus Alertmanager and Datadog must normalize into durable events, search memory for recurrence/persistence evidence, and route through SRE, software-engineering, data-engineering, or data-science goals before PR, dashboard, alert, or runbook changes.
 - Webhook auth must use `WebhookAuthPolicy` and `SecretRef`; shared-secret, bearer, and HMAC-SHA256 are local gateway paths, while mTLS/OIDC should terminate in trusted ingress or secret middleware until implemented.
 - Agent-proposed monitors or schedules require coordinator or human-approved activation.
@@ -227,6 +236,12 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - AWS SSO helper: `coat setup sso --profile <profile> --write-env --bedrock-live --preflight`
 - Chat client MCP/skill setup wizard: `coat setup chat-client`
 - Restate Cloud registration only: `coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
+- Goal ranking vote: `coat goal vote --goal-id <goal-id> --direction up --reason "promote umbrella work"`
+- Mechanism round start: `coat goal mechanism start --goal-id <goal-id> --file examples/mechanism-round-consensus.json`
+- Mechanism ballot: `coat goal mechanism ballot --goal-id <goal-id> --file examples/mechanism-ballot-consensus.json`
+- Create delayed compute thunk: `coat goal thunk create --goal-id <goal-id> --file examples/delayed-compute-thunk-human-input.json`
+- Inspect compute graph: `coat goal compute-graph --goal-id <goal-id>`
+- Resume delayed compute thunk: `coat human resume-thunk --goal-id <goal-id> --thunk-id <thunk-id> --response-summary "approved path"`
 - Kubernetes render: `coat deploy cluster render --output infra/k8s/rendered.yaml`
 - Kubernetes apply or dry-run: `coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client`
 - Kubernetes rollout status: `coat deploy cluster status --timeout 120s`

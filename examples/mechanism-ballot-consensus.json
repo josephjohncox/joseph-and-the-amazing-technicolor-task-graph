@@ -1,0 +1,19 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "round_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
+  "participant": "agent-a",
+  "source": "agent",
+  "allocations": [
+    {
+      "proposal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
+      "support": 3,
+      "rank": 1
+    },
+    {
+      "proposal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756702",
+      "support": 1,
+      "rank": 2
+    }
+  ],
+  "rationale": "The bounded patch lane best satisfies the current frontier and budget."
+}

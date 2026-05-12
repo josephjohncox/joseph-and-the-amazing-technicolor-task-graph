@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalRankingSummary",
+  "type": "object",
+  "properties": {
+    "downvotes": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "effective_priority": {
+      "$ref": "#/$defs/TaskPriority"
+    },
+    "hierarchy_role": {
+      "$ref": "#/$defs/GoalHierarchyRole"
+    },
+    "latest_decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GoalRankingDecision"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "score": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "upvotes": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "vote_count": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "score",
+    "upvotes",
+    "downvotes",
+    "vote_count",
+    "effective_priority",
+    "hierarchy_role"
+  ],
+  "$defs": {
+    "GoalHierarchyRole": {
+      "type": "string",
+      "enum": [
+        "overarching_goal",
+        "peer_goal",
+        "subgoal"
+      ]
+    },
+    "GoalRankingDecision": {
+      "type": "object",
+      "properties": {
+        "downvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effective_priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "hierarchy_role": {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "outcome": {
+          "$ref": "#/$defs/GoalRankingOutcome"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "upvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vote_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "score",
+        "upvotes",
+        "downvotes",
+        "vote_count",
+        "effective_priority",
+        "hierarchy_role",
+        "outcome",
+        "reason"
+      ]
+    },
+    "GoalRankingOutcome": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "promoted",
+        "demoted",
+        "unchanged"
+      ]
+    },
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    }
+  }
+}

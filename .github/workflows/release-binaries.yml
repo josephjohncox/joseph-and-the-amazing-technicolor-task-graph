@@ -18,6 +18,11 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
 jobs:
   build:
     name: Build ${{ matrix.target }}
@@ -44,6 +49,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Install Linux cross linker
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -61,7 +67,7 @@ jobs:
           EOF
 
       - name: Build release binaries
-        run: cargo build --workspace --release --target "${{ matrix.target }}"
+        run: cargo build --workspace --bins --release --target "${{ matrix.target }}"
 
       - name: Package binaries
         env:

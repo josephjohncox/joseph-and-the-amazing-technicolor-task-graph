@@ -847,6 +847,10 @@ pub struct GoalSpec {
     #[serde(default)]
     pub color_policy: GraphColorPolicy,
     #[serde(default)]
+    pub ranking_policy: GoalRankingPolicy,
+    #[serde(default)]
+    pub mechanism_policy: MechanismPolicy,
+    #[serde(default)]
     pub default_execution: ExecutionProfile,
     #[serde(default)]
     pub initial_tasks: Vec<ChildTaskRequest>,
@@ -880,6 +884,8 @@ impl GoalSpec {
             timeout_policy: TimeoutPolicy::default(),
             branching_policy: BranchingPolicy::default(),
             color_policy: GraphColorPolicy::default(),
+            ranking_policy: GoalRankingPolicy::default(),
+            mechanism_policy: MechanismPolicy::default(),
             default_execution: ExecutionProfile::default(),
             initial_tasks: Vec::new(),
         }
@@ -928,6 +934,12 @@ impl GoalSpec {
             && self.branching_policy.voting.min_votes == 0
         {
             warnings.push("branch voting is enabled but min_votes is zero".to_string());
+        }
+        if self.ranking_policy.enabled && self.ranking_policy.min_votes == 0 {
+            warnings.push("goal ranking is enabled but min_votes is zero".to_string());
+        }
+        if self.mechanism_policy.enabled && self.mechanism_policy.quorum == 0 {
+            warnings.push("mechanism policy is enabled but quorum is zero".to_string());
         }
         if self.review_policy.enabled && self.review_policy.min_reviews == 0 {
             warnings.push("review policy is enabled but min_reviews is zero".to_string());
@@ -1055,6 +1067,333 @@ impl GoalSpec {
             suggested_next_actions,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Optional extension for human/coordinator voting over goal priority.
+///
+/// Ranking votes are durable coordinator state. They can promote a goal into an
+/// overarching initiative, demote it into a subgoal, or leave it as a peer goal
+/// for frontier ordering and operator views.
+pub struct GoalRankingPolicy {
+    pub enabled: bool,
+    pub allow_human_votes: bool,
+    pub allow_coordinator_votes: bool,
+    pub allow_agent_votes: bool,
+    pub min_votes: u32,
+    pub promotion_score: i32,
+    pub demotion_score: i32,
+    pub max_vote_weight: u32,
+}
+
+impl Default for GoalRankingPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_human_votes: true,
+            allow_coordinator_votes: true,
+            allow_agent_votes: false,
+            min_votes: 2,
+            promotion_score: 2,
+            demotion_score: -2,
+            max_vote_weight: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalVoteDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalVoteSource {
+    Human,
+    Coordinator,
+    Agent,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalHierarchyRole {
+    OverarchingGoal,
+    PeerGoal,
+    Subgoal,
+}
+
+impl Default for GoalHierarchyRole {
+    fn default() -> Self {
+        Self::PeerGoal
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalRankingOutcome {
+    Pending,
+    Promoted,
+    Demoted,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalPriorityVoteRequest {
+    pub goal_id: GoalId,
+    pub voter: String,
+    pub source: GoalVoteSource,
+    pub direction: GoalVoteDirection,
+    #[serde(default)]
+    pub weight: u32,
+    pub reason: String,
+    #[serde(default)]
+    pub suggested_role: Option<GoalHierarchyRole>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalPriorityVote {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub voter: String,
+    pub source: GoalVoteSource,
+    pub direction: GoalVoteDirection,
+    pub weight: u32,
+    pub signed_weight: i32,
+    pub reason: String,
+    #[serde(default)]
+    pub suggested_role: Option<GoalHierarchyRole>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalRankingDecision {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub score: i32,
+    pub upvotes: u32,
+    pub downvotes: u32,
+    pub vote_count: u32,
+    pub effective_priority: TaskPriority,
+    pub hierarchy_role: GoalHierarchyRole,
+    pub outcome: GoalRankingOutcome,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct GoalRankingSummary {
+    pub score: i32,
+    pub upvotes: u32,
+    pub downvotes: u32,
+    pub vote_count: u32,
+    pub effective_priority: TaskPriority,
+    pub hierarchy_role: GoalHierarchyRole,
+    #[serde(default)]
+    pub latest_decision: Option<GoalRankingDecision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Opt-in protocol layer for distributed agent/human coordination.
+///
+/// This is the extension point for consensus, voting, mechanism design, and
+/// auction rounds. It is disabled by default because the coordinator must own
+/// the protocol, tally, and final decision before any task priority, allocation,
+/// or branch choice changes.
+pub struct MechanismPolicy {
+    pub enabled: bool,
+    pub allow_human_participants: bool,
+    pub allow_agent_participants: bool,
+    pub allow_coordinator_participants: bool,
+    pub default_mechanism: MechanismKind,
+    pub quorum: u32,
+    pub min_participants: u32,
+    pub max_rounds: u32,
+    pub max_ballots_per_participant: u32,
+    pub require_human_ratification: bool,
+}
+
+impl Default for MechanismPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_human_participants: true,
+            allow_agent_participants: true,
+            allow_coordinator_participants: true,
+            default_mechanism: MechanismKind::ApprovalVote,
+            quorum: 2,
+            min_participants: 2,
+            max_rounds: 8,
+            max_ballots_per_participant: 1,
+            require_human_ratification: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismKind {
+    ApprovalVote,
+    MajorityVote,
+    RankedChoice,
+    DelphiRound,
+    SealedBidAuction,
+    VickreyAuction,
+    ContractNet,
+}
+
+impl MechanismKind {
+    fn is_auction(self) -> bool {
+        matches!(
+            self,
+            Self::SealedBidAuction | Self::VickreyAuction | Self::ContractNet
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismTarget {
+    GoalPriority,
+    GoalPromotion,
+    SubgoalSelection,
+    BranchSelection,
+    RunnerAllocation,
+    BudgetAllocation,
+    WorkAuction,
+    ReviewPanel,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismParticipantSource {
+    Human,
+    Coordinator,
+    Agent,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanismRoundStatus {
+    Open,
+    QuorumPending,
+    Decided,
+    RatificationRequired,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismRoundRequest {
+    pub goal_id: GoalId,
+    pub title: String,
+    pub mechanism: Option<MechanismKind>,
+    pub target: MechanismTarget,
+    pub reason: String,
+    #[serde(default)]
+    pub proposals: Vec<MechanismProposalRequest>,
+    pub quorum: Option<u32>,
+    pub min_participants: Option<u32>,
+    pub require_human_ratification: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismProposalRequest {
+    pub label: String,
+    pub description: String,
+    pub proposer: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismProposal {
+    pub id: Uuid,
+    pub label: String,
+    pub description: String,
+    pub proposer: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismBallotRequest {
+    pub goal_id: GoalId,
+    pub round_id: Uuid,
+    pub participant: String,
+    pub source: MechanismParticipantSource,
+    #[serde(default)]
+    pub allocations: Vec<MechanismAllocation>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismAllocation {
+    pub proposal_id: Uuid,
+    pub support: i32,
+    pub rank: Option<u32>,
+    pub bid: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismBallot {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub round_id: Uuid,
+    pub participant: String,
+    pub source: MechanismParticipantSource,
+    #[serde(default)]
+    pub allocations: Vec<MechanismAllocation>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismDecision {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub round_id: Uuid,
+    pub selected_proposal_id: Option<Uuid>,
+    pub selected_label: Option<String>,
+    pub score: i64,
+    pub clearing_price: Option<u64>,
+    pub participant_count: u32,
+    pub quorum_met: bool,
+    pub status: MechanismRoundStatus,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct MechanismRound {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub title: String,
+    pub mechanism: MechanismKind,
+    pub target: MechanismTarget,
+    pub status: MechanismRoundStatus,
+    pub reason: String,
+    #[serde(default)]
+    pub proposals: Vec<MechanismProposal>,
+    #[serde(default)]
+    pub ballots: Vec<MechanismBallot>,
+    pub quorum: u32,
+    pub min_participants: u32,
+    pub require_human_ratification: bool,
+    pub decision: Option<MechanismDecision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
@@ -1217,6 +1556,12 @@ impl GraphColorRef {
                 "Waiting Approval",
                 "#d97706",
                 "paused for human approval",
+            ),
+            TaskStatus::WaitingInput => Self::new(
+                "status_waiting_input",
+                "Waiting Input",
+                "#0f766e",
+                "paused on a delayed compute thunk",
             ),
             TaskStatus::Done => Self::new("status_done", "Done", "#16a34a", "accepted work"),
             TaskStatus::Blocked => {
@@ -1826,6 +2171,14 @@ pub struct GoalState {
     #[serde(default)]
     pub approvals: Vec<ApprovalRequest>,
     #[serde(default)]
+    pub delayed_compute_thunks: Vec<DelayedComputeThunk>,
+    #[serde(default)]
+    pub goal_priority_votes: Vec<GoalPriorityVote>,
+    #[serde(default)]
+    pub goal_ranking_decisions: Vec<GoalRankingDecision>,
+    #[serde(default)]
+    pub mechanism_rounds: Vec<MechanismRound>,
+    #[serde(default)]
     pub final_artifacts: Vec<ArtifactRef>,
     #[serde(default)]
     pub checkpoints: Vec<CheckpointRef>,
@@ -1888,6 +2241,10 @@ impl GoalState {
             tasks: BTreeMap::from([(root_id, root)]),
             status: GoalStatus::Running,
             approvals: Vec::new(),
+            delayed_compute_thunks: Vec::new(),
+            goal_priority_votes: Vec::new(),
+            goal_ranking_decisions: Vec::new(),
+            mechanism_rounds: Vec::new(),
             final_artifacts: Vec::new(),
             checkpoints: Vec::new(),
             review_rounds: Vec::new(),
@@ -1996,6 +2353,7 @@ impl GoalState {
         let blocked_tasks = *by_status.get(&TaskStatus::Blocked).unwrap_or(&0);
         let failed_tasks = *by_status.get(&TaskStatus::Failed).unwrap_or(&0);
         let waiting_approval_tasks = *by_status.get(&TaskStatus::WaitingApproval).unwrap_or(&0);
+        let waiting_input_tasks = *by_status.get(&TaskStatus::WaitingInput).unwrap_or(&0);
         let runnable_tasks = task_progress
             .iter()
             .filter(|task| task.runnable)
@@ -2017,12 +2375,216 @@ impl GoalState {
             blocked_tasks,
             failed_tasks,
             waiting_approval_tasks,
+            waiting_input_tasks,
             percent_done,
             by_status,
             subgoals: self.subgoal_progress(),
+            ranking: self.goal_ranking_summary(),
+            open_mechanism_rounds: self
+                .mechanism_rounds
+                .iter()
+                .filter(|round| {
+                    matches!(
+                        round.status,
+                        MechanismRoundStatus::Open | MechanismRoundStatus::QuorumPending
+                    )
+                })
+                .count() as u32,
+            ratification_required_mechanism_rounds: self
+                .mechanism_rounds
+                .iter()
+                .filter(|round| round.status == MechanismRoundStatus::RatificationRequired)
+                .count() as u32,
+            pending_delayed_compute_thunks: self
+                .delayed_compute_thunks
+                .iter()
+                .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+                .count() as u32,
+            compute_graph: self.compute_graph(),
             runnable_tasks,
             next_tasks: task_progress.into_iter().take(10).collect(),
             satisfaction: self.satisfaction.clone(),
+        }
+    }
+
+    pub fn compute_graph(&self) -> ComputeGraphSnapshot {
+        let mut nodes = Vec::new();
+        let mut node_ids = BTreeSet::new();
+        let mut edges = Vec::new();
+        let goal_node_id = compute_graph_goal_node_id(self.goal.id);
+        push_compute_graph_node(
+            &mut nodes,
+            &mut node_ids,
+            ComputeGraphNode {
+                id: goal_node_id.clone(),
+                kind: ComputeGraphNodeKind::Goal,
+                label: self.goal.title.clone(),
+                status: compute_graph_goal_status(&self.status),
+                task_id: None,
+                thunk_id: None,
+                continuation_id: None,
+                wait_ref: None,
+            },
+        );
+
+        for task in self.tasks.values() {
+            let task_node_id = compute_graph_task_node_id(task.id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: task_node_id.clone(),
+                    kind: ComputeGraphNodeKind::Task,
+                    label: task.title.clone(),
+                    status: compute_graph_task_status(&task.status),
+                    task_id: Some(task.id),
+                    thunk_id: None,
+                    continuation_id: None,
+                    wait_ref: None,
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: task
+                    .parent_id
+                    .map(compute_graph_task_node_id)
+                    .unwrap_or_else(|| goal_node_id.clone()),
+                to: task_node_id.clone(),
+                kind: if task.parent_id.is_some() {
+                    ComputeGraphEdgeKind::ParentChild
+                } else {
+                    ComputeGraphEdgeKind::Owns
+                },
+            });
+            for dependency in &task.dependencies {
+                if self.tasks.contains_key(dependency) {
+                    edges.push(ComputeGraphEdge {
+                        from: compute_graph_task_node_id(*dependency),
+                        to: task_node_id.clone(),
+                        kind: ComputeGraphEdgeKind::DependsOn,
+                    });
+                }
+            }
+        }
+
+        for thunk in &self.delayed_compute_thunks {
+            let thunk_node_id = compute_graph_thunk_node_id(thunk.id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: thunk_node_id.clone(),
+                    kind: ComputeGraphNodeKind::DelayedComputeThunk,
+                    label: thunk.reason.clone(),
+                    status: compute_graph_thunk_status(thunk.status),
+                    task_id: thunk.task_id,
+                    thunk_id: Some(thunk.id),
+                    continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                    wait_ref: thunk.wait_ref.clone(),
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: thunk
+                    .task_id
+                    .map(compute_graph_task_node_id)
+                    .unwrap_or_else(|| goal_node_id.clone()),
+                to: thunk_node_id.clone(),
+                kind: ComputeGraphEdgeKind::SuspendsInto,
+            });
+
+            let continuation_node_id =
+                compute_graph_continuation_node_id(&thunk.continuation.continuation_id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: continuation_node_id.clone(),
+                    kind: ComputeGraphNodeKind::Continuation,
+                    label: thunk.continuation.continuation_id.clone(),
+                    status: compute_graph_thunk_status(thunk.status),
+                    task_id: thunk.task_id,
+                    thunk_id: Some(thunk.id),
+                    continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                    wait_ref: None,
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: thunk_node_id.clone(),
+                to: continuation_node_id,
+                kind: ComputeGraphEdgeKind::ResumesWith,
+            });
+
+            if let Some(wait_ref) = &thunk.wait_ref {
+                let wait_node_id = compute_graph_wait_node_id(wait_ref);
+                push_compute_graph_node(
+                    &mut nodes,
+                    &mut node_ids,
+                    ComputeGraphNode {
+                        id: wait_node_id.clone(),
+                        kind: ComputeGraphNodeKind::WaitRef,
+                        label: wait_ref.reference.clone(),
+                        status: compute_graph_thunk_status(thunk.status),
+                        task_id: thunk.task_id,
+                        thunk_id: Some(thunk.id),
+                        continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                        wait_ref: Some(wait_ref.clone()),
+                    },
+                );
+                edges.push(ComputeGraphEdge {
+                    from: thunk_node_id,
+                    to: wait_node_id,
+                    kind: ComputeGraphEdgeKind::WaitsOn,
+                });
+            }
+        }
+
+        for round in &self.mechanism_rounds {
+            let mechanism_node_id = compute_graph_mechanism_node_id(round.id);
+            push_compute_graph_node(
+                &mut nodes,
+                &mut node_ids,
+                ComputeGraphNode {
+                    id: mechanism_node_id.clone(),
+                    kind: ComputeGraphNodeKind::MechanismRound,
+                    label: round.title.clone(),
+                    status: compute_graph_mechanism_status(round.status),
+                    task_id: None,
+                    thunk_id: None,
+                    continuation_id: None,
+                    wait_ref: None,
+                },
+            );
+            edges.push(ComputeGraphEdge {
+                from: goal_node_id.clone(),
+                to: mechanism_node_id,
+                kind: ComputeGraphEdgeKind::MechanismControls,
+            });
+        }
+
+        ComputeGraphSnapshot {
+            goal_id: self.goal.id,
+            nodes,
+            edges,
+            open_thunks: self
+                .delayed_compute_thunks
+                .iter()
+                .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+                .count() as u32,
+            runnable_tasks: self
+                .runnable_tasks()
+                .into_iter()
+                .map(|task| task.id)
+                .collect(),
+            waiting_tasks: self
+                .tasks
+                .values()
+                .filter(|task| {
+                    matches!(
+                        task.status,
+                        TaskStatus::WaitingApproval | TaskStatus::WaitingInput
+                    )
+                })
+                .map(|task| task.id)
+                .collect(),
         }
     }
 
@@ -2455,6 +3017,525 @@ impl GoalState {
         Ok(updated)
     }
 
+    pub fn record_goal_priority_vote(
+        &mut self,
+        request: GoalPriorityVoteRequest,
+    ) -> Result<GoalRankingDecision, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::SteeringDenied(
+                "goal priority vote goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        let policy = &self.goal.ranking_policy;
+        if !policy.enabled {
+            return Err(DomainError::SteeringDenied(
+                "goal ranking votes are disabled for this goal".to_string(),
+            ));
+        }
+        let source_allowed = match request.source {
+            GoalVoteSource::Human => policy.allow_human_votes,
+            GoalVoteSource::Coordinator | GoalVoteSource::System => policy.allow_coordinator_votes,
+            GoalVoteSource::Agent => policy.allow_agent_votes,
+        };
+        if !source_allowed {
+            return Err(DomainError::SteeringDenied(format!(
+                "{:?} goal ranking votes are disabled for this goal",
+                request.source
+            )));
+        }
+
+        let weight = request.weight.max(1).min(policy.max_vote_weight.max(1));
+        let signed_weight = match request.direction {
+            GoalVoteDirection::Up => weight as i32,
+            GoalVoteDirection::Down => -(weight as i32),
+        };
+        let vote = GoalPriorityVote {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            voter: request.voter,
+            source: request.source,
+            direction: request.direction,
+            weight,
+            signed_weight,
+            reason: request.reason,
+            suggested_role: request.suggested_role,
+        };
+        self.goal_priority_votes.push(vote);
+        let decision = self.compute_goal_ranking_decision();
+        self.apply_goal_ranking_decision(&decision);
+        self.goal_ranking_decisions.push(decision.clone());
+        self.events.push(StateEvent::new(format!(
+            "goal_priority_vote_recorded:{}:{}:{}",
+            decision.id, decision.score, decision.reason
+        )));
+        Ok(decision)
+    }
+
+    pub fn goal_ranking_summary(&self) -> GoalRankingSummary {
+        let score: i32 = self
+            .goal_priority_votes
+            .iter()
+            .map(|vote| vote.signed_weight)
+            .sum();
+        let upvotes = self
+            .goal_priority_votes
+            .iter()
+            .filter(|vote| vote.direction == GoalVoteDirection::Up)
+            .count() as u32;
+        let downvotes = self
+            .goal_priority_votes
+            .iter()
+            .filter(|vote| vote.direction == GoalVoteDirection::Down)
+            .count() as u32;
+        let latest_decision = self.goal_ranking_decisions.last().cloned();
+        let (effective_priority, hierarchy_role) = latest_decision
+            .as_ref()
+            .map(|decision| {
+                (
+                    decision.effective_priority.clone(),
+                    decision.hierarchy_role.clone(),
+                )
+            })
+            .unwrap_or((TaskPriority::High, GoalHierarchyRole::PeerGoal));
+
+        GoalRankingSummary {
+            score,
+            upvotes,
+            downvotes,
+            vote_count: self.goal_priority_votes.len() as u32,
+            effective_priority,
+            hierarchy_role,
+            latest_decision,
+        }
+    }
+
+    fn compute_goal_ranking_decision(&self) -> GoalRankingDecision {
+        let summary = self.goal_ranking_summary();
+        let policy = &self.goal.ranking_policy;
+        let (outcome, effective_priority, hierarchy_role, reason) =
+            if summary.vote_count < policy.min_votes {
+                (
+                    GoalRankingOutcome::Pending,
+                    summary.effective_priority,
+                    summary.hierarchy_role,
+                    format!("waiting for {} total ranking votes", policy.min_votes),
+                )
+            } else if summary.score >= policy.promotion_score {
+                (
+                    GoalRankingOutcome::Promoted,
+                    TaskPriority::Critical,
+                    GoalHierarchyRole::OverarchingGoal,
+                    "ranking votes promoted this goal".to_string(),
+                )
+            } else if summary.score <= policy.demotion_score {
+                (
+                    GoalRankingOutcome::Demoted,
+                    TaskPriority::Low,
+                    GoalHierarchyRole::Subgoal,
+                    "ranking votes demoted this goal".to_string(),
+                )
+            } else {
+                (
+                    GoalRankingOutcome::Unchanged,
+                    TaskPriority::High,
+                    GoalHierarchyRole::PeerGoal,
+                    "ranking votes left this goal at peer priority".to_string(),
+                )
+            };
+
+        GoalRankingDecision {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            score: summary.score,
+            upvotes: summary.upvotes,
+            downvotes: summary.downvotes,
+            vote_count: summary.vote_count,
+            effective_priority,
+            hierarchy_role,
+            outcome,
+            reason,
+        }
+    }
+
+    fn apply_goal_ranking_decision(&mut self, decision: &GoalRankingDecision) {
+        if decision.outcome == GoalRankingOutcome::Pending {
+            return;
+        }
+        if let Some(root_id) = self
+            .tasks
+            .values()
+            .find(|task| task.parent_id.is_none())
+            .map(|task| task.id)
+        {
+            if let Ok(root) = self.task_mut(root_id) {
+                root.priority = decision.effective_priority.clone();
+                let role_tag = match decision.hierarchy_role {
+                    GoalHierarchyRole::OverarchingGoal => "goal:overarching",
+                    GoalHierarchyRole::PeerGoal => "goal:peer",
+                    GoalHierarchyRole::Subgoal => "goal:subgoal",
+                };
+                root.tags.retain(|tag| {
+                    !matches!(
+                        tag.as_str(),
+                        "goal:overarching" | "goal:peer" | "goal:subgoal"
+                    )
+                });
+                if !root.tags.iter().any(|tag| tag == role_tag) {
+                    root.tags.push(role_tag.to_string());
+                }
+            }
+        }
+    }
+
+    pub fn create_delayed_compute_thunk(
+        &mut self,
+        request: DelayedComputeThunkRequest,
+    ) -> Result<DelayedComputeThunk, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::SteeringDenied(
+                "delayed compute thunk goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        if let Some(task_id) = request.task_id {
+            let task = self.task_mut(task_id)?;
+            task.status = if request.kind == DelayedComputeThunkKind::Approval {
+                TaskStatus::WaitingApproval
+            } else {
+                TaskStatus::WaitingInput
+            };
+        }
+        let thunk = DelayedComputeThunk {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            task_id: request.task_id,
+            kind: request.kind,
+            status: DelayedComputeThunkStatus::Pending,
+            reason: request.reason,
+            requested_input: request.requested_input,
+            wait_ref: request.wait_ref,
+            continuation: request.continuation,
+            timeout_seconds: request.timeout_seconds,
+            created_at: now_unix_timestamp_string(),
+            resumed_at: None,
+            resume_record: None,
+        };
+        self.delayed_compute_thunks.push(thunk.clone());
+        self.refresh_goal_status();
+        self.events.push(StateEvent::new(format!(
+            "delayed_compute_thunk_created:{}",
+            thunk.id
+        )));
+        Ok(thunk)
+    }
+
+    pub fn resume_delayed_compute_thunk(
+        &mut self,
+        request: DelayedComputeThunkResumeRequest,
+    ) -> Result<DelayedComputeThunk, DomainError> {
+        let index = self
+            .delayed_compute_thunks
+            .iter()
+            .position(|thunk| thunk.id == request.thunk_id)
+            .ok_or(DomainError::InvariantViolation(format!(
+                "delayed compute thunk not found: {}",
+                request.thunk_id
+            )))?;
+        if self.delayed_compute_thunks[index].status != DelayedComputeThunkStatus::Pending {
+            return Err(DomainError::SteeringDenied(format!(
+                "delayed compute thunk {} is not pending",
+                request.thunk_id
+            )));
+        }
+
+        let task_id = self.delayed_compute_thunks[index].task_id;
+        let record = DelayedComputeThunkResumeRecord {
+            responder: request.responder,
+            response_summary: request.response_summary,
+            artifact_refs: request.artifact_refs,
+        };
+        self.delayed_compute_thunks[index].status = DelayedComputeThunkStatus::Resumed;
+        self.delayed_compute_thunks[index].resumed_at = Some(now_unix_timestamp_string());
+        self.delayed_compute_thunks[index].resume_record = Some(record);
+        let updated = self.delayed_compute_thunks[index].clone();
+        if let Some(task_id) = task_id {
+            let task = self.task_mut(task_id)?;
+            if matches!(
+                task.status,
+                TaskStatus::Blocked | TaskStatus::WaitingApproval | TaskStatus::WaitingInput
+            ) {
+                task.status = TaskStatus::Runnable;
+            }
+        }
+        self.refresh_goal_status();
+        self.events.push(StateEvent::new(format!(
+            "delayed_compute_thunk_resumed:{}",
+            request.thunk_id
+        )));
+        Ok(updated)
+    }
+
+    pub fn start_mechanism_round(
+        &mut self,
+        request: MechanismRoundRequest,
+    ) -> Result<MechanismRound, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::MechanismDenied(
+                "mechanism round goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        let policy = &self.goal.mechanism_policy;
+        if !policy.enabled {
+            return Err(DomainError::MechanismDenied(
+                "mechanism policy is disabled for this goal".to_string(),
+            ));
+        }
+        if self.mechanism_rounds.len() as u32 >= policy.max_rounds {
+            return Err(DomainError::MechanismDenied(
+                "mechanism max_rounds exceeded".to_string(),
+            ));
+        }
+
+        let round_id = Uuid::new_v4();
+        let proposals = request
+            .proposals
+            .into_iter()
+            .enumerate()
+            .map(|(index, proposal)| MechanismProposal {
+                id: Uuid::new_v5(
+                    &Uuid::NAMESPACE_URL,
+                    format!(
+                        "coat://goal/{}/mechanism/{round_id}/proposal/{index}",
+                        self.goal.id
+                    )
+                    .as_bytes(),
+                ),
+                label: proposal.label,
+                description: proposal.description,
+                proposer: proposal.proposer,
+                metadata: proposal.metadata,
+            })
+            .collect::<Vec<_>>();
+        if proposals.is_empty() {
+            return Err(DomainError::MechanismDenied(
+                "mechanism round requires at least one proposal".to_string(),
+            ));
+        }
+
+        let round = MechanismRound {
+            id: round_id,
+            goal_id: self.goal.id,
+            title: request.title,
+            mechanism: request.mechanism.unwrap_or(policy.default_mechanism),
+            target: request.target,
+            status: MechanismRoundStatus::Open,
+            reason: request.reason,
+            proposals,
+            ballots: Vec::new(),
+            quorum: request.quorum.unwrap_or(policy.quorum).max(1),
+            min_participants: request
+                .min_participants
+                .unwrap_or(policy.min_participants)
+                .max(1),
+            require_human_ratification: request
+                .require_human_ratification
+                .unwrap_or(policy.require_human_ratification),
+            decision: None,
+        };
+        self.mechanism_rounds.push(round.clone());
+        self.events.push(StateEvent::new(format!(
+            "mechanism_round_started:{}:{:?}:{:?}",
+            round.id, round.mechanism, round.target
+        )));
+        Ok(round)
+    }
+
+    pub fn record_mechanism_ballot(
+        &mut self,
+        request: MechanismBallotRequest,
+    ) -> Result<MechanismDecision, DomainError> {
+        if request.goal_id != self.goal.id {
+            return Err(DomainError::MechanismDenied(
+                "mechanism ballot goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        let policy = &self.goal.mechanism_policy;
+        if !policy.enabled {
+            return Err(DomainError::MechanismDenied(
+                "mechanism policy is disabled for this goal".to_string(),
+            ));
+        }
+        let source_allowed = match request.source {
+            MechanismParticipantSource::Human => policy.allow_human_participants,
+            MechanismParticipantSource::Coordinator | MechanismParticipantSource::System => {
+                policy.allow_coordinator_participants
+            }
+            MechanismParticipantSource::Agent => policy.allow_agent_participants,
+        };
+        if !source_allowed {
+            return Err(DomainError::MechanismDenied(format!(
+                "{:?} participants are disabled for this goal",
+                request.source
+            )));
+        }
+
+        let round_index = self
+            .mechanism_rounds
+            .iter()
+            .position(|round| round.id == request.round_id)
+            .ok_or(DomainError::MechanismRoundNotFound(request.round_id))?;
+        if matches!(
+            self.mechanism_rounds[round_index].status,
+            MechanismRoundStatus::Decided
+                | MechanismRoundStatus::RatificationRequired
+                | MechanismRoundStatus::Cancelled
+        ) {
+            return Err(DomainError::MechanismDenied(format!(
+                "mechanism round {} is not open",
+                request.round_id
+            )));
+        }
+        let proposal_ids = self.mechanism_rounds[round_index]
+            .proposals
+            .iter()
+            .map(|proposal| proposal.id)
+            .collect::<BTreeSet<_>>();
+        for allocation in &request.allocations {
+            if !proposal_ids.contains(&allocation.proposal_id) {
+                return Err(DomainError::MechanismDenied(format!(
+                    "unknown mechanism proposal: {}",
+                    allocation.proposal_id
+                )));
+            }
+        }
+        if self.mechanism_rounds[round_index].mechanism.is_auction()
+            && request
+                .allocations
+                .iter()
+                .all(|allocation| allocation.bid.is_none())
+        {
+            return Err(DomainError::MechanismDenied(
+                "auction mechanism ballots require at least one bid".to_string(),
+            ));
+        }
+
+        let participant = request.participant.clone();
+        let ballot = MechanismBallot {
+            id: Uuid::new_v4(),
+            goal_id: self.goal.id,
+            round_id: request.round_id,
+            participant: request.participant,
+            source: request.source,
+            allocations: request.allocations,
+            rationale: request.rationale,
+        };
+        let round = &mut self.mechanism_rounds[round_index];
+        round
+            .ballots
+            .retain(|existing| existing.participant != participant);
+        round.ballots.push(ballot);
+        let decision = Self::tally_mechanism_round(round);
+        round.status = decision.status;
+        round.decision = Some(decision.clone());
+        self.events.push(StateEvent::new(format!(
+            "mechanism_ballot_recorded:{}:{}:{:?}",
+            request.round_id, participant, decision.status
+        )));
+        Ok(decision)
+    }
+
+    fn tally_mechanism_round(round: &MechanismRound) -> MechanismDecision {
+        let participant_count = round.ballots.len() as u32;
+        let quorum_met =
+            participant_count >= round.quorum && participant_count >= round.min_participants;
+        if !quorum_met {
+            return MechanismDecision {
+                id: Uuid::new_v4(),
+                goal_id: round.goal_id,
+                round_id: round.id,
+                selected_proposal_id: None,
+                selected_label: None,
+                score: 0,
+                clearing_price: None,
+                participant_count,
+                quorum_met: false,
+                status: MechanismRoundStatus::QuorumPending,
+                reason: format!(
+                    "waiting for quorum: {} of {} participants",
+                    participant_count,
+                    round.quorum.max(round.min_participants)
+                ),
+            };
+        }
+
+        let mut scores: BTreeMap<Uuid, i64> = BTreeMap::new();
+        let mut bids: BTreeMap<Uuid, Vec<u64>> = BTreeMap::new();
+        for ballot in &round.ballots {
+            for allocation in &ballot.allocations {
+                if round.mechanism.is_auction() {
+                    if let Some(bid) = allocation.bid {
+                        bids.entry(allocation.proposal_id).or_default().push(bid);
+                        *scores.entry(allocation.proposal_id).or_default() += bid as i64;
+                    }
+                } else {
+                    let rank_bonus = allocation
+                        .rank
+                        .map(|rank| 1_000_i64 / rank.max(1) as i64)
+                        .unwrap_or(0);
+                    *scores.entry(allocation.proposal_id).or_default() +=
+                        allocation.support as i64 + rank_bonus;
+                }
+            }
+        }
+
+        let selected = scores
+            .iter()
+            .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
+            .map(|(proposal_id, score)| (*proposal_id, *score));
+        let (selected_proposal_id, score) = selected
+            .map(|(proposal_id, score)| (Some(proposal_id), score))
+            .unwrap_or((None, 0));
+        let selected_label = selected_proposal_id.and_then(|id| {
+            round
+                .proposals
+                .iter()
+                .find(|proposal| proposal.id == id)
+                .map(|proposal| proposal.label.clone())
+        });
+        let clearing_price = if round.mechanism == MechanismKind::VickreyAuction {
+            let mut all_bids = bids
+                .values()
+                .flat_map(|proposal_bids| proposal_bids.iter().copied())
+                .collect::<Vec<_>>();
+            all_bids.sort_by(|left, right| right.cmp(left));
+            all_bids.get(1).copied()
+        } else {
+            None
+        };
+        let status = if round.require_human_ratification {
+            MechanismRoundStatus::RatificationRequired
+        } else {
+            MechanismRoundStatus::Decided
+        };
+
+        MechanismDecision {
+            id: Uuid::new_v4(),
+            goal_id: round.goal_id,
+            round_id: round.id,
+            selected_proposal_id,
+            selected_label,
+            score,
+            clearing_price,
+            participant_count,
+            quorum_met,
+            status,
+            reason: if round.mechanism.is_auction() {
+                "auction tally selected the highest bid proposal".to_string()
+            } else {
+                "consensus tally selected the highest scoring proposal".to_string()
+            },
+        }
+    }
+
     pub fn apply_agent_result(
         &mut self,
         result: AgentRunResult,
@@ -2467,12 +3548,24 @@ impl GoalState {
             task.status = match result.status {
                 WorkerRunStatus::Done => TaskStatus::NeedsValidation,
                 WorkerRunStatus::Partial => TaskStatus::Runnable,
+                WorkerRunStatus::Waiting => TaskStatus::WaitingInput,
                 WorkerRunStatus::Blocked => TaskStatus::Blocked,
                 WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => TaskStatus::Failed,
             };
         }
 
         let parent_snapshot = self.task(result.task_id)?.clone();
+        for mut thunk_request in result.delayed_compute_thunks.clone() {
+            if thunk_request.goal_id != self.goal.id {
+                return Err(DomainError::SteeringDenied(
+                    "worker delayed compute thunk goal_id does not match workflow goal".to_string(),
+                ));
+            }
+            if thunk_request.task_id.is_none() {
+                thunk_request.task_id = Some(result.task_id);
+            }
+            self.create_delayed_compute_thunk(thunk_request)?;
+        }
         let mut child_requests = result.child_requests.clone();
         if result.status == WorkerRunStatus::Done {
             child_requests.extend(self.executor_guardrail_child_requests(&parent_snapshot));
@@ -3698,6 +4791,7 @@ impl GoalState {
                             | TaskStatus::Failed
                             | TaskStatus::Cancelled
                             | TaskStatus::WaitingApproval
+                            | TaskStatus::WaitingInput
                             | TaskStatus::Running
                     )
                 })
@@ -4069,6 +5163,12 @@ impl GoalState {
             .any(|task| task.status == TaskStatus::WaitingApproval)
         {
             GoalStatus::WaitingApproval
+        } else if self
+            .tasks
+            .values()
+            .any(|task| task.status == TaskStatus::WaitingInput)
+        {
+            GoalStatus::Paused
         } else if report.satisfied {
             GoalStatus::Done
         } else {
@@ -4263,6 +5363,7 @@ pub enum TaskStatus {
     Running,
     NeedsValidation,
     WaitingApproval,
+    WaitingInput,
     Done,
     Blocked,
     Failed,
@@ -4457,16 +5558,185 @@ pub struct GoalProgress {
     pub blocked_tasks: u32,
     pub failed_tasks: u32,
     pub waiting_approval_tasks: u32,
+    pub waiting_input_tasks: u32,
     pub percent_done: f32,
     #[serde(default)]
     pub by_status: BTreeMap<TaskStatus, u32>,
     #[serde(default)]
     pub subgoals: Vec<SubgoalProgress>,
+    pub ranking: GoalRankingSummary,
+    pub open_mechanism_rounds: u32,
+    pub ratification_required_mechanism_rounds: u32,
+    pub pending_delayed_compute_thunks: u32,
+    pub compute_graph: ComputeGraphSnapshot,
     #[serde(default)]
     pub runnable_tasks: Vec<TaskId>,
     #[serde(default)]
     pub next_tasks: Vec<TaskProgress>,
     pub satisfaction: Option<SatisfactionReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Read-only projection of the current durable compute graph.
+///
+/// The graph makes delayed computation, delimited continuations, waits, task
+/// dependencies, and coordinator-owned mechanism rounds inspectable without
+/// letting a worker own those decisions. It is derived from `GoalState`, so it
+/// can be rebuilt after Restate replay.
+pub struct ComputeGraphSnapshot {
+    pub goal_id: GoalId,
+    #[serde(default)]
+    pub nodes: Vec<ComputeGraphNode>,
+    #[serde(default)]
+    pub edges: Vec<ComputeGraphEdge>,
+    pub open_thunks: u32,
+    #[serde(default)]
+    pub runnable_tasks: Vec<TaskId>,
+    #[serde(default)]
+    pub waiting_tasks: Vec<TaskId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ComputeGraphNode {
+    pub id: String,
+    pub kind: ComputeGraphNodeKind,
+    pub label: String,
+    pub status: ComputeGraphNodeStatus,
+    pub task_id: Option<TaskId>,
+    pub thunk_id: Option<Uuid>,
+    pub continuation_id: Option<String>,
+    pub wait_ref: Option<WaitRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ComputeGraphEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: ComputeGraphEdgeKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeGraphNodeKind {
+    Goal,
+    Task,
+    DelayedComputeThunk,
+    Continuation,
+    WaitRef,
+    MechanismRound,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeGraphNodeStatus {
+    Pending,
+    Runnable,
+    Running,
+    Waiting,
+    NeedsValidation,
+    Done,
+    Blocked,
+    Failed,
+    Cancelled,
+    Paused,
+    Resumed,
+    Expired,
+    RatificationRequired,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeGraphEdgeKind {
+    Owns,
+    ParentChild,
+    DependsOn,
+    SuspendsInto,
+    ResumesWith,
+    WaitsOn,
+    MechanismControls,
+}
+
+fn push_compute_graph_node(
+    nodes: &mut Vec<ComputeGraphNode>,
+    seen: &mut BTreeSet<String>,
+    node: ComputeGraphNode,
+) {
+    if seen.insert(node.id.clone()) {
+        nodes.push(node);
+    }
+}
+
+fn compute_graph_goal_node_id(goal_id: GoalId) -> String {
+    format!("goal:{goal_id}")
+}
+
+fn compute_graph_task_node_id(task_id: TaskId) -> String {
+    format!("task:{task_id}")
+}
+
+fn compute_graph_thunk_node_id(thunk_id: Uuid) -> String {
+    format!("thunk:{thunk_id}")
+}
+
+fn compute_graph_continuation_node_id(continuation_id: &str) -> String {
+    format!("continuation:{continuation_id}")
+}
+
+fn compute_graph_wait_node_id(wait_ref: &WaitRef) -> String {
+    format!("wait:{:?}:{}", wait_ref.kind, wait_ref.reference)
+}
+
+fn compute_graph_mechanism_node_id(round_id: Uuid) -> String {
+    format!("mechanism:{round_id}")
+}
+
+fn compute_graph_goal_status(status: &GoalStatus) -> ComputeGraphNodeStatus {
+    match status {
+        GoalStatus::Running => ComputeGraphNodeStatus::Running,
+        GoalStatus::WaitingApproval => ComputeGraphNodeStatus::Waiting,
+        GoalStatus::Paused => ComputeGraphNodeStatus::Paused,
+        GoalStatus::Done => ComputeGraphNodeStatus::Done,
+        GoalStatus::Blocked => ComputeGraphNodeStatus::Blocked,
+        GoalStatus::Failed => ComputeGraphNodeStatus::Failed,
+        GoalStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+    }
+}
+
+fn compute_graph_task_status(status: &TaskStatus) -> ComputeGraphNodeStatus {
+    match status {
+        TaskStatus::Pending => ComputeGraphNodeStatus::Pending,
+        TaskStatus::Runnable => ComputeGraphNodeStatus::Runnable,
+        TaskStatus::Running => ComputeGraphNodeStatus::Running,
+        TaskStatus::NeedsValidation => ComputeGraphNodeStatus::NeedsValidation,
+        TaskStatus::WaitingApproval | TaskStatus::WaitingInput => ComputeGraphNodeStatus::Waiting,
+        TaskStatus::Done => ComputeGraphNodeStatus::Done,
+        TaskStatus::Blocked => ComputeGraphNodeStatus::Blocked,
+        TaskStatus::Failed => ComputeGraphNodeStatus::Failed,
+        TaskStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+    }
+}
+
+fn compute_graph_thunk_status(status: DelayedComputeThunkStatus) -> ComputeGraphNodeStatus {
+    match status {
+        DelayedComputeThunkStatus::Pending => ComputeGraphNodeStatus::Waiting,
+        DelayedComputeThunkStatus::Resumed => ComputeGraphNodeStatus::Resumed,
+        DelayedComputeThunkStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+        DelayedComputeThunkStatus::Expired => ComputeGraphNodeStatus::Expired,
+    }
+}
+
+fn compute_graph_mechanism_status(status: MechanismRoundStatus) -> ComputeGraphNodeStatus {
+    match status {
+        MechanismRoundStatus::Open | MechanismRoundStatus::QuorumPending => {
+            ComputeGraphNodeStatus::Waiting
+        }
+        MechanismRoundStatus::Decided => ComputeGraphNodeStatus::Done,
+        MechanismRoundStatus::RatificationRequired => ComputeGraphNodeStatus::RatificationRequired,
+        MechanismRoundStatus::Cancelled => ComputeGraphNodeStatus::Cancelled,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -10789,6 +12059,8 @@ pub struct AgentRunResult {
     pub test_evidence: Vec<TestCommandEvidence>,
     #[serde(default)]
     pub child_requests: Vec<ChildTaskRequest>,
+    #[serde(default)]
+    pub delayed_compute_thunks: Vec<DelayedComputeThunkRequest>,
     pub confidence: f32,
     #[serde(default)]
     pub next_actions: Vec<String>,
@@ -10861,6 +12133,7 @@ impl AgentRunResult {
                 Vec::new()
             },
             child_requests: Vec::new(),
+            delayed_compute_thunks: Vec::new(),
             confidence: 0.9,
             next_actions: Vec::new(),
             diagnostics: Vec::new(),
@@ -11007,6 +12280,7 @@ pub enum ReviewSeverity {
 pub enum WorkerRunStatus {
     Done,
     Partial,
+    Waiting,
     Blocked,
     Failed,
     TimedOut,
@@ -11105,6 +12379,7 @@ impl ValidationReport {
             .or_else(|| research.as_ref().map(|research| research.confidence))
             .unwrap_or(req.result.confidence);
         let status_after_validation = match req.result.status {
+            WorkerRunStatus::Waiting => TaskStatus::WaitingInput,
             WorkerRunStatus::Blocked => TaskStatus::Blocked,
             WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => TaskStatus::Failed,
             WorkerRunStatus::Partial => TaskStatus::Runnable,
@@ -11113,7 +12388,10 @@ impl ValidationReport {
 
         if matches!(
             req.result.status,
-            WorkerRunStatus::Blocked | WorkerRunStatus::Failed | WorkerRunStatus::TimedOut
+            WorkerRunStatus::Waiting
+                | WorkerRunStatus::Blocked
+                | WorkerRunStatus::Failed
+                | WorkerRunStatus::TimedOut
         ) {
             let artifacts = result_artifacts(&req.result);
             return Self {
@@ -11744,6 +13022,134 @@ pub struct HumanApproval {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Coordinator-owned placeholder for paused work.
+///
+/// A delayed compute thunk captures the suspended continuation when a task needs
+/// human input, external events, time, resources, or another bounded signal
+/// before computation can continue. It is deliberately state, not a sleeping
+/// worker loop.
+pub struct DelayedComputeThunk {
+    pub id: Uuid,
+    pub goal_id: GoalId,
+    pub task_id: Option<TaskId>,
+    pub kind: DelayedComputeThunkKind,
+    pub status: DelayedComputeThunkStatus,
+    pub reason: String,
+    pub requested_input: Option<String>,
+    pub wait_ref: Option<WaitRef>,
+    pub continuation: ContinuationRef,
+    pub timeout_seconds: Option<u64>,
+    pub created_at: String,
+    pub resumed_at: Option<String>,
+    pub resume_record: Option<DelayedComputeThunkResumeRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct DelayedComputeThunkRequest {
+    pub goal_id: GoalId,
+    pub task_id: Option<TaskId>,
+    pub kind: DelayedComputeThunkKind,
+    pub reason: String,
+    pub requested_input: Option<String>,
+    pub wait_ref: Option<WaitRef>,
+    pub continuation: ContinuationRef,
+    pub timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct DelayedComputeThunkResumeRequest {
+    pub thunk_id: Uuid,
+    pub responder: String,
+    pub response_summary: String,
+    #[serde(default)]
+    pub artifact_refs: Vec<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct DelayedComputeThunkResumeRecord {
+    pub responder: String,
+    pub response_summary: String,
+    #[serde(default)]
+    pub artifact_refs: Vec<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayedComputeThunkKind {
+    HumanInput,
+    Approval,
+    ExternalEvent,
+    Timer,
+    ResourceAvailability,
+    ModelAvailability,
+    WebhookCallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayedComputeThunkStatus {
+    Pending,
+    Resumed,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct ContinuationRef {
+    pub continuation_id: String,
+    pub boundary: ContinuationBoundary,
+    pub state_ref: String,
+    #[serde(default)]
+    pub resume_actions: Vec<ContinuationResumeAction>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationBoundary {
+    GoalWorkflow,
+    TaskDispatch,
+    ApprovalGate,
+    EventWait,
+    ExternalCallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationResumeAction {
+    MarkRunnable,
+    ApplyFeedback,
+    ApplyApproval,
+    InjectTask,
+    Replan,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct WaitRef {
+    pub kind: WaitRefKind,
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitRefKind {
+    HumanThread,
+    NotificationOutbox,
+    SqsMessage,
+    WebhookCorrelation,
+    CalendarEvent,
+    DurableTimer,
+    RunnerCapacity,
+    ModelRoute,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub struct StateEvent {
     pub sequence: u64,
     pub message: String,
@@ -11834,6 +13240,11 @@ pub enum EventSourceKind {
     BranchActivity,
     PullRequest,
     PullRequestReview,
+    PullRequestCheck,
+    #[serde(rename = "github_actions_check", alias = "git_hub_actions_check")]
+    GitHubActionsCheck,
+    #[serde(rename = "gitlab_pipeline_check", alias = "git_lab_pipeline_check")]
+    GitLabPipelineCheck,
     IssueTracker,
     IdeLsp,
     IdeDiagnostics,
@@ -12295,6 +13706,7 @@ pub struct GoalArtifactRecord {
 #[serde(rename_all = "snake_case")]
 pub struct GoalStoreSnapshot {
     pub goal: GoalRecord,
+    pub compute_graph: ComputeGraphSnapshot,
     #[serde(default)]
     pub tasks: Vec<TaskRecord>,
     #[serde(default)]
@@ -12555,6 +13967,7 @@ impl GoalStoreSnapshot {
                 updated_at: None,
                 payload_json: to_json_value(&state.goal),
             },
+            compute_graph: progress.compute_graph,
             tasks: state
                 .tasks
                 .values()
@@ -12744,6 +14157,10 @@ pub enum DomainError {
     BranchDenied(String),
     #[error("branch group not found: {0}")]
     BranchGroupNotFound(Uuid),
+    #[error("mechanism denied: {0}")]
+    MechanismDenied(String),
+    #[error("mechanism round not found: {0}")]
+    MechanismRoundNotFound(Uuid),
     #[error("approval not found: {0}")]
     ApprovalNotFound(Uuid),
     #[error("approval denied: {0}")]
@@ -15558,6 +16975,449 @@ mod tests {
     }
 
     #[test]
+    fn goal_priority_votes_promote_and_demote_goal_ranking() {
+        let mut goal = GoalSpec::new(
+            "rank me",
+            "ranking votes should promote or demote durable goals",
+        );
+        goal.ranking_policy.enabled = true;
+        goal.ranking_policy.min_votes = 2;
+        goal.ranking_policy.promotion_score = 2;
+        goal.ranking_policy.demotion_score = -2;
+        let mut state = GoalState::new(goal);
+
+        let pending = state
+            .record_goal_priority_vote(GoalPriorityVoteRequest {
+                goal_id: state.goal.id,
+                voter: "operator".to_string(),
+                source: GoalVoteSource::Human,
+                direction: GoalVoteDirection::Up,
+                weight: 1,
+                reason: "this is an umbrella objective".to_string(),
+                suggested_role: Some(GoalHierarchyRole::OverarchingGoal),
+            })
+            .expect("first vote records");
+        assert_eq!(pending.outcome, GoalRankingOutcome::Pending);
+
+        let promoted = state
+            .record_goal_priority_vote(GoalPriorityVoteRequest {
+                goal_id: state.goal.id,
+                voter: "coordinator".to_string(),
+                source: GoalVoteSource::Coordinator,
+                direction: GoalVoteDirection::Up,
+                weight: 1,
+                reason: "many subgoals depend on this".to_string(),
+                suggested_role: Some(GoalHierarchyRole::OverarchingGoal),
+            })
+            .expect("second vote promotes");
+        assert_eq!(promoted.outcome, GoalRankingOutcome::Promoted);
+        assert_eq!(promoted.hierarchy_role, GoalHierarchyRole::OverarchingGoal);
+        assert_eq!(
+            state.progress().ranking.effective_priority,
+            TaskPriority::Critical
+        );
+
+        let mut demotion_goal = GoalSpec::new(
+            "demote me",
+            "ranking votes should demote goals into subgoals when appropriate",
+        );
+        demotion_goal.ranking_policy.enabled = true;
+        demotion_goal.ranking_policy.min_votes = 2;
+        let mut demotion_state = GoalState::new(demotion_goal);
+        for voter in ["operator", "coordinator"] {
+            demotion_state
+                .record_goal_priority_vote(GoalPriorityVoteRequest {
+                    goal_id: demotion_state.goal.id,
+                    voter: voter.to_string(),
+                    source: if voter == "operator" {
+                        GoalVoteSource::Human
+                    } else {
+                        GoalVoteSource::Coordinator
+                    },
+                    direction: GoalVoteDirection::Down,
+                    weight: 1,
+                    reason: "this belongs under another initiative".to_string(),
+                    suggested_role: Some(GoalHierarchyRole::Subgoal),
+                })
+                .expect("demotion vote records");
+        }
+        let demoted = demotion_state.progress().ranking.latest_decision.unwrap();
+        assert_eq!(demoted.outcome, GoalRankingOutcome::Demoted);
+        assert_eq!(demoted.hierarchy_role, GoalHierarchyRole::Subgoal);
+        assert_eq!(
+            demotion_state.progress().ranking.effective_priority,
+            TaskPriority::Low
+        );
+    }
+
+    #[test]
+    fn goal_priority_votes_are_disabled_until_policy_opts_in() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "ranking disabled",
+            "ranking votes must be explicit extension behavior",
+        ));
+
+        let err = state
+            .record_goal_priority_vote(GoalPriorityVoteRequest {
+                goal_id: state.goal.id,
+                voter: "operator".to_string(),
+                source: GoalVoteSource::Human,
+                direction: GoalVoteDirection::Up,
+                weight: 1,
+                reason: "not opted in".to_string(),
+                suggested_role: None,
+            })
+            .expect_err("ranking votes are disabled by default");
+        assert!(matches!(err, DomainError::SteeringDenied(_)));
+    }
+
+    #[test]
+    fn delayed_compute_thunk_pauses_and_resumes_task_continuation() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "input needed",
+            "human input should pause and resume durable computation",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+
+        let thunk = state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need product owner decision".to_string(),
+                requested_input: Some("choose release lane".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/release-lane".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/input-needed".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![
+                        ContinuationResumeAction::ApplyFeedback,
+                        ContinuationResumeAction::MarkRunnable,
+                    ],
+                },
+                timeout_seconds: Some(3600),
+            })
+            .expect("thunk created");
+
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 1);
+
+        let resumed = state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id: thunk.id,
+                responder: "operator".to_string(),
+                response_summary: "ship through local smoke first".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect("thunk resumes");
+
+        assert_eq!(resumed.status, DelayedComputeThunkStatus::Resumed);
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+    }
+
+    #[test]
+    fn compute_graph_projects_tasks_thunks_continuations_and_wait_refs() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "compute graph",
+            "delayed computation should be visible as graph state",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+        let thunk = state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::ExternalEvent,
+                reason: "wait for webhook payload".to_string(),
+                requested_input: Some("external service callback".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::WebhookCorrelation,
+                    reference: "webhook://deploy/123".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/webhook-callback".to_string(),
+                    boundary: ContinuationBoundary::ExternalCallback,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(900),
+            })
+            .expect("thunk created");
+
+        let graph = state.compute_graph();
+        assert_eq!(graph.goal_id, state.goal.id);
+        assert_eq!(graph.open_thunks, 1);
+        assert_eq!(graph.waiting_tasks, vec![task_id]);
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == ComputeGraphNodeKind::DelayedComputeThunk
+                && node.thunk_id == Some(thunk.id)
+                && node.status == ComputeGraphNodeStatus::Waiting
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == ComputeGraphNodeKind::Continuation
+                && node.continuation_id.as_deref() == Some("goal/root/webhook-callback")
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == ComputeGraphNodeKind::WaitRef
+                && node
+                    .wait_ref
+                    .as_ref()
+                    .is_some_and(|wait| wait.kind == WaitRefKind::WebhookCorrelation)
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == compute_graph_task_node_id(task_id)
+                && edge.to == compute_graph_thunk_node_id(thunk.id)
+                && edge.kind == ComputeGraphEdgeKind::SuspendsInto
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == compute_graph_thunk_node_id(thunk.id)
+                && edge.kind == ComputeGraphEdgeKind::ResumesWith
+        }));
+        assert_eq!(state.progress().compute_graph.open_thunks, 1);
+    }
+
+    #[test]
+    fn worker_waiting_result_materializes_delayed_compute_thunk() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "worker wait",
+            "worker waiting output should become a delayed compute thunk",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Waiting,
+            summary: "waiting for model route capacity".to_string(),
+            delayed_compute_thunks: vec![DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: None,
+                kind: DelayedComputeThunkKind::ModelAvailability,
+                reason: "deep-review model is not registered yet".to_string(),
+                requested_input: Some(
+                    "register a deep-review route or pick an alternate".to_string(),
+                ),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::ModelRoute,
+                    reference: "model://deep-review".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "task/model-route-wait".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{}", state.goal.id, task.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(1800),
+            }],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("waiting result applies");
+
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        assert_eq!(state.delayed_compute_thunks[0].task_id, Some(task.id));
+        assert_eq!(state.compute_graph().open_thunks, 1);
+    }
+
+    #[test]
+    fn mechanism_policy_runs_consensus_round_when_enabled() {
+        let mut goal = GoalSpec::new(
+            "consensus",
+            "agents should run a durable consensus protocol when enabled",
+        );
+        goal.mechanism_policy.enabled = true;
+        goal.mechanism_policy.quorum = 2;
+        goal.mechanism_policy.min_participants = 2;
+        let mut state = GoalState::new(goal);
+        let round = state
+            .start_mechanism_round(MechanismRoundRequest {
+                goal_id: state.goal.id,
+                title: "Choose implementation lane".to_string(),
+                mechanism: Some(MechanismKind::ApprovalVote),
+                target: MechanismTarget::SubgoalSelection,
+                reason: "two candidate lanes need a coordinator-owned vote".to_string(),
+                proposals: vec![
+                    MechanismProposalRequest {
+                        label: "codex-fast".to_string(),
+                        description: "Use fast Codex worker for bounded patch".to_string(),
+                        proposer: "planner".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                    MechanismProposalRequest {
+                        label: "review-first".to_string(),
+                        description: "Run reviewer before implementation".to_string(),
+                        proposer: "critic".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                ],
+                quorum: None,
+                min_participants: None,
+                require_human_ratification: None,
+            })
+            .expect("round starts");
+        let winner = round.proposals[0].id;
+        let other = round.proposals[1].id;
+
+        let pending = state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "agent-a".to_string(),
+                source: MechanismParticipantSource::Agent,
+                allocations: vec![
+                    MechanismAllocation {
+                        proposal_id: winner,
+                        support: 3,
+                        rank: Some(1),
+                        bid: None,
+                    },
+                    MechanismAllocation {
+                        proposal_id: other,
+                        support: 1,
+                        rank: Some(2),
+                        bid: None,
+                    },
+                ],
+                rationale: "bounded patch is enough".to_string(),
+            })
+            .expect("first ballot records");
+        assert_eq!(pending.status, MechanismRoundStatus::QuorumPending);
+
+        let decision = state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "coordinator".to_string(),
+                source: MechanismParticipantSource::Coordinator,
+                allocations: vec![MechanismAllocation {
+                    proposal_id: winner,
+                    support: 2,
+                    rank: Some(1),
+                    bid: None,
+                }],
+                rationale: "frontier pressure favors the bounded patch".to_string(),
+            })
+            .expect("second ballot reaches quorum");
+
+        assert_eq!(decision.status, MechanismRoundStatus::Decided);
+        assert_eq!(decision.selected_proposal_id, Some(winner));
+        assert_eq!(state.progress().open_mechanism_rounds, 0);
+    }
+
+    #[test]
+    fn mechanism_policy_runs_vickrey_auction_and_requires_opt_in() {
+        let mut disabled = GoalState::new(GoalSpec::new(
+            "disabled auction",
+            "mechanism design extension should require opt in",
+        ));
+        let denied = disabled
+            .start_mechanism_round(MechanismRoundRequest {
+                goal_id: disabled.goal.id,
+                title: "Auction work".to_string(),
+                mechanism: Some(MechanismKind::VickreyAuction),
+                target: MechanismTarget::WorkAuction,
+                reason: "not enabled".to_string(),
+                proposals: vec![MechanismProposalRequest {
+                    label: "runner-a".to_string(),
+                    description: "runner bid".to_string(),
+                    proposer: "runner-a".to_string(),
+                    metadata: BTreeMap::new(),
+                }],
+                quorum: None,
+                min_participants: None,
+                require_human_ratification: None,
+            })
+            .expect_err("mechanism policy disabled by default");
+        assert!(matches!(denied, DomainError::MechanismDenied(_)));
+
+        let mut goal = GoalSpec::new(
+            "auction",
+            "agents should bid through a durable auction protocol when enabled",
+        );
+        goal.mechanism_policy.enabled = true;
+        goal.mechanism_policy.quorum = 2;
+        goal.mechanism_policy.min_participants = 2;
+        let mut state = GoalState::new(goal);
+        let round = state
+            .start_mechanism_round(MechanismRoundRequest {
+                goal_id: state.goal.id,
+                title: "Allocate runner slot".to_string(),
+                mechanism: Some(MechanismKind::VickreyAuction),
+                target: MechanismTarget::RunnerAllocation,
+                reason: "runners bid for the task slot".to_string(),
+                proposals: vec![
+                    MechanismProposalRequest {
+                        label: "runner-a".to_string(),
+                        description: "fast local runner".to_string(),
+                        proposer: "runner-a".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                    MechanismProposalRequest {
+                        label: "runner-b".to_string(),
+                        description: "deep review runner".to_string(),
+                        proposer: "runner-b".to_string(),
+                        metadata: BTreeMap::new(),
+                    },
+                ],
+                quorum: None,
+                min_participants: None,
+                require_human_ratification: Some(true),
+            })
+            .expect("auction starts");
+        let runner_a = round.proposals[0].id;
+        let runner_b = round.proposals[1].id;
+
+        state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "runner-a".to_string(),
+                source: MechanismParticipantSource::Agent,
+                allocations: vec![MechanismAllocation {
+                    proposal_id: runner_a,
+                    support: 0,
+                    rank: None,
+                    bid: Some(7),
+                }],
+                rationale: "low cost fast execution".to_string(),
+            })
+            .expect("runner a bid");
+        let decision = state
+            .record_mechanism_ballot(MechanismBallotRequest {
+                goal_id: state.goal.id,
+                round_id: round.id,
+                participant: "runner-b".to_string(),
+                source: MechanismParticipantSource::Agent,
+                allocations: vec![MechanismAllocation {
+                    proposal_id: runner_b,
+                    support: 0,
+                    rank: None,
+                    bid: Some(11),
+                }],
+                rationale: "higher value deep review".to_string(),
+            })
+            .expect("runner b bid reaches quorum");
+
+        assert_eq!(decision.status, MechanismRoundStatus::RatificationRequired);
+        assert_eq!(decision.selected_proposal_id, Some(runner_b));
+        assert_eq!(decision.clearing_price, Some(7));
+        assert_eq!(state.progress().ratification_required_mechanism_rounds, 1);
+    }
+
+    #[test]
     fn default_subagent_policy_routes_through_durable_child_requests() {
         let state = GoalState::new(GoalSpec::new("subagents", "route subagents through COAT"));
         let task = state.tasks.values().next().expect("root task");
@@ -16417,6 +18277,7 @@ mod tests {
             checkpoints: Vec::new(),
             test_evidence: fixture.accepted_worker_result.test_evidence.clone(),
             child_requests: Vec::new(),
+            delayed_compute_thunks: Vec::new(),
             confidence: 0.93,
             next_actions: Vec::new(),
             diagnostics: vec!["mode=replay".to_string()],
@@ -16863,6 +18724,18 @@ mod tests {
             "../../../examples/event-source-generic-ci.json"
         ))
         .expect("generic ci event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-pr-checks.json"
+        ))
+        .expect("pr checks event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-github-actions-checks.json"
+        ))
+        .expect("github actions checks event-source example parses");
+        serde_json::from_str::<EventSource>(include_str!(
+            "../../../examples/event-source-gitlab-pipeline-checks.json"
+        ))
+        .expect("gitlab pipeline checks event-source example parses");
         serde_json::from_str::<EventSource>(include_str!(
             "../../../examples/event-source-sqs-notifications.json"
         ))

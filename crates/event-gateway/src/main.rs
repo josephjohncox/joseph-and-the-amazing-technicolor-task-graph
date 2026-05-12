@@ -1209,6 +1209,9 @@ fn normalize_signal_event(mut event: ExternalEvent) -> ExternalEvent {
         | EventSourceKind::BranchActivity
         | EventSourceKind::PullRequest
         | EventSourceKind::PullRequestReview
+        | EventSourceKind::PullRequestCheck
+        | EventSourceKind::GitHubActionsCheck
+        | EventSourceKind::GitLabPipelineCheck
         | EventSourceKind::GitHubWebhook
         | EventSourceKind::GitLabWebhook => {
             event = normalize_change_activity_signal(event);
@@ -1309,9 +1312,12 @@ fn normalize_change_activity_signal(mut event: ExternalEvent) -> ExternalEvent {
         json_path_string(&event.payload, &["branch"]),
         json_path_string(&event.payload, &["ref_name"]),
         json_path_string(&event.payload, &["head_branch"]),
+        json_path_string(&event.payload, &["workflow_run", "head_branch"]),
         json_path_string(&event.payload, &["pull_request", "head", "ref"]),
         json_path_string(&event.payload, &["merge_request", "source_branch"]),
         json_path_string(&event.payload, &["object_attributes", "source_branch"]),
+        json_path_string(&event.payload, &["object_attributes", "ref"]),
+        json_path_string(&event.payload, &["pipeline", "ref"]),
         json_path_string(&event.payload, &["ref"]).and_then(|value| strip_git_ref(&value)),
     ]);
     let base_branch = first_string([
@@ -1351,6 +1357,9 @@ fn normalize_change_activity_signal(mut event: ExternalEvent) -> ExternalEvent {
             json_path_string(&event.payload, &["pull_request", "head", "sha"]),
             json_path_string(&event.payload, &["workflow_run", "head_sha"]),
             json_path_string(&event.payload, &["check_run", "head_sha"]),
+            json_path_string(&event.payload, &["pipeline", "sha"]),
+            json_path_string(&event.payload, &["object_attributes", "sha"]),
+            json_path_string(&event.payload, &["commit", "id"]),
         ]),
         "actor": first_string([
             json_path_string(&event.payload, &["sender", "login"]),
@@ -1371,22 +1380,29 @@ fn normalize_change_activity_signal(mut event: ExternalEvent) -> ExternalEvent {
             json_path_string(&event.payload, &["workflow_name"]),
             json_path_string(&event.payload, &["check_run", "name"]),
             json_path_string(&event.payload, &["job_name"]),
+            json_path_string(&event.payload, &["pipeline", "name"]),
+            json_path_string(&event.payload, &["object_attributes", "name"]),
         ]),
         "run_id": first_string([
             json_path_string(&event.payload, &["workflow_run", "id"]),
             json_path_string(&event.payload, &["run_id"]),
             json_path_string(&event.payload, &["check_run", "id"]),
             json_path_string(&event.payload, &["pipeline", "id"]),
+            json_path_string(&event.payload, &["object_attributes", "id"]),
         ]),
         "status": first_string([
             json_path_string(&event.payload, &["workflow_run", "status"]),
             json_path_string(&event.payload, &["status"]),
             json_path_string(&event.payload, &["check_run", "status"]),
+            json_path_string(&event.payload, &["pipeline", "status"]),
+            json_path_string(&event.payload, &["object_attributes", "status"]),
         ]),
         "conclusion": first_string([
             json_path_string(&event.payload, &["workflow_run", "conclusion"]),
             json_path_string(&event.payload, &["conclusion"]),
             json_path_string(&event.payload, &["check_run", "conclusion"]),
+            json_path_string(&event.payload, &["pipeline", "status"]),
+            json_path_string(&event.payload, &["object_attributes", "status"]),
         ]),
         "failed_test_count": first_string([
             json_path_string(&event.payload, &["failed_test_count"]),
@@ -1396,6 +1412,10 @@ fn normalize_change_activity_signal(mut event: ExternalEvent) -> ExternalEvent {
         "details_url": first_string([
             json_path_string(&event.payload, &["workflow_run", "html_url"]),
             json_path_string(&event.payload, &["check_run", "html_url"]),
+            json_path_string(&event.payload, &["pipeline", "web_url"]),
+            json_path_string(&event.payload, &["object_attributes", "url"]),
+            json_path_string(&event.payload, &["object_attributes", "web_url"]),
+            json_path_string(&event.payload, &["commit", "url"]),
             json_path_string(&event.payload, &["details_url"]),
             json_path_string(&event.payload, &["url"]),
         ]),
@@ -1491,8 +1511,12 @@ fn change_activity_provider(event: &ExternalEvent) -> &'static str {
         EventSourceKind::GitHubWebhook => "github",
         EventSourceKind::GitLabWebhook => "gitlab",
         EventSourceKind::Ci | EventSourceKind::CiTestFailure => "ci",
+        EventSourceKind::GitHubActionsCheck => "github_actions",
+        EventSourceKind::GitLabPipelineCheck => "gitlab",
         EventSourceKind::Git | EventSourceKind::BranchActivity => "git",
-        EventSourceKind::PullRequest | EventSourceKind::PullRequestReview => "pull_request",
+        EventSourceKind::PullRequest
+        | EventSourceKind::PullRequestReview
+        | EventSourceKind::PullRequestCheck => "pull_request",
         _ => "generic",
     }
 }
@@ -3389,6 +3413,174 @@ mod tests {
                 .payload
                 .pointer("/_coat_change_activity/failed_test_count"),
             Some(&serde_json::json!("3"))
+        );
+    }
+
+    #[test]
+    fn normalizes_pr_checks_and_provider_checks_into_change_activity_metadata() {
+        let github_source = coat_domain::EventSource {
+            id: "github-actions-checks".to_string(),
+            kind: EventSourceKind::GitHubActionsCheck,
+            enabled: true,
+            description: "GitHub Actions check events".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 4096,
+                allowed_event_types: vec![
+                    "github.workflow_run.completed".to_string(),
+                    "github.check_run.completed".to_string(),
+                ],
+                id_json_pointer: Some("/workflow_run/id".to_string()),
+                type_json_pointer: Some("/type".to_string()),
+                subject_json_pointer: None,
+                dedupe_json_pointer: Some("/delivery_id".to_string()),
+                dedupe_header: None,
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            sqs: None,
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::CreateGoal,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: false,
+                dedupe_window_seconds: 3600,
+            },
+        };
+        let github_event = normalize_generic_event(
+            Some(&github_source),
+            "github-actions-checks".to_string(),
+            &HeaderMap::new(),
+            br#"{
+                "type": "github.workflow_run.completed",
+                "delivery_id": "gha:example/repo:987654321",
+                "repository": { "full_name": "example/repo" },
+                "workflow_run": {
+                    "id": 987654321,
+                    "name": "Rust CI",
+                    "head_branch": "feature/event-sources",
+                    "head_sha": "abc123",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "html_url": "https://github.com/example/repo/actions/runs/987654321"
+                },
+                "pull_request_number": 42,
+                "pull_request_url": "https://github.com/example/repo/pull/42"
+            }"#,
+        )
+        .expect("GitHub Actions check event normalizes");
+
+        assert_eq!(github_event.subject.as_deref(), Some("example/repo#42"));
+        assert_eq!(
+            github_event
+                .payload
+                .pointer("/_coat_change_activity/provider"),
+            Some(&serde_json::json!("github_actions"))
+        );
+        assert_eq!(
+            github_event
+                .payload
+                .pointer("/_coat_change_activity/workflow_name"),
+            Some(&serde_json::json!("Rust CI"))
+        );
+        assert_eq!(
+            github_event
+                .payload
+                .pointer("/_coat_change_activity/details_url"),
+            Some(&serde_json::json!(
+                "https://github.com/example/repo/actions/runs/987654321"
+            ))
+        );
+
+        let gitlab_source = coat_domain::EventSource {
+            id: "gitlab-pipeline-checks".to_string(),
+            kind: EventSourceKind::GitLabPipelineCheck,
+            enabled: true,
+            description: "GitLab pipeline check events".to_string(),
+            namespace: None,
+            webhook: None,
+            generic: Some(GenericEventSource {
+                auth: WebhookAuthPolicy {
+                    kind: WebhookAuthKind::None,
+                    secret_ref: None,
+                    header_name: None,
+                },
+                accepts_cloudevents: true,
+                max_payload_bytes: 4096,
+                allowed_event_types: vec!["gitlab.pipeline.failed".to_string()],
+                id_json_pointer: Some("/object_attributes/id".to_string()),
+                type_json_pointer: Some("/type".to_string()),
+                subject_json_pointer: None,
+                dedupe_json_pointer: Some("/delivery_id".to_string()),
+                dedupe_header: None,
+                payload_schema: None,
+                mcp_context: None,
+            }),
+            sqs: None,
+            schedule: None,
+            calendar: None,
+            route: EventGoalRoute {
+                mode: coat_domain::EventRouteMode::CreateGoal,
+                goal_template: None,
+                target_goal_id: None,
+                steering_directive: None,
+                require_approval: false,
+                dedupe_window_seconds: 3600,
+            },
+        };
+        let gitlab_event = normalize_generic_event(
+            Some(&gitlab_source),
+            "gitlab-pipeline-checks".to_string(),
+            &HeaderMap::new(),
+            br#"{
+                "type": "gitlab.pipeline.failed",
+                "delivery_id": "gitlab:group/project:555",
+                "project": { "path_with_namespace": "group/project" },
+                "object_attributes": {
+                    "id": 555,
+                    "ref": "feature/event-sources",
+                    "sha": "def456",
+                    "status": "failed",
+                    "url": "https://gitlab.example/group/project/-/pipelines/555"
+                },
+                "merge_request": {
+                    "iid": 12,
+                    "url": "https://gitlab.example/group/project/-/merge_requests/12",
+                    "source_branch": "feature/event-sources",
+                    "target_branch": "main"
+                }
+            }"#,
+        )
+        .expect("GitLab pipeline check event normalizes");
+
+        assert_eq!(gitlab_event.subject.as_deref(), Some("group/project#12"));
+        assert_eq!(
+            gitlab_event
+                .payload
+                .pointer("/_coat_change_activity/provider"),
+            Some(&serde_json::json!("gitlab"))
+        );
+        assert_eq!(
+            gitlab_event
+                .payload
+                .pointer("/_coat_change_activity/run_id"),
+            Some(&serde_json::json!("555"))
+        );
+        assert_eq!(
+            gitlab_event
+                .payload
+                .pointer("/_coat_change_activity/conclusion"),
+            Some(&serde_json::json!("failed"))
         );
     }
 

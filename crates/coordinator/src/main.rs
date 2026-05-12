@@ -11,11 +11,13 @@
 
 use coat_domain::{
     AgentRunRequest, AgentRunResult, ApprovalRequest, BranchRequest, BranchSelectionRequest,
-    ControlLoopMode, DomainError, GoalProgress, GoalSpec, GoalState,
-    GoalStoreSnapshotUpsertRequest, HumanApproval, HumanFeedback, NotificationDeliveryReport,
-    NotificationEvent, NotificationRequest, RestartRequest, RunnerDispatchDecision,
-    RunnerDispatchRequest, RunnerDispatchStatus, SpawnPolicy, SteeringDirective, TaskList,
-    TaskQuery, TaskStatus, ValidationReport, ValidationRequest, WorkerRunStatus,
+    ComputeGraphSnapshot, ControlLoopMode, DelayedComputeThunkRequest,
+    DelayedComputeThunkResumeRequest, DomainError, GoalPriorityVoteRequest, GoalProgress, GoalSpec,
+    GoalState, GoalStoreSnapshotUpsertRequest, HumanApproval, HumanFeedback,
+    MechanismBallotRequest, MechanismRoundRequest, NotificationDeliveryReport, NotificationEvent,
+    NotificationRequest, RestartRequest, RunnerDispatchDecision, RunnerDispatchRequest,
+    RunnerDispatchStatus, SpawnPolicy, SteeringDirective, TaskList, TaskQuery, TaskStatus,
+    ValidationReport, ValidationRequest, WorkerRunStatus,
 };
 use restate_sdk::{prelude::*, serde::Json};
 
@@ -44,11 +46,33 @@ pub trait GoalWorkflow {
         request: Json<BranchSelectionRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>>;
 
+    async fn vote(request: Json<GoalPriorityVoteRequest>)
+    -> HandlerResult<Json<Option<GoalState>>>;
+
+    async fn resume_thunk(
+        request: Json<DelayedComputeThunkResumeRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>>;
+
+    async fn create_thunk(
+        request: Json<DelayedComputeThunkRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>>;
+
+    async fn mechanism_start(
+        request: Json<MechanismRoundRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>>;
+
+    async fn mechanism_ballot(
+        request: Json<MechanismBallotRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>>;
+
     #[shared]
     async fn status() -> HandlerResult<Json<Option<GoalState>>>;
 
     #[shared]
     async fn progress() -> HandlerResult<Json<Option<GoalProgress>>>;
+
+    #[shared]
+    async fn compute_graph() -> HandlerResult<Json<Option<ComputeGraphSnapshot>>>;
 
     #[shared]
     async fn tasks(query: Json<TaskQuery>) -> HandlerResult<Json<Option<TaskList>>>;
@@ -281,14 +305,21 @@ struct CoordinatorTransitionObservation {
     total_tasks: usize,
     runnable_tasks: usize,
     waiting_approval_tasks: usize,
+    waiting_input_tasks: usize,
     blocked_tasks: usize,
     failed_tasks: usize,
     done_tasks: usize,
     pending_approvals: usize,
+    pending_delayed_compute_thunks: usize,
+    open_mechanism_rounds: usize,
+    ratification_required_mechanism_rounds: usize,
+    compute_graph_nodes: usize,
+    compute_graph_edges: usize,
     event_count: usize,
 }
 
 fn observe_transition(state: &GoalState, reason: &'static str) -> CoordinatorTransitionObservation {
+    let progress = state.progress();
     CoordinatorTransitionObservation {
         goal_id: state.goal.id,
         reason,
@@ -303,6 +334,11 @@ fn observe_transition(state: &GoalState, reason: &'static str) -> CoordinatorTra
             .tasks
             .values()
             .filter(|task| task.status == TaskStatus::WaitingApproval)
+            .count(),
+        waiting_input_tasks: state
+            .tasks
+            .values()
+            .filter(|task| task.status == TaskStatus::WaitingInput)
             .count(),
         blocked_tasks: state
             .tasks
@@ -324,22 +360,42 @@ fn observe_transition(state: &GoalState, reason: &'static str) -> CoordinatorTra
             .iter()
             .filter(|approval| approval.status == coat_domain::ApprovalStatus::Pending)
             .count(),
+        pending_delayed_compute_thunks: state
+            .delayed_compute_thunks
+            .iter()
+            .filter(|thunk| thunk.status == coat_domain::DelayedComputeThunkStatus::Pending)
+            .count(),
+        open_mechanism_rounds: progress.open_mechanism_rounds as usize,
+        ratification_required_mechanism_rounds: progress.ratification_required_mechanism_rounds
+            as usize,
+        compute_graph_nodes: progress.compute_graph.nodes.len(),
+        compute_graph_edges: progress.compute_graph.edges.len(),
         event_count: state.events.len(),
     }
 }
 
 fn emit_transition_observation(observation: &CoordinatorTransitionObservation) {
-    tracing::info!(
+    let span = tracing::info_span!(
+        "coordinator.transition",
         goal_id = %observation.goal_id,
         reason = observation.reason,
         status = ?observation.status,
+    );
+    let _entered = span.enter();
+    tracing::info!(
         total_tasks = observation.total_tasks,
         runnable_tasks = observation.runnable_tasks,
         waiting_approval_tasks = observation.waiting_approval_tasks,
+        waiting_input_tasks = observation.waiting_input_tasks,
         blocked_tasks = observation.blocked_tasks,
         failed_tasks = observation.failed_tasks,
         done_tasks = observation.done_tasks,
         pending_approvals = observation.pending_approvals,
+        pending_delayed_compute_thunks = observation.pending_delayed_compute_thunks,
+        open_mechanism_rounds = observation.open_mechanism_rounds,
+        ratification_required_mechanism_rounds = observation.ratification_required_mechanism_rounds,
+        compute_graph_nodes = observation.compute_graph_nodes,
+        compute_graph_edges = observation.compute_graph_edges,
         event_count = observation.event_count,
         "coordinator state transition"
     );
@@ -469,6 +525,89 @@ impl GoalWorkflow for GoalWorkflowImpl {
         Ok(Json(Some(state)))
     }
 
+    async fn vote(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<GoalPriorityVoteRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .record_goal_priority_vote(request.into_inner())
+            .map_err(domain_error)?;
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "goal_priority_vote_recorded")
+            .await?;
+        Ok(Json(Some(state)))
+    }
+
+    async fn resume_thunk(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<DelayedComputeThunkResumeRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .resume_delayed_compute_thunk(request.into_inner())
+            .map_err(domain_error)?;
+        let state = self.drive_state(&ctx, state).await?;
+        Ok(Json(Some(state)))
+    }
+
+    async fn create_thunk(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<DelayedComputeThunkRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .create_delayed_compute_thunk(request.into_inner())
+            .map_err(domain_error)?;
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "delayed_compute_thunk_created")
+            .await?;
+        Ok(Json(Some(state)))
+    }
+
+    async fn mechanism_start(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<MechanismRoundRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .start_mechanism_round(request.into_inner())
+            .map_err(domain_error)?;
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "mechanism_round_started")
+            .await?;
+        Ok(Json(Some(state)))
+    }
+
+    async fn mechanism_ballot(
+        &self,
+        ctx: WorkflowContext<'_>,
+        request: Json<MechanismBallotRequest>,
+    ) -> HandlerResult<Json<Option<GoalState>>> {
+        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
+            return Ok(Json(None));
+        };
+        state
+            .record_mechanism_ballot(request.into_inner())
+            .map_err(domain_error)?;
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "mechanism_ballot_recorded")
+            .await?;
+        Ok(Json(Some(state)))
+    }
+
     async fn status(
         &self,
         ctx: SharedWorkflowContext<'_>,
@@ -489,6 +628,18 @@ impl GoalWorkflow for GoalWorkflowImpl {
                 .await?
                 .map(Json::into_inner)
                 .map(|state| state.progress()),
+        ))
+    }
+
+    async fn compute_graph(
+        &self,
+        ctx: SharedWorkflowContext<'_>,
+    ) -> HandlerResult<Json<Option<ComputeGraphSnapshot>>> {
+        Ok(Json(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner)
+                .map(|state| state.compute_graph()),
         ))
     }
 
@@ -907,6 +1058,7 @@ fn blocked_result(
         checkpoints: Vec::new(),
         test_evidence: Vec::new(),
         child_requests: Vec::new(),
+        delayed_compute_thunks: Vec::new(),
         confidence: 0.0,
         next_actions: vec![
             "register a compatible runner".to_string(),
@@ -944,6 +1096,7 @@ fn timeout_result(
         checkpoints: Vec::new(),
         test_evidence: Vec::new(),
         child_requests: Vec::new(),
+        delayed_compute_thunks: Vec::new(),
         confidence: 0.0,
         next_actions: vec![
             "restart the task if policy allows".to_string(),
@@ -986,6 +1139,10 @@ fn restate_identity_keys() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coat_domain::{
+        ContinuationBoundary, ContinuationRef, ContinuationResumeAction, DelayedComputeThunkKind,
+        WaitRef, WaitRefKind,
+    };
 
     #[test]
     fn transition_observation_captures_approval_pause() {
@@ -1018,7 +1175,50 @@ mod tests {
         assert_eq!(observation.total_tasks, 1);
         assert_eq!(observation.runnable_tasks, 0);
         assert_eq!(observation.waiting_approval_tasks, 1);
+        assert_eq!(observation.waiting_input_tasks, 0);
         assert_eq!(observation.pending_approvals, 1);
+        assert_eq!(observation.pending_delayed_compute_thunks, 0);
+        assert_eq!(observation.compute_graph_nodes, 2);
+        assert_eq!(observation.compute_graph_edges, 1);
+    }
+
+    #[test]
+    fn transition_observation_captures_delayed_compute_graph_state() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "thunk observation",
+            "prove suspended continuations are observable",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need operator input".to_string(),
+                requested_input: Some("choose route".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/runtime-verifier".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "runtime-verifier/operator-input".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![
+                        ContinuationResumeAction::ApplyFeedback,
+                        ContinuationResumeAction::MarkRunnable,
+                    ],
+                },
+                timeout_seconds: Some(300),
+            })
+            .expect("thunk");
+
+        let observation = observe_transition(&state, "delayed_compute_thunk_created");
+
+        assert_eq!(observation.waiting_input_tasks, 1);
+        assert_eq!(observation.pending_delayed_compute_thunks, 1);
+        assert_eq!(observation.compute_graph_nodes, 5);
+        assert_eq!(observation.compute_graph_edges, 4);
     }
 
     #[test]
@@ -1041,6 +1241,8 @@ mod tests {
         assert_eq!(observation.done_tasks, 1);
         assert_eq!(observation.blocked_tasks, 0);
         assert_eq!(observation.failed_tasks, 0);
+        assert_eq!(observation.compute_graph_nodes, 2);
+        assert_eq!(observation.compute_graph_edges, 1);
         assert_eq!(observation.event_count, initial_event_count + 1);
     }
 }

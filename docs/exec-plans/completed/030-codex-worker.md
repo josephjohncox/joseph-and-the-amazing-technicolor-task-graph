@@ -28,9 +28,7 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 
 ## Follow-Ups
 
-- Coordinate the first live worker proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Replace stub-only Codex execution with live App Server and MCP adapters once credentials, sandbox isolation, and package verification are available in CI.
-- Capture live session/thread IDs, checkpoint refs, git refs, and artifact manifests in a fixture that can be replayed without re-running Codex.
+- Run env-gated live Codex App Server and MCP fallback smoke with approved auth, sandbox, and workspace gates, then archive thread/turn IDs, checkpoint refs, git refs, and artifact manifests as replay fixtures.
 
 ## Acceptance
 

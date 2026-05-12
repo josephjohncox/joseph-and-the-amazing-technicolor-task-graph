@@ -25,17 +25,20 @@ use coat_domain::{
     BranchRequest, BranchSelectionRequest, ChildTaskRequest, CoatCliConfig, CoatCloudConfig,
     CoatConfig, CoatConfigPaths, CoatKubernetesConfig, CoatLlmGatewayConfig, CoatLocalDeployConfig,
     CoatModelRoutingConfig, CoatOperatorDefaults, CoatProfileConfig, CoatProjectConfig,
-    CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopMode, EventSource,
-    ExternalEvent, GoalAuthoringGuidance, GoalPlan, GoalRecord, GoalSpec, GraphColorRef,
-    HumanApproval, MemoryContextRequest, MemoryEditPreviewRequest, MemoryEditRequest,
-    MemoryJoinRequest, MemoryRepairRequest, MemoryRetractRequest, MemorySearchRequest,
-    MemoryWriteRequest, NetworkAccess, NotificationRequest, PlanCandidateSelectionRequest,
-    PlanCandidateVoteRequest, PlanCompileRequest, PlanDraftRequest, PlanQuestion,
-    PlanQuestionStatus, PlanRevisionRequest, PlanningMode, RestartRequest, ReviewDoctrine,
-    ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration, RunnerScalingRequest,
-    SandboxLaunchPlan, SandboxResourcePlan, SandboxSecurityPlan, StandardReviewCheck,
-    SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WebSearchRequest, WorkerKind,
+    CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopMode,
+    DelayedComputeThunkRequest, DelayedComputeThunkResumeRequest, EventSource, ExternalEvent,
+    GoalAuthoringGuidance, GoalHierarchyRole, GoalPlan, GoalPriorityVoteRequest, GoalRecord,
+    GoalSpec, GoalVoteDirection, GoalVoteSource, GraphColorRef, HumanApproval,
+    MechanismBallotRequest, MechanismRoundRequest, MemoryContextRequest, MemoryEditPreviewRequest,
+    MemoryEditRequest, MemoryJoinRequest, MemoryRepairRequest, MemoryRetractRequest,
+    MemorySearchRequest, MemoryWriteRequest, NetworkAccess, NotificationRequest,
+    PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest, PlanDraftRequest,
+    PlanQuestion, PlanQuestionStatus, PlanRevisionRequest, PlanningMode, RestartRequest,
+    ReviewDoctrine, ReviewDoctrinePreset, RunnerDispatchRequest, RunnerRegistration,
+    RunnerScalingRequest, SandboxLaunchPlan, SandboxResourcePlan, SandboxSecurityPlan,
+    StandardReviewCheck, SteeringDirective, SteeringDirectiveKind, SubgoalSpec, TaskPriority,
+    TaskPurpose, TaskPurposeKind, TaskQuery, TaskStatus, TriggeredGoalRequest, WebSearchRequest,
+    WorkerKind,
 };
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use uuid::Uuid;
@@ -700,11 +703,15 @@ enum GoalSubcommand {
     Submit(SubmitGoalArgs),
     Status(GoalIdArgs),
     Progress(GoalIdArgs),
+    ComputeGraph(GoalIdArgs),
     Tasks(GoalTasksArgs),
     Lint(GoalLintArgs),
     Steer(SteerGoalArgs),
     SteerStandard(SteerStandardGoalArgs),
     ReviewChecks,
+    Vote(GoalVoteArgs),
+    Mechanism(GoalMechanismCommand),
+    Thunk(GoalThunkCommand),
     Restart(RestartGoalArgs),
     Branch(BranchGoalArgs),
     SelectBranch(SelectBranchArgs),
@@ -845,6 +852,81 @@ struct GoalTasksArgs {
 
 #[derive(Debug, Args)]
 struct SteerGoalArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct GoalVoteArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long, value_parser = ["up", "down"])]
+    direction: String,
+    #[arg(long, default_value_t = 1)]
+    weight: u32,
+    #[arg(long, default_value = "human", value_parser = ["human", "coordinator", "agent", "system"])]
+    source: String,
+    #[arg(long, default_value = "operator")]
+    voter: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long, value_parser = ["overarching_goal", "peer_goal", "subgoal"])]
+    suggested_role: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct GoalMechanismCommand {
+    #[command(subcommand)]
+    command: GoalMechanismSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GoalMechanismSubcommand {
+    Start(GoalMechanismArgs),
+    Ballot(GoalMechanismArgs),
+}
+
+#[derive(Debug, Args)]
+struct GoalThunkCommand {
+    #[command(subcommand)]
+    command: GoalThunkSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GoalThunkSubcommand {
+    Create(GoalThunkArgs),
+}
+
+#[derive(Debug, Args)]
+struct GoalThunkArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long)]
+    file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct GoalMechanismArgs {
     #[arg(
         long,
         env = "COAT_RESTATE_INGRESS",
@@ -1423,7 +1505,26 @@ struct HumanCommand {
 #[derive(Debug, Subcommand)]
 enum HumanSubcommand {
     Approve(ApproveArgs),
+    ResumeThunk(ResumeThunkArgs),
     Notify(NotifyArgs),
+}
+
+#[derive(Debug, Args)]
+struct ResumeThunkArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long)]
+    thunk_id: Uuid,
+    #[arg(long, default_value = "operator")]
+    responder: String,
+    #[arg(long)]
+    response_summary: String,
 }
 
 #[derive(Debug, Args)]
@@ -2279,8 +2380,10 @@ fn print_command_map() {
     println!("COAT command map");
     println!("  coat guide                         guided setup and human-queue picker");
     println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
-    println!("  coat goal <draft|lint|submit|list|progress|tasks|steer|branch|restart|cancel>");
-    println!("  coat human <approve|notify>");
+    println!(
+        "  coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>"
+    );
+    println!("  coat human <approve|resume-thunk|notify>");
     println!("  coat deploy local <preflight|up|config|down>");
     println!("  coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>");
     println!("  coat deploy chart <lint|template|upgrade|rollback|package>");
@@ -3357,6 +3460,7 @@ async fn plan(args: PlanCommand) -> anyhow::Result<()> {
 async fn human(args: HumanCommand) -> anyhow::Result<()> {
     match args.command {
         HumanSubcommand::Approve(args) => approve(args).await,
+        HumanSubcommand::ResumeThunk(args) => resume_thunk(args).await,
         HumanSubcommand::Notify(args) => notify(args).await,
     }
 }
@@ -3984,9 +4088,13 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
             | GoalSubcommand::Submit(_)
             | GoalSubcommand::Status(_)
             | GoalSubcommand::Progress(_)
+            | GoalSubcommand::ComputeGraph(_)
             | GoalSubcommand::Tasks(_)
             | GoalSubcommand::Steer(_)
             | GoalSubcommand::SteerStandard(_)
+            | GoalSubcommand::Vote(_)
+            | GoalSubcommand::Mechanism(_)
+            | GoalSubcommand::Thunk(_)
             | GoalSubcommand::Restart(_)
             | GoalSubcommand::Branch(_)
             | GoalSubcommand::SelectBranch(_)
@@ -4575,6 +4683,24 @@ fn effective_steer_standard_goal_args(
     Ok(args)
 }
 
+fn effective_goal_vote_args(mut args: GoalVoteArgs) -> anyhow::Result<GoalVoteArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_goal_mechanism_args(mut args: GoalMechanismArgs) -> anyhow::Result<GoalMechanismArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn effective_goal_thunk_args(mut args: GoalThunkArgs) -> anyhow::Result<GoalThunkArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
 fn effective_restart_goal_args(mut args: RestartGoalArgs) -> anyhow::Result<RestartGoalArgs> {
     args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
     args.selector = effective_goal_selector_args(args.selector)?;
@@ -4605,6 +4731,58 @@ fn effective_approve_args(mut args: ApproveArgs) -> anyhow::Result<ApproveArgs> 
     Ok(args)
 }
 
+fn effective_resume_thunk_args(mut args: ResumeThunkArgs) -> anyhow::Result<ResumeThunkArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
+fn goal_priority_vote_request(
+    args: &GoalVoteArgs,
+    goal_id: Uuid,
+) -> anyhow::Result<GoalPriorityVoteRequest> {
+    Ok(GoalPriorityVoteRequest {
+        goal_id,
+        voter: args.voter.clone(),
+        source: parse_goal_vote_source(&args.source)?,
+        direction: parse_goal_vote_direction(&args.direction)?,
+        weight: args.weight,
+        reason: args.reason.clone(),
+        suggested_role: args
+            .suggested_role
+            .as_deref()
+            .map(parse_goal_hierarchy_role)
+            .transpose()?,
+    })
+}
+
+fn parse_goal_vote_direction(value: &str) -> anyhow::Result<GoalVoteDirection> {
+    match value {
+        "up" => Ok(GoalVoteDirection::Up),
+        "down" => Ok(GoalVoteDirection::Down),
+        other => bail!("unsupported vote direction: {other}"),
+    }
+}
+
+fn parse_goal_vote_source(value: &str) -> anyhow::Result<GoalVoteSource> {
+    match value {
+        "human" => Ok(GoalVoteSource::Human),
+        "coordinator" => Ok(GoalVoteSource::Coordinator),
+        "agent" => Ok(GoalVoteSource::Agent),
+        "system" => Ok(GoalVoteSource::System),
+        other => bail!("unsupported vote source: {other}"),
+    }
+}
+
+fn parse_goal_hierarchy_role(value: &str) -> anyhow::Result<GoalHierarchyRole> {
+    match value {
+        "overarching_goal" => Ok(GoalHierarchyRole::OverarchingGoal),
+        "peer_goal" => Ok(GoalHierarchyRole::PeerGoal),
+        "subgoal" => Ok(GoalHierarchyRole::Subgoal),
+        other => bail!("unsupported suggested role: {other}"),
+    }
+}
+
 fn effective_plan_store_args(mut args: PlanStoreArgs) -> anyhow::Result<PlanStoreArgs> {
     args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
     Ok(args)
@@ -4631,6 +4809,11 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             let goal_id = resolve_goal_id(&args.selector).await?;
             restate_post_without_body(&args.restate_ingress, goal_id, "progress").await
         }
+        GoalSubcommand::ComputeGraph(args) => {
+            let args = effective_goal_id_args(args)?;
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            restate_post_without_body(&args.restate_ingress, goal_id, "compute_graph").await
+        }
         GoalSubcommand::Tasks(args) => {
             let args = effective_goal_tasks_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
@@ -4649,6 +4832,38 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             steer_standard_goal(effective_steer_standard_goal_args(args)?).await
         }
         GoalSubcommand::ReviewChecks => review_checks(),
+        GoalSubcommand::Vote(args) => {
+            let args = effective_goal_vote_args(args)?;
+            let goal_id = resolve_goal_id(&args.selector).await?;
+            let request = goal_priority_vote_request(&args, goal_id)?;
+            restate_post_json(&args.restate_ingress, goal_id, "vote", &request).await
+        }
+        GoalSubcommand::Mechanism(command) => match command.command {
+            GoalMechanismSubcommand::Start(args) => {
+                let args = effective_goal_mechanism_args(args)?;
+                let goal_id = resolve_goal_id(&args.selector).await?;
+                let request: MechanismRoundRequest =
+                    read_goal_scoped_json_file(&args.file, goal_id, "MechanismRoundRequest")?;
+                restate_post_json(&args.restate_ingress, goal_id, "mechanism_start", &request).await
+            }
+            GoalMechanismSubcommand::Ballot(args) => {
+                let args = effective_goal_mechanism_args(args)?;
+                let goal_id = resolve_goal_id(&args.selector).await?;
+                let request: MechanismBallotRequest =
+                    read_goal_scoped_json_file(&args.file, goal_id, "MechanismBallotRequest")?;
+                restate_post_json(&args.restate_ingress, goal_id, "mechanism_ballot", &request)
+                    .await
+            }
+        },
+        GoalSubcommand::Thunk(command) => match command.command {
+            GoalThunkSubcommand::Create(args) => {
+                let args = effective_goal_thunk_args(args)?;
+                let goal_id = resolve_goal_id(&args.selector).await?;
+                let request: DelayedComputeThunkRequest =
+                    read_goal_scoped_json_file(&args.file, goal_id, "DelayedComputeThunkRequest")?;
+                restate_post_json(&args.restate_ingress, goal_id, "create_thunk", &request).await
+            }
+        },
         GoalSubcommand::Restart(args) => {
             let args = effective_restart_goal_args(args)?;
             let goal_id = resolve_goal_id(&args.selector).await?;
@@ -5134,6 +5349,18 @@ async fn approve(args: ApproveArgs) -> anyhow::Result<()> {
         note: args.note,
     };
     restate_post_json(&args.restate_ingress, goal_id, "approve", &approval).await
+}
+
+async fn resume_thunk(args: ResumeThunkArgs) -> anyhow::Result<()> {
+    let args = effective_resume_thunk_args(args)?;
+    let goal_id = resolve_goal_id(&args.selector).await?;
+    let request = DelayedComputeThunkResumeRequest {
+        thunk_id: args.thunk_id,
+        responder: args.responder,
+        response_summary: args.response_summary,
+        artifact_refs: Vec::new(),
+    };
+    restate_post_json(&args.restate_ingress, goal_id, "resume_thunk", &request).await
 }
 
 async fn restate_post_without_body(
@@ -10433,11 +10660,12 @@ mod tests {
     use super::{
         CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs,
         DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs,
-        HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec,
-        LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
-        ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
-        apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
-        bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
+        GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand, HelmTemplateArgs,
+        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec, LocalAuthAction,
+        LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand, ProjectInitAction,
+        ProjectInitCheck, SetupSubcommand, ToolSubcommand, apply_capacity_plan_policy_from_config,
+        apply_config_profile, apply_model_param_values, bump_release_versions,
+        chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
         compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
         compose_up_command_args, default_local_model_provider_index,
         default_model_param_preset_index, default_model_preset_index,
@@ -10749,6 +10977,95 @@ mod tests {
             human.command,
             Some(Commands::Human(ref human))
                 if matches!(human.command, HumanSubcommand::Notify(_))
+        ));
+
+        let resume_thunk = Cli::try_parse_from([
+            "coat",
+            "human",
+            "resume-thunk",
+            "--thunk-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--response-summary",
+            "continue with smoke lane",
+        ])
+        .expect("parse human resume-thunk");
+        assert!(matches!(
+            resume_thunk.command,
+            Some(Commands::Human(ref human))
+                if matches!(human.command, HumanSubcommand::ResumeThunk(_))
+        ));
+
+        let goal_vote = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "vote",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--direction",
+            "up",
+            "--reason",
+            "promote umbrella objective",
+        ])
+        .expect("parse goal vote");
+        assert!(matches!(
+            goal_vote.command,
+            Some(Commands::Goal(ref goal)) if matches!(goal.command, GoalSubcommand::Vote(_))
+        ));
+
+        let compute_graph = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "compute-graph",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+        ])
+        .expect("parse goal compute-graph");
+        assert!(matches!(
+            compute_graph.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(goal.command, GoalSubcommand::ComputeGraph(_))
+        ));
+
+        let mechanism = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "mechanism",
+            "start",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--file",
+            "examples/mechanism-round-consensus.json",
+        ])
+        .expect("parse goal mechanism start");
+        assert!(matches!(
+            mechanism.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(
+                    goal.command,
+                    GoalSubcommand::Mechanism(ref mechanism)
+                        if matches!(mechanism.command, GoalMechanismSubcommand::Start(_))
+                )
+        ));
+
+        let thunk = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "thunk",
+            "create",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--file",
+            "examples/delayed-compute-thunk-human-input.json",
+        ])
+        .expect("parse goal thunk create");
+        assert!(matches!(
+            thunk.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(
+                    goal.command,
+                    GoalSubcommand::Thunk(ref thunk)
+                        if matches!(thunk.command, GoalThunkSubcommand::Create(_))
+                )
         ));
 
         let follow_ups = Cli::try_parse_from(["coat", "plan", "follow-ups", "--json"])

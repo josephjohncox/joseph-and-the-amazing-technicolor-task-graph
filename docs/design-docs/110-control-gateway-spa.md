@@ -34,7 +34,7 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `POST /api/plans/{plan_id}/compile`: compile a plan into `GoalSpec`.
 - `GET /api/goals/{goal_id}`: composed Restate plus goal-store snapshot.
 - `POST /api/goals/submit`: submits a `GoalSpec` through `GoalWorkflow/run`.
-- `POST /api/goals/{goal_id}/{handler}`: calls approved workflow handlers such as `steer`, `approve`, `cancel`, `restart`, `branch`, `select_branch`, `tasks`, `status`, and `progress`.
+- `POST /api/goals/{goal_id}/{handler}`: calls approved workflow handlers such as `steer`, `vote`, `approve`, `cancel`, `restart`, `branch`, `select_branch`, `create_thunk`, `resume_thunk`, `mechanism_start`, `mechanism_ballot`, `tasks`, `status`, `progress`, and `compute_graph`.
 - `GET /api/agents`: projected task/agent rows across goals.
 - `GET /api/runners`: normalized runner-registry status rows with top-level `runner_id`, `node_id`, `endpoint`, `display_name`, status, capacity, labels, roles, capabilities, and model candidates for fleet UI and MCP clients.
 - `GET /api/human/threads`: local notification and feedback threads.
@@ -77,9 +77,12 @@ The SPA may edit text in browser forms, but edits become backend commands:
 - new goal: `GoalWorkflow/run`;
 - new/revised/compiled plan: `coat-goal-store` plan APIs;
 - steering: `GoalWorkflow/steer`;
+- goal ranking vote: `GoalWorkflow/vote`;
 - approval: `GoalWorkflow/approve`;
 - cancellation: `GoalWorkflow/cancel`;
-- restart or branch selection: workflow handler;
+- restart, branch, or branch selection: workflow handler;
+- delayed compute thunk creation or resume: `GoalWorkflow/create_thunk` and `GoalWorkflow/resume_thunk`;
+- mechanism round start or ballot: `GoalWorkflow/mechanism_start` and `GoalWorkflow/mechanism_ballot`;
 - memory note: `coat-memory-gateway`;
 - memory join or repair: `coat-memory-gateway`;
 - memory retraction or replacement: `coat-memory-gateway`;
@@ -89,6 +92,8 @@ The SPA may edit text in browser forms, but edits become backend commands:
 The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns draft payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. It can read optional goal context and fill existing JSON forms, but durable mutations still require the operator to press the normal submit, steer, approve, memory, or plan buttons.
 
 Chat supports three primary authoring modes: durable plan draft, GoalSpec draft, and search request. Search mode emits a structured `search_request` plus an optional coordinator-owned research steering directive. It must not claim live memory, web, or reference search occurred unless a backend tool result is present.
+
+The primary operator flow is chat first, control second. The chat panel can help explain a selected goal's compute graph, draft steering, or identify research gaps. The Flow Control view then submits the same typed workflow actions exposed by `coat goal vote`, `coat goal steer`, `coat goal restart`, `coat goal branch`, `coat goal thunk`, `coat goal mechanism`, `coat goal cancel`, and `coat human resume-thunk`. The UI should make the task graph feel like an AI-driven compiler: chat authors intent, the compute graph shows wait states and continuations, and explicit controls compile the operator decision into durable workflow commands.
 
 Every `/api/chat` request carries a `run_id`. The gateway records a short-lived operational trace with real stages such as goal-context load, backend resolution, model call or stub drafting, and chat-turn journaling. The SPA exposes this as "Chat activity"; it is an operational trace, not hidden model reasoning.
 
@@ -165,7 +170,7 @@ The UI should show:
 - execution profile, model route, persona, MCP refs, result channels, budget, sandbox profile, and done criteria;
 - result refs, git refs, object artifacts, checkpoint history, recent task events, and child task IDs.
 
-This is intentionally projection-based. If exact live state is needed, the gateway also calls `GoalWorkflow/status` and `GoalWorkflow/progress`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
+This is intentionally projection-based. If exact live state is needed, the gateway also calls `GoalWorkflow/status`, `GoalWorkflow/progress`, and `GoalWorkflow/compute_graph`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
 
 ## Continuation Work
 
@@ -173,8 +178,11 @@ User-facing continuation work comes from standard backend records:
 
 - durable plans and plan-continuity `next_actions`;
 - goal progress and task state;
+- compute graph snapshots with task, delayed thunk, wait-ref, continuation, dependency, and mechanism nodes;
+- goal ranking summaries, upvote/downvote actions, and promotion/demotion history;
+- mechanism rounds, proposals, ballots, bids, tallies, and ratification-required decisions;
 - event and trigger projections;
-- human queue approvals, blocked tasks, feedback requests, and async-response requests.
+- human queue approvals, blocked tasks, feedback requests, delayed compute thunks, and async-response requests.
 
 Repo markdown `## Follow-Ups` remains a developer doc-gardening convention for active execution plans. It is not the product queue.
 
@@ -188,6 +196,7 @@ Supported local queue items:
 
 - approval requests;
 - feedback requests;
+- delayed compute thunks for suspended human input, callbacks, timers, resource waits, or model availability;
 - blocked tasks;
 - failures;
 - completion notifications;

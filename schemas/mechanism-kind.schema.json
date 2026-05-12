@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismKind",
+  "type": "string",
+  "enum": [
+    "approval_vote",
+    "majority_vote",
+    "ranked_choice",
+    "delphi_round",
+    "sealed_bid_auction",
+    "vickrey_auction",
+    "contract_net"
+  ]
+}

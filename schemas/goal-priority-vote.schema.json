@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalPriorityVote",
+  "type": "object",
+  "properties": {
+    "direction": {
+      "$ref": "#/$defs/GoalVoteDirection"
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "signed_weight": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "source": {
+      "$ref": "#/$defs/GoalVoteSource"
+    },
+    "suggested_role": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "voter": {
+      "type": "string"
+    },
+    "weight": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "voter",
+    "source",
+    "direction",
+    "weight",
+    "signed_weight",
+    "reason"
+  ],
+  "$defs": {
+    "GoalHierarchyRole": {
+      "type": "string",
+      "enum": [
+        "overarching_goal",
+        "peer_goal",
+        "subgoal"
+      ]
+    },
+    "GoalVoteDirection": {
+      "type": "string",
+      "enum": [
+        "up",
+        "down"
+      ]
+    },
+    "GoalVoteSource": {
+      "type": "string",
+      "enum": [
+        "human",
+        "coordinator",
+        "agent",
+        "system"
+      ]
+    }
+  }
+}

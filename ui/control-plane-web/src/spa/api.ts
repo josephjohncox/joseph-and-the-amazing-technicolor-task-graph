@@ -119,11 +119,51 @@ export function chatRun(runId: string): Promise<ChatRunTrace> {
 }
 
 export function steer(goalId: string, body: JsonRecord): Promise<unknown> {
-  return api(`/api/goals/${encodeURIComponent(goalId)}/steer`, jsonPost(body));
+  return workflowAction(goalId, "steer", body);
+}
+
+export function voteGoal(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "vote", body);
+}
+
+export function restartGoal(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "restart", body);
+}
+
+export function branchGoal(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "branch", body);
+}
+
+export function selectBranch(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "select_branch", body);
+}
+
+export function cancelGoal(goalId: string, reason: string): Promise<unknown> {
+  return workflowAction(goalId, "cancel", reason);
 }
 
 export function approve(goalId: string, body: JsonRecord): Promise<unknown> {
-  return api(`/api/goals/${encodeURIComponent(goalId)}/approve`, jsonPost(body));
+  return workflowAction(goalId, "approve", body);
+}
+
+export function createThunk(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "create_thunk", body);
+}
+
+export function resumeThunk(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "resume_thunk", body);
+}
+
+export function mechanismStart(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "mechanism_start", body);
+}
+
+export function mechanismBallot(goalId: string, body: JsonRecord): Promise<unknown> {
+  return workflowAction(goalId, "mechanism_ballot", body);
+}
+
+export function workflowAction(goalId: string, handler: string, body: unknown): Promise<unknown> {
+  return api(`/api/goals/${encodeURIComponent(goalId)}/${encodeURIComponent(handler)}`, jsonPost(body));
 }
 
 function jsonPost(body: unknown): RequestInit {

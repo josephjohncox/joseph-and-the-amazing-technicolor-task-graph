@@ -143,6 +143,9 @@ components:
             - memory_event
             - ci
             - ci_test_failure
+            - pull_request_check
+            - github_actions_check
+            - gitlab_pipeline_check
             - git
             - branch_activity
             - pull_request

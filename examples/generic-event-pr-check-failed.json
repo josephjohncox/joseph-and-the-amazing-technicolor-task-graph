@@ -1,0 +1,18 @@
+{
+  "check_id": "required-check-42-rust-ci",
+  "type": "pr.required_check.failed",
+  "subject": "example/repo pull request 42 failed required check Rust CI",
+  "dedupe_key": "pr-check:example/repo:42:rust-ci:abc123",
+  "time": "2026-05-11T20:15:00Z",
+  "repo": "example/repo",
+  "pull_request_number": 42,
+  "pull_request_url": "https://github.com/example/repo/pull/42",
+  "branch": "feature/event-sources",
+  "base_branch": "main",
+  "commit_sha": "abc123",
+  "workflow_name": "Rust CI",
+  "status": "completed",
+  "conclusion": "failure",
+  "failed_test_count": 2,
+  "details_url": "https://ci.example.com/example/repo/checks/rust-ci/abc123"
+}

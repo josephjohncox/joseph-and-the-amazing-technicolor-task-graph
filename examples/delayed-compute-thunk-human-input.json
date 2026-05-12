@@ -1,0 +1,16 @@
+{
+  "kind": "human_input",
+  "reason": "Need an operator decision before continuing this task.",
+  "requested_input": "Choose whether the coordinator should resume with local smoke execution or wait for live runner capacity.",
+  "wait_ref": {
+    "kind": "human_thread",
+    "reference": "thread://operator/current-goal"
+  },
+  "continuation": {
+    "continuation_id": "operator/current-goal/human-input",
+    "boundary": "task_dispatch",
+    "state_ref": "goal/current/task/current",
+    "resume_actions": ["apply_feedback", "mark_runnable"]
+  },
+  "timeout_seconds": 3600
+}

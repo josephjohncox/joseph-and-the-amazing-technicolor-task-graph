@@ -1080,6 +1080,9 @@
         "branch_activity",
         "pull_request",
         "pull_request_review",
+        "pull_request_check",
+        "github_actions_check",
+        "gitlab_pipeline_check",
         "issue_tracker",
         "ide_lsp",
         "ide_diagnostics",
@@ -1452,6 +1455,52 @@
         }
       }
     },
+    "GoalRankingPolicy": {
+      "description": "Optional extension for human/coordinator voting over goal priority.\n\nRanking votes are durable coordinator state. They can promote a goal into an\noverarching initiative, demote it into a subgoal, or leave it as a peer goal\nfor frontier ordering and operator views.",
+      "type": "object",
+      "properties": {
+        "allow_agent_votes": {
+          "type": "boolean"
+        },
+        "allow_coordinator_votes": {
+          "type": "boolean"
+        },
+        "allow_human_votes": {
+          "type": "boolean"
+        },
+        "demotion_score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_vote_weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_votes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "promotion_score": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "enabled",
+        "allow_human_votes",
+        "allow_coordinator_votes",
+        "allow_agent_votes",
+        "min_votes",
+        "promotion_score",
+        "demotion_score",
+        "max_vote_weight"
+      ]
+    },
     "GoalSpec": {
       "description": "User-authored executable contract for a durable goal.\n\nA `GoalSpec` is not just a prompt. It carries the objective, budget,\nacceptance criteria, review policy, memory/research policy, approval policy,\ndefault execution profile, and optional initial tasks that seed the durable\ntask tree. See `docs/operations/goal-authoring.md`.",
       "type": "object",
@@ -1772,6 +1821,21 @@
             "$ref": "#/$defs/ChildTaskRequest"
           }
         },
+        "mechanism_policy": {
+          "$ref": "#/$defs/MechanismPolicy",
+          "default": {
+            "allow_agent_participants": true,
+            "allow_coordinator_participants": true,
+            "allow_human_participants": true,
+            "default_mechanism": "approval_vote",
+            "enabled": false,
+            "max_ballots_per_participant": 1,
+            "max_rounds": 8,
+            "min_participants": 2,
+            "quorum": 2,
+            "require_human_ratification": false
+          }
+        },
         "memory_policy": {
           "$ref": "#/$defs/MemoryPolicy",
           "default": {
@@ -1847,6 +1911,19 @@
             "distribution_notes": [],
             "subgoals": [],
             "summary": ""
+          }
+        },
+        "ranking_policy": {
+          "$ref": "#/$defs/GoalRankingPolicy",
+          "default": {
+            "allow_agent_votes": false,
+            "allow_coordinator_votes": true,
+            "allow_human_votes": true,
+            "demotion_score": -2,
+            "enabled": false,
+            "max_vote_weight": 3,
+            "min_votes": 2,
+            "promotion_score": 2
           }
         },
         "repo": {
@@ -2712,6 +2789,74 @@
         "stdio",
         "http",
         "sse"
+      ]
+    },
+    "MechanismKind": {
+      "type": "string",
+      "enum": [
+        "approval_vote",
+        "majority_vote",
+        "ranked_choice",
+        "delphi_round",
+        "sealed_bid_auction",
+        "vickrey_auction",
+        "contract_net"
+      ]
+    },
+    "MechanismPolicy": {
+      "description": "Opt-in protocol layer for distributed agent/human coordination.\n\nThis is the extension point for consensus, voting, mechanism design, and\nauction rounds. It is disabled by default because the coordinator must own\nthe protocol, tally, and final decision before any task priority, allocation,\nor branch choice changes.",
+      "type": "object",
+      "properties": {
+        "allow_agent_participants": {
+          "type": "boolean"
+        },
+        "allow_coordinator_participants": {
+          "type": "boolean"
+        },
+        "allow_human_participants": {
+          "type": "boolean"
+        },
+        "default_mechanism": {
+          "$ref": "#/$defs/MechanismKind"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_ballots_per_participant": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_participants": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quorum": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "require_human_ratification": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "allow_human_participants",
+        "allow_agent_participants",
+        "allow_coordinator_participants",
+        "default_mechanism",
+        "quorum",
+        "min_participants",
+        "max_rounds",
+        "max_ballots_per_participant",
+        "require_human_ratification"
       ]
     },
     "MemoryForkJoinPolicy": {

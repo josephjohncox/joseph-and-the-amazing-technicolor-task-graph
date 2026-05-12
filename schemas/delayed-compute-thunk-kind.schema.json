@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DelayedComputeThunkKind",
+  "type": "string",
+  "enum": [
+    "human_input",
+    "approval",
+    "external_event",
+    "timer",
+    "resource_availability",
+    "model_availability",
+    "webhook_callback"
+  ]
+}

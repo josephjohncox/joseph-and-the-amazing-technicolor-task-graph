@@ -81,7 +81,7 @@ Generic event sources let agents and outside systems respond to events that do n
 
 Use this pattern:
 
-1. Register an `EventSource` with `kind=generic`, `ide_lsp`, `ide_diagnostics`, `ci`, `ci_test_failure`, `git`, `branch_activity`, `pull_request`, `pull_request_review`, `issue_tracker`, `chat`, `monitoring_alert`, `database_change`, `agent_event`, `runner_event`, `goal_lifecycle`, or `memory_event`.
+1. Register an `EventSource` with `kind=generic`, `ide_lsp`, `ide_diagnostics`, `ci`, `ci_test_failure`, `pull_request_check`, `github_actions_check`, `gitlab_pipeline_check`, `git`, `branch_activity`, `pull_request`, `pull_request_review`, `issue_tracker`, `chat`, `monitoring_alert`, `database_change`, `agent_event`, `runner_event`, `goal_lifecycle`, or `memory_event`.
 2. Configure `generic.allowed_event_types` and JSON Pointer fields such as `/id`, `/type`, `/subject`, and `/delivery_id`.
 3. Emit raw JSON or CloudEvents-compatible JSON to `POST /events/generic/{source_id}`.
 4. The gateway normalizes the payload into `ExternalEvent`, applies dedupe, and routes according to `EventGoalRoute`.
@@ -103,8 +103,17 @@ events into `coat-event-gateway`:
   changes, ready-for-review signals, and branch deletion;
 - `kind=pull_request` or `kind=pull_request_review` for PR opened, updated,
   review-requested, review-comment, and human-review events;
+- `kind=pull_request_check` for provider-neutral required-check status from a
+  repository automation bus;
+- `kind=github_actions_check` for GitHub Actions `workflow_run`, `check_run`,
+  or `check_suite` status routed from GitHub webhooks, SQS, EventBridge, or a
+  normalized internal bus;
+- `kind=gitlab_pipeline_check` for GitLab pipeline, merge-request pipeline, or
+  job status routed from GitLab webhooks, SQS, Pub/Sub, or a normalized
+  internal bus;
 - `kind=ci_test_failure` or `kind=ci` for workflow failures, required-check
-  failures, flaky-test recurrences, and PR test failures.
+  failures, flaky-test recurrences, and PR test failures that are not tied to a
+  specific provider contract yet.
 
 The gateway normalizes IDE payloads into `payload._coat_ide` with provider,
 workspace, repo, branch, commit SHA, URI, file path, language ID, diagnostic
@@ -112,6 +121,12 @@ counts, and max severity. It normalizes branch, PR, and CI payloads into
 `payload._coat_change_activity` with provider, repo, branch, base branch, commit
 SHA, actor, PR number/URL, workflow/run IDs, conclusion, failed-test count, and
 details URL.
+
+Prefer the provider-specific check kinds once the upstream shape is stable
+enough to preserve run IDs and URLs. Use `ci` or `ci_test_failure` for older CI
+systems, mixed-provider buses, or early integrations. All of these paths still
+route through the same `_coat_change_activity` metadata so goal templates and
+memory searches can stay provider-neutral.
 
 Use this data for routing and memory, not as an automatic permission to edit
 code. Good patterns:
@@ -131,9 +146,15 @@ Local smoke examples:
 coat event register --file examples/event-source-ide-lsp.json
 coat event register --file examples/event-source-branch-activity.json
 coat event register --file examples/event-source-pr-ci-failure.json
+coat event register --file examples/event-source-pr-checks.json
+coat event register --file examples/event-source-github-actions-checks.json
+coat event register --file examples/event-source-gitlab-pipeline-checks.json
 coat event emit --source-id ide-lsp-diagnostics --file examples/generic-event-ide-lsp-diagnostics.json
 coat event emit --source-id branch-activity --file examples/generic-event-branch-updated.json
 coat event emit --source-id pr-ci-failures --file examples/generic-event-pr-ci-failed.json
+coat event emit --source-id pr-checks --file examples/generic-event-pr-check-failed.json
+coat event emit --source-id github-actions-checks --file examples/generic-event-github-actions-failed.json
+coat event emit --source-id gitlab-pipeline-checks --file examples/generic-event-gitlab-pipeline-failed.json
 ```
 
 ## Observability And Live System Events
@@ -215,10 +236,12 @@ For Google Calendar or Outlook:
 Use three layers:
 
 - Cluster schedules: Kubernetes CronJobs for detached scheduled triggers.
-- Durable waits: Restate timers and workflow state for "wake this goal later" behavior.
+- Durable waits: Restate timers, delayed compute thunks, and workflow state for "wake this goal later" or "resume this suspended continuation after input" behavior.
 - Operator automations: local Codex thread heartbeats/reminders only when the request is specifically about this interactive thread.
 
-Do not create a long-lived agent process that sleeps and wakes itself forever. Every wakeup must become an `ExternalEvent`, `TriggeredGoalRequest`, steering directive, or bounded task.
+Do not create a long-lived agent process that sleeps and wakes itself forever. Every wakeup must become an `ExternalEvent`, `TriggeredGoalRequest`, steering directive, delayed compute thunk resume, or bounded task.
+
+Delayed compute thunks are the local workflow representation for suspended work. Use them when the coordinator has already reached a task boundary but needs a human answer, approval, external callback, resource slot, model route, or timer before continuing. The thunk carries a wait reference and a delimited continuation reference; the worker is released, and the coordinator resumes the continuation after the input arrives.
 
 ## Agent-Generated Topologies
 

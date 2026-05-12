@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoalRankingOutcome",
+  "type": "string",
+  "enum": [
+    "pending",
+    "promoted",
+    "demoted",
+    "unchanged"
+  ]
+}

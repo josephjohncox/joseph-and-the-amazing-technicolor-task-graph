@@ -22,53 +22,61 @@ use coat_domain::{
     CoatKubernetesDistribution, CoatLocalDeployConfig, CoatOperatorDefaults, CoatProfileConfig,
     CoatProfileKind, CoatProjectConfig, CoatRestateCloudConfig, CoatRunnerCapacityConfig,
     CoatServiceEndpoints, CoatToolRoutingConfig, CoatUserConfig, CoatWebSearchRoutingConfig,
-    ControlLoopPolicy, DeviceAuthProvider, DurablePlan, DurablePlanListResponse,
+    ComputeGraphEdge, ComputeGraphEdgeKind, ComputeGraphNode, ComputeGraphNodeKind,
+    ComputeGraphNodeStatus, ComputeGraphSnapshot, ContinuationBoundary, ContinuationRef,
+    ContinuationResumeAction, ControlLoopPolicy, DelayedComputeThunk, DelayedComputeThunkKind,
+    DelayedComputeThunkRequest, DelayedComputeThunkResumeRecord, DelayedComputeThunkResumeRequest,
+    DelayedComputeThunkStatus, DeviceAuthProvider, DurablePlan, DurablePlanListResponse,
     DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind,
     EphemeralRunnerTemplateRef, EventGoalRoute, EventRouteMode, EventSource,
     EventSourceApprovalListResponse, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
     EventSourceApprovalRecordResponse, EventSourceApprovalStatus, EventSourceKind,
     ExecutionProfile, ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy,
     GitResultRef, GoalArtifactRecord, GoalAuthoringGuidance, GoalEventBackend, GoalEventKind,
-    GoalEventRecord, GoalPlan, GoalProgress, GoalQualityReport, GoalReadModelBackend, GoalRecord,
-    GoalSpec, GoalState, GoalStateAuthority, GoalStoreApprovalListResponse,
-    GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest, GoalStoreArtifactRecordResponse,
-    GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest, GoalStoreEventAppendResponse,
-    GoalStoreEventListResponse, GoalStoreGoalResponse, GoalStorePolicy, GoalStoreProjectionMode,
-    GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
-    GoalStoreTaskListResponse, GoalTriggerTemplate, GraphColorAssignmentMode, GraphColorPolicy,
-    GraphColorRef, HumanApproval, HumanFeedback, InformationUsePlan,
-    KubernetesExecutorJobProvisionRequest, KubernetesExecutorJobProvisionResponse,
-    KubernetesObjectRef, KubernetesProvisionMode, KubernetesProvisionStatus, LearningSignal,
-    McpAccessMode, McpAuthRef, McpContextRef, MemoryAdapterReport, MemoryContextRequest,
-    MemoryContextResponse, MemoryEditPreviewRequest, MemoryEditPreviewResponse, MemoryEditRequest,
-    MemoryEditResponse, MemoryEpisode, MemoryEvent, MemoryJoinRequest, MemoryJoinResponse,
-    MemoryPolicy, MemoryRepairRequest, MemoryRepairResponse, MemoryRetractRequest,
-    MemoryRetractResponse, MemoryRetrievalPolicy, MemorySearchRequest, MemorySearchResponse,
-    MemoryStoreRef, MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy, ModelRoute,
-    NativeSubagentSpawnPolicy, NotificationPolicy, NotificationRequest, ObjectStorageArtifactRef,
-    ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef, OidcDelegationPolicy,
-    PlanCandidateSelection, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
-    PlanCandidateVote, PlanCandidateVoteRequest, PlanCandidateVoteResponse, PlanCompileRequest,
-    PlanCompileResult, PlanDecision, PlanDraftRequest, PlanQuestion, PlanRevision,
-    PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata, ResearchOutput,
-    ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest, ResultChannelPolicy,
-    RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride,
-    ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding, ReviewObjective,
-    ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound, ReviewSubagentProfile,
-    RunnerDispatchCandidate, RunnerDispatchDecision, RunnerDispatchRejection,
-    RunnerDispatchRequest, RunnerPoolDemand, RunnerPoolSupply, RunnerRegistration,
-    RunnerScalingDecision, RunnerScalingRequest, RunnerStatus, SandboxAttestation, SandboxBackend,
-    SandboxIsolationProfile, SandboxLaunchPlan, SandboxNetworkPlan, SandboxProfile,
-    SandboxResourcePlan, SandboxSecurityPlan, SandboxSnapshotStrategy, SatisfactionReport,
-    ScheduleKind, ScheduleSpec, SecretRef, SourceArtifact, SqsEventSource, StandardReviewCheck,
-    SteeringDirective, StyleDoctrine, SubagentDelegationMode, SubagentDelegationPolicy,
-    SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy,
-    TriggeredGoalRequest, TriggeredGoalResponse, TriggeredGoalStatus, UserPrincipalRef,
-    ValidationGate, ValidationGateResult, ValidationReport, ValidationRequest, VectorMemoryPolicy,
-    WebSearchProviderKind, WebSearchRequest, WebSearchResponse, WebSearchRoutingMode,
-    WebSearchRoutingPreference, WebSearchStatus, WebhookAuthKind, WebhookAuthPolicy,
-    WebhookEventSource,
+    GoalEventRecord, GoalHierarchyRole, GoalPlan, GoalPriorityVote, GoalPriorityVoteRequest,
+    GoalProgress, GoalQualityReport, GoalRankingDecision, GoalRankingOutcome, GoalRankingPolicy,
+    GoalRankingSummary, GoalReadModelBackend, GoalRecord, GoalSpec, GoalState, GoalStateAuthority,
+    GoalStoreApprovalListResponse, GoalStoreArtifactListResponse, GoalStoreArtifactRecordRequest,
+    GoalStoreArtifactRecordResponse, GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest,
+    GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
+    GoalStorePolicy, GoalStoreProjectionMode, GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest,
+    GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse, GoalTriggerTemplate,
+    GoalVoteDirection, GoalVoteSource, GraphColorAssignmentMode, GraphColorPolicy, GraphColorRef,
+    HumanApproval, HumanFeedback, InformationUsePlan, KubernetesExecutorJobProvisionRequest,
+    KubernetesExecutorJobProvisionResponse, KubernetesObjectRef, KubernetesProvisionMode,
+    KubernetesProvisionStatus, LearningSignal, McpAccessMode, McpAuthRef, McpContextRef,
+    MechanismAllocation, MechanismBallot, MechanismBallotRequest, MechanismDecision, MechanismKind,
+    MechanismParticipantSource, MechanismPolicy, MechanismProposal, MechanismProposalRequest,
+    MechanismRound, MechanismRoundRequest, MechanismRoundStatus, MechanismTarget,
+    MemoryAdapterReport, MemoryContextRequest, MemoryContextResponse, MemoryEditPreviewRequest,
+    MemoryEditPreviewResponse, MemoryEditRequest, MemoryEditResponse, MemoryEpisode, MemoryEvent,
+    MemoryJoinRequest, MemoryJoinResponse, MemoryPolicy, MemoryRepairRequest, MemoryRepairResponse,
+    MemoryRetractRequest, MemoryRetractResponse, MemoryRetrievalPolicy, MemorySearchRequest,
+    MemorySearchResponse, MemoryStoreRef, MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy,
+    ModelRoute, NativeSubagentSpawnPolicy, NotificationPolicy, NotificationRequest,
+    ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef,
+    OidcDelegationPolicy, PlanCandidateSelection, PlanCandidateSelectionRequest,
+    PlanCandidateSelectionResponse, PlanCandidateVote, PlanCandidateVoteRequest,
+    PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult, PlanDecision,
+    PlanDraftRequest, PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus, PlanningMode,
+    ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest,
+    ResultChannelPolicy, RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy,
+    ReviewDoctrineOverride, ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding,
+    ReviewObjective, ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound,
+    ReviewSubagentProfile, RunnerDispatchCandidate, RunnerDispatchDecision,
+    RunnerDispatchRejection, RunnerDispatchRequest, RunnerPoolDemand, RunnerPoolSupply,
+    RunnerRegistration, RunnerScalingDecision, RunnerScalingRequest, RunnerStatus,
+    SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
+    SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan, SandboxSecurityPlan,
+    SandboxSnapshotStrategy, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
+    SourceArtifact, SqsEventSource, StandardReviewCheck, SteeringDirective, StyleDoctrine,
+    SubagentDelegationMode, SubagentDelegationPolicy, SubgoalProgress, SubgoalSpec, TaskList,
+    TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind, TaskQuery, TaskRecord,
+    TestCommandEvidence, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest, TriggeredGoalResponse,
+    TriggeredGoalStatus, UserPrincipalRef, ValidationGate, ValidationGateResult, ValidationReport,
+    ValidationRequest, VectorMemoryPolicy, WaitRef, WaitRefKind, WebSearchProviderKind,
+    WebSearchRequest, WebSearchResponse, WebSearchRoutingMode, WebSearchRoutingPreference,
+    WebSearchStatus, WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -307,6 +315,146 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "goal-progress.schema.json",
         schema_for!(GoalProgress),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-snapshot.schema.json",
+        schema_for!(ComputeGraphSnapshot),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-node.schema.json",
+        schema_for!(ComputeGraphNode),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-edge.schema.json",
+        schema_for!(ComputeGraphEdge),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-node-kind.schema.json",
+        schema_for!(ComputeGraphNodeKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-node-status.schema.json",
+        schema_for!(ComputeGraphNodeStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "compute-graph-edge-kind.schema.json",
+        schema_for!(ComputeGraphEdgeKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-ranking-policy.schema.json",
+        schema_for!(GoalRankingPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-priority-vote-request.schema.json",
+        schema_for!(GoalPriorityVoteRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-priority-vote.schema.json",
+        schema_for!(GoalPriorityVote),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-ranking-decision.schema.json",
+        schema_for!(GoalRankingDecision),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-ranking-summary.schema.json",
+        schema_for!(GoalRankingSummary),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-vote-direction.schema.json",
+        schema_for!(GoalVoteDirection),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-vote-source.schema.json",
+        schema_for!(GoalVoteSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-hierarchy-role.schema.json",
+        schema_for!(GoalHierarchyRole),
+    )?;
+    write_schema(
+        &out_dir,
+        "goal-ranking-outcome.schema.json",
+        schema_for!(GoalRankingOutcome),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-policy.schema.json",
+        schema_for!(MechanismPolicy),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-round-request.schema.json",
+        schema_for!(MechanismRoundRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-round.schema.json",
+        schema_for!(MechanismRound),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-proposal-request.schema.json",
+        schema_for!(MechanismProposalRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-proposal.schema.json",
+        schema_for!(MechanismProposal),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-ballot-request.schema.json",
+        schema_for!(MechanismBallotRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-ballot.schema.json",
+        schema_for!(MechanismBallot),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-allocation.schema.json",
+        schema_for!(MechanismAllocation),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-decision.schema.json",
+        schema_for!(MechanismDecision),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-kind.schema.json",
+        schema_for!(MechanismKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-target.schema.json",
+        schema_for!(MechanismTarget),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-participant-source.schema.json",
+        schema_for!(MechanismParticipantSource),
+    )?;
+    write_schema(
+        &out_dir,
+        "mechanism-round-status.schema.json",
+        schema_for!(MechanismRoundStatus),
     )?;
     write_schema(
         &out_dir,
@@ -767,6 +915,57 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "approval-request.schema.json",
         schema_for!(ApprovalRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "delayed-compute-thunk.schema.json",
+        schema_for!(DelayedComputeThunk),
+    )?;
+    write_schema(
+        &out_dir,
+        "delayed-compute-thunk-request.schema.json",
+        schema_for!(DelayedComputeThunkRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "delayed-compute-thunk-resume-request.schema.json",
+        schema_for!(DelayedComputeThunkResumeRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "delayed-compute-thunk-resume-record.schema.json",
+        schema_for!(DelayedComputeThunkResumeRecord),
+    )?;
+    write_schema(
+        &out_dir,
+        "delayed-compute-thunk-kind.schema.json",
+        schema_for!(DelayedComputeThunkKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "delayed-compute-thunk-status.schema.json",
+        schema_for!(DelayedComputeThunkStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "continuation-ref.schema.json",
+        schema_for!(ContinuationRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "continuation-boundary.schema.json",
+        schema_for!(ContinuationBoundary),
+    )?;
+    write_schema(
+        &out_dir,
+        "continuation-resume-action.schema.json",
+        schema_for!(ContinuationResumeAction),
+    )?;
+    write_schema(&out_dir, "wait-ref.schema.json", schema_for!(WaitRef))?;
+    write_schema(
+        &out_dir,
+        "wait-ref-kind.schema.json",
+        schema_for!(WaitRefKind),
     )?;
     write_schema(
         &out_dir,

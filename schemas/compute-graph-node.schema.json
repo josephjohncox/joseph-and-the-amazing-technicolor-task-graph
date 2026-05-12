@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ComputeGraphNode",
+  "type": "object",
+  "properties": {
+    "continuation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ComputeGraphNodeKind"
+    },
+    "label": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ComputeGraphNodeStatus"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "thunk_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "wait_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WaitRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "label",
+    "status"
+  ],
+  "$defs": {
+    "ComputeGraphNodeKind": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "delayed_compute_thunk",
+        "continuation",
+        "wait_ref",
+        "mechanism_round"
+      ]
+    },
+    "ComputeGraphNodeStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "waiting",
+        "needs_validation",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled",
+        "paused",
+        "resumed",
+        "expired",
+        "ratification_required"
+      ]
+    },
+    "WaitRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WaitRefKind"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
+      ]
+    }
+  }
+}

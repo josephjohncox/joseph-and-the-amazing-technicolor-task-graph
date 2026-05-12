@@ -149,14 +149,20 @@ const workflowHandlers = new Set([
   "progress",
   "tasks",
   "steer",
+  "vote",
   "restart",
   "branch",
   "select_branch",
+  "create_thunk",
+  "resume_thunk",
+  "mechanism_start",
+  "mechanism_ballot",
+  "compute_graph",
   "cancel",
   "approve",
   "inject_feedback",
 ]);
-const workflowReadHandlers = new Set(["status", "progress", "tasks"]);
+const workflowReadHandlers = new Set(["status", "progress", "tasks", "compute_graph"]);
 const chatRuns = new Map<string, ChatRunTrace>();
 const chatRunTtlMs = 30 * 60 * 1000;
 
@@ -567,7 +573,7 @@ function followUpDraftPrompt(item: FollowUpItem): string {
 
 async function goalSnapshot(goalId: string): Promise<JsonMap> {
   const encodedGoalId = encodeURIComponent(goalId);
-  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress] = await Promise.all([
+  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph] = await Promise.all([
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/tasks`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/events`, { method: "GET" }),
@@ -576,12 +582,14 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/approvals`, { method: "GET" }),
     workflowReadPost(goalId, "status", {}),
     workflowReadPost(goalId, "progress", {}),
+    workflowReadPost(goalId, "compute_graph", {}),
   ]);
   return {
     generated_at: new Date().toISOString(),
     goal_id: goalId,
     workflow_status: workflowStatus,
     workflow_progress: progress,
+    workflow_compute_graph: computeGraph,
     goal_store_goal: goal,
     tasks,
     events,

@@ -6,7 +6,9 @@
 //! Testcontainers-backed process runner for the ordered harness plan below.
 
 use coat_domain::{
-    GoalSpec, GoalState, GoalStatus, GoalStoreSnapshotUpsertRequest, StateEvent, TaskStatus,
+    ContinuationBoundary, ContinuationRef, ContinuationResumeAction, DelayedComputeThunkKind,
+    DelayedComputeThunkRequest, GoalSpec, GoalState, GoalStatus, GoalStoreSnapshotUpsertRequest,
+    StateEvent, TaskStatus, WaitRef, WaitRefKind,
 };
 use std::{env, path::PathBuf, process::Command};
 
@@ -104,6 +106,10 @@ struct RuntimeVerifierProjectionCounters {
     total_tasks: u32,
     open_tasks: u32,
     done_tasks: usize,
+    compute_graph_nodes: usize,
+    compute_graph_edges: usize,
+    open_thunks: u32,
+    waiting_tasks: usize,
     event_count: usize,
     last_event_sequence: u64,
 }
@@ -119,6 +125,10 @@ impl RuntimeVerifierProjectionCounters {
                 .iter()
                 .filter(|task| task.status == TaskStatus::Done)
                 .count(),
+            compute_graph_nodes: request.snapshot.compute_graph.nodes.len(),
+            compute_graph_edges: request.snapshot.compute_graph.edges.len(),
+            open_thunks: request.snapshot.compute_graph.open_thunks,
+            waiting_tasks: request.snapshot.compute_graph.waiting_tasks.len(),
             event_count: request.snapshot.events.len(),
             last_event_sequence: request
                 .snapshot
@@ -293,6 +303,10 @@ fn runtime_verifier_projection_requests_are_idempotent_for_replay() {
             total_tasks: 1,
             open_tasks: 1,
             done_tasks: 0,
+            compute_graph_nodes: 2,
+            compute_graph_edges: 1,
+            open_thunks: 0,
+            waiting_tasks: 0,
             event_count: 1,
             last_event_sequence: 1,
         }
@@ -322,6 +336,10 @@ fn runtime_verifier_projection_counters_advance_only_when_state_advances() {
             total_tasks: 1,
             open_tasks: 0,
             done_tasks: 1,
+            compute_graph_nodes: 2,
+            compute_graph_edges: 1,
+            open_thunks: 0,
+            waiting_tasks: 0,
             event_count: 2,
             last_event_sequence: 2,
         }
@@ -330,6 +348,49 @@ fn runtime_verifier_projection_counters_advance_only_when_state_advances() {
         RuntimeVerifierProjectionCounters::from_projection(&after),
         RuntimeVerifierProjectionCounters::from_projection(&replay_after_restart),
         "counter comparison is the deterministic stand-in for the live restart/resume assertion"
+    );
+}
+
+#[test]
+fn runtime_verifier_projection_counters_include_compute_graph_waits() {
+    let mut state = runtime_verifier_goal_state();
+    let task_id = state.runnable_tasks().remove(0).id;
+    state
+        .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            kind: DelayedComputeThunkKind::ExternalEvent,
+            reason: "wait for runtime verifier callback".to_string(),
+            requested_input: Some("callback payload".to_string()),
+            wait_ref: Some(WaitRef {
+                kind: WaitRefKind::WebhookCorrelation,
+                reference: "webhook://runtime-verifier/restart".to_string(),
+            }),
+            continuation: ContinuationRef {
+                continuation_id: "runtime-verifier/restart-callback".to_string(),
+                boundary: ContinuationBoundary::ExternalCallback,
+                state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+            },
+            timeout_seconds: Some(60),
+        })
+        .expect("delayed compute thunk");
+
+    let projection = projection_request(&state, "delayed_compute_thunk_created");
+
+    assert_eq!(
+        RuntimeVerifierProjectionCounters::from_projection(&projection),
+        RuntimeVerifierProjectionCounters {
+            total_tasks: 1,
+            open_tasks: 1,
+            done_tasks: 0,
+            compute_graph_nodes: 5,
+            compute_graph_edges: 4,
+            open_thunks: 1,
+            waiting_tasks: 1,
+            event_count: 2,
+            last_event_sequence: 2,
+        }
     );
 }
 

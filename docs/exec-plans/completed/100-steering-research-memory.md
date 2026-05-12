@@ -44,7 +44,6 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 
 - Coordinate live memory adapter and browser memory workflow proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 - Run live Graphiti/Zep and Qdrant adapter tests in CI once those service URLs and credentials are approved for the test environment.
-- Add a full browser interaction smoke for selecting a goal, previewing memory replacement diffs, and applying edits once a lightweight browser harness is approved for CI.
 
 ## Acceptance
 

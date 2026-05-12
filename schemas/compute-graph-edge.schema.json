@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ComputeGraphEdge",
+  "type": "object",
+  "properties": {
+    "from": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ComputeGraphEdgeKind"
+    },
+    "to": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "from",
+    "to",
+    "kind"
+  ],
+  "$defs": {
+    "ComputeGraphEdgeKind": {
+      "type": "string",
+      "enum": [
+        "owns",
+        "parent_child",
+        "depends_on",
+        "suspends_into",
+        "resumes_with",
+        "waits_on",
+        "mechanism_controls"
+      ]
+    }
+  }
+}

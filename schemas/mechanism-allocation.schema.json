@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismAllocation",
+  "type": "object",
+  "properties": {
+    "bid": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    },
+    "proposal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "rank": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "support": {
+      "type": "integer",
+      "format": "int32"
+    }
+  },
+  "required": [
+    "proposal_id",
+    "support"
+  ]
+}

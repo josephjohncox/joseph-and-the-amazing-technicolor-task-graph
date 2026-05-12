@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismRound",
+  "type": "object",
+  "properties": {
+    "ballots": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MechanismBallot"
+      }
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MechanismDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "mechanism": {
+      "$ref": "#/$defs/MechanismKind"
+    },
+    "min_participants": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "proposals": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MechanismProposal"
+      }
+    },
+    "quorum": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string"
+    },
+    "require_human_ratification": {
+      "type": "boolean"
+    },
+    "status": {
+      "$ref": "#/$defs/MechanismRoundStatus"
+    },
+    "target": {
+      "$ref": "#/$defs/MechanismTarget"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "goal_id",
+    "title",
+    "mechanism",
+    "target",
+    "status",
+    "reason",
+    "quorum",
+    "min_participants",
+    "require_human_ratification"
+  ],
+  "$defs": {
+    "MechanismAllocation": {
+      "type": "object",
+      "properties": {
+        "bid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "proposal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rank": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "support": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "support"
+      ]
+    },
+    "MechanismBallot": {
+      "type": "object",
+      "properties": {
+        "allocations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismAllocation"
+          }
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "round_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source": {
+          "$ref": "#/$defs/MechanismParticipantSource"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "round_id",
+        "participant",
+        "source",
+        "rationale"
+      ]
+    },
+    "MechanismDecision": {
+      "type": "object",
+      "properties": {
+        "clearing_price": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quorum_met": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "round_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "selected_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selected_proposal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/MechanismRoundStatus"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "round_id",
+        "score",
+        "participant_count",
+        "quorum_met",
+        "status",
+        "reason"
+      ]
+    },
+    "MechanismKind": {
+      "type": "string",
+      "enum": [
+        "approval_vote",
+        "majority_vote",
+        "ranked_choice",
+        "delphi_round",
+        "sealed_bid_auction",
+        "vickrey_auction",
+        "contract_net"
+      ]
+    },
+    "MechanismParticipantSource": {
+      "type": "string",
+      "enum": [
+        "human",
+        "coordinator",
+        "agent",
+        "system"
+      ]
+    },
+    "MechanismProposal": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "label": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "proposer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "proposer"
+      ]
+    },
+    "MechanismRoundStatus": {
+      "type": "string",
+      "enum": [
+        "open",
+        "quorum_pending",
+        "decided",
+        "ratification_required",
+        "cancelled"
+      ]
+    },
+    "MechanismTarget": {
+      "type": "string",
+      "enum": [
+        "goal_priority",
+        "goal_promotion",
+        "subgoal_selection",
+        "branch_selection",
+        "runner_allocation",
+        "budget_allocation",
+        "work_auction",
+        "review_panel",
+        "custom"
+      ]
+    }
+  }
+}

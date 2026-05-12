@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismRoundRequest",
+  "type": "object",
+  "properties": {
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "mechanism": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MechanismKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "min_participants": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "proposals": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MechanismProposalRequest"
+      }
+    },
+    "quorum": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string"
+    },
+    "require_human_ratification": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "target": {
+      "$ref": "#/$defs/MechanismTarget"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "goal_id",
+    "title",
+    "target",
+    "reason"
+  ],
+  "$defs": {
+    "MechanismKind": {
+      "type": "string",
+      "enum": [
+        "approval_vote",
+        "majority_vote",
+        "ranked_choice",
+        "delphi_round",
+        "sealed_bid_auction",
+        "vickrey_auction",
+        "contract_net"
+      ]
+    },
+    "MechanismProposalRequest": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "proposer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "description",
+        "proposer"
+      ]
+    },
+    "MechanismTarget": {
+      "type": "string",
+      "enum": [
+        "goal_priority",
+        "goal_promotion",
+        "subgoal_selection",
+        "branch_selection",
+        "runner_allocation",
+        "budget_allocation",
+        "work_auction",
+        "review_panel",
+        "custom"
+      ]
+    }
+  }
+}

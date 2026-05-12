@@ -67,11 +67,43 @@ export type GoalSnapshot = {
   goal_id?: string;
   goal_store_goal?: unknown;
   workflow_progress?: unknown;
+  workflow_compute_graph?: ComputeGraphSnapshot | { data?: ComputeGraphSnapshot } | unknown;
   workflow_status?: unknown;
   tasks?: unknown;
   approvals?: unknown;
   checkpoints?: unknown;
   agent_activity?: TaskRow[];
+};
+
+export type WaitRef = {
+  kind?: string;
+  reference?: string;
+};
+
+export type ComputeGraphNode = {
+  id?: string;
+  kind?: string;
+  label?: string;
+  status?: string;
+  task_id?: string | null;
+  thunk_id?: string | null;
+  continuation_id?: string | null;
+  wait_ref?: WaitRef | null;
+};
+
+export type ComputeGraphEdge = {
+  from?: string;
+  to?: string;
+  kind?: string;
+};
+
+export type ComputeGraphSnapshot = {
+  goal_id?: string;
+  nodes?: ComputeGraphNode[];
+  edges?: ComputeGraphEdge[];
+  open_thunks?: number;
+  runnable_tasks?: string[];
+  waiting_tasks?: string[];
 };
 
 export type ChatResponse = {

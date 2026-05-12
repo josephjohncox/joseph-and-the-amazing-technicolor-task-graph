@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MechanismRoundStatus",
+  "type": "string",
+  "enum": [
+    "open",
+    "quorum_pending",
+    "decided",
+    "ratification_required",
+    "cancelled"
+  ]
+}

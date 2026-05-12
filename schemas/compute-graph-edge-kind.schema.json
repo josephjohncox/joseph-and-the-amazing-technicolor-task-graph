@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ComputeGraphEdgeKind",
+  "type": "string",
+  "enum": [
+    "owns",
+    "parent_child",
+    "depends_on",
+    "suspends_into",
+    "resumes_with",
+    "waits_on",
+    "mechanism_controls"
+  ]
+}

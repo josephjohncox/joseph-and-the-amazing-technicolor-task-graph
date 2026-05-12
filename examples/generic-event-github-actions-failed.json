@@ -1,0 +1,18 @@
+{
+  "type": "github.workflow_run.completed",
+  "delivery_id": "gha:example/repo:987654321",
+  "repository": {
+    "full_name": "example/repo"
+  },
+  "workflow_run": {
+    "id": 987654321,
+    "name": "Rust CI",
+    "head_branch": "feature/event-sources",
+    "head_sha": "abc123",
+    "status": "completed",
+    "conclusion": "failure",
+    "html_url": "https://github.com/example/repo/actions/runs/987654321"
+  },
+  "pull_request_number": 42,
+  "pull_request_url": "https://github.com/example/repo/pull/42"
+}

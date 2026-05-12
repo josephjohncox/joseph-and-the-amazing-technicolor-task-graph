@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ComputeGraphNodeStatus",
+  "type": "string",
+  "enum": [
+    "pending",
+    "runnable",
+    "running",
+    "waiting",
+    "needs_validation",
+    "done",
+    "blocked",
+    "failed",
+    "cancelled",
+    "paused",
+    "resumed",
+    "expired",
+    "ratification_required"
+  ]
+}

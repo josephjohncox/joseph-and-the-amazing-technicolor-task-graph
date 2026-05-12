@@ -32,6 +32,13 @@
         "$ref": "#/$defs/CheckpointRef"
       }
     },
+    "delayed_compute_thunks": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/DelayedComputeThunk"
+      }
+    },
     "events": {
       "type": "array",
       "default": [],
@@ -49,11 +56,32 @@
     "goal": {
       "$ref": "#/$defs/GoalSpec"
     },
+    "goal_priority_votes": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GoalPriorityVote"
+      }
+    },
+    "goal_ranking_decisions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GoalRankingDecision"
+      }
+    },
     "learning_signals": {
       "type": "array",
       "default": [],
       "items": {
         "$ref": "#/$defs/LearningSignal"
+      }
+    },
+    "mechanism_rounds": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MechanismRound"
       }
     },
     "memory_events": {
@@ -1194,6 +1222,53 @@
         "agent_run_result_child_requests"
       ]
     },
+    "ContinuationBoundary": {
+      "type": "string",
+      "enum": [
+        "goal_workflow",
+        "task_dispatch",
+        "approval_gate",
+        "event_wait",
+        "external_callback"
+      ]
+    },
+    "ContinuationRef": {
+      "type": "object",
+      "properties": {
+        "boundary": {
+          "$ref": "#/$defs/ContinuationBoundary"
+        },
+        "continuation_id": {
+          "type": "string"
+        },
+        "resume_actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContinuationResumeAction"
+          }
+        },
+        "state_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "continuation_id",
+        "boundary",
+        "state_ref"
+      ]
+    },
+    "ContinuationResumeAction": {
+      "type": "string",
+      "enum": [
+        "mark_runnable",
+        "apply_feedback",
+        "apply_approval",
+        "inject_task",
+        "replan",
+        "cancel"
+      ]
+    },
     "ControlLoopMode": {
       "type": "string",
       "enum": [
@@ -1259,6 +1334,134 @@
         "cancelled",
         "human_paused",
         "max_frontier_rounds"
+      ]
+    },
+    "DelayedComputeThunk": {
+      "description": "Coordinator-owned placeholder for paused work.\n\nA delayed compute thunk captures the suspended continuation when a task needs\nhuman input, external events, time, resources, or another bounded signal\nbefore computation can continue. It is deliberately state, not a sleeping\nworker loop.",
+      "type": "object",
+      "properties": {
+        "continuation": {
+          "$ref": "#/$defs/ContinuationRef"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/DelayedComputeThunkKind"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requested_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resume_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayedComputeThunkResumeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resumed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/DelayedComputeThunkStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "wait_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "kind",
+        "status",
+        "reason",
+        "continuation",
+        "created_at"
+      ]
+    },
+    "DelayedComputeThunkKind": {
+      "type": "string",
+      "enum": [
+        "human_input",
+        "approval",
+        "external_event",
+        "timer",
+        "resource_availability",
+        "model_availability",
+        "webhook_callback"
+      ]
+    },
+    "DelayedComputeThunkResumeRecord": {
+      "type": "object",
+      "properties": {
+        "artifact_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "responder": {
+          "type": "string"
+        },
+        "response_summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "responder",
+        "response_summary"
+      ]
+    },
+    "DelayedComputeThunkStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "resumed",
+        "cancelled",
+        "expired"
       ]
     },
     "DeviceAuthProvider": {
@@ -1750,6 +1953,14 @@
         }
       }
     },
+    "GoalHierarchyRole": {
+      "type": "string",
+      "enum": [
+        "overarching_goal",
+        "peer_goal",
+        "subgoal"
+      ]
+    },
     "GoalPlan": {
       "type": "object",
       "properties": {
@@ -1772,6 +1983,172 @@
           "default": ""
         }
       }
+    },
+    "GoalPriorityVote": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/GoalVoteDirection"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "signed_weight": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "source": {
+          "$ref": "#/$defs/GoalVoteSource"
+        },
+        "suggested_role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalHierarchyRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "voter": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "voter",
+        "source",
+        "direction",
+        "weight",
+        "signed_weight",
+        "reason"
+      ]
+    },
+    "GoalRankingDecision": {
+      "type": "object",
+      "properties": {
+        "downvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effective_priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "hierarchy_role": {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "outcome": {
+          "$ref": "#/$defs/GoalRankingOutcome"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "upvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vote_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "score",
+        "upvotes",
+        "downvotes",
+        "vote_count",
+        "effective_priority",
+        "hierarchy_role",
+        "outcome",
+        "reason"
+      ]
+    },
+    "GoalRankingOutcome": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "promoted",
+        "demoted",
+        "unchanged"
+      ]
+    },
+    "GoalRankingPolicy": {
+      "description": "Optional extension for human/coordinator voting over goal priority.\n\nRanking votes are durable coordinator state. They can promote a goal into an\noverarching initiative, demote it into a subgoal, or leave it as a peer goal\nfor frontier ordering and operator views.",
+      "type": "object",
+      "properties": {
+        "allow_agent_votes": {
+          "type": "boolean"
+        },
+        "allow_coordinator_votes": {
+          "type": "boolean"
+        },
+        "allow_human_votes": {
+          "type": "boolean"
+        },
+        "demotion_score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_vote_weight": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_votes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "promotion_score": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "enabled",
+        "allow_human_votes",
+        "allow_coordinator_votes",
+        "allow_agent_votes",
+        "min_votes",
+        "promotion_score",
+        "demotion_score",
+        "max_vote_weight"
+      ]
     },
     "GoalSpec": {
       "description": "User-authored executable contract for a durable goal.\n\nA `GoalSpec` is not just a prompt. It carries the objective, budget,\nacceptance criteria, review policy, memory/research policy, approval policy,\ndefault execution profile, and optional initial tasks that seed the durable\ntask tree. See `docs/operations/goal-authoring.md`.",
@@ -2093,6 +2470,21 @@
             "$ref": "#/$defs/ChildTaskRequest"
           }
         },
+        "mechanism_policy": {
+          "$ref": "#/$defs/MechanismPolicy",
+          "default": {
+            "allow_agent_participants": true,
+            "allow_coordinator_participants": true,
+            "allow_human_participants": true,
+            "default_mechanism": "approval_vote",
+            "enabled": false,
+            "max_ballots_per_participant": 1,
+            "max_rounds": 8,
+            "min_participants": 2,
+            "quorum": 2,
+            "require_human_ratification": false
+          }
+        },
         "memory_policy": {
           "$ref": "#/$defs/MemoryPolicy",
           "default": {
@@ -2168,6 +2560,19 @@
             "distribution_notes": [],
             "subgoals": [],
             "summary": ""
+          }
+        },
+        "ranking_policy": {
+          "$ref": "#/$defs/GoalRankingPolicy",
+          "default": {
+            "allow_agent_votes": false,
+            "allow_coordinator_votes": true,
+            "allow_human_votes": true,
+            "demotion_score": -2,
+            "enabled": false,
+            "max_vote_weight": 3,
+            "min_votes": 2,
+            "promotion_score": 2
           }
         },
         "repo": {
@@ -2300,6 +2705,22 @@
         "failed",
         "paused",
         "cancelled"
+      ]
+    },
+    "GoalVoteDirection": {
+      "type": "string",
+      "enum": [
+        "up",
+        "down"
+      ]
+    },
+    "GoalVoteSource": {
+      "type": "string",
+      "enum": [
+        "human",
+        "coordinator",
+        "agent",
+        "system"
       ]
     },
     "GraphColorAssignmentMode": {
@@ -2879,6 +3300,355 @@
         "stdio",
         "http",
         "sse"
+      ]
+    },
+    "MechanismAllocation": {
+      "type": "object",
+      "properties": {
+        "bid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "proposal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rank": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "support": {
+          "type": "integer",
+          "format": "int32"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "support"
+      ]
+    },
+    "MechanismBallot": {
+      "type": "object",
+      "properties": {
+        "allocations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismAllocation"
+          }
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "round_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source": {
+          "$ref": "#/$defs/MechanismParticipantSource"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "round_id",
+        "participant",
+        "source",
+        "rationale"
+      ]
+    },
+    "MechanismDecision": {
+      "type": "object",
+      "properties": {
+        "clearing_price": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "participant_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quorum_met": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "round_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "selected_label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selected_proposal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/MechanismRoundStatus"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "round_id",
+        "score",
+        "participant_count",
+        "quorum_met",
+        "status",
+        "reason"
+      ]
+    },
+    "MechanismKind": {
+      "type": "string",
+      "enum": [
+        "approval_vote",
+        "majority_vote",
+        "ranked_choice",
+        "delphi_round",
+        "sealed_bid_auction",
+        "vickrey_auction",
+        "contract_net"
+      ]
+    },
+    "MechanismParticipantSource": {
+      "type": "string",
+      "enum": [
+        "human",
+        "coordinator",
+        "agent",
+        "system"
+      ]
+    },
+    "MechanismPolicy": {
+      "description": "Opt-in protocol layer for distributed agent/human coordination.\n\nThis is the extension point for consensus, voting, mechanism design, and\nauction rounds. It is disabled by default because the coordinator must own\nthe protocol, tally, and final decision before any task priority, allocation,\nor branch choice changes.",
+      "type": "object",
+      "properties": {
+        "allow_agent_participants": {
+          "type": "boolean"
+        },
+        "allow_coordinator_participants": {
+          "type": "boolean"
+        },
+        "allow_human_participants": {
+          "type": "boolean"
+        },
+        "default_mechanism": {
+          "$ref": "#/$defs/MechanismKind"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_ballots_per_participant": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "min_participants": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "quorum": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "require_human_ratification": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "allow_human_participants",
+        "allow_agent_participants",
+        "allow_coordinator_participants",
+        "default_mechanism",
+        "quorum",
+        "min_participants",
+        "max_rounds",
+        "max_ballots_per_participant",
+        "require_human_ratification"
+      ]
+    },
+    "MechanismProposal": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "label": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "proposer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "proposer"
+      ]
+    },
+    "MechanismRound": {
+      "type": "object",
+      "properties": {
+        "ballots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismBallot"
+          }
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MechanismDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mechanism": {
+          "$ref": "#/$defs/MechanismKind"
+        },
+        "min_participants": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "proposals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MechanismProposal"
+          }
+        },
+        "quorum": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        },
+        "require_human_ratification": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/MechanismRoundStatus"
+        },
+        "target": {
+          "$ref": "#/$defs/MechanismTarget"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "title",
+        "mechanism",
+        "target",
+        "status",
+        "reason",
+        "quorum",
+        "min_participants",
+        "require_human_ratification"
+      ]
+    },
+    "MechanismRoundStatus": {
+      "type": "string",
+      "enum": [
+        "open",
+        "quorum_pending",
+        "decided",
+        "ratification_required",
+        "cancelled"
+      ]
+    },
+    "MechanismTarget": {
+      "type": "string",
+      "enum": [
+        "goal_priority",
+        "goal_promotion",
+        "subgoal_selection",
+        "branch_selection",
+        "runner_allocation",
+        "budget_allocation",
+        "work_auction",
+        "review_panel",
+        "custom"
       ]
     },
     "MemoryEvent": {
@@ -5748,6 +6518,7 @@
         "running",
         "needs_validation",
         "waiting_approval",
+        "waiting_input",
         "done",
         "blocked",
         "failed",
@@ -6027,6 +6798,34 @@
         "search_embeddings",
         "hybrid_search",
         "top_k"
+      ]
+    },
+    "WaitRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WaitRefKind"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
       ]
     },
     "WorkerKind": {

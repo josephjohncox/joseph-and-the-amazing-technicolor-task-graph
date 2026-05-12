@@ -28,9 +28,8 @@ Make Restate the durable outer loop for goals and task-tree state.
 
 ## Follow-Ups
 
-- Coordinate live runtime proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Add restart/resume integration tests with Docker Testcontainers and a real Restate runtime.
-- Extend transition observation checks into metrics and trace assertions for durable fanout, restarts, validation retries, and projection failures.
+- Complete the env-gated Docker Testcontainers restart/resume proof; the deterministic RuntimeVerifier scaffold and projection counters exist, but the live Restate harness remains open.
+- Wire transition/projection observation assertions into the live harness and exported OpenTelemetry spans once a sink is selected.
 
 ## Acceptance
 

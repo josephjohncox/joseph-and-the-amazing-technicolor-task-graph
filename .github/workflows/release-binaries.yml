@@ -142,19 +142,22 @@ jobs:
       - name: Download and smoke x86_64 Linux binary asset
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           BASE_VERSION: ${{ steps.version.outputs.base_version }}
           TAG_SUFFIX: ${{ steps.version.outputs.tag_suffix }}
           TARGET: x86_64-unknown-linux-gnu
-          RELEASE_URL: https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           tmp_dir="$(mktemp -d)"
           trap 'rm -rf "$tmp_dir"' EXIT
           cd "$tmp_dir"
           archive="jattg-binaries-${VERSION}-${TARGET}.tar.gz"
-          curl --retry 6 --retry-delay 5 --retry-all-errors -fsSLO "${RELEASE_URL}/${archive}"
-          curl --retry 6 --retry-delay 5 --retry-all-errors -fsSLO "${RELEASE_URL}/${archive}.sha256"
+          gh release download "v${VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${archive}" \
+            --pattern "${archive}.sha256" \
+            --dir "${tmp_dir}"
           expected_sha="$(cut -d ' ' -f 1 "${archive}.sha256")"
           printf '%s  %s\n' "${expected_sha}" "${archive}" | shasum -a 256 -c -
           tar -xzf "${archive}"

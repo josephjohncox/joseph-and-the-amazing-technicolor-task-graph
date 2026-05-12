@@ -168,14 +168,18 @@ release-binary-smoke:
 	fi; \
 	archive="jattg-binaries-$(VERSION)-$$target.tar.gz"; \
 	release_url="$(RELEASE_URL)"; \
-	if [ -z "$$release_url" ]; then \
-		release_url="https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v$(VERSION)"; \
-	fi; \
 	tmp_dir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmp_dir"' EXIT INT TERM; \
 	cd "$$tmp_dir"; \
-	curl --retry 6 --retry-delay 5 --retry-all-errors -fsSLO "$$release_url/$$archive"; \
-	curl --retry 6 --retry-delay 5 --retry-all-errors -fsSLO "$$release_url/$$archive.sha256"; \
+	if [ -z "$$release_url" ] && command -v gh >/dev/null 2>&1; then \
+		gh release download "v$(VERSION)" --repo josephjohncox/joseph-and-the-amazing-technicolor-task-graph --pattern "$$archive" --pattern "$$archive.sha256" --dir "$$tmp_dir"; \
+	else \
+		if [ -z "$$release_url" ]; then \
+			release_url="https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v$(VERSION)"; \
+		fi; \
+		curl --retry 6 --retry-delay 5 --retry-all-errors -fsSLO "$$release_url/$$archive"; \
+		curl --retry 6 --retry-delay 5 --retry-all-errors -fsSLO "$$release_url/$$archive.sha256"; \
+	fi; \
 	expected_sha="$$(cut -d ' ' -f 1 "$$archive.sha256")"; \
 	printf '%s  %s\n' "$$expected_sha" "$$archive" | shasum -a 256 -c -; \
 	tar -xzf "$$archive"; \
@@ -205,14 +209,18 @@ release-helm-smoke: coat-cli
 	namespace="$(NAMESPACE)"; \
 	if [ -z "$$namespace" ]; then namespace="jattg-smoke"; fi; \
 	chart_url="$(CHART_URL)"; \
-	if [ -z "$$chart_url" ]; then \
-		chart_url="https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v$(CHART_VERSION)/jattg-$(CHART_VERSION).tgz"; \
-	fi; \
 	tmp_dir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmp_dir"' EXIT INT TERM; \
 	chart="$$tmp_dir/jattg-$(CHART_VERSION).tgz"; \
-	curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "$$chart_url" -o "$$chart"; \
-	curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "$$chart_url.sha256" -o "$$chart.sha256"; \
+	if [ -z "$$chart_url" ] && command -v gh >/dev/null 2>&1; then \
+		gh release download "chart-v$(CHART_VERSION)" --repo josephjohncox/joseph-and-the-amazing-technicolor-task-graph --pattern "jattg-$(CHART_VERSION).tgz" --pattern "jattg-$(CHART_VERSION).tgz.sha256" --dir "$$tmp_dir"; \
+	else \
+		if [ -z "$$chart_url" ]; then \
+			chart_url="https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v$(CHART_VERSION)/jattg-$(CHART_VERSION).tgz"; \
+		fi; \
+		curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "$$chart_url" -o "$$chart"; \
+		curl --retry 6 --retry-delay 5 --retry-all-errors -fsSL "$$chart_url.sha256" -o "$$chart.sha256"; \
+	fi; \
 	expected_sha="$$(cut -d ' ' -f 1 "$$chart.sha256")"; \
 	printf '%s  %s\n' "$$expected_sha" "$$chart" | shasum -a 256 -c -; \
 	$(COAT_BIN_DIR)/coat deploy chart lint --chart "$$chart"; \

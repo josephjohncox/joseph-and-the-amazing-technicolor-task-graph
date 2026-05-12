@@ -33,6 +33,7 @@ services:
       args:
         BIN: coat-coordinator
     environment:
+      COAT_SERVICE_BIN: coat-coordinator
       BIND_ADDR: 0.0.0.0:9080
       RUST_LOG: coat_coordinator=info,restate_sdk=info
       COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -91,6 +92,7 @@ services:
       args:
         BIN: coat-validator
     environment:
+      COAT_SERVICE_BIN: coat-validator
       BIND_ADDR: 0.0.0.0:9082
     ports:
       - "9082:9082"
@@ -103,6 +105,7 @@ services:
       args:
         BIN: coat-sandbox-runner
     environment:
+      COAT_SERVICE_BIN: coat-sandbox-runner
       BIND_ADDR: 0.0.0.0:9083
       SANDBOX_WORKSPACE_ROOT: /workspaces
       SANDBOX_SUPPORTED_BACKENDS: local_workspace
@@ -124,6 +127,7 @@ services:
       args:
         BIN: coat-tool-registry
     environment:
+      COAT_SERVICE_BIN: coat-tool-registry
       BIND_ADDR: 0.0.0.0:9084
       TOOL_REGISTRY_WORKSPACE_ROOT: /workspace
       TOOL_REGISTRY_SANDBOX_WORKSPACE_ROOT: /workspaces
@@ -147,6 +151,7 @@ services:
       args:
         BIN: coat-runner-registry
     environment:
+      COAT_SERVICE_BIN: coat-runner-registry
       BIND_ADDR: 0.0.0.0:9085
       COAT_RUNNER_REGISTRY_JOURNAL_PATH: /data/runner-registry.jsonl
     volumes:
@@ -162,6 +167,7 @@ services:
       args:
         BIN: coat-notifier
     environment:
+      COAT_SERVICE_BIN: coat-notifier
       BIND_ADDR: 0.0.0.0:9086
       AWS_REGION: ${AWS_REGION:-us-west-2}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
@@ -179,6 +185,7 @@ services:
       args:
         BIN: coat-goal-store
     environment:
+      COAT_SERVICE_BIN: coat-goal-store
       BIND_ADDR: 0.0.0.0:9088
       COAT_GOAL_STORE_BACKEND: ${COAT_GOAL_STORE_BACKEND:-jsonl}
       COAT_GOAL_STORE_JOURNAL_PATH: /data/goal-store.jsonl
@@ -196,6 +203,7 @@ services:
       args:
         BIN: coat-event-gateway
     environment:
+      COAT_SERVICE_BIN: coat-event-gateway
       BIND_ADDR: 0.0.0.0:9089
       COAT_RESTATE_INGRESS: http://restate:8080
       COAT_GOAL_STORE_URL: http://goal-store:9088
@@ -223,6 +231,7 @@ services:
       args:
         BIN: coat-memory-gateway
     environment:
+      COAT_SERVICE_BIN: coat-memory-gateway
       BIND_ADDR: 0.0.0.0:9087
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:-}
       MEMORY_GATEWAY_JOURNAL_PATH: /data/memory-gateway.jsonl

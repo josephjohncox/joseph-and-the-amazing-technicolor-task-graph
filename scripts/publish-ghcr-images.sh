@@ -33,8 +33,31 @@ build_image() {
   local cache_scope="$2"
   shift 2
   local image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/${image_name}"
+  build_with_tags "${cache_scope}" \
+    "${image_ref}:v${VERSION}" \
+    "${image_ref}:${VERSION}" \
+    "${image_ref}:latest" \
+    -- \
+    "$@"
+}
+
+build_with_tags() {
+  local cache_scope="$1"
+  shift
   local registry_cache_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/jattg-build-cache:${cache_scope}"
   local cache_args=()
+  local tag_args=()
+
+  while [[ "$#" -gt 0 && "$1" != "--" ]]; do
+    tag_args+=(--tag "$1")
+    shift
+  done
+
+  if [[ "$#" -eq 0 ]]; then
+    echo "internal error: build_with_tags missing -- separator" >&2
+    exit 2
+  fi
+  shift
 
   if [[ "${BUILDX_CACHE}" == "true" || ( "${BUILDX_CACHE}" == "auto" && "${GITHUB_ACTIONS:-}" == "true" ) ]]; then
     cache_args=(
@@ -56,9 +79,7 @@ build_image() {
     --platform="${PLATFORMS}" \
     "${output_args[@]}" \
     "${cache_args[@]}" \
-    --tag "${image_ref}:v${VERSION}" \
-    --tag "${image_ref}:${VERSION}" \
-    --tag "${image_ref}:latest" \
+    "${tag_args[@]}" \
     "$@" \
     .
 }
@@ -115,17 +136,27 @@ rust_images=(
   jattg-validator=coat-validator
 )
 
+rust_service_tags=()
 for spec in "${rust_images[@]}"; do
   image_name="${spec%%=*}"
-  bin="${spec#*=}"
   if should_build_image "${image_name}" rust-service; then
-    build_image "${image_name}" rust-services \
-      -f infra/containers/rust-service.Dockerfile \
-      --target service \
-      --build-arg "BIN=${bin}" \
-      --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+    image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/${image_name}"
+    rust_service_tags+=(
+      "${image_ref}:v${VERSION}"
+      "${image_ref}:${VERSION}"
+      "${image_ref}:latest"
+    )
   fi
 done
+
+if [[ "${#rust_service_tags[@]}" -gt 0 ]]; then
+  build_with_tags rust-services \
+    "${rust_service_tags[@]}" \
+    -- \
+    -f infra/containers/rust-service.Dockerfile \
+    --target service \
+    --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}"
+fi
 
 if should_build_image "jattg-agent-toolbox" agent-toolbox; then
   build_image "jattg-agent-toolbox" agent-toolbox \

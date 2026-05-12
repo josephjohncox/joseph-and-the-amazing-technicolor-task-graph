@@ -102,12 +102,15 @@ The workflow builds release binaries for:
 Linux release binaries are built on native GitHub-hosted runners instead of cross-compiling ARM from x64: x64 Linux uses `ubuntu-22.04`, ARM Linux uses `ubuntu-22.04-arm`, and macOS ARM uses `macos-latest`. The main CI workflow also has a runner-target compatibility lane across `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest` so runner-label regressions are caught before release.
 
 It uploads tarballs plus SHA-256 files to the GitHub Release. After the binary build matrix passes, the same workflow publishes multi-arch service images to GHCR under `ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/...` with `vX.Y.Z`, `X.Y.Z`, and `latest` tags.
-Release binary jobs use Rust dependency caches plus `sccache` compiler-output caching. GHCR image publishing uses GitHub Actions BuildKit caches and registry-backed cache images by default so the large Rust and sidecar layers can survive normal Actions cache churn. Rust service and toolbox images are published in one visible lane so they can share the Rust Docker build cache; Node sidecar images fan out in parallel lanes so a slow or failed sidecar does not hide behind one opaque serial publish step. Set `BUILDX_CACHE=false` to disable GitHub Actions cache and `BUILDX_REGISTRY_CACHE=false` to disable GHCR-backed cache when manually debugging the image script without remote cache state.
+Release binary jobs use Rust dependency caches plus `sccache` compiler-output caching. GHCR image publishing uses GitHub Actions BuildKit caches and registry-backed cache images by default so the large Rust and sidecar layers can survive normal Actions cache churn. Rust service image tags are produced from one shared service image build, while the toolbox image remains a separate target in the same visible lane; Node sidecar images fan out in parallel lanes so a slow or failed sidecar does not hide behind one opaque serial publish step. Set `BUILDX_CACHE=false` to disable GitHub Actions cache and `BUILDX_REGISTRY_CACHE=false` to disable GHCR-backed cache when manually debugging the image script without remote cache state.
 Rust service images are built from the `service` target in
-`infra/containers/rust-service.Dockerfile`. The `jattg-agent-toolbox` image is
-built from the same Dockerfile's `agent-toolbox` target so ephemeral Kubernetes
-Jobs can share the released Rust binaries and runner sidecars without creating a
-second Rust base image.
+`infra/containers/rust-service.Dockerfile`. The released service image contains
+all Rust service binaries; deployments select the process with
+`COAT_SERVICE_BIN`, and the entrypoint falls back to the known `BIND_ADDR` port
+mapping for existing manifests. The `jattg-agent-toolbox` image is built from
+the same Dockerfile's `agent-toolbox` target so ephemeral Kubernetes Jobs can
+share the released Rust binaries and runner sidecars without creating a second
+Rust base image.
 
 Published JATTG images:
 

@@ -134,6 +134,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Evidence 2026-05-11: CI, release-binary, and release-Helm workflows now use stable Rust cache keys plus `sccache`; GHCR publishing uses both GitHub Actions BuildKit cache and registry-backed `jattg-build-cache` refs; Rust and Node Dockerfiles use BuildKit cache mounts for target and npm caches.
 - Evidence 2026-05-11: release binaries now build Linux ARM on the native `ubuntu-22.04-arm` runner and macOS ARM on `macos-latest`; CI adds a cached runner-target compatibility lane for `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`.
 - Evidence 2026-05-11: GHCR image publishing can now target a single image or image group; the release workflow keeps Rust service/toolbox publishing in one cache-sharing lane and fans Node sidecar images out into parallel lanes.
+- Evidence 2026-05-11: Rust service release tags now share one multi-binary service image build; `COAT_SERVICE_BIN` selects the process, and the entrypoint preserves compatibility by mapping known `BIND_ADDR` ports to service binaries.
 - Promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
 - Add provider overlays after the first target is chosen; the first executor proof remains kind/k3d.
 - Add Restate Cloud journal encryption guidance when the Rust service path and provider documentation support it.

@@ -100,14 +100,39 @@ CMD ["bash"]
 
 FROM debian:bookworm-slim AS service
 
-ARG BIN
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/coat-services/ /usr/local/bin/coat-services/
-RUN cp "/usr/local/bin/coat-services/${BIN}" /usr/local/bin/service \
-    && rm -rf /usr/local/bin/coat-services
+RUN set -eu; \
+    { \
+      printf '%s\n' '#!/bin/sh'; \
+      printf '%s\n' 'set -eu'; \
+      printf '%s\n' 'if [ "$#" -gt 0 ]; then'; \
+      printf '%s\n' '  exec "$@"'; \
+      printf '%s\n' 'fi'; \
+      printf '%s\n' 'bin="${COAT_SERVICE_BIN:-}"'; \
+      printf '%s\n' 'if [ -z "$bin" ]; then'; \
+      printf '%s\n' '  port="${BIND_ADDR##*:}"'; \
+      printf '%s\n' '  case "$port" in'; \
+      printf '%s\n' '    9080) bin=coat-coordinator ;;'; \
+      printf '%s\n' '    9082) bin=coat-validator ;;'; \
+      printf '%s\n' '    9083) bin=coat-sandbox-runner ;;'; \
+      printf '%s\n' '    9084) bin=coat-tool-registry ;;'; \
+      printf '%s\n' '    9085) bin=coat-runner-registry ;;'; \
+      printf '%s\n' '    9086) bin=coat-notifier ;;'; \
+      printf '%s\n' '    9087) bin=coat-memory-gateway ;;'; \
+      printf '%s\n' '    9088) bin=coat-goal-store ;;'; \
+      printf '%s\n' '    9089) bin=coat-event-gateway ;;'; \
+      printf '%s\n' '  esac'; \
+      printf '%s\n' 'fi'; \
+      printf '%s\n' 'if [ -z "$bin" ]; then'; \
+      printf '%s\n' '  echo "COAT_SERVICE_BIN is required when BIND_ADDR does not identify a known service port" >&2'; \
+      printf '%s\n' '  exit 2'; \
+      printf '%s\n' 'fi'; \
+      printf '%s\n' 'exec "/usr/local/bin/coat-services/$bin"'; \
+    } > /usr/local/bin/coat-service-entrypoint; \
+    chmod +x /usr/local/bin/coat-service-entrypoint
 EXPOSE 9080
-CMD ["/usr/local/bin/service"]
+CMD ["/usr/local/bin/coat-service-entrypoint"]

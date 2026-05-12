@@ -1,7 +1,21 @@
+x-coat-rust-logging: &coat-rust-logging
+  COAT_LOG_FORMAT: ${COAT_LOG_FORMAT:-compact}
+  COAT_LOG_LEVEL: ${COAT_LOG_LEVEL:-debug}
+  COAT_LOG_ANSI: ${COAT_LOG_ANSI:-true}
+  RUST_LOG: ${COAT_RUST_LOG:-info,tower_http=debug,restate_sdk=info,coat_coordinator=debug,coat_validator=debug,coat_sandbox_runner=debug,coat_tool_registry=debug,coat_runner_registry=debug,coat_notifier=debug,coat_goal_store=debug,coat_event_gateway=debug,coat_memory_gateway=debug}
+
+x-coat-node-logging: &coat-node-logging
+  COAT_LOG_FORMAT: ${COAT_LOG_FORMAT:-compact}
+  COAT_LOG_LEVEL: ${COAT_LOG_LEVEL:-debug}
+  COAT_NODE_LOG_LEVEL: ${COAT_NODE_LOG_LEVEL:-debug}
+  NODE_ENV: ${NODE_ENV:-development}
+
 services:
   restate:
     image: docker.restate.dev/restatedev/restate:latest
     command: ["--node-name=restate-1"]
+    environment:
+      RUST_LOG: ${COAT_RESTATE_RUST_LOG:-info}
     ports:
       - "8080:8080"
       - "9070:9070"
@@ -33,9 +47,9 @@ services:
       args:
         BIN: coat-coordinator
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-coordinator
       BIND_ADDR: 0.0.0.0:9080
-      RUST_LOG: coat_coordinator=info,restate_sdk=info
       COAT_RUNNER_REGISTRY_URL: http://runner-registry:9085
       COAT_NOTIFIER_URL: http://notifier:9086
       COAT_GOAL_STORE_URL: http://goal-store:9088
@@ -92,6 +106,7 @@ services:
       args:
         BIN: coat-validator
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-validator
       BIND_ADDR: 0.0.0.0:9082
     ports:
@@ -105,6 +120,7 @@ services:
       args:
         BIN: coat-sandbox-runner
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-sandbox-runner
       BIND_ADDR: 0.0.0.0:9083
       SANDBOX_WORKSPACE_ROOT: /workspaces
@@ -127,6 +143,7 @@ services:
       args:
         BIN: coat-tool-registry
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-tool-registry
       BIND_ADDR: 0.0.0.0:9084
       TOOL_REGISTRY_WORKSPACE_ROOT: /workspace
@@ -151,6 +168,7 @@ services:
       args:
         BIN: coat-runner-registry
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-runner-registry
       BIND_ADDR: 0.0.0.0:9085
       COAT_RUNNER_REGISTRY_JOURNAL_PATH: /data/runner-registry.jsonl
@@ -167,6 +185,7 @@ services:
       args:
         BIN: coat-notifier
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-notifier
       BIND_ADDR: 0.0.0.0:9086
       AWS_REGION: ${AWS_REGION:-us-west-2}
@@ -185,6 +204,7 @@ services:
       args:
         BIN: coat-goal-store
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-goal-store
       BIND_ADDR: 0.0.0.0:9088
       COAT_GOAL_STORE_BACKEND: ${COAT_GOAL_STORE_BACKEND:-jsonl}
@@ -203,6 +223,7 @@ services:
       args:
         BIN: coat-event-gateway
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-event-gateway
       BIND_ADDR: 0.0.0.0:9089
       COAT_RESTATE_INGRESS: http://restate:8080
@@ -231,6 +252,7 @@ services:
       args:
         BIN: coat-memory-gateway
     environment:
+      <<: *coat-rust-logging
       COAT_SERVICE_BIN: coat-memory-gateway
       BIND_ADDR: 0.0.0.0:9087
       MEMORY_GATEWAY_TOKEN: ${MEMORY_GATEWAY_TOKEN:-}
@@ -312,6 +334,7 @@ services:
       args:
         SIDECAR_DIR: ui/control-plane-web
     environment:
+      <<: *coat-node-logging
       PORT: 9090
       COAT_RESTATE_INGRESS: http://restate:8080
       COAT_RESTATE_ADMIN_URL: http://restate:9070
@@ -371,6 +394,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/codex-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9091
       CODEX_RUNNER_MODE: ${CODEX_RUNNER_MODE:-stub}
       RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -403,6 +427,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/codex-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9091
       CODEX_RUNNER_MODE: ${CODEX_REVIEW_RUNNER_MODE:-stub}
       CODEX_MODEL: ${CODEX_REVIEW_MODEL:-codex-default}
@@ -435,6 +460,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/claude-code-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9094
       CLAUDE_CODE_RUNNER_MODE: ${CLAUDE_CODE_RUNNER_MODE:-stub}
       RUNNER_REGISTRY_URL: http://runner-registry:9085
@@ -467,6 +493,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9093
       MODEL_PROVIDER_RUNNER_MODE: ${MODEL_PROVIDER_RUNNER_MODE:-stub}
       MODEL_PROVIDER_KIND: ${MODEL_PROVIDER_KIND:-open_ai_compatible}
@@ -518,6 +545,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9093
       MODEL_PROVIDER_RUNNER_MODE: ${MODEL_PROVIDER_RESEARCH_RUNNER_MODE:-stub}
       MODEL_PROVIDER_KIND: ${MODEL_PROVIDER_RESEARCH_KIND:-open_ai_compatible}
@@ -569,6 +597,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9093
       MODEL_PROVIDER_RUNNER_MODE: ${MODEL_PROVIDER_LOCAL_RUNNER_MODE:-stub}
       MODEL_PROVIDER_KIND: ${LOCAL_MODEL_PROVIDER_KIND:-ollama}
@@ -605,6 +634,7 @@ services:
       args:
         SIDECAR_DIR: sidecars/staff-engineer-runner-ts
     environment:
+      <<: *coat-node-logging
       PORT: 9092
       STAFF_ENGINEER_RUNNER_MODE: ${STAFF_ENGINEER_RUNNER_MODE:-stub}
       RUNNER_REGISTRY_URL: http://runner-registry:9085

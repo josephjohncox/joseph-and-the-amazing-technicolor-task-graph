@@ -225,12 +225,7 @@ struct EventSourceApprovalFilter {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "coat_goal_store=info,tower_http=info".to_string()),
-        )
-        .init();
+    coat_observability::init_tracing("coat-goal-store", "coat_goal_store=info,tower_http=info");
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9088".to_string());
     let journal_path = std::env::var("COAT_GOAL_STORE_JOURNAL_PATH")

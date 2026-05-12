@@ -8,6 +8,7 @@
  * Architecture reference: docs/design-docs/110-control-gateway-spa.md
  */
 import * as Dialog from "@radix-ui/react-dialog";
+import * as Popover from "@radix-ui/react-popover";
 import {
   ChatContainer,
   MainContainer,
@@ -19,10 +20,12 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Background, Controls, MarkerType, MiniMap, ReactFlow, type Edge, type Node } from "@xyflow/react";
 import clsx from "clsx";
+import { Command } from "cmdk";
 import {
   Bell,
   Brain,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   FileJson,
   GitBranch,
@@ -46,7 +49,7 @@ import {
   Vote,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
   approvals,
@@ -77,6 +80,7 @@ import {
   selectBranch,
   setAuthToken,
   steer,
+  submitGoal,
   threads,
   voteGoal,
 } from "./api";
@@ -87,6 +91,24 @@ type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type GraphFilter = "all" | "attention" | "active" | "completed";
 type DraftKind = "plan" | "goal" | "search";
+type OperatorStateKey = "action-needed" | "running" | "waiting" | "reviewing" | "satisfied";
+type GoalSummary = {
+  id: string;
+  title: string;
+  objective: string;
+  status: string;
+  progress: number;
+  openTasks: number;
+  blockedTasks: number;
+  failedTasks: number;
+  updatedAt: string;
+};
+type OperatorStateDefinition = {
+  key: OperatorStateKey;
+  label: string;
+  detail: string;
+  statuses: string[];
+};
 type ContinuationRow = {
   key: string;
   thunkId: string;
@@ -99,6 +121,7 @@ type ContinuationRow = {
 };
 
 const themeStorageKey = "coat.theme";
+const selectedGoalStorageKey = "coat.selectedGoalId";
 const themeColors: Record<ResolvedTheme, string> = {
   light: "#f5f6f4",
   dark: "#080c0f",
@@ -111,26 +134,60 @@ const knownStatusTones = new Set([
   "waiting-approval",
   "waiting-input",
   "done",
+  "submitted",
   "blocked",
   "failed",
   "cancelled",
 ]);
+const operatorStateDefinitions: OperatorStateDefinition[] = [
+  {
+    key: "action-needed",
+    label: "Action needed",
+    detail: "failed, blocked, or approval work",
+    statuses: ["failed", "blocked", "waiting-approval"],
+  },
+  {
+    key: "running",
+    label: "Running",
+    detail: "active agents and runnable frontier",
+    statuses: ["running", "runnable"],
+  },
+  {
+    key: "waiting",
+    label: "Waiting",
+    detail: "queued, submitted, or paused continuations",
+    statuses: ["waiting-input", "pending", "submitted", "unknown"],
+  },
+  {
+    key: "reviewing",
+    label: "Reviewing",
+    detail: "validation and evidence checks",
+    statuses: ["needs-validation"],
+  },
+  {
+    key: "satisfied",
+    label: "Satisfied",
+    detail: "accepted task evidence",
+    statuses: ["done"],
+  },
+];
 const statusLegend = [
-  { token: "failed", label: "Failed", detail: "needs operator or retry" },
-  { token: "blocked", label: "Blocked", detail: "waiting on dependency" },
-  { token: "waiting-approval", label: "Approval", detail: "human gate open" },
-  { token: "waiting-input", label: "Continuation", detail: "delayed compute thunk" },
+  { token: "failed", label: "Action needed", detail: "failed task" },
+  { token: "blocked", label: "Action needed", detail: "blocked task" },
+  { token: "waiting-approval", label: "Action needed", detail: "approval gate" },
+  { token: "waiting-input", label: "Waiting", detail: "delayed compute thunk" },
   { token: "running", label: "Running", detail: "agent is active" },
-  { token: "needs-validation", label: "Validate", detail: "evidence review" },
-  { token: "runnable", label: "Runnable", detail: "ready frontier" },
-  { token: "done", label: "Done", detail: "accepted work" },
-  { token: "pending", label: "Pending", detail: "not yet runnable" },
-  { token: "cancelled", label: "Cancelled", detail: "intentionally stopped" },
+  { token: "needs-validation", label: "Reviewing", detail: "evidence check" },
+  { token: "runnable", label: "Running", detail: "ready frontier" },
+  { token: "done", label: "Satisfied", detail: "accepted evidence" },
+  { token: "submitted", label: "Waiting", detail: "projection sync" },
+  { token: "pending", label: "Waiting", detail: "queued work" },
+  { token: "cancelled", label: "Stopped", detail: "intentionally stopped" },
 ] as const;
 const statusPriority = new Map<string, number>(statusLegend.map((item, index) => [item.token, index]));
 const graphFilterOptions: Array<{ key: GraphFilter; label: string; detail: string }> = [
   { key: "all", label: "All", detail: "all projected tasks" },
-  { key: "attention", label: "Attention", detail: "failed, blocked, approvals, continuations" },
+  { key: "attention", label: "Action needed", detail: "failed, blocked, approvals, continuations" },
   { key: "active", label: "Active", detail: "running, runnable, validation" },
   { key: "completed", label: "Completed", detail: "done or cancelled" },
 ];
@@ -150,14 +207,16 @@ const starterMessages: ChatMessage[] = [
   {
     role: "assistant",
     content:
-      "Tell me the outcome you want. I can draft a durable plan, a GoalSpec, or a backend-routed search request without changing durable state.",
+      "Tell me the outcome you want. I can draft a plan, a goal, or a search request.",
   },
 ];
 
 export function App() {
   const queryClient = useQueryClient();
   const [activeView, setActiveView] = useState<ViewKey>("dashboard");
-  const [selectedGoalId, setSelectedGoalId] = useState("");
+  const [selectedGoalId, setSelectedGoalId] = useState(() => initialSelectedGoalId());
+  const [goalPickerOpen, setGoalPickerOpen] = useState(false);
+  const [submittedGoalDrafts, setSubmittedGoalDrafts] = useState<Record<string, JsonRecord>>({});
   const [token, setToken] = useState(authToken());
   const [messages, setMessages] = useState<ChatMessage[]>(starterMessages);
   const [chatInput, setChatInput] = useState("");
@@ -177,7 +236,13 @@ export function App() {
     queryKey: ["goal", selectedGoalId],
     queryFn: () => goalSnapshot(selectedGoalId),
     enabled: Boolean(selectedGoalId),
+    refetchInterval: () => (selectedGoalId && submittedGoalDrafts[selectedGoalId] ? 1_000 : 10_000),
   });
+  const selectGoalId = useCallback((goalId: string) => {
+    const nextGoalId = goalId.trim();
+    setSelectedGoalId(nextGoalId);
+    persistSelectedGoalId(nextGoalId);
+  }, []);
 
   const sendChat = useMutation({
     mutationFn: async (overrideContent?: string) => {
@@ -192,7 +257,7 @@ export function App() {
       setActiveChatRunId(runId);
       const response = await chat(chatSessionId, modeForDraftKind(draftKind), selectedGoalId, nextMessages, runId);
       setActiveChatRunId(response.run_id ?? runId);
-      setMessages([...nextMessages, { role: "assistant", content: response.assistant ?? "No response." }]);
+      setMessages([...nextMessages, { role: "assistant", content: response.assistant ?? "Response pending." }]);
       void queryClient.invalidateQueries({ queryKey: ["chat-session", chatSessionId] });
       return response;
     },
@@ -203,10 +268,47 @@ export function App() {
     enabled: Boolean(activeChatRunId && sendChat.isPending),
     refetchInterval: sendChat.isPending ? 750 : false,
   });
+  const latestGoalDraft = useMemo(() => goalDraftFromChatResponse(sendChat.data), [sendChat.data]);
+  const submitGoalDraft = useMutation({
+    mutationFn: async () => {
+      const draft = goalDraftFromChatResponse(sendChat.data);
+      if (!draft) {
+        throw new Error("Generate a goal draft first.");
+      }
+      const response = await submitGoal(draft);
+      assertGoalSubmitReachedCoordinator(response);
+      return { response, draft };
+    },
+    onSuccess: (result) => {
+      const goalId = goalIdFromSubmitResponse(result.response);
+      if (goalId) {
+        setSubmittedGoalDrafts((current) => ({ ...current, [goalId]: result.draft }));
+        selectGoalId(goalId);
+        setActiveView("graph");
+        void queryClient.refetchQueries({ queryKey: ["goal", goalId] });
+      }
+      void queryClient.refetchQueries({ queryKey: ["goals"] });
+      void queryClient.refetchQueries({ queryKey: ["overview"] });
+    },
+  });
 
   const refreshAll = () => {
     void queryClient.invalidateQueries();
   };
+  const sendChatFromPanel = (content?: string) => {
+    submitGoalDraft.reset();
+    sendChat.mutate(content);
+  };
+
+  useEffect(() => {
+    persistSelectedGoalId(selectedGoalId);
+  }, [selectedGoalId]);
+
+  useEffect(() => {
+    const handlePopState = () => setSelectedGoalId(initialSelectedGoalId());
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -237,7 +339,19 @@ export function App() {
     setMessages(persistedMessages.length ? persistedMessages : starterMessages);
     setActiveChatRunId(null);
     sendChat.reset();
+    submitGoalDraft.reset();
   }, [chatSessionId, chatSessionQuery.dataUpdatedAt]);
+
+  useEffect(() => {
+    if (!selectedGoalId || !submittedGoalDrafts[selectedGoalId] || !goalSnapshotHasProjectedTasks(selectedGoalQuery.data)) {
+      return;
+    }
+    setSubmittedGoalDrafts((current) => {
+      const next = { ...current };
+      delete next[selectedGoalId];
+      return next;
+    });
+  }, [selectedGoalId, selectedGoalQuery.data, submittedGoalDrafts]);
 
   const saveToken = (value: string) => {
     setToken(value);
@@ -246,8 +360,12 @@ export function App() {
   };
 
   const overviewData = overviewQuery.data;
-  const goalRows = useMemo(() => rowsFrom(at(goalsQuery.data, ["data"]) ?? goalsQuery.data) as GoalRow[], [goalsQuery.data]);
+  const projectedGoalRows = useMemo(() => rowsFrom(at(goalsQuery.data, ["data"]) ?? goalsQuery.data) as GoalRow[], [goalsQuery.data]);
+  const goalRows = useMemo(() => mergeSubmittedGoalRows(projectedGoalRows, submittedGoalDrafts), [projectedGoalRows, submittedGoalDrafts]);
   const currentGoal = selectedGoalQuery.data;
+  const selectedSubmittedDraft = selectedGoalId ? submittedGoalDrafts[selectedGoalId] ?? null : null;
+  const selectedGoal = useMemo(() => selectedGoalSummary(selectedGoalId, goalRows, currentGoal, selectedSubmittedDraft), [currentGoal, goalRows, selectedGoalId, selectedSubmittedDraft]);
+  const selectableGoals = useMemo(() => goalRowsWithSelected(goalRows, selectedGoal), [goalRows, selectedGoal]);
   const serviceRows = overviewData?.services ?? [];
 
   return (
@@ -302,10 +420,24 @@ export function App() {
 
       <main className="workspace">
         <header className="topbar">
-          <div>
+          <div className="topbar-title">
             <p className="eyebrow">User-facing manager</p>
             <h1>{titleFor(activeView)}</h1>
           </div>
+          <GoalContextBar
+            goals={selectableGoals}
+            selectedGoal={selectedGoal}
+            selectedGoalId={selectedGoalId}
+            open={goalPickerOpen}
+            loading={goalsQuery.isFetching || selectedGoalQuery.isFetching}
+            onOpenChange={setGoalPickerOpen}
+            onSelectGoal={selectGoalId}
+            onRefreshGoals={() => {
+              void queryClient.invalidateQueries({ queryKey: ["goals"] });
+              void queryClient.invalidateQueries({ queryKey: ["overview"] });
+            }}
+            onOpenGraph={() => selectedGoalId && setActiveView("graph")}
+          />
           <ServiceStrip services={serviceRows} />
         </header>
 
@@ -318,16 +450,23 @@ export function App() {
             error={sendChat.error}
             latestResponse={sendChat.data}
             chatRun={(chatRunQuery.data ?? sendChat.data?.chat_run) as ChatRunTrace | undefined}
+            goalDraft={latestGoalDraft}
+            goalSubmitBusy={submitGoalDraft.isPending}
+            goalSubmitError={submitGoalDraft.error as Error | null}
+            goalSubmitResult={submitGoalDraft.data?.response}
             selectedGoalId={selectedGoalId}
+            selectedGoal={selectedGoal}
             sessionId={chatSessionId}
             mode={modeForDraftKind(draftKind)}
             onDraftKindChange={setDraftKind}
             onInputChange={setChatInput}
-            onSend={(content?: string) => sendChat.mutate(content)}
+            onSend={sendChatFromPanel}
+            onSubmitGoalDraft={() => submitGoalDraft.mutate()}
             onClear={() => {
               setMessages(starterMessages);
               setChatInput("");
               sendChat.reset();
+              submitGoalDraft.reset();
             }}
           />
 
@@ -337,7 +476,7 @@ export function App() {
               goals={goalRows}
               selectedGoalId={selectedGoalId}
               onSelectGoal={(goalId) => {
-                setSelectedGoalId(goalId);
+                selectGoalId(goalId);
                 setActiveView("graph");
               }}
             />
@@ -347,16 +486,16 @@ export function App() {
               goals={goalRows}
               selectedGoalId={selectedGoalId}
               onSelectGoal={(goalId) => {
-                setSelectedGoalId(goalId);
+                selectGoalId(goalId);
                 setActiveView("graph");
               }}
             />
           )}
           {activeView === "graph" && (
-            <TaskGraphView goalId={selectedGoalId} snapshot={currentGoal} loading={selectedGoalQuery.isFetching} onGoalIdChange={setSelectedGoalId} />
+            <TaskGraphView goalId={selectedGoalId} snapshot={currentGoal} submittedDraft={selectedSubmittedDraft} loading={selectedGoalQuery.isFetching} onOpenGoalPicker={() => setGoalPickerOpen(true)} />
           )}
           {activeView === "control" && (
-            <CompilerControlView goalId={selectedGoalId} snapshot={currentGoal} loading={selectedGoalQuery.isFetching} onGoalIdChange={setSelectedGoalId} />
+            <CompilerControlView goalId={selectedGoalId} snapshot={currentGoal} loading={selectedGoalQuery.isFetching} onOpenGoalPicker={() => setGoalPickerOpen(true)} />
           )}
           {activeView === "memory" && <MemoryView selectedGoalId={selectedGoalId} />}
           {activeView === "plans" && <PlansView />}
@@ -376,6 +515,231 @@ function modeForDraftKind(kind: DraftKind): string {
 
 function createRunId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function selectedGoalIdFromLocation(search: string, storedGoalId?: string | null): string {
+  const urlGoalId = new URLSearchParams(search).get("goal")?.trim();
+  if (urlGoalId) {
+    return urlGoalId;
+  }
+  return storedGoalId?.trim() ?? "";
+}
+
+function initialSelectedGoalId(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  let storedGoalId = "";
+  try {
+    storedGoalId = window.localStorage.getItem(selectedGoalStorageKey) ?? "";
+  } catch {
+    storedGoalId = "";
+  }
+  return selectedGoalIdFromLocation(window.location.search, storedGoalId);
+}
+
+function persistSelectedGoalId(goalId: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const trimmed = goalId.trim();
+  try {
+    if (trimmed) {
+      window.localStorage.setItem(selectedGoalStorageKey, trimmed);
+    } else {
+      window.localStorage.removeItem(selectedGoalStorageKey);
+    }
+  } catch {
+    // Local persistence is a convenience; URL state remains the shareable selector.
+  }
+  const url = new URL(window.location.href);
+  if (trimmed) {
+    url.searchParams.set("goal", trimmed);
+  } else {
+    url.searchParams.delete("goal");
+  }
+  if (`${url.pathname}${url.search}${url.hash}` !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+    window.history.replaceState({}, "", url);
+  }
+}
+
+function goalDraftFromChatResponse(response?: ChatResponse): JsonRecord | null {
+  const draft = response?.drafts?.goal_spec;
+  if (!isRecord(draft)) {
+    return null;
+  }
+  const title = typeof draft.title === "string" ? draft.title.trim() : "";
+  const objective = typeof draft.objective === "string" ? draft.objective.trim() : "";
+  return title && objective ? draft : null;
+}
+
+function goalIdFromSubmitResponse(response: unknown): string {
+  for (const path of [
+    ["goal_id"],
+    ["id"],
+    ["goal", "id"],
+    ["goal", "spec", "id"],
+    ["state", "goal", "id"],
+    ["result", "goal_id"],
+    ["result", "id"],
+  ]) {
+    const candidate = valueAt(response, path);
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  const url = isRecord(response) && typeof response.url === "string" ? response.url : "";
+  return url.match(/\/GoalWorkflow\/([0-9a-f-]{36})\/run$/i)?.[1] ?? "";
+}
+
+function assertGoalSubmitReachedCoordinator(response: unknown): void {
+  if (!isRecord(response)) {
+    return;
+  }
+  const proxyStatus = typeof response.status === "number" ? response.status : null;
+  if (proxyStatus === null || (proxyStatus >= 200 && proxyStatus < 400)) {
+    return;
+  }
+  const detail = typeof response.error === "string" ? response.error : typeof response.url === "string" ? response.url : "unknown upstream failure";
+  throw new Error(`Goal submit returned an upstream failure: ${detail}`);
+}
+
+function mergeSubmittedGoalRows(projectedRows: GoalRow[], submittedDrafts: Record<string, JsonRecord>): GoalRow[] {
+  const projectedIds = new Set(projectedRows.map((goal) => String(goal.goal_id ?? goal.id ?? "")).filter(Boolean));
+  const pendingRows = Object.entries(submittedDrafts)
+    .filter(([goalId]) => !projectedIds.has(goalId))
+    .map(([goalId, draft]) => pendingGoalRow(goalId, draft));
+  return [...pendingRows, ...projectedRows];
+}
+
+function goalSummaryFromRow(goal: GoalRow): GoalSummary | null {
+  const id = String(goal.goal_id ?? goal.id ?? "").trim();
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    title: stringValue(goal.title) || id,
+    objective: stringValue(goal.objective),
+    status: stringValue(goal.status) || "unknown",
+    progress: numericProgress(goal.percent_done),
+    openTasks: numberValue(goal.open_tasks) ?? 0,
+    blockedTasks: numberValue(goal.blocked_tasks) ?? 0,
+    failedTasks: numberValue(goal.failed_tasks) ?? 0,
+    updatedAt: stringValue(goal.updated_at),
+  };
+}
+
+function selectedGoalSummary(goalId: string, rows: GoalRow[], snapshot?: GoalSnapshot, submittedDraft?: JsonRecord | null): GoalSummary | null {
+  if (!goalId) {
+    return null;
+  }
+  const fromRows = rows.map(goalSummaryFromRow).find((goal): goal is GoalSummary => Boolean(goal && goal.id === goalId));
+  if (fromRows) {
+    return fromRows;
+  }
+  const payload = at(snapshot, ["goal_store_goal", "data", "goal", "payload_json"]);
+  const source = isRecord(payload) ? payload : submittedDraft;
+  return {
+    id: goalId,
+    title: stringValue(source?.title) || goalId,
+    objective: stringValue(source?.objective),
+    status: stringValue(at(snapshot, ["goal_store_goal", "data", "goal", "status"])) || (submittedDraft ? "submitted" : "selected"),
+    progress: numericProgress(at(snapshot, ["goal_store_goal", "data", "goal", "percent_done"])),
+    openTasks: numberValue(at(snapshot, ["goal_store_goal", "data", "goal", "open_tasks"])) ?? rowsFrom(source?.initial_tasks).length,
+    blockedTasks: numberValue(at(snapshot, ["goal_store_goal", "data", "goal", "blocked_tasks"])) ?? 0,
+    failedTasks: numberValue(at(snapshot, ["goal_store_goal", "data", "goal", "failed_tasks"])) ?? 0,
+    updatedAt: stringValue(at(snapshot, ["goal_store_goal", "data", "goal", "updated_at"])),
+  };
+}
+
+function goalRowsWithSelected(rows: GoalRow[], selectedGoal: GoalSummary | null): GoalSummary[] {
+  const summaries = rows.map(goalSummaryFromRow).filter((goal): goal is GoalSummary => Boolean(goal));
+  if (selectedGoal && !summaries.some((goal) => goal.id === selectedGoal.id)) {
+    return [selectedGoal, ...summaries];
+  }
+  return summaries;
+}
+
+function numericProgress(value: unknown): number {
+  const numeric = numberValue(value) ?? 0;
+  return numeric > 1 ? numeric / 100 : numeric;
+}
+
+function pendingGoalRow(goalId: string, draft: JsonRecord): GoalRow {
+  const initialTasks = rowsFrom(draft.initial_tasks);
+  const subgoals = goalSubgoalsFromDraft(draft);
+  return {
+    goal_id: goalId,
+    id: goalId,
+    title: stringValue(draft.title) || "Submitted goal",
+    objective: stringValue(draft.objective) || "Waiting for the coordinator projection.",
+    status: "submitted",
+    percent_done: 0,
+    open_tasks: Math.max(1, initialTasks.length || subgoals.length),
+    blocked_tasks: 0,
+    failed_tasks: 0,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function goalSnapshotHasProjectedTasks(snapshot?: GoalSnapshot): boolean {
+  return Boolean(snapshot?.goal_store_goal || snapshot?.workflow_status || snapshot?.agent_activity?.length);
+}
+
+function taskRowsFromGoalDraft(goalId: string, draft?: JsonRecord | null): TaskRow[] {
+  if (!draft) {
+    return [];
+  }
+  const initialTasks = rowsFrom(draft.initial_tasks);
+  if (initialTasks.length) {
+    return initialTasks.map((task, index) => ({
+      goal_id: goalId,
+      task_id: stringValue(task.id) || stringValue(task.task_id) || `draft-task-${index + 1}`,
+      parent_task_id: index === 0 ? null : "draft-root",
+      subgoal_id: stringValue(task.subgoal_id) || null,
+      title: stringValue(task.title) || stringValue(task.role) || `Draft task ${index + 1}`,
+      role: stringValue(task.role) || "planner",
+      purpose: "work",
+      status: "submitted",
+      current_prompt: stringValue(task.prompt) || stringValue(task.reason) || null,
+      prompt: stringValue(task.prompt) || stringValue(task.reason) || null,
+      raw_task: task,
+    }));
+  }
+  return goalSubgoalsFromDraft(draft).map((subgoal, index) => ({
+    goal_id: goalId,
+    task_id: stringValue(subgoal.id) || stringValue(subgoal.subgoal_id) || `draft-subgoal-${index + 1}`,
+    parent_task_id: "draft-root",
+    subgoal_id: stringValue(subgoal.id) || stringValue(subgoal.subgoal_id) || null,
+    title: stringValue(subgoal.title) || `Draft subgoal ${index + 1}`,
+    role: "planner",
+    purpose: "work",
+    status: "submitted",
+    current_prompt: stringValue(subgoal.objective) || stringValue(subgoal.summary) || null,
+    prompt: stringValue(subgoal.objective) || stringValue(subgoal.summary) || null,
+    raw_task: subgoal,
+  }));
+}
+
+function goalSubgoalsFromDraft(draft?: JsonRecord | null): JsonRecord[] {
+  return rowsFrom(at(draft, ["plan", "subgoals"]));
+}
+
+function goalSubgoalsFromSnapshotOrDraft(snapshot?: GoalSnapshot, draft?: JsonRecord | null): JsonRecord[] {
+  const projected = rowsFrom(at(snapshot, ["goal_store_goal", "data", "goal", "payload_json", "plan", "subgoals"]));
+  return projected.length ? projected : goalSubgoalsFromDraft(draft);
+}
+
+function valueAt(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return null;
+    }
+    current = current[key];
+  }
+  return current;
 }
 
 function initialThemePreference(): ThemePreference {
@@ -444,7 +808,7 @@ function titleFor(view: ViewKey): string {
 
 function ServiceStrip({ services }: { services: Overview["services"] }) {
   if (!services?.length) {
-    return <span className="status-pill muted">No services projected</span>;
+    return <span className="status-pill muted">Services pending</span>;
   }
   return (
     <div className="service-strip">
@@ -458,6 +822,115 @@ function ServiceStrip({ services }: { services: Overview["services"] }) {
   );
 }
 
+function GoalContextBar(props: {
+  goals: GoalSummary[];
+  selectedGoal: GoalSummary | null;
+  selectedGoalId: string;
+  open: boolean;
+  loading: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSelectGoal: (goalId: string) => void;
+  onRefreshGoals: () => void;
+  onOpenGraph: () => void;
+}) {
+  const done = Math.round((props.selectedGoal?.progress ?? 0) * 100);
+  const selectedState = props.selectedGoal ? operatorStateForStatus(props.selectedGoal.status) : null;
+  return (
+    <Popover.Root open={props.open} onOpenChange={props.onOpenChange}>
+      <div className="goal-context-bar">
+        <Popover.Trigger asChild>
+          <button type="button" className="goal-context-trigger" aria-expanded={props.open}>
+            <div>
+              <span className="goal-context-kicker">Current goal</span>
+              <strong>{props.selectedGoal?.title || "Select a goal"}</strong>
+              {props.selectedGoal ? (
+                <small>{done}% · {props.selectedGoal.openTasks} open · {props.selectedGoal.blockedTasks} blocked · {selectedState?.label}</small>
+              ) : (
+                <small>Chat, graph, controls, memory, and queue use this context</small>
+              )}
+            </div>
+            <span className={clsx("operator-state-pill", selectedState ? stateTone(selectedState.key) : "muted")}>
+              {selectedState?.label ?? (props.loading ? "Loading" : "Select")}
+            </span>
+            <ChevronDown size={16} />
+          </button>
+        </Popover.Trigger>
+        {props.selectedGoal && (
+          <InspectButton
+            title="Current goal identity"
+            payload={{
+              goal_id: props.selectedGoalId,
+              title: props.selectedGoal.title,
+              status: props.selectedGoal.status,
+              operator_state: selectedState,
+              objective: props.selectedGoal.objective,
+            }}
+            buttonLabel="Inspect id"
+          />
+        )}
+        <Popover.Portal>
+          <Popover.Content className="goal-picker" align="end" sideOffset={8}>
+            <Command shouldFilter className="goal-command">
+              <div className="goal-picker-actions">
+                <label>
+                  Search goals
+                  <Command.Input placeholder="Title, status, or id" />
+                </label>
+                <button type="button" className="secondary-button" onClick={props.onRefreshGoals}>
+                  <RefreshCw size={15} />
+                  Refresh
+                </button>
+              </div>
+              <Command.List className="goal-picker-list">
+                <Command.Empty>
+                  <EmptyState title="Goal match pending" detail="Refresh goals or submit one from chat." />
+                </Command.Empty>
+                <Command.Group>
+                  {props.goals.map((goal) => (
+                    <Command.Item
+                      key={goal.id}
+                      value={`${goal.title} ${goal.objective} ${goal.status} ${goal.id}`}
+                      className={clsx("goal-picker-item", props.selectedGoalId === goal.id && "active")}
+                      onSelect={() => {
+                        props.onSelectGoal(goal.id);
+                        props.onOpenChange(false);
+                      }}
+                    >
+                      <span>
+                        <strong>{goal.title || goal.id}</strong>
+                        <small>{goal.objective || goal.id}</small>
+                      </span>
+                      <span className={clsx("status-pill", statusTone(goal.status))}>{goal.status}</span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              </Command.List>
+              <div className="goal-picker-footer">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!props.selectedGoalId}
+                  onClick={() => {
+                    props.onSelectGoal("");
+                    props.onOpenChange(false);
+                  }}
+                >
+                  <XCircle size={15} />
+                  Clear goal
+                </button>
+                <button type="button" className="primary-button" disabled={!props.selectedGoalId} onClick={props.onOpenGraph}>
+                  <Network size={15} />
+                  Open graph
+                </button>
+              </div>
+            </Command>
+          </Popover.Content>
+        </Popover.Portal>
+      </div>
+    </Popover.Root>
+  );
+}
+
 function CommandPanel(props: {
   messages: ChatMessage[];
   input: string;
@@ -466,17 +939,24 @@ function CommandPanel(props: {
   error: Error | null;
   latestResponse?: ChatResponse;
   chatRun?: ChatRunTrace;
+  goalDraft: JsonRecord | null;
+  goalSubmitBusy: boolean;
+  goalSubmitError: Error | null;
+  goalSubmitResult?: unknown;
   selectedGoalId: string;
+  selectedGoal: GoalSummary | null;
   sessionId: string;
   mode: string;
   onDraftKindChange: (value: DraftKind) => void;
   onInputChange: (value: string) => void;
   onSend: (content?: string) => void;
+  onSubmitGoalDraft: () => void;
   onClear: () => void;
 }) {
   const draftKeys = Object.keys(props.latestResponse?.drafts ?? {});
   const activityPayload = chatActivityPayload(props);
   const activityLabel = props.busy ? "Activity" : "Run details";
+  const submittedGoalId = goalIdFromSubmitResponse(props.goalSubmitResult);
   return (
     <section className="command-panel">
       <div className="section-heading">
@@ -515,7 +995,9 @@ function CommandPanel(props: {
         </div>
       </div>
       <div className="outcome-meta">
-        <span className="status-pill">{props.selectedGoalId ? `Goal ${props.selectedGoalId.slice(0, 8)}` : "No goal selected"}</span>
+        <span className={clsx("status-pill", props.selectedGoal ? statusTone(props.selectedGoal.status) : "muted")}>
+          {props.selectedGoal ? `${props.selectedGoal.title} · ${props.selectedGoalId.slice(0, 8)}` : "Select a goal"}
+        </span>
         <span className={clsx("status-pill", props.busy ? "status-running" : "status-pending")}>
           {props.busy ? commandBusyLabel(props.draftKind) : `${props.mode} · ${props.sessionId}`}
         </span>
@@ -523,8 +1005,19 @@ function CommandPanel(props: {
           <InspectButton title="Chat activity" payload={activityPayload} buttonLabel={activityLabel} />
         )}
       </div>
+      {props.goalDraft && (
+        <div className="draft-action-bar">
+          <span className="status-pill status-runnable">Goal draft ready</span>
+          {submittedGoalId && <span className="status-pill status-done">Submitted {submittedGoalId.slice(0, 8)}</span>}
+          <InspectButton title="GoalSpec draft" payload={props.goalDraft} buttonLabel="Review draft" />
+          <button type="button" className="primary-button" disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
+            <ListChecks size={15} />
+            {submittedGoalId ? "Submitted" : props.goalSubmitBusy ? "Submitting" : "Submit goal"}
+          </button>
+        </div>
+      )}
       <div className="quick-prompts" aria-label="Compiler console prompts">
-        {compilerPromptTemplates(props.selectedGoalId).map((template) => (
+        {compilerPromptTemplates(props.selectedGoalId, props.selectedGoal?.title).map((template) => (
           <button key={template.label} type="button" className="secondary-button" disabled={props.busy} onClick={() => props.onSend(template.prompt)}>
             {template.icon === "graph" && <Network size={15} />}
             {template.icon === "control" && <ShieldCheck size={15} />}
@@ -569,6 +1062,7 @@ function CommandPanel(props: {
       </div>
       <div className="composer-actions">
         {props.error && <span className="error-text">{props.error.message}</span>}
+        {props.goalSubmitError && <span className="error-text">{props.goalSubmitError.message}</span>}
         <button type="button" className="secondary-button" onClick={props.onClear}>
           Clear
         </button>
@@ -577,8 +1071,8 @@ function CommandPanel(props: {
   );
 }
 
-function compilerPromptTemplates(goalId: string): Array<{ label: string; icon: "graph" | "control" | "research"; prompt: string }> {
-  const goalClause = goalId ? ` for goal ${goalId}` : "";
+function compilerPromptTemplates(goalId: string, goalTitle?: string): Array<{ label: string; icon: "graph" | "control" | "research"; prompt: string }> {
+  const goalClause = goalId ? ` for ${goalTitle ? `"${goalTitle}"` : "the selected goal"} (${goalId})` : "";
   return [
     {
       label: "Explain graph",
@@ -588,7 +1082,7 @@ function compilerPromptTemplates(goalId: string): Array<{ label: string; icon: "
     {
       label: "Draft steering",
       icon: "control",
-      prompt: `Draft one structured steering directive${goalClause} that would move the objective forward without bypassing coordinator review.`,
+      prompt: `Draft one structured steering directive${goalClause} that moves the objective forward through coordinator review.`,
     },
     {
       label: "Research gap",
@@ -624,10 +1118,12 @@ function chatActivityPayload(props: {
   mode: string;
   latestResponse?: ChatResponse;
   chatRun?: ChatRunTrace;
+  goalDraft?: JsonRecord | null;
+  goalSubmitResult?: unknown;
 }): JsonRecord {
   return {
     label: "operational trace",
-    note: "This shows gateway and backend stages, not hidden model reasoning.",
+    note: "Gateway and backend stages for this chat run.",
     status: props.busy ? "running" : "idle",
     draft_kind: props.draftKind,
     mode: props.mode,
@@ -638,6 +1134,8 @@ function chatActivityPayload(props: {
     model_params: props.latestResponse?.model_params ?? props.chatRun?.model_params ?? null,
     chat_log: props.latestResponse?.chat_log ?? props.chatRun?.chat_log ?? null,
     drafts: props.latestResponse?.drafts ?? null,
+    ready_goal_draft: props.goalDraft ?? null,
+    goal_submit: props.goalSubmitResult ?? null,
   };
 }
 
@@ -708,7 +1206,7 @@ function EventSourcesPanel({ rows }: { rows: JsonRecord[] }) {
         <Network size={18} />
       </div>
       <SimpleTable
-        empty="No event sources projected."
+        empty="Event sources pending."
         headers={["Source", "Status", "Activation"]}
         rows={rows.slice(0, 6).map(eventSourceTableRow)}
       />
@@ -737,7 +1235,7 @@ function GoalsView(props: { goals: GoalRow[]; selectedGoalId: string; onSelectGo
     <section className="panel">
       <div className="section-heading">
         <h2>Goal progress</h2>
-        <span className="muted-small">Clean progress cards, not workflow internals</span>
+        <span className="muted-small">Progress, blockers, and evidence</span>
       </div>
       <GoalList goals={props.goals} selectedGoalId={props.selectedGoalId} onSelect={props.onSelectGoal} />
     </section>
@@ -746,7 +1244,7 @@ function GoalsView(props: { goals: GoalRow[]; selectedGoalId: string; onSelectGo
 
 function GoalList({ goals, selectedGoalId, onSelect }: { goals: GoalRow[]; selectedGoalId: string; onSelect: (goalId: string) => void }) {
   if (!goals.length) {
-    return <EmptyState title="No goals yet" detail="Submit or draft a goal to start a durable task graph." />;
+    return <EmptyState title="Start a goal" detail="Draft or submit work from chat." />;
   }
   return (
     <div className="goal-list">
@@ -759,7 +1257,7 @@ function GoalList({ goals, selectedGoalId, onSelect }: { goals: GoalRow[]; selec
               <strong>{goal.title || goalId || "Untitled goal"}</strong>
               <span className={clsx("status-pill", statusTone(goal.status))}>{goal.status ?? "unknown"}</span>
             </div>
-            <p>{goal.objective || "No projected objective."}</p>
+            <p>{goal.objective || "Objective pending."}</p>
             <div className="progress-line" aria-label={`${done}% complete`}>
               <span style={{ width: `${Math.max(0, Math.min(100, done))}%` }} />
             </div>
@@ -771,15 +1269,41 @@ function GoalList({ goals, selectedGoalId, onSelect }: { goals: GoalRow[]; selec
   );
 }
 
-function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onGoalIdChange: (value: string) => void }) {
+function SubgoalPlanPanel({ subgoals, source }: { subgoals: JsonRecord[]; source: string }) {
+  return (
+    <section className="subgoal-panel">
+      <div className="section-heading">
+        <div>
+          <h3>Subgoals</h3>
+          <span className="muted-small">{source}</span>
+        </div>
+      </div>
+      <div className="subgoal-list">
+        {subgoals.map((subgoal, index) => (
+          <article key={stringValue(subgoal.id) || stringValue(subgoal.subgoal_id) || `subgoal-${index}`} className="subgoal-card">
+            <strong>{stringValue(subgoal.title) || `Subgoal ${index + 1}`}</strong>
+            <p>{stringValue(subgoal.objective) || stringValue(subgoal.summary) || "Objective pending."}</p>
+            {(stringValue(subgoal.id) || stringValue(subgoal.subgoal_id)) && <small>{stringValue(subgoal.id) || stringValue(subgoal.subgoal_id)}</small>}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submittedDraft?: JsonRecord | null; loading: boolean; onOpenGoalPicker: () => void }) {
   const [graphFilter, setGraphFilter] = useState<GraphFilter>("all");
-  const tasks = useMemo(() => (props.snapshot?.agent_activity ?? []) as TaskRow[], [props.snapshot]);
+  const projectedTasks = useMemo(() => (props.snapshot?.agent_activity ?? []) as TaskRow[], [props.snapshot]);
+  const draftTasks = useMemo(() => taskRowsFromGoalDraft(props.goalId, props.submittedDraft), [props.goalId, props.submittedDraft]);
+  const tasks = projectedTasks.length ? projectedTasks : draftTasks;
   const computeGraph = useMemo(() => props.snapshot ? workflowComputeGraph(props.snapshot) : undefined, [props.snapshot]);
   const computeNodes = useMemo(() => computeGraphNodes(computeGraph), [computeGraph]);
   const filteredComputeNodes = useMemo(() => computeNodes.filter((node) => computeNodeMatchesGraphFilter(node, graphFilter)), [computeNodes, graphFilter]);
   const filteredTasks = useMemo(() => tasks.filter((task) => taskMatchesGraphFilter(task, graphFilter)), [tasks, graphFilter]);
   const graph = useMemo(() => computeNodes.length ? graphFromComputeGraph(computeGraph, filteredComputeNodes) : graphFromTasks(filteredTasks), [computeGraph, computeNodes.length, filteredComputeNodes, filteredTasks]);
   const counts = useMemo(() => taskStatusCounts(tasks), [tasks]);
+  const subgoals = useMemo(() => goalSubgoalsFromSnapshotOrDraft(props.snapshot, props.submittedDraft), [props.snapshot, props.submittedDraft]);
+  const showingSubmittedDraft = Boolean(props.submittedDraft && !projectedTasks.length);
   const taskCount = tasks.length;
   const visibleCount = computeNodes.length ? filteredComputeNodes.length : filteredTasks.length;
   const totalCount = computeNodes.length ? computeNodes.length : taskCount;
@@ -789,15 +1313,8 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; loading
       <div className="section-heading">
         <div>
           <h2>Technicolor task graph</h2>
-          <span className="muted-small">Color, role, status, and parent-child shape without prompt dumps</span>
+          <span className="muted-small">Workstreams, status, and dependencies</span>
         </div>
-        <input
-          className="goal-id-input"
-          value={props.goalId}
-          onChange={(event) => props.onGoalIdChange(event.target.value)}
-          placeholder="Goal UUID"
-          aria-label="Goal UUID"
-        />
       </div>
       {props.snapshot && (
         <div className="graph-toolbar">
@@ -819,11 +1336,11 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; loading
         </div>
       )}
       {!props.goalId ? (
-        <EmptyState title="Choose a goal" detail="Open a goal from the dashboard or paste a goal UUID." />
-      ) : props.loading ? (
+        <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
+      ) : props.loading && !showingSubmittedDraft ? (
         <EmptyState title="Loading task graph" detail="Fetching goal snapshot and agent activity." />
       ) : taskCount === 0 ? (
-        <EmptyState title="No graph projection" detail="The goal exists, but no task activity is projected yet." />
+        <EmptyState title="Task activity pending" detail="Waiting for the first projected task." />
       ) : graph.nodes.length ? (
         <div className="flow-canvas">
           <ReactFlow nodes={graph.nodes} edges={graph.edges} fitView>
@@ -833,11 +1350,14 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; loading
           </ReactFlow>
         </div>
       ) : (
-        <EmptyState title="No tasks match this filter" detail="Change the graph filter to inspect other task states." />
+        <EmptyState title="Filter has no matches" detail="Try another task state." />
       )}
+      {showingSubmittedDraft && <EmptyState title="Submitted goal is syncing" detail="Draft tasks are visible while projection catches up." />}
+      {subgoals.length > 0 && <SubgoalPlanPanel subgoals={subgoals} source={showingSubmittedDraft ? "submitted draft" : "goal projection"} />}
       {props.snapshot && (
         <>
           <GraphStatusPanel counts={counts} taskCount={taskCount} />
+          <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={taskCount} compact />
           <TaskSummary snapshot={props.snapshot} counts={counts} />
           <ComputeGraphDetails snapshot={props.snapshot} />
           <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />
@@ -848,7 +1368,7 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; loading
   );
 }
 
-function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onGoalIdChange: (value: string) => void }) {
+function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onOpenGoalPicker: () => void }) {
   return (
     <section className="panel">
       <div className="section-heading">
@@ -856,21 +1376,15 @@ function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; l
           <h2>Flow control</h2>
           <span className="muted-small">Vote, steer, branch, restart, cancel, and resume durable work</span>
         </div>
-        <input
-          className="goal-id-input"
-          value={props.goalId}
-          onChange={(event) => props.onGoalIdChange(event.target.value)}
-          placeholder="Goal UUID"
-          aria-label="Goal UUID"
-        />
       </div>
       {!props.goalId ? (
-        <EmptyState title="Choose a goal" detail="Open a goal from the dashboard or paste a goal UUID." />
+        <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
       ) : props.loading ? (
         <EmptyState title="Loading controls" detail="Fetching workflow projection." />
       ) : (
         <>
           {props.snapshot && <TaskSummary snapshot={props.snapshot} counts={taskStatusCounts((props.snapshot.agent_activity ?? []) as TaskRow[])} />}
+          {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={taskStatusCounts((props.snapshot.agent_activity ?? []) as TaskRow[])} taskCount={((props.snapshot.agent_activity ?? []) as TaskRow[]).length} />}
           {props.snapshot && <ComputeGraphDetails snapshot={props.snapshot} />}
           <CompilerControlPanel goalId={props.goalId} snapshot={props.snapshot} />
           <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />
@@ -885,12 +1399,13 @@ function graphFromTasks(tasks: TaskRow[]): { nodes: Node[]; edges: Edge[] } {
     const id = taskId(task) || `task-${index}`;
     const color = colorRef(task.color ?? taskPayload(task).color);
     const status = String(task.status ?? "unknown");
+    const state = operatorStateForStatus(status);
     return {
       id,
       className: clsx("task-node", statusTone(status)),
       position: { x: (Number(taskPayload(task).depth ?? index) % 4) * 280, y: Math.floor(index / 4) * 150 },
       data: {
-        label: `${color?.label ? `${color.label}: ` : ""}${task.title || id}\n${task.role ?? ""} · ${status}`,
+        label: `${color?.label ? `${color.label}: ` : ""}${task.title || id}\n${task.role ?? ""} · ${state.label} · ${status}`,
       },
       style: {
         borderColor: safeHex(color?.hex),
@@ -929,12 +1444,13 @@ function graphFromComputeGraph(graph: Record<string, unknown> | undefined, nodes
     const id = stringValue(node.id) || `compute-${index}`;
     const status = String(node.status ?? "unknown");
     const kind = String(node.kind ?? "node");
+    const state = operatorStateForStatus(status);
     return {
       id,
       className: clsx("task-node", statusTone(status)),
       position: { x: (index % 4) * 285, y: Math.floor(index / 4) * 150 },
       data: {
-        label: `${node.label || id}\n${kind} · ${status}`,
+        label: `${node.label || id}\n${kind} · ${state.label} · ${status}`,
       },
       style: {
         borderColor: statusColorVar(status),
@@ -993,7 +1509,7 @@ function ComputeGraphDetails({ snapshot }: { snapshot: GoalSnapshot }) {
   const nodes = computeGraphNodes(graph);
   const openRows = nodes.filter((node) => computeNodeMatchesGraphFilter(node, "attention")).slice(0, 8);
   if (!nodes.length) {
-    return <EmptyState title="No compute graph nodes" detail="Workflow compute graph projections will appear here when available." />;
+    return <EmptyState title="Compute graph pending" detail="Waiting for workflow activity." />;
   }
   return (
     <div className="compute-details">
@@ -1002,7 +1518,7 @@ function ComputeGraphDetails({ snapshot }: { snapshot: GoalSnapshot }) {
         <InspectButton title="Compute graph projection" payload={graph} buttonLabel="Inspect graph" />
       </div>
       <SimpleTable
-        empty="No waiting or active compute nodes."
+        empty="Active nodes pending."
         headers={["Node", "Kind", "Status", "Wait / Continuation"]}
         rows={(openRows.length ? openRows : nodes.slice(0, 8)).map((node) => [
           stringValue(node.label) || stringValue(node.id) || "node",
@@ -1079,6 +1595,129 @@ function TaskSummary({ snapshot, counts }: { snapshot: GoalSnapshot; counts: Map
   );
 }
 
+function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false }: { snapshot: GoalSnapshot; counts: Map<string, number>; taskCount: number; compact?: boolean }) {
+  const highlights = evidenceHighlights(snapshot, counts, taskCount);
+  const nextAction = nextActionSummary(counts, taskCount, snapshot);
+  return (
+    <div className={clsx("evidence-next-panel", compact && "compact")}>
+      <section className="evidence-card">
+        <div className="section-heading">
+          <h3>Evidence</h3>
+          <InspectButton
+            title="Evidence detail"
+            payload={{
+              status_counts: Object.fromEntries(counts),
+              workflow_progress: workflowProgress(snapshot) ?? null,
+              compute_graph: workflowComputeGraph(snapshot) ?? null,
+            }}
+            buttonLabel="Inspect evidence"
+          />
+        </div>
+        <ul className="evidence-list">
+          {highlights.map((item) => (
+            <li key={item.label}>
+              <span>{item.label}</span>
+              <strong className={clsx("operator-state-pill", stateTone(item.state))}>{item.value}</strong>
+            </li>
+          ))}
+        </ul>
+      </section>
+      <section className="evidence-card next-action-card">
+        <div className="section-heading">
+          <h3>Next action</h3>
+          <span className={clsx("operator-state-pill", stateTone(nextAction.state))}>{nextAction.stateLabel}</span>
+        </div>
+        <strong>{nextAction.title}</strong>
+        <p>{nextAction.detail}</p>
+      </section>
+    </div>
+  );
+}
+
+function evidenceHighlights(snapshot: GoalSnapshot, counts: Map<string, number>, taskCount: number): Array<{ label: string; value: string; state: OperatorStateKey }> {
+  const computeGraph = workflowComputeGraph(snapshot);
+  const progress = workflowProgress(snapshot);
+  const nodeCount = Array.isArray(computeGraph?.nodes) ? computeGraph.nodes.length : 0;
+  const openThunks = Number(computeGraph?.open_thunks ?? 0) || countForStatusToken(counts, "waiting-input");
+  const reviewing = countForStatusToken(counts, "needs-validation");
+  const satisfied = countForStatusToken(counts, "done");
+  const running = countForStatusToken(counts, "running") + countForStatusToken(counts, "runnable");
+  const rounds = Number(progress?.open_mechanism_rounds ?? 0);
+  return [
+    { label: "Task states", value: `${taskCount} visible`, state: running > 0 ? "running" : "waiting" },
+    { label: "Satisfied evidence", value: `${satisfied} accepted`, state: "satisfied" },
+    { label: "Review evidence", value: `${reviewing} checks`, state: reviewing > 0 ? "reviewing" : "satisfied" },
+    { label: "Wait evidence", value: `${openThunks} continuations`, state: openThunks > 0 ? "waiting" : "satisfied" },
+    { label: "Compute graph", value: `${nodeCount} nodes`, state: nodeCount > 0 ? "running" : "waiting" },
+    { label: "Mechanisms", value: `${rounds} open`, state: rounds > 0 ? "action-needed" : "satisfied" },
+  ];
+}
+
+function nextActionSummary(counts: Map<string, number>, taskCount: number, snapshot: GoalSnapshot): { title: string; detail: string; state: OperatorStateKey; stateLabel: string } {
+  const failed = countForStatusToken(counts, "failed");
+  const blocked = countForStatusToken(counts, "blocked");
+  const approvals = countForStatusToken(counts, "waiting-approval");
+  const continuations = countForStatusToken(counts, "waiting-input") || Number(workflowComputeGraph(snapshot)?.open_thunks ?? 0);
+  const reviewing = countForStatusToken(counts, "needs-validation");
+  const running = countForStatusToken(counts, "running");
+  const runnable = countForStatusToken(counts, "runnable");
+  const satisfied = countForStatusToken(counts, "done");
+  if (failed + blocked + approvals > 0) {
+    return {
+      title: "Review action-needed work",
+      detail: `${failed} failed · ${blocked} blocked · ${approvals} approvals`,
+      state: "action-needed",
+      stateLabel: "Action needed",
+    };
+  }
+  if (continuations > 0) {
+    return {
+      title: "Resume waiting continuation",
+      detail: `${continuations} waiting continuations can accept operator input.`,
+      state: "waiting",
+      stateLabel: "Waiting",
+    };
+  }
+  if (reviewing > 0) {
+    return {
+      title: "Review evidence",
+      detail: `${reviewing} validation checks are ready for satisfaction review.`,
+      state: "reviewing",
+      stateLabel: "Reviewing",
+    };
+  }
+  if (running > 0) {
+    return {
+      title: "Monitor running work",
+      detail: `${running} active tasks are producing evidence.`,
+      state: "running",
+      stateLabel: "Running",
+    };
+  }
+  if (runnable > 0) {
+    return {
+      title: "Dispatch runnable frontier",
+      detail: `${runnable} tasks are ready for the next runner lane.`,
+      state: "running",
+      stateLabel: "Running",
+    };
+  }
+  if (taskCount > 0 && satisfied >= taskCount) {
+    return {
+      title: "Confirm satisfaction",
+      detail: "Accepted evidence covers the visible task graph.",
+      state: "satisfied",
+      stateLabel: "Satisfied",
+    };
+  }
+  return {
+    title: "Refresh projection",
+    detail: "Goal state is syncing from the coordinator.",
+    state: "waiting",
+    stateLabel: "Waiting",
+  };
+}
+
 function GraphStatusPanel({ counts, taskCount }: { counts: Map<string, number>; taskCount: number }) {
   const failed = countForStatusToken(counts, "failed");
   const blocked = countForStatusToken(counts, "blocked");
@@ -1090,9 +1729,10 @@ function GraphStatusPanel({ counts, taskCount }: { counts: Map<string, number>; 
   return (
     <div className="graph-status-panel" aria-label="Task graph status legend">
       <div className={clsx("graph-attention", attention > 0 ? "needs-attention" : "stable")}>
-        <strong>{attention > 0 ? `${attention} need attention` : "No urgent task states"}</strong>
+        <strong>{attention > 0 ? `${attention} need attention` : "All tasks steady"}</strong>
         <span>{taskCount} tasks · {running} running · {done} done</span>
       </div>
+      <OperatorStateStrip counts={counts} />
       <div className="status-legend" aria-label="Graph legend">
         {statusLegend.map((item) => (
           <span key={item.token} className="legend-item">
@@ -1104,6 +1744,22 @@ function GraphStatusPanel({ counts, taskCount }: { counts: Map<string, number>; 
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+function OperatorStateStrip({ counts }: { counts: Map<string, number> }) {
+  return (
+    <div className="operator-state-row" aria-label="Operator state labels">
+      {operatorStateDefinitions.map((definition) => {
+        const count = definition.statuses.reduce((sum, status) => sum + countForStatusToken(counts, status), 0);
+        return (
+          <span key={definition.key} className={clsx("operator-state-chip", stateTone(definition.key), count > 0 && "active")}>
+            <strong>{definition.label}</strong>
+            <small>{count} · {definition.detail}</small>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -1184,7 +1840,7 @@ function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: Go
   });
 
   if (!rows.length) {
-    return <EmptyState title="No open continuations" detail="Delayed compute thunks that need operator input will appear here." />;
+    return <EmptyState title="Continuations clear" detail="Waiting tasks will appear here." />;
   }
 
   return (
@@ -1284,7 +1940,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
           <h3>Compiler controls</h3>
           <span className="muted-small">Goal ranking, steering, flow control, thunks, and mechanism rounds</span>
         </div>
-        {result ? <InspectButton title="Last control action" payload={result} buttonLabel="Inspect result" /> : <span className="status-pill muted">No action yet</span>}
+        {result ? <InspectButton title="Last control action" payload={result} buttonLabel="Inspect result" /> : <span className="status-pill muted">Action result pending</span>}
       </div>
       <div className="control-grid">
         <section className="control-card">
@@ -1407,11 +2063,11 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             </label>
             <label>
               Branch group
-              <input value={branchGroupId} onChange={(event) => setBranchGroupId(event.target.value)} disabled={flowMode !== "select_branch"} placeholder="branch group uuid" />
+              <input value={branchGroupId} onChange={(event) => setBranchGroupId(event.target.value)} disabled={flowMode !== "select_branch"} placeholder="branch group id" />
             </label>
             <label>
               Selected task
-              <input value={selectedTaskId} onChange={(event) => setSelectedTaskId(event.target.value)} disabled={flowMode !== "select_branch"} placeholder="candidate task uuid" />
+              <input value={selectedTaskId} onChange={(event) => setSelectedTaskId(event.target.value)} disabled={flowMode !== "select_branch"} placeholder="candidate task id" />
             </label>
             <label>
               Reason
@@ -1727,6 +2383,17 @@ function workflowProgress(snapshot: GoalSnapshot): Record<string, unknown> | und
   return undefined;
 }
 
+function operatorStateForStatus(status: unknown): OperatorStateDefinition {
+  const token = statusToken(status);
+  return operatorStateDefinitions.find((definition) => definition.statuses.includes(token))
+    ?? operatorStateDefinitions.find((definition) => definition.key === "waiting")
+    ?? { key: "waiting", label: "Waiting", detail: "projection pending", statuses: ["unknown"] };
+}
+
+function stateTone(state: OperatorStateKey): string {
+  return `state-${state}`;
+}
+
 function statusTone(status: unknown): string {
   const normalized = statusToken(status);
   return `status-${normalized}`;
@@ -2006,7 +2673,7 @@ function tokenList(value: string): string[] {
 
 function PreviewStatus({ value }: { value: unknown }) {
   if (!value) {
-    return <span className="status-pill muted">No preview</span>;
+    return <span className="status-pill muted">Preview pending</span>;
   }
   return (
     <span className={clsx("status-pill", previewReady(value) ? "status-done" : "status-blocked")}>
@@ -2031,7 +2698,7 @@ function previewRecord(value: unknown): JsonRecord | null {
 function MemoryDiffTable({ value }: { value: unknown }) {
   const record = previewRecord(value);
   if (!record) {
-    return <EmptyState title="No replacement preview" detail="Preview a memory edit." />;
+    return <EmptyState title="Preview memory edit" detail="Choose replacement details." />;
   }
   const diffs = rowsFrom(record.diffs);
   const missingKeys = arrayStrings(record.missing_keys);
@@ -2042,7 +2709,7 @@ function MemoryDiffTable({ value }: { value: unknown }) {
         {missingKeys.length > 0 && <span className="status-pill status-blocked">Missing {missingKeys.join(", ")}</span>}
       </div>
       <SimpleTable
-        empty="No diff rows."
+        empty="Diff rows pending."
         headers={["Key", "Before", "After"]}
         rows={diffs.map((row) => [
           String(row.key ?? ""),
@@ -2059,7 +2726,7 @@ function MemoryDiffTable({ value }: { value: unknown }) {
 
 function MemoryEventsTable({ selectedGoalId, value, loading }: { selectedGoalId: string; value: unknown; loading: boolean }) {
   if (!selectedGoalId) {
-    return <EmptyState title="No goal selected" detail="Choose a goal to inspect memory events." />;
+    return <EmptyState title="Select a goal" detail="Memory events are scoped to the current goal." />;
   }
   if (loading && !value) {
     return <EmptyState title="Loading memory events" detail="Fetching memory event history." />;
@@ -2067,7 +2734,7 @@ function MemoryEventsTable({ selectedGoalId, value, loading }: { selectedGoalId:
   const rows = rowsFrom(at(value, ["events"]) ?? value).slice(-10).reverse();
   return (
     <SimpleTable
-      empty="No memory events projected."
+      empty="Memory events pending."
       headers={["Action", "Key", "Scope", "Summary"]}
       rows={rows.map((row) => [
         String(row.action ?? ""),
@@ -2103,7 +2770,7 @@ function PlansView() {
           <span className="muted-small">Planning-mode records before GoalSpec submission</span>
         </div>
         <SimpleTable
-          empty="No plans projected."
+          empty="Plans pending."
           headers={["Plan", "Status", "Mode", "Questions"]}
           rows={rows.map((row) => [
             String(row.title ?? row.plan_id ?? row.id ?? ""),
@@ -2119,7 +2786,7 @@ function PlansView() {
           <GitBranch size={18} />
         </div>
         <p className="body-copy">
-          Continuation work belongs to durable plans, goals, events, or human queue items. Repo markdown follow-ups are kept for developer doc gardening, not as the product queue.
+          Open planning continuations and follow-up work.
         </p>
         <InspectButton title="Plan projection" payload={planQuery.data ?? {}} buttonLabel="Inspect plans" />
       </div>
@@ -2147,7 +2814,7 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
       <div className="panel span-2">
         <div className="section-heading">
           <h2>Approvals</h2>
-          <span className="muted-small">Human gates remain explicit</span>
+          <span className="muted-small">Human decisions</span>
         </div>
         <ApprovalList
           rows={approvalRows}
@@ -2162,7 +2829,7 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
           <MessageSquareText size={18} />
         </div>
         <ul className="compact-list">
-          {threadRows.length ? threadRows.map((row) => <li key={String(row.thread_key ?? row.key ?? JSON.stringify(row))}><strong>{String(row.thread_key ?? row.key ?? "thread")}</strong><span>{String(row.entries ?? row.reports ?? "")} entries</span></li>) : <li>No local threads.</li>}
+          {threadRows.length ? threadRows.map((row) => <li key={String(row.thread_key ?? row.key ?? JSON.stringify(row))}><strong>{String(row.thread_key ?? row.key ?? "thread")}</strong><span>{String(row.entries ?? row.reports ?? "")} entries</span></li>) : <li>Threads pending.</li>}
         </ul>
       </div>
     </section>
@@ -2201,7 +2868,7 @@ function ApprovalList({
             </button>
           </div>
         );
-      }) : <EmptyState title="No approvals" detail="Blocked or risky work will appear here." />}
+      }) : <EmptyState title="Approvals clear" detail="Blocked or risky work appears here." />}
     </div>
   );
 }
@@ -2214,12 +2881,12 @@ function RunnersView({ overview }: { overview?: Overview }) {
       <div className="section-heading">
         <div>
           <h2>Runner fleet</h2>
-          <span className="muted-small">Persistent and ephemeral capacity reported through the same registry</span>
+          <span className="muted-small">Capacity and endpoints</span>
         </div>
         <Server size={18} />
       </div>
       <SimpleTable
-        empty="No runners registered."
+        empty="Runners pending."
         headers={["Runner", "Node", "Status", "Capacity", "Endpoint"]}
         rows={tableRows}
       />
@@ -2273,7 +2940,7 @@ function numberValue(value: unknown): number | null {
 function ResultList({ value }: { value: unknown }) {
   const rows = rowsFrom(at(value, ["data"]) ?? value);
   if (!value) {
-    return <EmptyState title="No memory result yet" detail="Search, build context, or save a note." />;
+    return <EmptyState title="Memory results pending" detail="Search, build context, or save a note." />;
   }
   if (rows.length) {
     return (
@@ -2310,12 +2977,17 @@ function SimpleTable({ headers, rows, empty }: { headers: string[]; rows: string
   );
 }
 
-function EmptyState({ title, detail }: { title: string; detail: string }) {
+function EmptyState({ title, detail, actionLabel, onAction }: { title: string; detail: string; actionLabel?: string; onAction?: () => void }) {
   return (
     <div className="empty-state">
       <CircleAlert size={18} />
       <strong>{title}</strong>
       <span>{detail}</span>
+      {actionLabel && onAction && (
+        <button type="button" className="secondary-button" onClick={onAction}>
+          {actionLabel}
+        </button>
+      )}
     </div>
   );
 }

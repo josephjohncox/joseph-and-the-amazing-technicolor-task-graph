@@ -204,12 +204,10 @@ struct KubernetesProvisionerEvidenceRefs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "coat_sandbox_runner=info,tower_http=info".to_string()),
-        )
-        .init();
+    coat_observability::init_tracing(
+        "coat-sandbox-runner",
+        "coat_sandbox_runner=info,tower_http=info",
+    );
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9083".to_string());
     let workspace_root = std::env::var("SANDBOX_WORKSPACE_ROOT")

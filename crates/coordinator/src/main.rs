@@ -23,6 +23,7 @@ use restate_sdk::{prelude::*, serde::Json};
 
 const STATE_KEY: &str = "state";
 const MAX_FRONTIER_ROUNDS: usize = 32;
+const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
 
 #[restate_sdk::workflow]
 pub trait GoalWorkflow {
@@ -93,9 +94,7 @@ impl Default for GoalWorkflowImpl {
             client: reqwest::Client::new(),
             notifier_url: std::env::var("COAT_NOTIFIER_URL")
                 .unwrap_or_else(|_| "http://localhost:9086".to_string()),
-            goal_store_url: std::env::var("COAT_GOAL_STORE_URL")
-                .ok()
-                .filter(|url| !url.trim().is_empty()),
+            goal_store_url: configured_goal_store_url(std::env::var("COAT_GOAL_STORE_URL").ok()),
             goal_store_required: env_bool("COAT_GOAL_STORE_REQUIRED", false),
         }
     }
@@ -1119,6 +1118,20 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn configured_goal_store_url(raw: Option<String>) -> Option<String> {
+    match raw.map(|value| value.trim().to_string()) {
+        Some(value)
+            if value.is_empty()
+                || value.eq_ignore_ascii_case("disabled")
+                || value.eq_ignore_ascii_case("none") =>
+        {
+            None
+        }
+        Some(value) => Some(value),
+        None => Some(DEFAULT_GOAL_STORE_URL.to_string()),
+    }
+}
+
 fn restate_identity_keys() -> Vec<String> {
     let mut keys = Vec::new();
     for name in ["RESTATE_IDENTITY_KEYS", "RESTATE_SIGNING_PUBLIC_KEY"] {
@@ -1143,6 +1156,23 @@ mod tests {
         ContinuationBoundary, ContinuationRef, ContinuationResumeAction, DelayedComputeThunkKind,
         WaitRef, WaitRefKind,
     };
+
+    #[test]
+    fn goal_store_projection_defaults_to_local_read_model() {
+        assert_eq!(
+            configured_goal_store_url(None).as_deref(),
+            Some(DEFAULT_GOAL_STORE_URL)
+        );
+        assert_eq!(
+            configured_goal_store_url(Some(" http://goal-store:9088 ".to_string())).as_deref(),
+            Some("http://goal-store:9088")
+        );
+        assert_eq!(
+            configured_goal_store_url(Some("disabled".to_string())),
+            None
+        );
+        assert_eq!(configured_goal_store_url(Some(String::new())), None);
+    }
 
     #[test]
     fn transition_observation_captures_approval_pause() {
@@ -1249,12 +1279,7 @@ mod tests {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            std::env::var("RUST_LOG")
-                .unwrap_or_else(|_| "coat_coordinator=info,restate_sdk=info".to_string()),
-        )
-        .init();
+    coat_observability::init_tracing("coat-coordinator", "coat_coordinator=info,restate_sdk=info");
 
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9080".to_string());
     let mut endpoint = Endpoint::builder()

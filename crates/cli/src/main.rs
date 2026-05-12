@@ -10,6 +10,9 @@
 //! - `docs/operations/local-dev.md` for local smoke workflows.
 //! - `docs/operations/goal-authoring.md` for structured goal authoring.
 
+mod scenario;
+mod tui;
+
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -43,6 +46,8 @@ use coat_domain::{
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use uuid::Uuid;
 
+use scenario::ScenarioCommand;
+
 const COAT_PROJECT_MARKER: &str = ".coat/project.json";
 const DEFAULT_USER_CONFIG: &str = "~/.coat/config.json";
 const DEFAULT_LOCAL_PROVIDER_ENV: &str = "infra/compose/local-providers.env";
@@ -64,6 +69,7 @@ const DEFAULT_NOTIFIER_URL: &str = "http://localhost:9086";
 const DEFAULT_MEMORY_GATEWAY_URL: &str = "http://localhost:9087";
 const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
 const DEFAULT_EVENT_GATEWAY_URL: &str = "http://localhost:9089";
+const DEFAULT_CONTROL_GATEWAY_URL: &str = "http://localhost:9090";
 const DEFAULT_CONTROL_MCP_URL: &str = "http://localhost:9090/mcp";
 const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
 const DEFAULT_PROJECT_MODEL_INDEX: &str = ".coat/model-index.json";
@@ -95,6 +101,8 @@ struct Cli {
 enum Commands {
     #[command(about = "Open guided setup and human-queue workflows")]
     Guide(GuideArgs),
+    #[command(about = "Open the terminal dashboard and control-gateway chat")]
+    Tui(TuiArgs),
     #[command(about = "Plan, inspect, and compile durable planning artifacts")]
     Plan(PlanCommand),
     #[command(about = "Submit, steer, inspect, branch, and cancel durable goals")]
@@ -113,6 +121,8 @@ enum Commands {
     Memory(MemoryCommand),
     #[command(about = "Inspect goal-store projections and audit records")]
     Store(StoreCommand),
+    #[command(about = "Run deterministic durable task graph E2E scenarios")]
+    Scenario(ScenarioCommand),
     #[command(about = "Plan, create, snapshot, and clean sandbox workspaces")]
     Sandbox(SandboxCommand),
     #[command(about = "Plan, bump, and cut binary or chart releases")]
@@ -126,6 +136,24 @@ enum Commands {
 struct GuideArgs {
     #[arg(long)]
     print: bool,
+}
+
+#[derive(Debug, Args)]
+struct TuiArgs {
+    #[arg(
+        long,
+        env = "COAT_CONTROL_GATEWAY_URL",
+        default_value = "http://localhost:9090"
+    )]
+    control_gateway_url: String,
+    #[arg(long, env = "COAT_CONTROL_GATEWAY_TOKEN")]
+    token: Option<String>,
+    #[arg(long)]
+    goal_id: Option<String>,
+    #[arg(long, default_value = "operator:default")]
+    session_id: String,
+    #[arg(long, default_value_t = 2500)]
+    refresh_ms: u64,
 }
 
 #[derive(Debug, Args)]
@@ -1621,7 +1649,7 @@ impl Default for ChatClientArgs {
 #[derive(Debug, Args)]
 #[command(
     about = "Run and inspect the local Docker Compose stack",
-    after_help = "Examples:\n  coat deploy local preflight --allow-stub-runners\n  coat deploy local up --allow-stub-runners\n  coat deploy local config --env-file infra/compose/local-providers.env\n  coat deploy local down"
+    after_help = "Examples:\n  coat deploy local preflight --allow-stub-runners\n  coat deploy local up --allow-stub-runners\n  coat deploy local logs --follow coordinator runner-registry control-web\n  coat deploy local config --env-file infra/compose/local-providers.env\n  coat deploy local down"
 )]
 struct ComposeCommand {
     #[command(subcommand)]
@@ -1636,6 +1664,8 @@ enum ComposeSubcommand {
     Up(ComposeUpArgs),
     #[command(about = "Print the resolved docker compose config")]
     Config(ComposeConfigArgs),
+    #[command(about = "Show local Compose service logs with the resolved COAT config")]
+    Logs(ComposeLogsArgs),
     #[command(about = "Stop the local Compose stack")]
     Down(ComposeDownArgs),
 }
@@ -1725,6 +1755,27 @@ struct ComposeConfigArgs {
     profile: Vec<String>,
     #[arg(long)]
     allow_placeholder_env: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+struct ComposeLogsArgs {
+    #[arg(long)]
+    restate_cloud: bool,
+    #[arg(
+        long = "restate-cloud-env-file",
+        default_value = "infra/compose/restate-cloud.env"
+    )]
+    restate_cloud_env_file: PathBuf,
+    #[arg(long = "env-file")]
+    env_file: Vec<PathBuf>,
+    #[arg(long)]
+    profile: Vec<String>,
+    #[arg(long, short = 'f')]
+    follow: bool,
+    #[arg(long, default_value = "200")]
+    tail: String,
+    #[arg(value_name = "SERVICE")]
+    services: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2251,6 +2302,7 @@ async fn main() -> anyhow::Result<()> {
     warn_if_project_not_initialized(&command)?;
     match command {
         Commands::Guide(args) => guide(args).await,
+        Commands::Tui(args) => tui(args).await,
         Commands::Init(args) => init(args),
         Commands::Plan(args) => plan(args).await,
         Commands::Goal(args) => goal(args).await,
@@ -2261,10 +2313,23 @@ async fn main() -> anyhow::Result<()> {
         Commands::Tool(args) => tool(args).await,
         Commands::Memory(args) => memory(args).await,
         Commands::Store(args) => store(args).await,
+        Commands::Scenario(args) => scenario::run(args).await,
         Commands::Sandbox(args) => sandbox(args).await,
         Commands::Release(args) => release(args),
         Commands::Setup(args) => setup(args).await,
     }
+}
+
+async fn tui(args: TuiArgs) -> anyhow::Result<()> {
+    let control_gateway_url = effective_control_gateway_url(&args.control_gateway_url)?;
+    tui::run(tui::TuiConfig {
+        control_gateway_url,
+        token: args.token,
+        session_id: args.session_id,
+        goal_id: args.goal_id,
+        refresh: Duration::from_millis(args.refresh_ms.max(250)),
+    })
+    .await
 }
 
 async fn guide(args: GuideArgs) -> anyhow::Result<()> {
@@ -2379,12 +2444,13 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
 fn print_command_map() {
     println!("COAT command map");
     println!("  coat guide                         guided setup and human-queue picker");
+    println!("  coat tui                           terminal dashboard and gateway chat");
     println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
     println!(
         "  coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>"
     );
     println!("  coat human <approve|resume-thunk|notify>");
-    println!("  coat deploy local <preflight|up|config|down>");
+    println!("  coat deploy local <preflight|up|config|logs|down>");
     println!("  coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>");
     println!("  coat deploy chart <lint|template|upgrade|rollback|package>");
     println!("  coat deploy restate <cloud-env|tunnel-docker|register-cloud>");
@@ -2393,6 +2459,7 @@ fn print_command_map() {
     println!("  coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>");
     println!("  coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>");
     println!("  coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>");
+    println!("  coat scenario <list|run|report>");
     println!("  coat setup <login|sso|model-index|config|local-auth|chat-client>");
 }
 
@@ -4080,6 +4147,7 @@ enum ProjectInitAction {
 fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
     match command {
         Commands::Init(_) | Commands::Setup(_) | Commands::Guide(_) => ProjectInitCheck::None,
+        Commands::Tui(_) => ProjectInitCheck::WarnOnly,
         Commands::Goal(command) => match &command.command {
             GoalSubcommand::Draft(_) | GoalSubcommand::Lint(_) | GoalSubcommand::ReviewChecks => {
                 ProjectInitCheck::WarnOnly
@@ -4118,6 +4186,12 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
             DeploySubcommand::Cluster(_)
             | DeploySubcommand::Chart(_)
             | DeploySubcommand::Restate(_) => ProjectInitCheck::Durable,
+        },
+        Commands::Scenario(command) => match &command.command {
+            scenario::ScenarioSubcommand::Run(_) => ProjectInitCheck::Durable,
+            scenario::ScenarioSubcommand::List(_) | scenario::ScenarioSubcommand::Report(_) => {
+                ProjectInitCheck::WarnOnly
+            }
         },
         Commands::Human(_)
         | Commands::Event(_)
@@ -4641,6 +4715,24 @@ fn effective_control_mcp_url(value: &str) -> anyhow::Result<String> {
         value,
         DEFAULT_CONTROL_MCP_URL,
         config.service_endpoints.control_mcp_url,
+    ))
+}
+
+fn effective_control_gateway_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_CONTROL_GATEWAY_URL {
+        return Ok(value.trim_end_matches('/').to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    let configured = config.service_endpoints.control_mcp_url.map(|value| {
+        value
+            .trim_end_matches("/mcp")
+            .trim_end_matches('/')
+            .to_string()
+    });
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_CONTROL_GATEWAY_URL,
+        configured,
     ))
 }
 
@@ -8919,6 +9011,13 @@ fn compose(args: ComposeCommand) -> anyhow::Result<()> {
                 "run docker compose config",
             )
         }
+        ComposeSubcommand::Logs(mut args) => {
+            args.env_file = effective_compose_env_files(args.env_file)?;
+            args.profile = effective_compose_profiles(args.profile)?;
+            args.restate_cloud_env_file =
+                effective_restate_cloud_env_file(&args.restate_cloud_env_file)?;
+            run_docker_compose(compose_logs_command_args(&args), "show docker compose logs")
+        }
         ComposeSubcommand::Down(mut args) => {
             args.env_file = effective_compose_env_files(args.env_file)?;
             run_docker_compose(compose_down_command_args(&args), "run docker compose down")
@@ -9742,6 +9841,23 @@ fn compose_config_command_args(args: &ComposeConfigArgs) -> Vec<String> {
         &args.profile,
     );
     command_args.push("config".to_string());
+    command_args
+}
+
+fn compose_logs_command_args(args: &ComposeLogsArgs) -> Vec<String> {
+    let mut command_args = compose_base_args(
+        args.restate_cloud,
+        &args.restate_cloud_env_file,
+        &args.env_file,
+        &args.profile,
+    );
+    command_args.push("logs".to_string());
+    command_args.push("--tail".to_string());
+    command_args.push(args.tail.clone());
+    if args.follow {
+        command_args.push("--follow".to_string());
+    }
+    command_args.extend(args.services.iter().cloned());
     command_args
 }
 
@@ -10731,30 +10847,31 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs,
-        DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs,
-        GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand, HelmTemplateArgs,
-        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec, LocalAuthAction,
-        LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand, ProjectInitAction,
-        ProjectInitCheck, SetupSubcommand, ToolSubcommand, apply_capacity_plan_policy_from_config,
-        apply_config_profile, apply_model_param_values, bump_release_versions,
-        chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
-        compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
-        compose_up_command_args, control_chat_default_choice, default_local_chat_completions_url,
-        default_local_model_provider_index, default_model_param_preset_index,
-        default_model_preset_index, endpoint_discovery_candidates, endpoint_from_config,
-        ensure_json_goal_id, executor_job_manifest, extract_follow_ups, helm_template_args,
-        helm_upgrade_args, kubectl_apply_args, kubectl_ephemeral_jobs_apply_args,
-        kubectl_rollout_status_args, latest_goal_id_from_value, live_model_presets,
-        load_fresh_model_index_from_paths, local_auth_action_command, local_auth_profile_defaults,
-        local_model_provider_preset, local_model_provider_preset_labels, login_actions_from_args,
-        merge_coat_config, model_index_cache_is_fresh, model_param_preset,
-        model_param_preset_labels, model_param_values_from_env, model_param_values_from_preset,
-        model_preset, model_preset_labels, model_presets_with_configured,
-        models_dev_embedding_dimensions, models_dev_embedding_presets, models_dev_provider_presets,
-        openai_embeddings_url, parse_env_file_content, preferred_operator_chat_model,
-        project_init_action, read_json_file, release_plan_json, replace_env_line,
-        replace_toml_section_value, replace_yaml_root_value, restate_cloud_env_placeholders,
+        CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeLogsArgs,
+        ComposeUpArgs, DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs,
+        ExecutorJobRenderArgs, GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand,
+        HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec,
+        LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
+        ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
+        apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
+        bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
+        compose_config_command_args, compose_logs_command_args, compose_model_preflight_findings,
+        compose_runner_modes, compose_up_command_args, control_chat_default_choice,
+        default_local_chat_completions_url, default_local_model_provider_index,
+        default_model_param_preset_index, default_model_preset_index,
+        endpoint_discovery_candidates, endpoint_from_config, ensure_json_goal_id,
+        executor_job_manifest, extract_follow_ups, helm_template_args, helm_upgrade_args,
+        kubectl_apply_args, kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args,
+        latest_goal_id_from_value, live_model_presets, load_fresh_model_index_from_paths,
+        local_auth_action_command, local_auth_profile_defaults, local_model_provider_preset,
+        local_model_provider_preset_labels, login_actions_from_args, merge_coat_config,
+        model_index_cache_is_fresh, model_param_preset, model_param_preset_labels,
+        model_param_values_from_env, model_param_values_from_preset, model_preset,
+        model_preset_labels, model_presets_with_configured, models_dev_embedding_dimensions,
+        models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
+        parse_env_file_content, preferred_operator_chat_model, project_init_action, read_json_file,
+        release_plan_json, replace_env_line, replace_toml_section_value, replace_yaml_root_value,
+        restate_cloud_env_placeholders,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
@@ -10803,8 +10920,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         for expected in [
-            "guide", "plan", "goal", "human", "deploy", "event", "runner", "tool", "memory",
-            "store", "sandbox", "release", "setup", "init",
+            "guide", "tui", "plan", "goal", "human", "deploy", "event", "runner", "tool", "memory",
+            "store", "scenario", "sandbox", "release", "setup", "init",
         ] {
             assert!(
                 visible.contains(&expected.to_string()),
@@ -10952,6 +11069,7 @@ mod tests {
         for expected in [
             "Check initialization, Docker, env files, runner modes, and model setup",
             "Run docker compose up after preflight unless --skip-preflight is set",
+            "Show local Compose service logs with the resolved COAT config",
             "coat deploy local config --env-file infra/compose/local-providers.env",
         ] {
             assert!(
@@ -11149,6 +11267,17 @@ mod tests {
                 if matches!(plan.command, PlanSubcommand::FollowUps(_))
         ));
 
+        let tui = Cli::try_parse_from([
+            "coat",
+            "tui",
+            "--control-gateway-url",
+            "http://localhost:9090",
+            "--session-id",
+            "operator:default",
+        ])
+        .expect("parse tui");
+        assert!(matches!(tui.command, Some(Commands::Tui(_))));
+
         let login = Cli::try_parse_from([
             "coat",
             "setup",
@@ -11243,6 +11372,48 @@ mod tests {
         assert!(matches!(
             tool_call.command,
             Some(Commands::Tool(ref tool)) if matches!(tool.command, ToolSubcommand::Call(_))
+        ));
+    }
+
+    #[test]
+    fn scenario_cli_parses_list_run_and_report() {
+        let list = Cli::try_parse_from(["coat", "scenario", "list"]).expect("parse scenario list");
+        assert!(matches!(
+            list.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::List(_))
+        ));
+
+        let run = Cli::try_parse_from([
+            "coat",
+            "scenario",
+            "run",
+            "--file",
+            "scenarios/e2e/basic.json",
+            "--gateway-url",
+            "http://localhost:9090",
+            "--timeout",
+            "30s",
+        ])
+        .expect("parse scenario run");
+        assert!(matches!(
+            run.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::Run(_))
+        ));
+
+        let report = Cli::try_parse_from([
+            "coat",
+            "scenario",
+            "report",
+            "--run-dir",
+            "target/coat-scenarios/basic",
+        ])
+        .expect("parse scenario report");
+        assert!(matches!(
+            report.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::Report(_))
         ));
     }
 
@@ -12056,6 +12227,38 @@ mod tests {
                 "--profile",
                 "restate-cloud",
                 "config",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_logs_uses_resolved_stack_files_profiles_and_tail() {
+        let args = ComposeLogsArgs {
+            restate_cloud: false,
+            restate_cloud_env_file: PathBuf::from("infra/compose/restate-cloud.env"),
+            env_file: vec![PathBuf::from("infra/compose/local-providers.env")],
+            profile: vec!["db".to_string()],
+            follow: true,
+            tail: "300".to_string(),
+            services: vec!["coordinator".to_string(), "runner-registry".to_string()],
+        };
+
+        assert_eq!(
+            compose_logs_command_args(&args),
+            vec![
+                "compose",
+                "--env-file",
+                "infra/compose/local-providers.env",
+                "-f",
+                "infra/compose/docker-compose.yml",
+                "--profile",
+                "db",
+                "logs",
+                "--tail",
+                "300",
+                "--follow",
+                "coordinator",
+                "runner-registry",
             ]
         );
     }

@@ -1,0 +1,106 @@
+{
+  "id": "local_stub_stack",
+  "title": "Local stub stack",
+  "description": "Deterministic scenario fixture for backend scenario wiring with all provider-backed runners held in stub mode.",
+  "deterministic": true,
+  "determinism": {
+    "mode": "offline_fixture",
+    "clock_start": "2026-05-12T16:00:00Z",
+    "seed": 1201,
+    "live_provider_credentials_required": false
+  },
+  "services": {
+    "required": [
+      "coordinator",
+      "runner-registry",
+      "goal-store",
+      "event-gateway",
+      "memory-gateway",
+      "notifier",
+      "tool-registry",
+      "sandbox-runner",
+      "validator"
+    ],
+    "compose": "auto",
+    "live_provider_credentials_required": false
+  },
+  "goals": [
+    {
+      "id": "goal-local-stub-stack",
+      "title": "Local stub stack scenario",
+      "objective": "Prove scenario evidence can be generated without live Codex, Claude, model provider, or web-search credentials."
+    }
+  ],
+  "actions": [],
+  "expectations": {
+    "terminal_state": "completed",
+    "goal_status": "done",
+    "min_tasks": 1,
+    "min_compute_graph_nodes": 1,
+    "task_statuses": {
+      "done": 1
+    },
+    "task_purposes": {
+      "work": 1
+    },
+    "required_events": [
+      "goal_completed"
+    ],
+    "required_artifacts": [
+      "artifact://scenarios/local_stub_stack/stack-health.json"
+    ],
+    "required_ui_projection": [
+      "local-stub-stack"
+    ],
+    "required_transitions": [
+      "submitted",
+      "done"
+    ]
+  },
+  "timeout": "2m",
+  "fixtures": {
+    "projection": {
+      "goal_id": "goal-local-stub-stack",
+      "goal_status": "done",
+      "terminal_state": "completed",
+      "tasks": [
+        {
+          "id": "task-local-stub-stack",
+          "status": "done",
+          "purpose": "work"
+        }
+      ],
+      "events": [
+        {
+          "type": "goal_completed",
+          "detail": "local_stub_stack fixture goal_completed"
+        }
+      ],
+      "artifacts": [
+        {
+          "uri": "artifact://scenarios/local_stub_stack/stack-health.json",
+          "description": "Deterministic stub stack evidence fixture"
+        }
+      ],
+      "compute_graph_nodes": [
+        {
+          "id": "task-local-stub-stack",
+          "kind": "task"
+        }
+      ],
+      "runner_dispatches": [
+        {
+          "runner_id": "scenario-stub-runner",
+          "task_id": "task-local-stub-stack"
+        }
+      ],
+      "ui_projection": {
+        "summary": "local-stub-stack completed in offline fixture mode"
+      },
+      "transitions": [
+        "submitted",
+        "done"
+      ]
+    }
+  }
+}

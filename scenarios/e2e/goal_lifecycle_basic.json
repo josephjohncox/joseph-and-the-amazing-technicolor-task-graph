@@ -1,0 +1,272 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "goal_lifecycle_basic",
+  "title": "Goal lifecycle basic",
+  "description": "Submit one authored goal, dispatch one deterministic stub worker result, validate it, and project a completed goal without live provider credentials.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "clock_start": "2026-05-12T16:00:00Z",
+    "seed": 1101,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner",
+    "projection_mode": "fixture_replay"
+  },
+  "services": [
+    {
+      "name": "coordinator",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["goal_lifecycle_basic.result"]
+    },
+    {
+      "name": "runner_registry",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["runner.scenario-stub-runner"]
+    },
+    {
+      "name": "goal_store",
+      "mode": "jsonl_projection",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["goal_lifecycle_basic.projection"]
+    }
+  ],
+  "setup": {
+    "workspace": {
+      "mode": "ephemeral",
+      "requires_live_repo": false,
+      "write_policy": "scenario_tempdir_only"
+    },
+    "env": {
+      "COAT_ALLOW_LOCAL_STUB_FALLBACK": "true",
+      "COAT_SCENARIO_STUB_PROJECTIONS": "true",
+      "COAT_SCENARIO_ID": "goal_lifecycle_basic"
+    },
+    "fixtures": [
+      {
+        "id": "runner.scenario-stub-runner",
+        "kind": "runner_registration",
+        "description": "Single deterministic runner that returns authored AgentRunResult fixtures.",
+        "value": {
+          "runner_id": "scenario-stub-runner",
+          "capabilities": ["stub_results", "json_schema"],
+          "labels": {
+            "stub": "true",
+            "network.egress": "disabled"
+          }
+        }
+      }
+    ],
+    "stub_projections": [
+      {
+        "id": "goal_lifecycle_basic.projection",
+        "kind": "goal_store_snapshot",
+        "description": "Final projection emitted after validation accepts the stub worker result.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000101",
+          "status": "done",
+          "satisfaction_score": 0.96,
+          "task_counts": {
+            "done": 1,
+            "blocked": 0,
+            "failed": 0
+          }
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000000101",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000000101",
+        "title": "Basic lifecycle smoke goal",
+        "objective": "Prove a goal can move from submitted to done using deterministic stub worker evidence.",
+        "repo": null,
+        "root_budget": {
+          "max_tokens": 200000,
+          "remaining_tokens": 200000,
+          "max_runtime_seconds": 600,
+          "remaining_runtime_seconds": 600,
+          "max_tool_calls": 50,
+          "remaining_tool_calls": 50,
+          "max_child_tasks": 4,
+          "remaining_child_tasks": 4,
+          "max_patch_size": 50000
+        },
+        "done_criteria": {
+          "tests_pass": false,
+          "artifact_exists": true,
+          "validator_score_min": 0.85
+        },
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Produce basic lifecycle evidence",
+            "prompt": "Return deterministic lifecycle evidence for the basic scenario.",
+            "reason": "The scenario needs one work task that can be validated without provider credentials.",
+            "tags": ["scenario", "stub"]
+          }
+        ]
+      },
+      "projection_fixture": {
+        "initial_status": "running",
+        "terminal_status": "done",
+        "task_counts": {
+          "pending": 0,
+          "runnable": 1,
+          "running": 0,
+          "needs_validation": 0,
+          "waiting_approval": 0,
+          "waiting_input": 0,
+          "done": 0,
+          "blocked": 0,
+          "failed": 0,
+          "cancelled": 0
+        },
+        "notes": ["Coordinator owns state transitions; the runner returns only structured evidence."]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "description": "Submit the authored goal into coordinator state.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000101",
+      "expect": {
+        "goal_status": "running",
+        "runnable_tasks": 1
+      }
+    },
+    {
+      "id": "dispatch_stub_worker",
+      "type": "inject_worker_result",
+      "description": "Replay the deterministic stub AgentRunResult for the root work task.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000101",
+      "task_id": "00000000-0000-4000-8000-000000001101",
+      "after": ["submit_goal"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001101",
+        "status": "done",
+        "summary": "Basic lifecycle fixture completed.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "test_result",
+            "uri": "artifact://scenarios/goal_lifecycle_basic/root-result.json",
+            "description": "Deterministic root task result"
+          }
+        ],
+        "test_evidence": [
+          {
+            "command": "scenario replay goal_lifecycle_basic",
+            "passed": true,
+            "notes": ["fixture replay passed"]
+          }
+        ]
+      },
+      "expect": {
+        "task_status": "needs_validation"
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "description": "Apply validator checks and project the terminal goal-store snapshot.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000101",
+      "after": ["dispatch_stub_worker"],
+      "expect": {
+        "goal_status": "done",
+        "satisfaction_score": 0.96
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "pending": 0,
+      "runnable": 0,
+      "running": 0,
+      "needs_validation": 0,
+      "waiting_approval": 0,
+      "waiting_input": 0,
+      "done": 1,
+      "blocked": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "satisfaction": {
+      "min_score": 0.95,
+      "required": true,
+      "rationale": "The validator accepted the deterministic task evidence and the required root result artifact is present."
+    },
+    "required_events": ["goal_submitted", "task_completed", "validation_passed", "goal_satisfied"],
+    "forbidden_events": ["approval_requested", "task_blocked", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/goal_lifecycle_basic/root-result.json"]
+  },
+  "evaluator_checks": [
+    {
+      "id": "terminal_goal_done",
+      "kind": "goal_status",
+      "description": "The coordinator reaches a done terminal state.",
+      "assertion": "goal.status == done",
+      "expected": "done",
+      "required": true
+    },
+    {
+      "id": "no_live_credentials",
+      "kind": "determinism",
+      "description": "The scenario never asks for provider or MCP credentials.",
+      "assertion": "credential_requests == 0",
+      "expected": 0,
+      "required": true
+    },
+    {
+      "id": "artifact_manifest_present",
+      "kind": "artifact_policy",
+      "description": "The terminal projection includes the deterministic root task artifact.",
+      "assertion": "required_artifacts contains root-result.json",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "timeout": {
+    "scenario_timeout_seconds": 120,
+    "action_timeout_seconds": 30,
+    "idle_timeout_seconds": 15,
+    "on_timeout": "fail_scenario"
+  },
+  "artifact_policy": {
+    "mode": "inline_manifest",
+    "retention": "keep_on_failure",
+    "allow_object_storage": false,
+    "require_manifest": true,
+    "max_inline_bytes": 65536,
+    "required_artifacts": [
+      {
+        "kind": "test_result",
+        "uri": "artifact://scenarios/goal_lifecycle_basic/root-result.json",
+        "description": "Deterministic root task result",
+        "sha256": null
+      }
+    ],
+    "forbidden_artifacts": ["raw_provider_credentials", "ambient_home_tokens"]
+  }
+}

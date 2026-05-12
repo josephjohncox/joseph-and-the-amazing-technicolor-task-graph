@@ -123,6 +123,14 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Evidence 2026-05-11: operator continuations are now actionable in the SPA: open delayed-compute thunk nodes render reason, task ID, thunk ID, continuation ID, wait ref, response-summary input, and a guarded `resume_thunk` backend mutation; resumed/cancelled thunks are filtered out of the actionable queue.
 - Verify UI mutations use backend APIs only and never mutate goal-store projections directly.
 - Keep existing gateway contract smoke tests as the fast CI path.
+- Evidence 2026-05-12: CI and docs now define the deterministic PR-gated
+  scenario lane as a loop over `scenarios/e2e/*.json` with
+  `target/debug/coat scenario run --file <scenario> --output-dir
+  target/coat-scenarios`; failure artifacts include `target/coat-scenarios`
+  plus control-web Playwright traces, screenshots, `test-results`, and reports.
+  The scenario policy requires stubbed workers, fixed seeds, bounded clocks,
+  backend API mutations, and current-goal selector evidence across SPA and TUI
+  surfaces.
 - Add token-broker-backed multi-user MCP smoke only after a broker implementation is selected.
 
 ### Release And Deployment Proof
@@ -166,7 +174,9 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Kubernetes tests cover kind/k3d Job provision, execution, log/result collection, attestation, timeout, image-pull failure, runtime-class failure, scheduling failure, and artifact upload failure.
 - Memory and research tests cover env-gated Qdrant/Graphiti/Zep, offline replay fixtures, source snapshots, citation validation, and memory repair/replay after adapter outage.
 - Event and notification tests cover LocalStack SQS ingest, outbound notification, retry, ack, DLQ, event dedupe, and triggered-goal projection.
-- UI tests cover existing gateway smoke plus browser E2E for the full Compose operator workflows.
+- UI tests cover existing gateway smoke plus deterministic `coat scenario run`
+  browser E2E specs for full Compose operator workflows. The PR gate uploads
+  scenario evidence and Playwright traces or screenshots on failure.
 - Release tests cover binary unpack/checksum/operator-surface smoke and Helm template/install/rollout/rollback smoke after publication.
 
 ## Follow-Ups
@@ -182,7 +192,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
 - `EventOps`: run event-gateway projection proof against full Compose or cluster topology, reusing the local projection smoke as the fast path.
 - `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
-- `UIE2E`: upgrade gateway fixture smoke into full Compose browser workflows for goals, memory, approvals, runners, and events.
+- `UIE2E`: fill the PR-gated `scenarios/e2e` lane with full Compose browser workflows for goals, memory, approvals, runners, and events.
 - `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.
 - `ReleaseHardening`: run the first published binary and Helm chart smoke and record evidence.
 - `ReleaseHardening`: promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
@@ -202,5 +212,7 @@ Workers in these lanes use COAT durable child tasks. They must not use hidden na
 - Live provider verification records one profile result per enabled provider lane.
 - Staff-engineer remains gated until package behavior, isolated target repo install, tracker auth, and Claude Code auth distribution are verified.
 - Live worker outputs are captured as reviewer/validator fixtures with git checkpoint/worktree evidence where branch workflows are involved.
-- Browser E2E proves operator workflows against backend APIs rather than projection mutation.
+- Browser E2E proves operator workflows against backend APIs rather than
+  projection mutation, and failed PR-gated scenario runs expose
+  `target/coat-scenarios` plus Playwright traces/screenshots for review.
 - Published binary and Helm chart smoke evidence is recorded after the first release.

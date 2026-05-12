@@ -118,6 +118,10 @@ export function chatRun(runId: string): Promise<ChatRunTrace> {
   return api<ChatRunTrace>(`/api/chat/runs/${encodeURIComponent(runId)}`);
 }
 
+export function submitGoal(body: JsonRecord): Promise<unknown> {
+  return api("/api/goals/submit", jsonPost(body));
+}
+
 export function steer(goalId: string, body: JsonRecord): Promise<unknown> {
   return workflowAction(goalId, "steer", body);
 }

@@ -4,8 +4,13 @@ CARGO ?= cargo
 NPM ?= npm
 NODE ?= node
 BUF ?= buf
-COAT ?= coat
+COAT ?= $(COAT_BIN_DIR)/coat
 BUF_GENERATE_HOME ?= $(CURDIR)/target/buf-home
+SCENARIO_E2E_OUT ?= target/coat-scenarios
+SCENARIO_E2E_SPECS ?= scenarios/e2e/*.json
+SCENARIO_E2E_STACK ?= auto
+SCENARIO_E2E_SERVICES ?=
+SCENARIO_E2E_KEEP_STACK ?= 1
 
 COAT_BUILD_PROFILE ?= debug
 ifeq ($(COAT_BUILD_PROFILE),release)
@@ -37,6 +42,7 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 	ci ci-rust fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
 	proto-sdk-generate proto-sdk-check \
 	event-gateway-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
+	scenario-e2e scenario-e2e-stack scenario-e2e-ui \
 	release-binary-smoke release-helm-smoke \
 	ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
@@ -61,6 +67,27 @@ runner-smoke:
 
 compose-runner-smoke:
 	sh scripts/coat-compose-runner-smoke.sh
+
+scenario-e2e: coat-cli
+	COAT="$(COAT)" \
+	COAT_SCENARIO_E2E_OUT="$(SCENARIO_E2E_OUT)" \
+	COAT_SCENARIO_E2E_SPECS="$(SCENARIO_E2E_SPECS)" \
+	COAT_SCENARIO_E2E_STACK="$(SCENARIO_E2E_STACK)" \
+	COAT_SCENARIO_E2E_SERVICES="$(SCENARIO_E2E_SERVICES)" \
+	COAT_SCENARIO_E2E_KEEP_STACK="$(SCENARIO_E2E_KEEP_STACK)" \
+	sh scripts/coat-scenario-e2e.sh
+
+scenario-e2e-stack:
+	COAT="$(COAT)" \
+	COAT_SCENARIO_E2E_OUT="$(SCENARIO_E2E_OUT)" \
+	COAT_SCENARIO_E2E_STACK=always \
+	COAT_SCENARIO_E2E_STACK_ONLY=1 \
+	COAT_SCENARIO_E2E_SERVICES="$(SCENARIO_E2E_SERVICES)" \
+	COAT_SCENARIO_E2E_KEEP_STACK="$(SCENARIO_E2E_KEEP_STACK)" \
+	sh scripts/coat-scenario-e2e.sh
+
+scenario-e2e-ui: control-web-build
+	$(NPM) run --prefix ui/control-plane-web test:e2e
 
 coat-cli-release:
 	$(MAKE) coat-cli COAT_BUILD_PROFILE=release

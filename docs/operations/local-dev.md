@@ -37,6 +37,8 @@ npm run --prefix sidecars/codex-runner-ts build
 npm run --prefix sidecars/staff-engineer-runner-ts build
 npm run --prefix ui/control-plane-web build
 npm run --prefix ui/control-plane-web smoke
+target/debug/coat scenario list
+target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --output-dir target/coat-scenarios
 ```
 
 ## Protocol SDK Generation
@@ -83,6 +85,8 @@ compatibility rules, package metadata, and publish targets are selected.
 coat deploy local config
 coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
+coat deploy local logs --follow coordinator runner-registry control-web
+coat tui
 coat deploy local config --profile db
 coat deploy local up --allow-stub-runners --profile db
 coat --config-profile restate-cloud deploy local up --restate-cloud --init-env
@@ -126,7 +130,7 @@ The Rust service image builds all `coat` Rust binaries once in a shared builder 
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
-The control gateway and SPA listen on `http://localhost:9090`. Use the Chat tab to draft goals, plans, steering directives, and state explanations from plain language. Use the Memory tab to search context, write reviewed facts, join forked branch memories, retract or replace stale facts, dry-run adapter repair, inspect memory events, and apply sourced research output back into the goal as steering directives.
+The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Submitting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up.
 The default Compose stack starts a small multi-agent pool and auto-registers every runner with `runner-registry`:
 
 - `codex-runner`: externally exposed coding lane on `localhost:9091`;
@@ -139,6 +143,38 @@ The default Compose stack starts a small multi-agent pool and auto-registers eve
 
 Use the internal-only runners through the registry and control gateway rather than direct host ports.
 The sandbox runner uses `SANDBOX_WORKSPACE_ROOT=/workspaces` in Compose and writes per-task manifests under the `sandbox-workspaces` volume.
+
+## Scenario Evidence
+
+Use `coat scenario` when a local or CI run needs reviewable evidence for an
+operator workflow:
+
+```sh
+make build
+target/debug/coat scenario list
+target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --output-dir target/coat-scenarios
+target/debug/coat scenario report --run-dir target/coat-scenarios/goal_lifecycle_basic
+```
+
+The PR gate runs every checked-in spec under `scenarios/e2e` with
+`coat scenario run --output-dir target/coat-scenarios`. The deterministic E2E
+lane uses local services, stub runner behavior, fixed seeds, bounded timeouts,
+and explicit fixtures. It should not require live model credentials, provider
+auth, real web search, or external SaaS. When the run drives the browser, it
+must assert the same goal-selection model operators use: the SPA top-bar
+current goal is the source for Chat, Task Graph, Flow Control, Memory, and
+Human Queue, and the TUI sends the selected goal through control-gateway
+chat/session APIs instead of asking the operator to retype raw UUIDs.
+
+Scenario output belongs under `target/coat-scenarios`. Keep enough files there
+for a reviewer to reconstruct the run: `spec.json`, `evidence.json`,
+`report.json`, started/finished timestamps, deterministic seed and clock
+settings, service endpoints, command stdout/stderr summaries, created goal IDs,
+selected-goal transitions, API snapshots, Compose logs, and browser artifacts.
+Playwright traces, screenshots, `test-results`, and `playwright-report` may
+either live under `target/coat-scenarios` or under the standard
+`ui/control-plane-web` Playwright paths; CI uploads both locations on failure.
+
 Live git worktree creation is disabled by default. For an explicitly approved local development run, start the sandbox runner with:
 
 ```sh
@@ -541,6 +577,8 @@ curl -sS -X POST http://localhost:9090/mcp \
 Set `COAT_CONTROL_GATEWAY_TOKEN` and `COAT_CONTROL_MCP_TOKEN` when exposing the gateway beyond local trusted development.
 
 The Chat tab is always routed through the control gateway backend. The browser calls `/api/chat`; it does not call Ollama, vLLM, OpenAI, or other model providers directly.
+
+Chat inherits the top-bar current goal. With a goal selected, chat history and requests use the `goal:<goal_id>` session and send that goal id as context; without one, chat uses the operator workspace session.
 
 Use the chat mode switcher for the three standard authoring paths: Plan, Goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
 

@@ -67,6 +67,32 @@ jobs:
         run: target/debug/coat deploy local config
       - name: Validate Restate Cloud Compose config
         run: target/debug/coat deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
+      - name: Run deterministic scenario E2E
+        run: make scenario-e2e
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ui/control-plane-web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+      - name: Install Playwright browser
+        run: npx --prefix ui/control-plane-web playwright install chromium
+      - name: Run operator UI E2E
+        run: make scenario-e2e-ui
+      - name: Upload scenario E2E failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            target/coat-scenarios
+            ui/control-plane-web/test-results
+            ui/control-plane-web/playwright-report
+            ui/control-plane-web/screenshots
+            ui/control-plane-web/traces
       - name: Check generated diffs and whitespace
         run: git diff --check
       - name: Print Rust compiler cache stats

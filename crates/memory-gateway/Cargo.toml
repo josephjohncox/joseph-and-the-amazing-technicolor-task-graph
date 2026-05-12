@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 coat-domain = { path = "../domain" }
+coat-observability = { path = "../observability" }
 anyhow.workspace = true
 axum.workspace = true
 reqwest.workspace = true
@@ -15,7 +16,6 @@ serde_json.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

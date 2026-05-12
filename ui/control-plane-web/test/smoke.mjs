@@ -148,9 +148,10 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Start work", "Plan first", "Goal draft", "Search request", "Chat activity", "Flow Control", "Compiler controls", "Upvote", "Mechanism round", "Create wait state", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "No urgent task states", "Continuations", "Response summary", "Resume", "Attention", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Current goal", "Clear goal", "Open graph", "Start work", "Plan first", "Goal draft", "Goal draft ready", "Submit goal", "Search request", "Chat activity", "Flow Control", "Compiler controls", "Upvote", "Mechanism round", "Create wait state", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Inspect evidence", "Next action", "Action needed", "Reviewing", "Satisfied", "Continuations", "Response summary", "Resume", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
+  assert(!script.includes("Goal UUID"), "graph/control views no longer render editable raw UUID inputs");
 }
 
 async function assertStylesheet() {
@@ -160,7 +161,7 @@ async function assertStylesheet() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "stylesheet returns ok");
   const css = await response.text();
-  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", ".theme-control", ".mode-toggle", ".quick-prompts", ".coat-chat-container", ".outcome-list", ".graph-filter", ".graph-status-panel", ".compiler-control-panel", ".control-grid", ".continuation-card", ".react-flow__node.task-node"]) {
+  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".draft-action-bar", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".react-flow__node.task-node"]) {
     assert(css.includes(expected), `stylesheet includes ${expected}`);
   }
 }
@@ -273,11 +274,11 @@ async function assertMemoryReplacementDiffRender() {
     assert(blockedStatusMarkup.includes(">Blocked<"), "blocked memory preview renders Blocked label");
     const blockedDiffMarkup = renderToStaticMarkup(React.createElement(MemoryDiffTable, { value: blockedPreview }));
     assert(blockedDiffMarkup.includes("Missing mem-absent"), "blocked memory diff renders missing key warning");
-    assert(blockedDiffMarkup.includes("No diff rows."), "blocked memory diff renders empty diff rows state");
+    assert(blockedDiffMarkup.includes("Diff rows pending."), "blocked memory diff renders empty diff rows state");
 
     const emptyMarkup = renderToStaticMarkup(React.createElement(MemoryDiffTable, { value: null }));
-    assert(emptyMarkup.includes("No replacement preview"), "empty memory diff renders no-preview state");
-    assert(emptyMarkup.includes("Preview a memory edit."), "empty memory diff renders preview guidance");
+    assert(emptyMarkup.includes("Preview memory edit"), "empty memory diff renders no-preview state");
+    assert(emptyMarkup.includes("Choose replacement details."), "empty memory diff renders preview guidance");
   } finally {
     await viteServer.close();
   }
@@ -295,7 +296,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ApprovalList, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, EventSourcesPanel, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, runnerTableRow, taskMatchesGraphFilter, taskStatusCounts };`;
+            return `${code}\nexport { ApprovalList, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -309,22 +310,34 @@ async function assertOperatorWorkflowRender() {
   try {
     const {
       ApprovalList,
+      CommandPanel,
       CompilerControlPanel,
       ComputeGraphDetails,
       ContinuationQueue,
       Dashboard,
       EventSourcesPanel,
+      EvidenceNextActionPanel,
+      GoalContextBar,
       GoalList,
       GraphStatusPanel,
       MemoryEventsTable,
       RunnersView,
+      SubgoalPlanPanel,
       TaskSummary,
       computeGraphNodes,
       computeNodeMatchesGraphFilter,
       continuationRowsFromSnapshot,
       eventSourceTableRow,
+      goalDraftFromChatResponse,
+      goalIdFromSubmitResponse,
+      goalRowsWithSelected,
+      goalSubgoalsFromSnapshotOrDraft,
+      mergeSubmittedGoalRows,
       runnerTableRow,
+      selectedGoalIdFromLocation,
+      selectedGoalSummary,
       taskMatchesGraphFilter,
+      taskRowsFromGoalDraft,
       taskStatusCounts,
     } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
     const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
@@ -395,6 +408,136 @@ async function assertOperatorWorkflowRender() {
       event_sources: { sources: eventSources },
     };
 
+    const chatGoalDraftResponse = {
+      assistant: "Drafted a goal payload with coordinator-owned initial work, evidence requirements, and validation gates.",
+      drafts: {
+        goal_spec: {
+          title: "Ship chat goal submit",
+          objective: "Submit chat-authored GoalSpec drafts through the gateway.",
+          plan: {
+            subgoals: [
+              {
+                id: "sg-submit",
+                title: "Submit drafted GoalSpec",
+                objective: "Send the reviewed goal draft to the coordinator.",
+              },
+              {
+                id: "sg-project",
+                title: "Project graph state",
+                objective: "Refresh the goal list and task graph from the goal-store projection.",
+              },
+            ],
+          },
+          root_budget: { max_tokens: 1000 },
+          done_criteria: { tests_pass: true },
+          initial_tasks: [
+            {
+              role: "planner",
+              prompt: "Decompose the submitted goal into the next durable task frontier.",
+              subgoal_id: "sg-submit",
+            },
+          ],
+        },
+      },
+    };
+    const goalDraft = goalDraftFromChatResponse(chatGoalDraftResponse);
+    assertEqual(goalDraft.title, "Ship chat goal submit", "goal draft helper extracts valid GoalSpec draft");
+    assertEqual(
+      selectedGoalIdFromLocation("?goal=018f8f2f-1fd8-7688-bb12-8bfb6b756700", "018f8f2f-1fd8-7688-bb12-8bfb6b756701"),
+      "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
+      "URL goal selection wins over local storage fallback",
+    );
+    assertEqual(
+      selectedGoalIdFromLocation("", "018f8f2f-1fd8-7688-bb12-8bfb6b756701"),
+      "018f8f2f-1fd8-7688-bb12-8bfb6b756701",
+      "local storage fallback restores selected goal when URL has no goal",
+    );
+    assertEqual(
+      goalIdFromSubmitResponse({ url: "http://127.0.0.1:8080/GoalWorkflow/018f8f2f-1fd8-7688-bb12-8bfb6b756999/run" }),
+      "018f8f2f-1fd8-7688-bb12-8bfb6b756999",
+      "goal submit helper extracts gateway-assigned workflow id from proxy URL",
+    );
+    const commandMarkup = renderToStaticMarkup(
+      React.createElement(CommandPanel, {
+        messages: [
+          { role: "assistant", content: "Ready." },
+          { role: "user", content: "Ship chat goal submit." },
+          { role: "assistant", content: chatGoalDraftResponse.assistant },
+        ],
+        input: "",
+        draftKind: "goal",
+        busy: false,
+        error: null,
+        latestResponse: chatGoalDraftResponse,
+        chatRun: { run_id: "chat-run-smoke", status: "done", steps: [{ stage: "journaling_turns" }] },
+        goalDraft,
+        goalSubmitBusy: false,
+        goalSubmitError: null,
+        goalSubmitResult: undefined,
+        selectedGoalId: "",
+        sessionId: "operator:default",
+        mode: "draft_goal",
+        onDraftKindChange: () => {},
+        onInputChange: () => {},
+        onSend: () => {},
+        onSubmitGoalDraft: () => {},
+        onClear: () => {},
+      }),
+    );
+    for (const expected of ["Goal draft", "Goal draft ready", "Review draft", "Submit goal"]) {
+      assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
+    }
+
+    const pendingGoalRows = mergeSubmittedGoalRows([], {
+      "018f8f2f-1fd8-7688-bb12-8bfb6b756999": goalDraft,
+    });
+    assertEqual(pendingGoalRows.length, 1, "submitted draft is visible before projection");
+    assertEqual(pendingGoalRows[0].status, "submitted", "pending submitted draft has submitted status");
+    assertEqual(pendingGoalRows[0].open_tasks, 1, "pending submitted draft counts seeded tasks");
+    const draftTaskRows = taskRowsFromGoalDraft("018f8f2f-1fd8-7688-bb12-8bfb6b756999", goalDraft);
+    assertEqual(draftTaskRows.length, 1, "submitted draft exposes seeded task rows before projection");
+    assertEqual(draftTaskRows[0].subgoal_id, "sg-submit", "submitted draft task preserves subgoal id");
+    const draftSubgoals = goalSubgoalsFromSnapshotOrDraft(undefined, goalDraft);
+    assertEqual(draftSubgoals.length, 2, "submitted draft exposes subgoals before projection");
+    const projectedSubgoals = goalSubgoalsFromSnapshotOrDraft({
+      goal_store_goal: {
+        data: {
+          goal: {
+            payload_json: {
+              plan: {
+                subgoals: [{ id: "sg-projected", title: "Projected subgoal" }],
+              },
+            },
+          },
+        },
+      },
+    }, goalDraft);
+    assertEqual(projectedSubgoals[0].id, "sg-projected", "projected subgoals replace submitted-draft fallback");
+    const selectedGoal = selectedGoalSummary("018f8f2f-1fd8-7688-bb12-8bfb6b756999", pendingGoalRows, undefined, goalDraft);
+    assertEqual(selectedGoal.title, "Ship chat goal submit", "selected goal summary reads submitted draft titles");
+    const selectableGoalRows = goalRowsWithSelected([], selectedGoal);
+    assertEqual(selectableGoalRows.length, 1, "picker includes submitted draft goals before projection");
+    const goalContextMarkup = renderToStaticMarkup(
+      React.createElement(GoalContextBar, {
+        goals: selectableGoalRows,
+        selectedGoal,
+        selectedGoalId: selectedGoal.id,
+        open: true,
+        loading: false,
+        onOpenChange: () => {},
+        onSelectGoal: () => {},
+        onRefreshGoals: () => {},
+        onOpenGraph: () => {},
+      }),
+    );
+    for (const expected of ["Current goal", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Inspect id"]) {
+      assert(goalContextMarkup.includes(expected), `goal context picker includes ${expected}`);
+    }
+    const subgoalMarkup = renderToStaticMarkup(React.createElement(SubgoalPlanPanel, { subgoals: draftSubgoals, source: "submitted draft" }));
+    for (const expected of ["Subgoals", "submitted draft", "Submit drafted GoalSpec", "Project graph state"]) {
+      assert(subgoalMarkup.includes(expected), `subgoal panel markup includes ${expected}`);
+    }
+
     const dashboardMarkup = renderToStaticMarkup(
       React.createElement(Dashboard, {
         overview,
@@ -449,9 +592,12 @@ async function assertOperatorWorkflowRender() {
       "4 need attention",
       "6 tasks · 1 running · 1 done",
       "Graph legend",
-      "Approval",
-      "Continuation",
-      "human gate open",
+      "Action needed",
+      "3 · failed, blocked, or approval work",
+      "Waiting",
+      "Reviewing",
+      "Satisfied",
+      "approval gate",
       "delayed compute thunk",
     ]) {
       assert(graphStatusMarkup.includes(expected), `graph status markup includes ${expected}`);
@@ -518,6 +664,20 @@ async function assertOperatorWorkflowRender() {
     const computeNodes = computeGraphNodes(computeGraphSnapshot.workflow_compute_graph.data);
     assertEqual(computeNodes.length, 3, "compute graph helper loads projected nodes");
     assertEqual(computeNodeMatchesGraphFilter(computeNodes[2], "attention"), true, "waiting thunk matches attention filter");
+    const evidenceMarkup = renderToStaticMarkup(React.createElement(EvidenceNextActionPanel, { snapshot: computeGraphSnapshot, counts, taskCount: taskRows.length }));
+    for (const expected of [
+      "Evidence",
+      "Inspect evidence",
+      "Task states",
+      "6 visible",
+      "Satisfied evidence",
+      "1 accepted",
+      "Next action",
+      "Review action-needed work",
+      "Action needed",
+    ]) {
+      assert(evidenceMarkup.includes(expected), `evidence and next-action markup includes ${expected}`);
+    }
     const computeMarkup = renderToStaticMarkup(React.createElement(ComputeGraphDetails, { snapshot: computeGraphSnapshot }));
     for (const expected of [
       "Compute graph",
@@ -617,7 +777,7 @@ async function assertOperatorWorkflowRender() {
         React.createElement(ContinuationQueue, { goalId, snapshot: { workflow_compute_graph: { data: { nodes: [], edges: [], open_thunks: 0 } } } }),
       ),
     );
-    assert(emptyContinuationMarkup.includes("No open continuations"), "empty continuation queue renders stable empty state");
+    assert(emptyContinuationMarkup.includes("Continuations clear"), "empty continuation queue renders stable empty state");
 
     const approvalMarkup = renderToStaticMarkup(
       React.createElement(ApprovalList, {
@@ -1021,7 +1181,7 @@ async function assertGoalSubmitAssignsWorkflowId() {
       objective: "Submitting without an id should still target a durable workflow instance.",
     }),
   });
-  assert(response.ok, "goal submit endpoint returns a gateway result");
+  assertEqual(response.status, 503, "goal submit surfaces unavailable local Restate as an HTTP failure");
   const body = await response.json();
   assertEqual(body.status, 0, "goal submit reports unavailable local Restate as proxy status 0");
   const match = String(body.url).match(/\/GoalWorkflow\/([0-9a-f-]{36})\/run$/);
@@ -1212,6 +1372,19 @@ async function assertBackendBackedControlSurfaces() {
     calls.restate.push(request);
     if (request.method === "GET" && request.path === "/health") {
       respondJson(res, 200, { service: "restate", ok: true });
+      return;
+    }
+    const runMatch = request.path.match(/^\/GoalWorkflow\/([0-9a-f-]{36})\/run$/);
+    if (request.method === "POST" && runMatch) {
+      if (request.body?.title === "Bad upstream submit") {
+        respondJson(res, 400, { error: "invalid goal spec", detail: "upstream rejected the run payload" });
+        return;
+      }
+      respondJson(res, 200, {
+        accepted: true,
+        goal_id: runMatch[1],
+        received: request.body,
+      });
       return;
     }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/status`) {
@@ -1440,6 +1613,52 @@ async function assertBackendBackedControlSurfaces() {
 
   try {
     await waitForProcessHealth(backendBaseUrl, backendServer, () => ({ stdout: backendStdout, stderr: backendStderr }));
+
+    const submitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Backend-backed submit normalization",
+        objective: "Normalize a chat-authored goal draft before Restate decodes it.",
+        plan: {
+          summary: "Submitted by chat.",
+          subgoals: [
+            {
+              id: "research-ui-submit",
+              title: "Research UI submit",
+              objective: "Ensure submitted goal drafts keep subgoal metadata.",
+              color: "cyan",
+            },
+          ],
+        },
+        initial_tasks: [
+          {
+            role: "planner",
+            prompt: "Plan the submitted UI goal.",
+            reason: "Smoke-test gateway normalization.",
+          },
+        ],
+      }),
+    });
+    assert(submitResponse.ok, "goal submit normalizes chat-authored drafts before proxying");
+    const submitBody = await submitResponse.json();
+    assertEqual(submitBody.data.received.plan.subgoals[0].owner_role, "planner", "goal submit fills missing subgoal owner role");
+    assertEqual(submitBody.data.received.plan.subgoals[0].color.key, "cyan", "goal submit converts color strings into GraphColorRef");
+    assertEqual(submitBody.data.received.initial_tasks[0].subgoal_id, "research-ui-submit", "goal submit links the first task to the only subgoal");
+    const submitRunCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${submitBody.data.goal_id}/run`);
+    assertEqual(submitRunCall?.body?.plan?.subgoals?.[0]?.owner_role, "planner", "normalized submit payload reaches Restate");
+
+    const badSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Bad upstream submit",
+        objective: "Prove upstream Restate submit failures surface as frontend-visible errors.",
+      }),
+    });
+    assertEqual(badSubmitResponse.status, 400, "goal submit propagates upstream Restate validation failures");
+    const badSubmitBody = await badSubmitResponse.json();
+    assertEqual(badSubmitBody.status, 400, "goal submit preserves upstream proxy status in the response body");
 
     const snapshotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}`);
     assert(snapshotResponse.ok, "backend-backed goal snapshot returns ok");

@@ -9,20 +9,25 @@
     "build:spa": "tsc -p tsconfig.app.json && vite build",
     "dev": "vite --host 0.0.0.0",
     "smoke": "node test/smoke.mjs",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@chatscope/chat-ui-kit-react": "^2.1.1",
     "@chatscope/chat-ui-kit-styles": "^1.4.0",
     "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-popover": "^1.1.15",
     "@tanstack/react-query": "^5.90.7",
     "@xyflow/react": "^12.9.2",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "lucide-react": "^0.552.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
+    "@playwright/test": "^1.60.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",

@@ -38,6 +38,7 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
 - Chat client MCP/skill integration: `docs/operations/chat-client-integration.md`
+- Local observability guide: `docs/operations/local-observability.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
 - Restate Cloud runbook: `docs/operations/restate-cloud.md`
 - Ephemeral Kubernetes runners: `docs/operations/ephemeral-kubernetes-runners.md`
@@ -219,6 +220,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run `cargo check --workspace` before handing off.
 - Prefer behavioral tests that would fail for incorrect goal, workflow, routing, validation, persistence, or operator-feedback behavior.
 - Validate Compose with `coat deploy local preflight --allow-stub-runners` and `coat deploy local config`.
+- Inspect local Compose logs with `coat deploy local logs --follow coordinator runner-registry control-web`.
 - Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 
 ## Deployment
@@ -226,7 +228,9 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - CLI hierarchy: `coat --help` and `coat guide --print`
 - Config profiles: `coat setup config --list-profiles`
 - Config inspection: `coat setup config --show`
+- Terminal dashboard and chat: `coat tui`
 - Local stub smoke stack: `coat deploy local up --allow-stub-runners`
+- Local debug logs: `coat deploy local logs --follow coordinator runner-registry control-web`
 - Personal Restate Cloud env bootstrap: `coat deploy local up --restate-cloud --init-env`
 - Personal Restate Cloud stack and registration: `coat deploy local up --restate-cloud --register-cloud --allow-stub-runners`
 - Model index refresh: `coat setup model-index refresh`

@@ -25,7 +25,7 @@ not in the committed `.envrc`.
 coat plan <draft|list|show|revise|compile|follow-ups>
 coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>
 coat human <approve|resume-thunk|notify>
-coat deploy local <preflight|up|config|down>
+coat deploy local <preflight|up|config|logs|down>
 coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>
 coat deploy chart <lint|template|upgrade|rollback|package>
 coat deploy restate <cloud-env|tunnel-docker|register-cloud>
@@ -34,7 +34,9 @@ coat tool <list|call|web-search>
 coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>
 coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>
 coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>
+coat scenario <list|run|report>
 coat setup <login|sso|model-index|config|local-auth|chat-client>
+coat tui
 ```
 
 ## Rules
@@ -47,6 +49,9 @@ coat setup <login|sso|model-index|config|local-auth|chat-client>
 - Prefer explicit subcommands by default. Use dialogue commands only where
   interaction is useful, such as setup, auth, chat-client installation, human
   feedback queues, and approvals.
+- Use `coat tui` for an interactive terminal dashboard and chat surface. It is
+  a Ratatui/Crossterm client over the control gateway APIs, not a separate
+  engine or model runner.
 - Run `coat init` once per checkout. It writes `.coat/project.json`, a
   non-secret project config that lets commands warn when they are outside an
   initialized COAT project and supplies standard `cli`, `local`,
@@ -69,6 +74,11 @@ coat setup <login|sso|model-index|config|local-auth|chat-client>
   COAT checkout.
 - Use `coat deploy local preflight` before Compose automation. `up` runs the
   same preflight unless `--skip-preflight` is explicit.
+- Use `coat deploy local logs` for Compose logs so env files, profiles, and
+  Restate Cloud overlays are resolved the same way as the local stack.
+- Use `coat scenario` for deterministic operator workflow evidence. Scenario
+  runs write reviewable artifacts under `target/coat-scenarios` by default and
+  are the CI entry point for PR-gated browser and backend E2E coverage.
 
 ## Runner Capacity
 
@@ -114,6 +124,99 @@ inspection, approvals, project/user config, local provider auth, chat-client
 integration, and active plan follow-up inspection. It does not bypass the normal
 backend APIs or approval gates.
 
+## Terminal Dashboard And Chat
+
+`coat tui` opens a terminal dashboard with gateway-backed chat. It uses
+Ratatui and Crossterm for terminal rendering and keyboard handling, and it
+talks to the same backend routes used by the TypeScript SPA:
+
+- `GET /api/config`
+- `GET /api/overview`
+- `GET /api/chat/session`
+- `POST /api/chat`
+- `POST /api/goals/submit` only when the operator explicitly submits a goal draft
+
+The TUI never calls model providers directly. Chat requests are operator-chat
+requests routed through the control gateway, which handles backend selection,
+chat-turn journaling, and stub fallback policy. Chat alone is a drafting
+surface; pressing `F5` or `Ctrl-G` submits only the last `drafts.goal_spec`
+payload through the same gateway endpoint used by the SPA and regular CLI.
+When a chat turn returns a goal draft, the TUI shows the exact draft summary in
+two places before submission: the chat log receives a `Goal draft ready for
+submission` preview, and the left dashboard shows an `active goal draft`
+section with title, objective, initial task count, done criteria, and the
+submit binding. After submission, the chat log echoes the submitted goal id and
+the same draft summary, selects that goal, and reloads the goal-scoped session.
+
+Goal context is selected in the TUI, not retyped into every prompt. `Ctrl-N`
+and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the selection, and
+`Ctrl-R` refreshes the dashboard projection. When
+a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
+same goal id to `/api/chat`; without a selected goal it uses the operator
+workspace session.
+
+```sh
+coat tui
+coat tui --control-gateway-url http://localhost:9090
+```
+
+Key bindings:
+
+- `Enter`: send the chat input to `/api/chat`.
+- `Tab`: switch chat mode across general, goal, plan, and search.
+- `Ctrl-N`, `Ctrl-P`: cycle to the next or previous projected goal.
+- `Ctrl-O`: clear the selected goal and return chat to the operator workspace session.
+- `Ctrl-R`: refresh the dashboard projection for the current goal.
+- `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: scroll chat history.
+- `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.
+- `Ctrl-U`: clear the input.
+- `Esc`, `Ctrl-C`, or `q` with an empty input: quit.
+
+## Scenario E2E
+
+`coat scenario` is the operator command for deterministic end-to-end evidence.
+It is separate from live autonomous execution: normal CI scenarios use stubbed
+runners, bounded clocks, fixed seeds, local ports, and explicit fixtures so a PR
+cannot pass because a live model, credential, or external service happened to
+respond.
+
+```sh
+coat scenario list
+coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --output-dir target/coat-scenarios
+coat scenario report --run-dir target/coat-scenarios/goal_lifecycle_basic
+```
+
+The default PR gate runs every checked-in E2E scenario spec:
+
+```sh
+for scenario in scenarios/e2e/*.json; do
+  target/debug/coat scenario run --file "$scenario" --output-dir target/coat-scenarios
+done
+```
+
+Use the checkout-built binary in CI so the scenario command matches the Rust
+contracts, gateway, and SPA produced by the same workflow run. Local operators
+who have run `direnv allow` can use plain `coat scenario ...` after `make build`.
+
+Scenario evidence is a directory, not a console transcript. Each run writes
+`target/coat-scenarios/<scenario-id>/spec.json`, `evidence.json`, and
+`report.json`. Evidence should include enough deterministic fixture and
+projection detail for a reviewer to reconstruct the run: step results, command
+evidence, service endpoint health, goal IDs created by the run, selected-goal
+state, API snapshots, relevant Compose logs, and any browser artifacts.
+Browser-driven scenarios should place Playwright `test-results`, traces,
+screenshots, and reports under the scenario evidence tree or the standard
+control-web Playwright paths so CI can upload them on failure.
+
+PR-gated scenarios must prove the operator workflow, not only endpoint
+availability. The baseline browser scenario covers creating or selecting a
+goal, verifying the SPA current-goal selector drives Chat, Task Graph, Flow
+Control, Memory, and Human Queue, verifying `coat tui` uses the same selected
+goal model through gateway APIs, and capturing enough evidence for a reviewer
+to distinguish a real workflow failure from a harness or fixture failure. Use
+`docs/exec-plans/active/170-usability-coherence-evaluation.md` as the scenario
+usability rubric for operator comprehension and SPA/TUI coherence.
+
 ## Local Compose Preflight
 
 `coat deploy local preflight` checks project initialization, Compose files,
@@ -131,6 +234,7 @@ For a smoke stack:
 coat init
 coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
+coat deploy local logs --follow coordinator runner-registry control-web
 ```
 
 For live model/provider lanes:
@@ -168,6 +272,7 @@ live `/models` or Ollama tags response. Use `coat setup model-index show
 cache. Runtime parameter pickers include fast, provider speed tier, fast
 completions, balanced, deep review, xhigh reasoning, deterministic JSON/tool
 output, provider defaults, and custom values.
+
 Codex runner setup is not the same as OpenAI hosted model-provider setup;
 selecting the OpenAI hosted surface writes the generic model-provider lane and
 can also write the research lane. `coat setup login` and `coat setup sso` own the provider CLI login steps
@@ -176,3 +281,20 @@ raw `codex login`, `claude auth login`, or `aws sso login` commands from docs.
 For Claude Code SSO or Console auth, use `coat setup login --claude
 --claude-sso` or `coat setup login --claude --claude-console`; `--claude-email`
 passes an email prefill to the underlying Claude auth command.
+
+## Local Logs
+
+`coat deploy local logs` wraps `docker compose logs` with the resolved COAT
+local-deploy config. It supports `--tail`, `--follow`, `--profile`,
+`--env-file`, `--restate-cloud`, and explicit service names:
+
+```sh
+coat deploy local logs --tail 200 coordinator runner-registry control-web
+coat deploy local logs --follow --profile db goal-store postgres
+coat --config-profile restate-cloud deploy local logs --restate-cloud --follow coordinator
+```
+
+Compose defaults local COAT services to debug request and task logs. Set
+`COAT_LOG_FORMAT=json` for structured log capture, or override
+`COAT_RUST_LOG` when a specific Rust service needs trace-level diagnostics.
+See `docs/operations/local-observability.md` for the full local logging surface.

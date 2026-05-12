@@ -79,6 +79,7 @@ docs/design-docs/100-strong-sandboxing-guardrails.md
 docs/design-docs/110-control-gateway-spa.md
 docs/design-docs/120-durable-planning-mode.md
 docs/operations/restate-cloud.md
+docs/operations/local-observability.md
 docs/operations/model-runner-clusters.md
 proto/coat/v1/common.proto
 proto/coat/v1/goal_store.proto
@@ -152,7 +153,7 @@ check_command_line() {
 check_command_line 'coat plan <draft|list|show|revise|compile|follow-ups>'
 check_command_line 'coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>'
 check_command_line 'coat human <approve|resume-thunk|notify>'
-check_command_line 'coat deploy local <preflight|up|config|down>'
+check_command_line 'coat deploy local <preflight|up|config|logs|down>'
 check_command_line 'coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>'
 check_command_line 'coat deploy chart <lint|template|upgrade|rollback|package>'
 check_command_line 'coat deploy restate <cloud-env|tunnel-docker|register-cloud>'
@@ -161,7 +162,9 @@ check_command_line 'coat tool <list|call|web-search>'
 check_command_line 'coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>'
 check_command_line 'coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>'
 check_command_line 'coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>'
+check_command_line 'coat scenario <list|run|report>'
 check_command_line 'coat setup <login|sso|model-index|config|local-auth|chat-client>'
+check_command_line 'coat tui'
 
 if [ -f "$root/.envrc" ] && grep -nE '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_STORE|EVENT|CONTROL)_' "$root/.envrc" >/tmp/coat-doc-gardener-direnv.txt; then
   cat /tmp/coat-doc-gardener-direnv.txt >&2

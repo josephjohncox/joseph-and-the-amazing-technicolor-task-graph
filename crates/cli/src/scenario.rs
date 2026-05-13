@@ -64,6 +64,8 @@ pub struct ScenarioSpec {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    pub determinism: Value,
+    #[serde(default)]
     pub services: Value,
     #[serde(default)]
     pub setup: Value,
@@ -424,11 +426,24 @@ async fn collect_projection(
         .timeout(timeout)
         .build()
         .context("build scenario HTTP client")?;
+    let projection = fixture_projection(spec);
+    if uses_fixture_projection_replay(spec) {
+        if projection_is_empty(&projection) {
+            bail!(
+                "scenario {} requests fixture projection replay but has no fixture projection",
+                spec.id
+            );
+        }
+        return Ok((
+            projection.clone(),
+            fixture_action_results(spec, &projection)?,
+            "fixture_projection_replay".to_string(),
+        ));
+    }
     if gateway_reachable(&client, gateway_url).await {
         return drive_gateway(spec, gateway_url, timeout, client).await;
     }
 
-    let projection = fixture_projection(spec);
     if projection_is_empty(&projection) {
         bail!(
             "gateway {gateway_url} is not reachable and scenario {} has no fixture projection",
@@ -436,6 +451,104 @@ async fn collect_projection(
         );
     }
     Ok((projection, Vec::new(), "offline_fixture".to_string()))
+}
+
+fn uses_fixture_projection_replay(spec: &ScenarioSpec) -> bool {
+    let mode = first_string(
+        &spec.determinism,
+        &[&["mode"], &["projection_mode"], &["determinism", "mode"]],
+    )
+    .map(|value| normalize_token(&value));
+    let projection_mode = first_string(
+        &spec.determinism,
+        &[
+            &["projection_mode"],
+            &["determinism", "projection_mode"],
+            &["mode"],
+        ],
+    )
+    .map(|value| normalize_token(&value));
+    matches!(
+        (mode.as_deref(), projection_mode.as_deref()),
+        (Some("stub_projection_replay"), _) | (_, Some("fixture_replay"))
+    )
+}
+
+fn fixture_action_results(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+) -> anyhow::Result<Vec<ScenarioActionResult>> {
+    let known_goal_ids = scenario_goal_ids(spec, projection);
+    spec.actions
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            let response = match action.kind {
+                ScenarioActionKind::SubmitGoal => {
+                    let goal_id = action_goal_id(action, &known_goal_ids).or_else(|_| {
+                        spec.goals
+                            .first()
+                            .map(|goal| goal.id.clone())
+                            .context("scenario has no goal for submit action")
+                    })?;
+                    json!({
+                        "scenario_action": action.id,
+                        "kind": action_name(action),
+                        "fixture_only": true,
+                        "goal_id": goal_id,
+                        "status": "submitted",
+                        "goal": goal_body(spec, action)?,
+                    })
+                }
+                ScenarioActionKind::EmitEvent | ScenarioActionKind::EmitExternalEvent => json!({
+                    "scenario_action": action.id,
+                    "kind": action_name(action),
+                    "fixture_only": true,
+                    "event": event_body(spec, action),
+                    "expect": action.expect,
+                }),
+                ScenarioActionKind::ResumeThunk | ScenarioActionKind::ResumeDelayedCompute => {
+                    json!({
+                        "scenario_action": action.id,
+                        "kind": action_name(action),
+                        "fixture_only": true,
+                        "resume": action.resume,
+                        "expect": action.expect,
+                    })
+                }
+                ScenarioActionKind::Wait => json!({
+                    "scenario_action": action.id,
+                    "kind": action_name(action),
+                    "fixture_only": true,
+                    "wait": action.payload,
+                }),
+                ScenarioActionKind::WaitForProjection => json!({
+                    "scenario_action": action.id,
+                    "kind": action_name(action),
+                    "fixture_only": true,
+                    "projection_goal_id": projection.goal_id,
+                }),
+                _ => json!({
+                    "scenario_action": action.id,
+                    "kind": action_name(action),
+                    "fixture_only": true,
+                    "expect": action.expect,
+                    "payload": action.payload,
+                    "worker_result": action.worker_result,
+                    "worker_results": action.worker_results,
+                }),
+            };
+            Ok(ScenarioActionResult {
+                index,
+                kind: action.kind.clone(),
+                label: action.label.clone(),
+                url: None,
+                status: None,
+                ok: true,
+                response,
+            })
+        })
+        .collect()
 }
 
 async fn gateway_reachable(client: &reqwest::Client, gateway_url: &str) -> bool {
@@ -2199,6 +2312,37 @@ mod tests {
         let verdict = evaluate(&spec, &spec.fixtures.projection);
         assert_eq!(verdict.status, "passed");
         assert!(verdict.findings.is_empty());
+    }
+
+    #[test]
+    fn fixture_replay_specs_do_not_require_live_gateway_actions() {
+        let mut spec = fixture_spec();
+        spec.determinism = json!({
+            "mode": "stub_projection_replay",
+            "projection_mode": "fixture_replay"
+        });
+        spec.actions.push(
+            serde_json::from_value(json!({
+                "id": "resume",
+                "kind": "resume_delayed_compute",
+                "goal_id": "goal-basic",
+                "resume": {"thunk_id": "thunk-1", "response_summary": "continue"}
+            }))
+            .expect("resume action"),
+        );
+
+        assert!(uses_fixture_projection_replay(&spec));
+        let results =
+            fixture_action_results(&spec, &spec.fixtures.projection).expect("fixture actions");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[1].kind, ScenarioActionKind::ResumeDelayedCompute);
+        assert_eq!(
+            results[1]
+                .response
+                .get("fixture_only")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]

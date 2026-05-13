@@ -59,7 +59,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 ## Follow-Ups
 
 - Coordinate remaining live runner and provider verification proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Promote the manual `make compose-runner-smoke` workflow to required or scheduled CI once the runner has Docker build capacity and image caches.
+- Keep `make compose-runner-smoke` on pull-request CI and workflow dispatch; do not add cron-based test execution unless a future plan introduces a different non-PR maintenance workload.
 - Add live notification and event-source smoke tests for Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and additional provider adapters once test credentials are approved; SQS/LocalStack inbound/outbound proof is closed by the active plan's `make eventops-sqs-smoke` evidence.
 - Add live provider verification profiles for Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face endpoints, and OpenAI-compatible gateways after the auth setup command is exercised on real nodes.
 

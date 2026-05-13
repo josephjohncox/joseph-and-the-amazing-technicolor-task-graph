@@ -157,11 +157,11 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Evidence 2026-05-11: release binaries now build Linux ARM on the native `ubuntu-22.04-arm` runner and macOS ARM on `macos-latest`; CI adds a cached runner-target compatibility job matrix for `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`.
 - Evidence 2026-05-11: GHCR image publishing can now target a single image or image group; the release workflow keeps Rust service/toolbox publishing in one cache-sharing job and fans Node sidecar images out into parallel jobs.
 - Evidence 2026-05-11: Rust service release tags now share one multi-binary service image build; `COAT_SERVICE_BIN` selects the process, and the entrypoint preserves compatibility by mapping known `BIND_ADDR` ports to service binaries.
-- Evidence 2026-05-12: CI now has a scheduled `compose-topology-smokes`
-  job that runs `make compose-runner-smoke` and
-  `make event-gateway-compose-smoke` weekly, while workflow dispatch can run
-  either smoke on demand. The job uses the same Rust cache/sccache setup as the
-  rest of CI and uploads Compose topology evidence on failure.
+- Evidence 2026-05-12: CI now runs `compose-topology-smokes` on pull requests
+  rather than on a cron schedule. The job runs `make compose-runner-smoke` and
+  `make event-gateway-compose-smoke`, keeps workflow-dispatch escape hatches
+  for targeted operator reruns, uses the same Rust cache/sccache setup as the
+  rest of CI, and uploads Compose topology evidence on failure.
 - Add provider overlays after the first target is chosen; the first executor proof remains kind/k3d.
 - Add Restate Cloud journal encryption guidance when the Rust service path and provider documentation support it.
 

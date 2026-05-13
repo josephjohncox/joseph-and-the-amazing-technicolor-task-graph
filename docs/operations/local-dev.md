@@ -426,7 +426,7 @@ stub mode for the smoke, starts an isolated Compose project, waits for sidecar
 dispatchable in `/runners/status`, verifies `/dispatch` selects
 `codex-runner-ts` for an explicit task contract, and verifies `/capacity/plan`
 uses the heartbeat-derived pool supply.
-CI runs this smoke weekly through the scheduled `compose-topology-smokes` job;
+CI runs this smoke on pull requests through the `compose-topology-smokes` job;
 operators can also trigger it manually from workflow dispatch.
 
 If Docker, the daemon, or the Compose plugin is unavailable, the script prints a

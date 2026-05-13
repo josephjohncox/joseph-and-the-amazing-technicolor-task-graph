@@ -46,7 +46,7 @@ choices current without compiling provider model IDs into `coat`.
 
 Model routing is config-adjacent too. Use `config.model_routing` for non-secret
 defaults such as `direct_providers`, `shared_gateway`, or `hybrid`, gateway base
-URLs, lane model names, and secret reference names. For local Compose,
+URLs, model route names, and secret reference names. For local Compose,
 `coat setup local-auth` writes the equivalent runtime env keys:
 `COAT_LLM_GATEWAY_URL`, `COAT_LLM_GATEWAY_API_KEY`,
 `COAT_LLM_GATEWAY_{WORK,RESEARCH,CHAT,DEFAULT}_MODEL`, and direct provider

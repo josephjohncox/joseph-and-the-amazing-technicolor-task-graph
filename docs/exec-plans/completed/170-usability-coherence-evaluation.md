@@ -18,6 +18,10 @@ adds scenario-level coherence expectations, browser-level operator journeys,
 accessibility checks, SPA evidence and next-action panels, and TUI selected-goal
 runtime context.
 
+Residual screenshot/transcript capture and optional LLM usability evaluation
+work is preserved in `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`
+under the `UIE2E` follow-ups.
+
 ## Evaluation Scope
 
 - Primary operator path: create or select a goal, inspect progress, identify
@@ -157,16 +161,11 @@ The deterministic review fails when:
 
 ## Validation
 
-- Run `git diff --check -- docs/exec-plans/active/170-usability-coherence-evaluation.md docs/README.md docs/operations/cli.md` after edits to this plan or its references.
+- Run `git diff --check -- docs/exec-plans/completed/170-usability-coherence-evaluation.md docs/README.md docs/operations/cli.md` after edits to this plan or its references.
 - Run markdown or link checks when a docs-wide checker is introduced.
 - Do not treat this plan as complete until scenario evidence has been scored
   against the hard gates above.
 
 ## Follow-Ups
 
-- Move this plan to `docs/exec-plans/completed/` when the broader active-plan
-  cleanup pass archives the rest of the current milestone plans.
-- Add persisted SPA screenshots and TUI transcripts to scenario artifacts when
-  the scenario runner grows first-class terminal/browser capture paths.
-- Consider a gated LLM usability evaluator later; PR CI should keep using the
-  deterministic coherence checks added by this pass.
+None currently. Residual UIE2E work is tracked by the master runtime plan.

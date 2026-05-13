@@ -9366,7 +9366,7 @@ fn runner_mode_is_stub(mode: &str) -> bool {
 }
 
 fn live_runner_setup_issues(
-    lane: &'static str,
+    runner: &'static str,
     key: &'static str,
     values: &BTreeMap<String, String>,
 ) -> Vec<String> {
@@ -9376,7 +9376,7 @@ fn live_runner_setup_issues(
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but no Codex auth is configured; set OPENAI_API_KEY/CODEX_API_KEY, CODEX_AUTH_MODE=runner_local_device after `codex login`, or CODEX_APP_SERVER_URL with CODEX_AUTH_MODE=app_server"
+                    "{runner} runner is live but no Codex auth is configured; set OPENAI_API_KEY/CODEX_API_KEY, CODEX_AUTH_MODE=runner_local_device after `codex login`, or CODEX_APP_SERVER_URL with CODEX_AUTH_MODE=app_server"
                 )]
             }
         }
@@ -9390,26 +9390,26 @@ fn live_runner_setup_issues(
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `coat setup login --claude`"
+                    "{runner} runner is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `coat setup login --claude`"
                 )]
             }
         }
         "MODEL_PROVIDER_RUNNER_MODE" => model_provider_setup_issues(
-            lane,
+            runner,
             values,
             "MODEL_PROVIDER_KIND",
             "MODEL_PROVIDER_MODEL",
             "MODEL_PROVIDER_ENDPOINT",
         ),
         "MODEL_PROVIDER_RESEARCH_RUNNER_MODE" => model_provider_setup_issues(
-            lane,
+            runner,
             values,
             "MODEL_PROVIDER_RESEARCH_KIND",
             "MODEL_PROVIDER_RESEARCH_MODEL",
             "MODEL_PROVIDER_RESEARCH_ENDPOINT",
         ),
         "MODEL_PROVIDER_LOCAL_RUNNER_MODE" => model_provider_setup_issues(
-            lane,
+            runner,
             values,
             "LOCAL_MODEL_PROVIDER_KIND",
             "LOCAL_MODEL_PROVIDER_MODEL",
@@ -9461,7 +9461,7 @@ fn auth_mode_is(values: &BTreeMap<String, String>, key: &str, expected: &str) ->
 }
 
 fn model_provider_setup_issues(
-    lane: &'static str,
+    runner: &'static str,
     values: &BTreeMap<String, String>,
     kind_key: &'static str,
     model_key: &'static str,
@@ -9470,7 +9470,9 @@ fn model_provider_setup_issues(
     let mut issues = Vec::new();
     let kind = env_value(values, kind_key).unwrap_or_else(|| "open_ai_compatible".to_string());
     if !model_provider_model_present(values, kind_key, model_key) {
-        issues.push(format!("{lane} is live but {model_key} is not set"));
+        issues.push(format!(
+            "{runner} runner is live but {model_key} is not set"
+        ));
     }
     let auth_mode_key = match kind_key {
         "MODEL_PROVIDER_RESEARCH_KIND" => "MODEL_PROVIDER_RESEARCH_AUTH_MODE",
@@ -9490,7 +9492,9 @@ fn model_provider_setup_issues(
     match kind.as_str() {
         "bedrock" => {
             if !any_env_present(values, &["AWS_REGION", "AWS_DEFAULT_REGION"]) {
-                issues.push(format!("{lane} is bedrock-backed but no AWS region is set"));
+                issues.push(format!(
+                    "{runner} runner is bedrock-backed but no AWS region is set"
+                ));
             }
             if !any_env_present(values, &["AWS_PROFILE", "AWS_ACCESS_KEY_ID"])
                 && !matches!(
@@ -9499,7 +9503,7 @@ fn model_provider_setup_issues(
                 )
             {
                 issues.push(format!(
-                    "{lane} is bedrock-backed but no AWS profile/access key or workload identity auth mode is set"
+                    "{runner} runner is bedrock-backed but no AWS profile/access key or workload identity auth mode is set"
                 ));
             }
         }
@@ -9508,13 +9512,15 @@ fn model_provider_setup_issues(
                 && !auth_mode_allows_non_env_secret(values, auth_mode_key)
             {
                 issues.push(format!(
-                    "{lane} is open_ai-backed but OPENAI_API_KEY or a brokered auth mode is not set"
+                    "{runner} runner is open_ai-backed but OPENAI_API_KEY or a brokered auth mode is not set"
                 ));
             }
         }
         "hugging_face" => {
             if !env_present(values, endpoint_key) {
-                issues.push(format!("{lane} is live but {endpoint_key} is not set"));
+                issues.push(format!(
+                    "{runner} runner is live but {endpoint_key} is not set"
+                ));
             }
             if auth_mode == "provider_token"
                 && !any_env_present(
@@ -9528,13 +9534,15 @@ fn model_provider_setup_issues(
                 )
             {
                 issues.push(format!(
-                    "{lane} uses provider_token auth but no Hugging Face/model-provider token is set"
+                    "{runner} runner uses provider_token auth but no Hugging Face/model-provider token is set"
                 ));
             }
         }
         _ => {
             if !model_provider_endpoint_present(values, endpoint_key, &kind) {
-                issues.push(format!("{lane} is live but {endpoint_key} is not set"));
+                issues.push(format!(
+                    "{runner} runner is live but {endpoint_key} is not set"
+                ));
             }
         }
     }

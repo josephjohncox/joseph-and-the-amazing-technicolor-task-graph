@@ -63,21 +63,22 @@ test.describe("COAT control-plane browser flows", () => {
     await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(1);
     await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Submitted browser E2E task");
-    await expect(page.locator(".outcome-meta")).toContainText("Active draft: Goal draft · operator:default");
-    await expect(page.getByText("Saved Goal draft")).toBeVisible();
-    await expect(page.getByText("Submitted Ref 018f8f2f")).toBeVisible();
+    await expect(page.locator(".outcome-meta")).toContainText("Active draft: none");
+    await expect(page.getByText("Saved Goal draft")).toBeHidden();
     await expect(page.getByText("Submitted goal is syncing")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Work graph", exact: true })).toBeVisible();
     await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E task");
-    await page.locator(".goal-context-trigger").click();
-    await expect(page.locator(".goal-picker")).toContainText("Submitted browser E2E task");
-    await page.keyboard.press("Escape");
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(3);
     await openPrimaryNav(page, "Work Graph");
     await expect(subgoalCard(page, "Validate mocked gateway fixtures")).toBeVisible();
-    await page.locator(".goal-context-trigger").click();
-    await page.getByRole("button", { name: "Clear goal" }).click();
+    await page.evaluate((storageKey) => {
+      window.localStorage.removeItem(storageKey);
+      window.history.pushState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, selectedGoalStorageKey);
     await expect(page.locator(".outcome-meta")).toContainText("Session: draft_goal · operator:default");
+    await expect(page.locator(".outcome-meta")).toContainText("Active draft: Goal draft · operator:default");
+    await expect(page.getByText("Saved Goal draft")).toBeVisible();
     await expect(page.getByText("Edited browser E2E task with deterministic mocked gateway evidence.")).toBeVisible();
     await expect(page.getByText("Goal draft ready. Review the fields, then submit or discard it.").first()).toBeVisible();
     expect(state.submittedGoalSpec?.objective).toContain("Edited browser E2E task");
@@ -170,8 +171,14 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.locator(".evidence-next-panel")).toContainText("Evidence");
     await expect(page.locator(".evidence-next-panel")).toContainText("Next action");
     await expect(page.locator(".evidence-next-panel")).toContainText("Review action-needed work");
+    await expect(page.getByLabel("Action needed")).toContainText("Review action-needed thunk");
     await expect(page.getByLabel("Continuations")).toContainText("1 waiting");
     await expect(page.getByLabel("Continuations")).toContainText("wait Ref thunk-approval-1");
+
+    await openPrimaryNav(page, "Human Queue");
+    await expect(page.getByRole("heading", { name: "Action queue" })).toBeVisible();
+    await expect(page.locator(".approval-list")).toContainText("Review action-needed thunk");
+    await expect(page.locator(".approval-list")).toContainText("Action needed: approve sandbox profile");
 
     await openPrimaryNav(page, "Goal Controls");
     await expect(page.getByRole("heading", { level: 1, name: "Goal Controls" })).toBeVisible();

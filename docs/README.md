@@ -72,6 +72,9 @@ Update docs when behavior, service boundaries, public contracts, deployment knob
 
 Active execution plans must include a `## Follow-Ups` section for developer doc gardening. Treat those bullets as repo-maintenance notes, not product workflow truth.
 
-Use `exec-plans/active/170-usability-coherence-evaluation.md` when reviewing scenario evidence for operator usability and cross-surface coherence.
+Use `exec-plans/completed/170-usability-coherence-evaluation.md` as the scenario
+usability rubric for operator comprehension and cross-surface coherence.
+Residual UIE2E runtime work is tracked in
+`exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 User-facing continuation work belongs in durable plans, goal/task state, compute graph snapshots, delayed compute thunks, event projections, or human queue records. Use `coat plan follow-ups` when maintaining active execution-plan markdown; use the SPA, gateway APIs, or MCP tools for durable operator queues.

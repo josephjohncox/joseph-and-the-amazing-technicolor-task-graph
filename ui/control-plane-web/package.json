@@ -10,7 +10,8 @@
     "dev": "vite --host 0.0.0.0",
     "smoke": "node test/smoke.mjs",
     "start": "node dist/server.js",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:live": "playwright test test/e2e/live-stack.spec.ts"
   },
   "dependencies": {
     "@chatscope/chat-ui-kit-react": "^2.1.1",

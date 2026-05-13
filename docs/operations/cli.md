@@ -157,11 +157,19 @@ a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
 same goal id to `/api/chat`; without a selected goal it uses the operator
 workspace session.
 
-The dashboard also shows a compact outline for the selected goal when the
-gateway projection includes one: projected subgoals, visible tasks, and compute
-graph nodes such as wait states. This is the terminal counterpart to the SPA
-work graph, meant for navigation and status comprehension rather than raw JSON
-inspection.
+The left control panel has four views: Overview, Goals, Approvals, and Events.
+Overview shows service health, runner count, selected-goal state, blockers,
+next action, evidence, and any active goal draft. Goals is the navigable goal
+list. Approvals shows pending and resolved approval records with risk, goal,
+task, and requested action. Events shows recent gateway or goal-store events,
+plus registered event sources when the projection includes them. Both the chat
+panel and the control panel render scroll progress and a scrollbar when content
+exceeds the visible area.
+
+The selected-goal outline includes projected subgoals, visible tasks, and
+compute graph nodes such as wait states. This is the terminal counterpart to
+the SPA work graph, meant for navigation and status comprehension rather than
+raw JSON inspection.
 
 ```sh
 coat tui
@@ -171,13 +179,17 @@ coat tui --control-gateway-url http://localhost:9090
 Key bindings:
 
 - `Tab`, `Shift-Tab`: move focus across dashboard, chat, and input panels.
+- `Left`, `Right`, or `1` through `4` while the control panel is focused:
+  switch Overview, Goals, Approvals, and Events.
 - `Enter`: send the chat input to `/api/chat` only when the input panel is focused; from another panel it focuses the input first.
 - `Ctrl-T`: switch chat mode across general, goal, plan, and search.
 - `Ctrl-N`, `Ctrl-P`: cycle to the next or previous projected goal.
 - `Ctrl-O`: clear the selected goal and return chat to the operator workspace session.
 - `Ctrl-R`: refresh the dashboard projection for the current goal.
-- `Up`, `Down`: scroll chat history when chat is focused, or cycle projected goals when dashboard is focused.
-- `PageUp`, `PageDown`, `Home`, `End`: scroll chat history when chat is focused.
+- `Up`, `Down`: scroll the focused control view, scroll chat history, or
+  cycle projected goals while the Goals view is focused.
+- `PageUp`, `PageDown`, `Home`, `End`: scroll the focused control view or
+  chat history.
 - `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.
 - `Ctrl-D`: discard the active chat-authored GoalSpec draft.
 - `Ctrl-U`: clear the input.
@@ -219,14 +231,24 @@ Browser-driven scenarios should place Playwright `test-results`, traces,
 screenshots, and reports under the scenario evidence tree or the standard
 control-web Playwright paths so CI can upload them on failure.
 
+Use `make scenario-e2e-ui-live` when you need the browser to talk to the real
+local Compose control gateway instead of Playwright API fixtures. That target
+starts or reuses the deterministic stub-runner Compose stack, points Playwright
+at `http://127.0.0.1:9090`, submits a chat-authored goal through the gateway,
+waits for the goal-store projection to appear in the selected-goal and goal
+list surfaces, then verifies memory preview/apply, human queue visibility,
+runner status, and event-source registration through backend APIs.
+
 PR-gated scenarios must prove the operator workflow, not only endpoint
 availability. The baseline browser scenario covers creating or selecting a
 goal, verifying the SPA current-goal selector drives Chat, Task Graph, Flow
 Control, Memory, and Human Queue, verifying `coat tui` uses the same selected
 goal model through gateway APIs, and capturing enough evidence for a reviewer
 to distinguish a real workflow failure from a harness or fixture failure. Use
-`docs/exec-plans/active/170-usability-coherence-evaluation.md` as the scenario
-usability rubric for operator comprehension and SPA/TUI coherence.
+`docs/exec-plans/completed/170-usability-coherence-evaluation.md` as the
+scenario usability rubric for operator comprehension and SPA/TUI coherence.
+Residual UIE2E runtime proof belongs in
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Local Compose Preflight
 

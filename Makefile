@@ -41,8 +41,8 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 	build coat-cli coat-cli-release coat-path \
 	ci ci-rust fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
 	proto-sdk-generate proto-sdk-check \
-	event-gateway-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
-	scenario-e2e scenario-e2e-stack scenario-e2e-ui \
+	event-gateway-smoke event-gateway-compose-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
+	scenario-e2e scenario-e2e-stack scenario-e2e-ui scenario-e2e-ui-live \
 	release-binary-smoke release-helm-smoke \
 	ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
@@ -57,6 +57,9 @@ coat-cli:
 event-gateway-smoke:
 	$(CARGO) build -p coat-event-gateway -p coat-goal-store $(COAT_BUILD_ARGS)
 	COAT_EVENT_GATEWAY_SMOKE_SKIP_BUILD=1 COAT_BUILD_PROFILE=$(COAT_BUILD_PROFILE) sh scripts/coat-event-gateway-smoke.sh
+
+event-gateway-compose-smoke: coat-cli
+	sh scripts/coat-event-gateway-compose-smoke.sh
 
 eventops-sqs-smoke:
 	COAT_BUILD_PROFILE=$(COAT_BUILD_PROFILE) sh scripts/coat-eventops-sqs-smoke.sh
@@ -88,6 +91,16 @@ scenario-e2e-stack:
 
 scenario-e2e-ui: control-web-build
 	$(NPM) run --prefix ui/control-plane-web test:e2e
+
+scenario-e2e-ui-live: control-web-build
+	$(MAKE) scenario-e2e-stack SCENARIO_E2E_KEEP_STACK=1
+	@status=0; \
+	COAT_CONTROL_E2E_USE_EXISTING_SERVER=1 \
+	COAT_CONTROL_E2E_LIVE=1 \
+	PLAYWRIGHT_BASE_URL=http://127.0.0.1:9090 \
+	$(NPM) run --prefix ui/control-plane-web test:e2e:live || status=$$?; \
+	$(COAT) deploy local down --env-file target/coat-scenarios/latest/stack/stub-local-providers.env || true; \
+	exit $$status
 
 coat-cli-release:
 	$(MAKE) coat-cli COAT_BUILD_PROFILE=release

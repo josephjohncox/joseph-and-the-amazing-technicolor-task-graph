@@ -8,6 +8,12 @@ task graph state, runner state, blocked work, next action, and evidence obvious
 without requiring operators to understand raw JSON, Restate internals, or hidden
 session mechanics.
 
+## Status
+
+Completed on 2026-05-12. Remaining live-runtime UI proof work is preserved in
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md` under the
+`UIE2E` workstream.
+
 ## Product Questions
 
 - What is the current operator context: workspace chat, selected goal, selected
@@ -84,15 +90,11 @@ session mechanics.
 - `npm run --prefix ui/control-plane-web smoke`
 - `npm run --prefix ui/control-plane-web test:e2e`
 - `make scenario-e2e-ui`
+- `make scenario-e2e-ui-live`
 - `make docs-check`
 - `git diff --check`
 
 ## Follow-Ups
 
-- Completed: add a richer TUI selected-goal outline for projected subgoals,
-  tasks, and compute graph nodes so terminal operators can navigate more than a
-  flat latest-goals list.
-- Completed: add first-class SPA draft editing fields for title, objective,
-  evidence requirements, and constraints before submit.
-- Add a live backend E2E proving goal-store refresh with real Compose services
-  after deterministic fixture coverage is stable.
+None currently. Completed items are recorded in the validation and status
+sections above.

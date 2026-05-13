@@ -52,6 +52,6 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 
 - Operators can bring up the local stack from a clean checkout.
 - Deployment artifacts do not require live agent credentials for smoke tests.
-- Default Compose registers multiple stub runners with stable IDs so routing can exercise lane, role, and model selection locally.
+- Default Compose registers multiple stub runners with stable IDs so routing can exercise labels, role, and model selection locally.
 - Primary chat clients can connect to the control gateway through MCP and a skill without becoming the durable coordinator.
 - Kubernetes operators can use `jattg-agent-toolbox` for burst runners without replacing the slim always-on service images.

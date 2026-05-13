@@ -47,7 +47,7 @@ default.
 
 Do not size runner pools from prompt prose. Size them from durable queue state.
 
-The coordinator should group demand by execution lane:
+The coordinator should group demand by execution profile:
 
 - worker role and purpose: actor, reviewer, tester, research, unification,
   event processor, or SRE/data-engineering task;

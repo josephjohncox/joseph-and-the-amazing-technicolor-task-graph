@@ -43,7 +43,7 @@ target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --
 
 ## Protocol SDK Generation
 
-`buf.gen.yaml` is the local generation scaffold for the future ProtocolSDK lane.
+`buf.gen.yaml` is the local generation scaffold for the future ProtocolSDK workstream.
 It keeps protobuf packages under `coat.v1`, writes generated Rust output to
 `target/generated-sdks/rust`, and writes generated TypeScript output to
 `target/generated-sdks/typescript`. Those paths are build artifacts, not
@@ -131,6 +131,19 @@ Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
 The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Submitting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up.
+
+For a browser proof against real local services, run:
+
+```sh
+make scenario-e2e-ui-live
+```
+
+This starts or reuses the deterministic Compose stack with stub runners, opens
+Playwright against the Compose-hosted gateway on `http://127.0.0.1:9090`, submits
+a chat-authored goal, and verifies the goal-store projection updates the goal
+list and selected-goal work graph. It also exercises backend-routed memory
+write, memory preview/apply, human queue visibility, registered runner status,
+and event-source registration through the same gateway used by the SPA.
 The default Compose stack starts a small multi-agent pool and auto-registers every runner with `runner-registry`:
 
 - `codex-runner`: externally exposed coding runner on `localhost:9091`;
@@ -413,6 +426,8 @@ stub mode for the smoke, starts an isolated Compose project, waits for sidecar
 dispatchable in `/runners/status`, verifies `/dispatch` selects
 `codex-runner-ts` for an explicit task contract, and verifies `/capacity/plan`
 uses the heartbeat-derived pool supply.
+CI runs this smoke weekly through the scheduled `compose-topology-smokes` job;
+operators can also trigger it manually from workflow dispatch.
 
 If Docker, the daemon, or the Compose plugin is unavailable, the script prints a
 clear `SKIP` line and exits successfully. CI jobs that require Docker coverage
@@ -495,6 +510,19 @@ cannot bind the needed localhost ports, it prints a clear `SKIP` line and exits
 successfully.
 
 The event API contract lives at `docs/api/event-gateway.asyncapi.yaml`. The cluster CronJob pattern lives at `infra/k8s/examples/calendar-trigger-cronjob.yaml`.
+
+Run the Compose-backed topology proof when you need to verify the event gateway,
+Restate, and goal-store wiring exactly as the local operator stack runs it:
+
+```sh
+make event-gateway-compose-smoke
+```
+
+This starts the deterministic Compose stack, registers an approved create-goal
+CI event source, emits and dedupes a synthetic CI failure, verifies the event
+gateway submitted the generated goal through Restate, checks the projected
+goal-store event, writes evidence under
+`target/coat-event-gateway-compose-smoke/latest`, and tears the stack down.
 
 Run the optional LocalStack SQS EventOps proof when Docker is available:
 

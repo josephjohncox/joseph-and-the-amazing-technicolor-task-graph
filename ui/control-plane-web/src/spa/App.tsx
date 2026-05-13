@@ -93,6 +93,20 @@ type GraphFilter = "all" | "attention" | "active" | "completed";
 type DraftKind = "plan" | "goal" | "search";
 type GoalDraftEditField = "title" | "objective" | "acceptance_evidence" | "constraints";
 type OperatorStateKey = "action-needed" | "running" | "waiting" | "reviewing" | "satisfied";
+type ActionNeededKind = "approval" | "blocked-task" | "waiting-task" | "thunk";
+type ActionNeededItem = {
+  key: string;
+  kind: ActionNeededKind;
+  label: string;
+  status: string;
+  detail: string;
+  goalId: string;
+  taskId: string;
+  approvalId: string;
+  thunkId: string;
+  risk: string;
+  actionLabel: string;
+};
 type ActiveDraftState = {
   kind: DraftKind;
   mode: string;
@@ -102,6 +116,11 @@ type ActiveDraftState = {
   response: ChatResponse;
   goalDraft: JsonRecord | null;
   runId: string | null;
+};
+type SubmittedGoalDraft = {
+  draft: JsonRecord;
+  submittedAt: number;
+  projected: boolean;
 };
 type GoalSummary = {
   id: string;
@@ -227,7 +246,7 @@ export function App() {
   const [activeView, setActiveView] = useState<ViewKey>("dashboard");
   const [selectedGoalId, setSelectedGoalId] = useState(() => initialSelectedGoalId());
   const [goalPickerOpen, setGoalPickerOpen] = useState(false);
-  const [submittedGoalDrafts, setSubmittedGoalDrafts] = useState<Record<string, JsonRecord>>({});
+  const [submittedGoalDrafts, setSubmittedGoalDrafts] = useState<Record<string, SubmittedGoalDraft>>({});
   const [token, setToken] = useState(authToken());
   const [sessionMessages, setSessionMessages] = useState<Record<string, ChatMessage[]>>({});
   const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null);
@@ -240,6 +259,7 @@ export function App() {
   const overviewQuery = useQuery({ queryKey: ["overview"], queryFn: overview });
   const goalsQuery = useQuery({ queryKey: ["goals"], queryFn: goals });
   const chatSessionId = selectedGoalId ? `goal:${selectedGoalId}` : "operator:default";
+  const activeDraftForSession = activeDraft?.sessionId === chatSessionId ? activeDraft : null;
   const chatSessionQuery = useQuery({
     queryKey: ["chat-session", chatSessionId],
     queryFn: () => chatSession(chatSessionId),
@@ -249,7 +269,19 @@ export function App() {
     queryKey: ["goal", selectedGoalId],
     queryFn: () => goalSnapshot(selectedGoalId),
     enabled: Boolean(selectedGoalId),
-    refetchInterval: () => (selectedGoalId && submittedGoalDrafts[selectedGoalId] ? 1_000 : 10_000),
+    refetchInterval: () => {
+      if (!selectedGoalId) {
+        return false;
+      }
+      const pending = submittedGoalDrafts[selectedGoalId];
+      if (!pending) {
+        return 10_000;
+      }
+      if (pending.projected || Date.now() - pending.submittedAt > 30_000) {
+        return 10_000;
+      }
+      return 1_000;
+    },
   });
   const selectGoalId = useCallback((goalId: string) => {
     const nextGoalId = goalId.trim();
@@ -300,8 +332,8 @@ export function App() {
     enabled: Boolean(activeChatRunId && sendChat.isPending),
     refetchInterval: sendChat.isPending ? 750 : false,
   });
-  const latestResponse = activeDraft?.response;
-  const latestGoalDraft = activeDraft?.goalDraft ?? null;
+  const latestResponse = activeDraftForSession?.response;
+  const latestGoalDraft = activeDraftForSession?.goalDraft ?? null;
   const submitGoalDraft = useMutation({
     mutationFn: async () => {
       const draft = latestGoalDraft;
@@ -315,7 +347,14 @@ export function App() {
     onSuccess: (result) => {
       const goalId = goalIdFromSubmitResponse(result.response);
       if (goalId) {
-        setSubmittedGoalDrafts((current) => ({ ...current, [goalId]: result.draft }));
+        setSubmittedGoalDrafts((current) => ({
+          ...current,
+          [goalId]: {
+            draft: result.draft,
+            submittedAt: Date.now(),
+            projected: false,
+          },
+        }));
         selectGoalId(goalId);
         setActiveView("graph");
         void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
@@ -419,10 +458,17 @@ export function App() {
     }
     setSubmittedGoalDrafts((current) => {
       const next = { ...current };
-      delete next[selectedGoalId];
+      const pending = next[selectedGoalId];
+      if (pending) {
+        next[selectedGoalId] = { ...pending, projected: true };
+      }
       return next;
     });
-  }, [selectedGoalId, selectedGoalQuery.data, submittedGoalDrafts]);
+    void queryClient.invalidateQueries({ queryKey: ["goals"] });
+    void queryClient.invalidateQueries({ queryKey: ["overview"] });
+    void queryClient.refetchQueries({ queryKey: ["goals"] });
+    void queryClient.refetchQueries({ queryKey: ["overview"] });
+  }, [queryClient, selectedGoalId, selectedGoalQuery.data, submittedGoalDrafts]);
 
   const saveToken = (value: string) => {
     setToken(value);
@@ -434,7 +480,7 @@ export function App() {
   const projectedGoalRows = useMemo(() => rowsFrom(at(goalsQuery.data, ["data"]) ?? goalsQuery.data) as GoalRow[], [goalsQuery.data]);
   const goalRows = useMemo(() => mergeSubmittedGoalRows(projectedGoalRows, submittedGoalDrafts), [projectedGoalRows, submittedGoalDrafts]);
   const currentGoal = selectedGoalQuery.data;
-  const selectedSubmittedDraft = selectedGoalId ? submittedGoalDrafts[selectedGoalId] ?? null : null;
+  const selectedSubmittedDraft = selectedGoalId ? submittedGoalDrafts[selectedGoalId]?.draft ?? null : null;
   const selectedGoal = useMemo(() => selectedGoalSummary(selectedGoalId, goalRows, currentGoal, selectedSubmittedDraft), [currentGoal, goalRows, selectedGoalId, selectedSubmittedDraft]);
   const selectableGoals = useMemo(() => goalRowsWithSelected(goalRows, selectedGoal), [goalRows, selectedGoal]);
   const serviceRows = overviewData?.services ?? [];
@@ -519,7 +565,7 @@ export function App() {
             draftKind={draftKind}
             busy={sendChat.isPending}
             error={sendChat.error}
-            activeDraft={activeDraft}
+            activeDraft={activeDraftForSession}
             latestResponse={latestResponse}
             chatRun={(chatRunQuery.data ?? latestResponse?.chat_run) as ChatRunTrace | undefined}
             goalDraft={latestGoalDraft}
@@ -712,12 +758,26 @@ function assertGoalSubmitReachedCoordinator(response: unknown): void {
   throw new Error(`Goal submit returned an upstream failure: ${detail}`);
 }
 
-function mergeSubmittedGoalRows(projectedRows: GoalRow[], submittedDrafts: Record<string, JsonRecord>): GoalRow[] {
+function mergeSubmittedGoalRows(projectedRows: GoalRow[], submittedDrafts: Record<string, SubmittedGoalDraft | JsonRecord>): GoalRow[] {
   const projectedIds = new Set(projectedRows.map((goal) => String(goal.goal_id ?? goal.id ?? "")).filter(Boolean));
   const pendingRows = Object.entries(submittedDrafts)
-    .filter(([goalId]) => !projectedIds.has(goalId))
-    .map(([goalId, draft]) => pendingGoalRow(goalId, draft));
+    .filter(([goalId, pending]) => {
+      const submitted = submittedGoalDraftState(pending);
+      return !submitted.projected || !projectedIds.has(goalId);
+    })
+    .map(([goalId, pending]) => pendingGoalRow(goalId, submittedGoalDraftState(pending).draft));
   return [...pendingRows, ...projectedRows];
+}
+
+function submittedGoalDraftState(value: SubmittedGoalDraft | JsonRecord): SubmittedGoalDraft {
+  if (isRecord(value.draft)) {
+    return value as SubmittedGoalDraft;
+  }
+  return {
+    draft: value,
+    submittedAt: 0,
+    projected: false,
+  };
 }
 
 function goalSummaryFromRow(goal: GoalRow): GoalSummary | null {
@@ -1589,7 +1649,7 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
 
 function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submittedDraft?: JsonRecord | null; loading: boolean; onOpenGoalPicker: () => void }) {
   const [graphFilter, setGraphFilter] = useState<GraphFilter>("all");
-  const projectedTasks = useMemo(() => (props.snapshot?.agent_activity ?? []) as TaskRow[], [props.snapshot]);
+  const projectedTasks = useMemo(() => taskRowsFromSnapshot(props.snapshot), [props.snapshot]);
   const draftTasks = useMemo(() => taskRowsFromGoalDraft(props.goalId, props.submittedDraft), [props.goalId, props.submittedDraft]);
   const tasks = projectedTasks.length ? projectedTasks : draftTasks;
   const computeGraph = useMemo(() => props.snapshot ? workflowComputeGraph(props.snapshot) : undefined, [props.snapshot]);
@@ -1605,6 +1665,7 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
   const totalCount = computeNodes.length ? computeNodes.length : taskCount;
   const graphUnit = computeNodes.length ? "compute nodes" : "tasks";
   const continuationCount = props.snapshot ? continuationRowsFromSnapshot(props.snapshot).length : 0;
+  const actionNeeded = useMemo(() => actionNeededItemsFromSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
   return (
     <section className="panel graph-panel">
       <div className="section-heading">
@@ -1633,6 +1694,7 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
           <span className="filter-count">Showing {visibleCount} of {totalCount} {graphUnit}</span>
         </div>
       )}
+      {props.snapshot && <ActionNeededPanel items={actionNeeded} />}
       {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={taskCount} />}
       {props.snapshot && <GraphStatusPanel counts={counts} taskCount={taskCount} />}
       {!props.goalId ? (
@@ -1673,9 +1735,10 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
 }
 
 function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onOpenGoalPicker: () => void }) {
-  const tasks = (props.snapshot?.agent_activity ?? []) as TaskRow[];
+  const tasks = taskRowsFromSnapshot(props.snapshot);
   const counts = taskStatusCounts(tasks);
   const continuationCount = props.snapshot ? continuationRowsFromSnapshot(props.snapshot).length : 0;
+  const actionNeeded = useMemo(() => actionNeededItemsFromSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
   return (
     <section className="panel">
       <div className="section-heading">
@@ -1690,6 +1753,7 @@ function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; l
         <EmptyState title="Loading controls" detail="Fetching workflow projection." />
       ) : (
         <>
+          {props.snapshot && <ActionNeededPanel items={actionNeeded} />}
           {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={tasks.length} />}
           {props.snapshot && <GraphStatusPanel counts={counts} taskCount={tasks.length} />}
           {props.snapshot && continuationCount > 0 && <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />}
@@ -1911,6 +1975,34 @@ function TaskSummary({ snapshot, counts }: { snapshot: GoalSnapshot; counts: Map
   );
 }
 
+function ActionNeededPanel({ items }: { items: ActionNeededItem[] }) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <section className="evidence-card action-needed-panel" aria-label="Action needed">
+      <div className="section-heading">
+        <h3>Action needed</h3>
+        <span className="muted-small">{items.length} waiting</span>
+      </div>
+      <div className="approval-list">
+        {items.slice(0, 5).map((item) => (
+          <div key={item.key} className="approval-card">
+            <div>
+              <strong>{item.label}</strong>
+              <span>{statusLabel(item.status)} · {item.goalId ? friendlyRef(item.goalId) : "selected goal"}</span>
+              {item.detail && <small>{item.detail}</small>}
+            </div>
+            <span className={clsx("operator-state-pill", stateTone(item.kind === "approval" || statusToken(item.status) === "waiting-approval" ? "action-needed" : "waiting"))}>
+              {item.actionLabel}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false }: { snapshot: GoalSnapshot; counts: Map<string, number>; taskCount: number; compact?: boolean }) {
   const highlights = evidenceHighlights(snapshot, counts, taskCount);
   const nextAction = nextActionSummary(counts, taskCount, snapshot);
@@ -2108,6 +2200,136 @@ function workflowComputeGraph(snapshot: GoalSnapshot): Record<string, unknown> |
     return data && typeof data === "object" ? data as Record<string, unknown> : direct;
   }
   return undefined;
+}
+
+function taskRowsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord): TaskRow[] {
+  if (!snapshot) {
+    return [];
+  }
+  const agentRows = Array.isArray(snapshot.agent_activity) ? snapshot.agent_activity.filter(isRecord) as TaskRow[] : [];
+  if (agentRows.length) {
+    return agentRows;
+  }
+  const taskRows = rowsFrom(at(snapshot, ["tasks", "data", "tasks"]) ?? at(snapshot, ["tasks", "tasks"]) ?? at(snapshot, ["tasks", "data"]) ?? snapshot.tasks);
+  return taskRows as TaskRow[];
+}
+
+function actionNeededItemsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord, selectedGoalId = ""): ActionNeededItem[] {
+  if (!snapshot) {
+    return [];
+  }
+  return mergeActionNeededItems([
+    ...actionNeededItemsFromApprovals(rowsFrom(at(snapshot, ["approvals", "data", "approvals"]) ?? at(snapshot, ["approvals", "approvals"]) ?? at(snapshot, ["approvals", "data"]) ?? snapshot.approvals), selectedGoalId),
+    ...actionNeededItemsFromTasks(taskRowsFromSnapshot(snapshot), selectedGoalId),
+    ...actionNeededItemsFromThunks(snapshot as GoalSnapshot, selectedGoalId),
+  ]);
+}
+
+function actionNeededItemsFromOverview(value?: unknown): ActionNeededItem[] {
+  const source = isRecord(value) ? value : {};
+  return mergeActionNeededItems([
+    ...actionNeededItemsFromApprovals(rowsFrom(at(source, ["approvals", "data", "approvals"]) ?? at(source, ["approvals", "approvals"]) ?? at(source, ["approvals", "data"]) ?? source.approvals)),
+    ...actionNeededItemsFromTasks(rowsFrom(at(source, ["agents", "data", "tasks"]) ?? at(source, ["agents", "tasks"]) ?? at(source, ["tasks", "data", "tasks"]) ?? source.agents)),
+  ]);
+}
+
+function actionNeededItemsFromApprovals(rows: JsonRecord[], selectedGoalId = ""): ActionNeededItem[] {
+  return rows.map((row, index) => {
+    const approvalId = stringValue(row.approval_id) || stringValue(row.id) || stringValue(row.approval_ref);
+    const goalId = stringValue(row.goal_id) || selectedGoalId;
+    const risk = stringValue(row.risk) || stringValue(at(row, ["payload_json", "risk"]));
+    const action = stringValue(row.requested_action) || stringValue(row.reason) || stringValue(at(row, ["payload_json", "requested_action"])) || stringValue(at(row, ["payload_json", "reason"])) || risk || "Review approval request";
+    return {
+      key: approvalId ? `approval:${approvalId}` : `approval:${goalId}:${index}`,
+      kind: "approval" as const,
+      label: action,
+      status: normalizeStatus(row.status) || "pending",
+      detail: risk ? `Risk: ${risk}` : "Human approval requested.",
+      goalId,
+      taskId: stringValue(row.task_id) || stringValue(at(row, ["payload_json", "task_id"])),
+      approvalId,
+      thunkId: "",
+      risk,
+      actionLabel: "Approve",
+    };
+  });
+}
+
+function actionNeededItemsFromTasks(rows: JsonRecord[], selectedGoalId = ""): ActionNeededItem[] {
+  return rows
+    .filter((task) => taskNeedsOperatorAttention(task))
+    .map((task, index) => {
+      const status = normalizeStatus(task.status ?? at(task, ["payload_json", "status"]));
+      const id = taskId(task as TaskRow) || stringValue(task.id);
+      const goalId = stringValue(task.goal_id) || stringValue(at(task, ["payload_json", "goal_id"])) || selectedGoalId;
+      const title = taskTitle(task) || (id ? `Task ${friendlyRef(id)}` : "Task needs operator action");
+      return {
+        key: id ? `task:${id}` : `task:${goalId}:${index}`,
+        kind: status === "blocked" || status === "failed" ? "blocked-task" as const : "waiting-task" as const,
+        label: title,
+        status,
+        detail: taskDetail(task, status),
+        goalId,
+        taskId: id,
+        approvalId: "",
+        thunkId: "",
+        risk: "",
+        actionLabel: status === "waiting-approval" ? "Approve" : status === "waiting-input" ? "Provide input" : "Review",
+      };
+    });
+}
+
+function actionNeededItemsFromThunks(snapshot: GoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
+  return continuationRowsFromSnapshot(snapshot).map((row) => ({
+    key: `thunk:${row.thunkId}`,
+    kind: "thunk" as const,
+    label: row.reason || "Continuation waiting for input",
+    status: row.status || "waiting-input",
+    detail: [row.waitKind ? `Wait: ${row.waitKind}` : "", row.waitReference ? `Ref ${friendlyRef(row.waitReference)}` : ""].filter(Boolean).join(" · ") || "Delayed compute continuation is paused.",
+    goalId: selectedGoalId,
+    taskId: row.taskId,
+    approvalId: "",
+    thunkId: row.thunkId,
+    risk: "",
+    actionLabel: "Resume",
+  }));
+}
+
+function mergeActionNeededItems(items: ActionNeededItem[]): ActionNeededItem[] {
+  const seen = new Set<string>();
+  const merged: ActionNeededItem[] = [];
+  for (const item of items) {
+    const key = item.key || `${item.kind}:${item.goalId}:${item.taskId}:${item.label}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push({ ...item, key });
+  }
+  return merged.sort((left, right) => actionNeededPriority(left) - actionNeededPriority(right) || left.label.localeCompare(right.label));
+}
+
+function actionNeededPriority(item: ActionNeededItem): number {
+  const status = statusToken(item.status);
+  if (item.kind === "approval" || status === "waiting-approval") return 0;
+  if (status === "blocked" || status === "failed") return 1;
+  if (item.kind === "thunk" || status === "waiting-input") return 2;
+  return 3;
+}
+
+function taskNeedsOperatorAttention(task: JsonRecord): boolean {
+  return ["blocked", "failed", "waiting-approval", "waiting-input"].includes(statusToken(task.status ?? at(task, ["payload_json", "status"])));
+}
+
+function taskTitle(task: JsonRecord): string {
+  return stringValue(task.title) || stringValue(task.current_prompt) || stringValue(task.prompt) || stringValue(at(task, ["payload_json", "title"])) || stringValue(at(task, ["payload_json", "prompt"]));
+}
+
+function taskDetail(task: JsonRecord, status: string): string {
+  const role = stringValue(task.role) || stringValue(at(task, ["payload_json", "role"]));
+  const subgoal = stringValue(task.subgoal_id) || stringValue(at(task, ["payload_json", "subgoal_id"]));
+  const reason = stringValue(task.reason) || stringValue(task.blocker) || stringValue(task.summary) || stringValue(at(task, ["payload_json", "reason"]));
+  return [statusLabel(status), role, subgoal ? `subgoal ${subgoal}` : "", reason].filter(Boolean).join(" · ");
 }
 
 function continuationRowsFromSnapshot(snapshot?: GoalSnapshot): ContinuationRow[] {
@@ -3281,8 +3503,20 @@ function PlansView() {
 
 function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
   const approvalQuery = useQuery({ queryKey: ["approvals"], queryFn: approvals });
+  const overviewQuery = useQuery({ queryKey: ["overview"], queryFn: overview, enabled: !selectedGoalId });
+  const selectedGoalQuery = useQuery({
+    queryKey: ["goal", selectedGoalId],
+    queryFn: () => goalSnapshot(selectedGoalId),
+    enabled: Boolean(selectedGoalId),
+  });
   const threadQuery = useQuery({ queryKey: ["threads"], queryFn: threads });
   const approvalRows = rowsFrom(at(approvalQuery.data, ["data"]) ?? approvalQuery.data);
+  const actionItems = useMemo(() => {
+    const approvalItems = actionNeededItemsFromApprovals(approvalRows, selectedGoalId);
+    const selectedGoalItems = selectedGoalId ? actionNeededItemsFromSnapshot(selectedGoalQuery.data, selectedGoalId) : [];
+    const overviewItems = selectedGoalId ? [] : actionNeededItemsFromOverview(overviewQuery.data);
+    return mergeActionNeededItems([...approvalItems, ...selectedGoalItems, ...overviewItems]);
+  }, [approvalRows, overviewQuery.data, selectedGoalId, selectedGoalQuery.data]);
   const threadRows = rowsFrom(at(threadQuery.data, ["data"]) ?? threadQuery.data);
   const approvalMutation = useMutation({
     mutationFn: ({ approvalId, goalId }: { approvalId: string; goalId: string }) => {
@@ -3298,12 +3532,11 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
     <section className="dashboard-grid">
       <div className="panel span-2">
         <div className="section-heading">
-          <h2>Approvals</h2>
-          <span className="muted-small">Human decisions</span>
+          <h2>Action queue</h2>
+          <span className="muted-small">Approvals, blockers, and waiting continuations</span>
         </div>
         <ApprovalList
-          rows={approvalRows}
-          selectedGoalId={selectedGoalId}
+          items={actionItems}
           busy={approvalMutation.isPending}
           onApprove={(approvalId, goalId) => approvalMutation.mutate({ approvalId, goalId })}
         />
@@ -3322,38 +3555,42 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
 }
 
 function ApprovalList({
-  rows,
-  selectedGoalId,
+  items,
   busy,
   onApprove,
 }: {
-  rows: JsonRecord[];
-  selectedGoalId: string;
+  items: ActionNeededItem[];
   busy: boolean;
   onApprove?: (approvalId: string, goalId: string) => void;
 }) {
   return (
     <div className="approval-list">
-      {rows.length ? rows.map((row) => {
-        const id = String(row.approval_id ?? row.id ?? "");
-        const goalId = String(row.goal_id ?? selectedGoalId ?? "");
+      {items.length ? items.map((item) => {
+        const canApprove = item.kind === "approval" && item.approvalId && item.goalId;
         return (
-          <div key={id || JSON.stringify(row)} className="approval-card">
+          <div key={item.key} className="approval-card">
             <div>
-              <strong>{String(row.risk ?? row.title ?? "Approval")}</strong>
-              <span>{statusLabel(row.status ?? "pending")} · {friendlyRef(row.goal_id ?? goalId)}</span>
+              <strong>{item.label}</strong>
+              <span>{statusLabel(item.status)} · {item.goalId ? friendlyRef(item.goalId) : "no goal selected"}</span>
+              {item.detail && <small>{item.detail}</small>}
             </div>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!id || !goalId || busy || !onApprove}
-              onClick={() => onApprove?.(id, goalId)}
-            >
-              Approve
-            </button>
+            {canApprove ? (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy || !onApprove}
+                onClick={() => onApprove?.(item.approvalId, item.goalId)}
+              >
+                Approve
+              </button>
+            ) : (
+              <span className={clsx("operator-state-pill", stateTone(item.kind === "blocked-task" ? "action-needed" : "waiting"))}>
+                {item.actionLabel}
+              </span>
+            )}
           </div>
         );
-      }) : <EmptyState title="Approvals clear" detail="Blocked or risky work appears here." />}
+      }) : <EmptyState title="Action queue clear" detail="Approvals, blocked tasks, and waiting continuations appear here." />}
     </div>
   );
 }

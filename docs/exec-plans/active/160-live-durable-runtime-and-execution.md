@@ -47,7 +47,7 @@ The completed plans under `docs/exec-plans/completed/` remain the subsystem evid
 - `ReleaseHardening`: owns GitHub Release, Helm chart, kind/k3d, and published smoke evidence.
 - `ProtocolSDK`: owns Buf-generated Rust and TypeScript SDK target selection and generation.
 - `Reviewer`: reviews each workstream for correctness, security, testing depth, and public-contract drift.
-- `Unifier`: joins accepted lane outputs and decides whether the master plan can be moved to completed.
+- `Unifier`: joins accepted workstream outputs and decides whether the master plan can be moved to completed.
 
 Workers in these workstreams use COAT durable child tasks. They must not use hidden native Codex, Claude Code, Agents SDK, or MCP subagent spawning. Any request for more work returns `ChildTaskRequest` values for coordinator approval.
 
@@ -113,6 +113,12 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Keep event activation behind coordinator policy and human approval when sources add external callbacks, cost-bearing polling, or broad network access.
 - Prove event-gateway projection against the same Compose or cluster topology operators run, not only isolated local smoke scripts.
 - Evidence 2026-05-11: `coat-event-gateway` now projects create-goal trigger decisions with concrete `goal_id` values into `coat-goal-store`; `make event-gateway-smoke` verifies source registration, normalized event ingestion, trigger creation, goal-store projection, and dedupe behavior.
+- Evidence 2026-05-12: `make event-gateway-compose-smoke` now runs the same
+  proof against the deterministic Compose topology operators use: it starts the
+  stack, registers an approved create-goal CI source, emits and dedupes a
+  synthetic CI failure, verifies Restate submission and goal-store projection,
+  records evidence under `target/coat-event-gateway-compose-smoke/latest`, and
+  tears the stack down.
 - Add Slack, PagerDuty, Google Calendar, Outlook, and OpenTelemetry provider adapters after the SQS proof is stable and credentials are approved.
 
 ### Operator UI And MCP
@@ -124,13 +130,21 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Verify UI mutations use backend APIs only and never mutate goal-store projections directly.
 - Keep existing gateway contract smoke tests as the fast CI path.
 - Evidence 2026-05-12: CI and docs now define the deterministic PR-gated
-  scenario lane as a loop over `scenarios/e2e/*.json` with
+  scenario workstream as a loop over `scenarios/e2e/*.json` with
   `target/debug/coat scenario run --file <scenario> --output-dir
   target/coat-scenarios`; failure artifacts include `target/coat-scenarios`
   plus control-web Playwright traces, screenshots, `test-results`, and reports.
   The scenario policy requires stubbed workers, fixed seeds, bounded clocks,
   backend API mutations, and current-goal selector evidence across SPA and TUI
   surfaces.
+- Evidence 2026-05-12: `make scenario-e2e-ui-live` now starts the
+  deterministic Compose stack, drives a chat-authored goal through the real
+  control gateway, selects the returned goal, and waits until goal-store
+  projection appears in the goal list and selected-goal work graph.
+- Evidence 2026-05-12: the same live-stack browser proof now exercises
+  backend-routed memory write, memory preview/apply, human queue visibility,
+  registered runner status, and event-source registration through the real
+  gateway before shutting the deterministic stack back down.
 - Add token-broker-backed multi-user MCP smoke only after a broker implementation is selected.
 
 ### Release And Deployment Proof
@@ -143,7 +157,11 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Evidence 2026-05-11: release binaries now build Linux ARM on the native `ubuntu-22.04-arm` runner and macOS ARM on `macos-latest`; CI adds a cached runner-target compatibility job matrix for `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`.
 - Evidence 2026-05-11: GHCR image publishing can now target a single image or image group; the release workflow keeps Rust service/toolbox publishing in one cache-sharing job and fans Node sidecar images out into parallel jobs.
 - Evidence 2026-05-11: Rust service release tags now share one multi-binary service image build; `COAT_SERVICE_BIN` selects the process, and the entrypoint preserves compatibility by mapping known `BIND_ADDR` ports to service binaries.
-- Promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
+- Evidence 2026-05-12: CI now has a scheduled `compose-topology-smokes`
+  job that runs `make compose-runner-smoke` and
+  `make event-gateway-compose-smoke` weekly, while workflow dispatch can run
+  either smoke on demand. The job uses the same Rust cache/sccache setup as the
+  rest of CI and uploads Compose topology evidence on failure.
 - Add provider overlays after the first target is chosen; the first executor proof remains kind/k3d.
 - Add Restate Cloud journal encryption guidance when the Rust service path and provider documentation support it.
 
@@ -184,18 +202,18 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - `RuntimeVerifier`: complete the ignored entrypoint's deterministic scaffold with a Docker Testcontainers Restate harness and restart/resume proof.
 - `RuntimeVerifier`: wire the deterministic transition/projection observation assertions into the live Docker Testcontainers harness and, once an OpenTelemetry sink is selected, assert exported spans instead of only local tracing fields.
 - `CodexWorker`: run an env-gated live Codex App Server smoke with real thread/turn IDs, then capture the live result as a replay fixture.
-- `CodexWorker`: run live provider verification on real configured nodes and archive one profile result per enabled lane.
+- `CodexWorker`: run live provider verification on real configured nodes and archive one profile result per enabled model route.
 - `CodexWorker`: verify `@ctxr/kit` and `@ctxr/agent-staff-engineer` before staff-engineer live smoke work.
 - `Provisioner`: run kind/k3d watch proof from sandbox-runner provision request through result ingestion, failure taxonomy, cleanup, and attestation projection.
 - `Provisioner`: add provider-backed sandbox adapters only when they return validator-reviewable attestations, or write a supersession note if provider sandboxes remain out of scope.
 - `ResearchMemory`: run live Qdrant, Graphiti, Zep, and object-store adapter smoke with approved credentials, then capture replayable fixture evidence.
 - `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
-- `EventOps`: run event-gateway projection proof against full Compose or cluster topology, reusing the local projection smoke as the fast path.
 - `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
 - `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events.
+- `UIE2E`: add persisted SPA screenshots and TUI transcripts to scenario artifacts when the scenario runner grows first-class terminal and browser capture paths.
+- `UIE2E`: consider a gated LLM usability evaluator later; PR CI should keep using deterministic coherence checks.
 - `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.
 - `ReleaseHardening`: run the first published binary and Helm chart smoke and record evidence.
-- `ReleaseHardening`: promote `make compose-runner-smoke` to required or scheduled CI once Docker build capacity and image caches are available.
 - `ReleaseHardening`: add provider-specific deploy overlays and Restate Cloud journal-encryption guidance once the first cloud target and supported SDK path are selected.
 
 ## Acceptance

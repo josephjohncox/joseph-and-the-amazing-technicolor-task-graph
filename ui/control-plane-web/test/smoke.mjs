@@ -810,8 +810,19 @@ async function assertOperatorWorkflowRender() {
 
     const approvalMarkup = renderToStaticMarkup(
       React.createElement(ApprovalList, {
-        rows: approvals,
-        selectedGoalId: "",
+        items: approvals.map((approval) => ({
+          key: `approval:${approval.approval_id}`,
+          kind: "approval",
+          label: approval.risk,
+          status: approval.status,
+          detail: `Risk: ${approval.risk}`,
+          goalId: approval.goal_id,
+          taskId: "",
+          approvalId: approval.approval_id,
+          thunkId: "",
+          risk: approval.risk,
+          actionLabel: "Approve",
+        })),
         busy: false,
         onApprove: () => {},
       }),
@@ -823,13 +834,25 @@ async function assertOperatorWorkflowRender() {
 
     const disabledApprovalMarkup = renderToStaticMarkup(
       React.createElement(ApprovalList, {
-        rows: [{ approval_id: "", status: "pending", risk: "unknown gate" }],
-        selectedGoalId: "",
+        items: [{
+          key: "approval:missing",
+          kind: "approval",
+          label: "unknown gate",
+          status: "pending",
+          detail: "Risk: unknown gate",
+          goalId: "",
+          taskId: "",
+          approvalId: "",
+          thunkId: "",
+          risk: "unknown gate",
+          actionLabel: "Approve",
+        }],
         busy: false,
         onApprove: () => {},
       }),
     );
-    assert(disabledApprovalMarkup.includes("disabled=\"\""), "approval command is disabled without a goal id");
+    assert(disabledApprovalMarkup.includes("unknown gate"), "action queue still renders incomplete approval rows");
+    assert(!disabledApprovalMarkup.includes("<button"), "approval command is hidden when an approval cannot be acted on");
 
     const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { overview }));
     for (const expected of [

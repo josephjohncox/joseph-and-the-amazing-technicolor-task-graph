@@ -1229,7 +1229,9 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::from(""),
     ];
     if approvals.is_empty() {
-        lines.push(Line::from("No approvals, blocked tasks, or continuations need operator action."));
+        lines.push(Line::from(
+            "No approvals, blocked tasks, or continuations need operator action.",
+        ));
         return lines;
     }
     for approval in approvals {
@@ -1645,7 +1647,10 @@ fn thunk_action_needed_summaries_from_value(value: &Value) -> Vec<ApprovalSummar
         let status = compact_string_at_paths(node, &[&["status"]])
             .map(|status| status_token(&status))
             .unwrap_or_else(|| "waiting-input".to_string());
-        !matches!(status.as_str(), "resumed" | "cancelled" | "expired" | "done")
+        !matches!(
+            status.as_str(),
+            "resumed" | "cancelled" | "expired" | "done"
+        )
     })
     .filter_map(thunk_action_needed_summary)
     .collect()
@@ -3053,8 +3058,16 @@ mod tests {
         assert!(labels.contains("Approve sandbox profile"));
         assert!(labels.contains("Provide missing operator input"));
         assert!(action_needed.iter().any(|item| item.status == "blocked"));
-        assert!(action_needed.iter().any(|item| item.status == "waiting-approval"));
-        assert!(action_needed.iter().any(|item| item.status == "waiting-input"));
+        assert!(
+            action_needed
+                .iter()
+                .any(|item| item.status == "waiting-approval")
+        );
+        assert!(
+            action_needed
+                .iter()
+                .any(|item| item.status == "waiting-input")
+        );
     }
 
     #[test]

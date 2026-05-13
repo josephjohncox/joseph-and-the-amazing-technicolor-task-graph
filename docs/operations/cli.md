@@ -23,7 +23,7 @@ not in the committed `.envrc`.
 
 ```text
 coat plan <draft|list|show|revise|compile|follow-ups>
-coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>
+coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|adversarial|mechanism|thunk|branch|restart|cancel>
 coat human <approve|resume-thunk|notify>
 coat deploy local <preflight|up|config|logs|down>
 coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>
@@ -124,6 +124,48 @@ inspection, approvals, project/user config, local provider auth, chat-client
 integration, and active plan follow-up inspection. It does not bypass the normal
 backend APIs or approval gates.
 
+## Shortcut Flows
+
+Shortcut flows are named operator recipes over the canonical commands. They
+should create normal durable plans, goals, branch groups, reviews, votes,
+research tasks, approvals, or steering directives; they must not introduce a
+second orchestration path.
+
+Recommended shortcuts:
+
+- `strict_review`: draft or steer an actor task, run compile/test evidence,
+  request critic review, then require unifier or validator acceptance.
+- `red_team`: add security, safety, or policy critics to an existing goal before
+  completion can be evaluated.
+- `model_bakeoff`: create a branch group with model/persona variants, collect
+  `branch_vote` outputs, and select or unify the winner.
+- `research_first`: create a sourced research task and apply its
+  `InformationUsePlan` as steering before implementation.
+- `test_first`: inject a tester task that defines failing or missing evidence,
+  then route actor work against that evidence.
+- `cheap_then_deep`: run a fast candidate first and add deep review only when
+  evidence is incomplete or high risk.
+- `operator_review`: pause after critic or vote output and require a human
+  approval, branch selection, or steering directive.
+
+Near-term CLI shape should prefer explicit subcommands such as:
+
+```sh
+coat goal adversarial plan --goal-id <goal-id> --actor-count 3 --critic-check test_evidence --critic-check security --emit-only --out-dir /tmp/coat-adversarial
+coat goal adversarial start --goal-id <goal-id> --actor-count 3 --critic-check test_evidence --research-topic "<topic>"
+coat goal steer-standard --goal-id <goal-id> --check deep_research --topic "<topic>"
+coat goal branch --goal-id <goal-id> --file examples/branch-request-root.json
+coat goal select-branch --goal-id <goal-id> --file examples/branch-selection.json
+coat goal vote --goal-id <goal-id> --direction up --reason "<why>"
+coat goal compute-graph --goal-id <goal-id>
+coat goal tasks --goal-id <goal-id>
+```
+
+Interactive surfaces such as `coat guide` and `coat tui` may expose these
+shortcuts as buttons or menu actions, but the resulting action should still be
+shown as the underlying command or workflow handler before it mutates durable
+state.
+
 ## Terminal Dashboard And Chat
 
 `coat tui` opens a terminal dashboard with gateway-backed chat. It uses
@@ -157,14 +199,26 @@ a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
 same goal id to `/api/chat`; without a selected goal it uses the operator
 workspace session.
 
-The left control panel has four views: Overview, Goals, Approvals, and Events.
+The left control panel has six views: Overview, Goals, Approvals, Events,
+Adversarial, and Commands.
 Overview shows service health, runner count, selected-goal state, blockers,
 next action, evidence, and any active goal draft. Goals is the navigable goal
-list. Approvals shows pending and resolved approval records with risk, goal,
-task, and requested action. Events shows recent gateway or goal-store events,
-plus registered event sources when the projection includes them. Both the chat
-panel and the control panel render scroll progress and a scrollbar when content
-exceeds the visible area.
+list. Approvals is an action queue: approval rows can be approved directly,
+waiting continuations can be resumed using the input line as the response, and
+blocked or failed task rows retry the recoverable work through the coordinator
+restart path. Events shows recent gateway or goal-store events, plus registered event
+sources when the projection includes them. Adversarial shows actor, critic,
+research, vote, and unifier context for actor/critic workflows. Commands maps
+the canonical CLI hierarchy to the SPA/TUI panel or explicit CLI action path
+that covers it. Both the chat panel and the control panel render scroll
+progress and a scrollbar when content exceeds the visible area.
+
+Cancel is the explicit terminal stop path. Use `coat goal cancel --goal-id
+<goal-id> --reason "..."` when the operator wants the coordinator to stop the
+goal and mark remaining recoverable work cancelled. For normal recovery, use the
+action queue, `coat goal restart`, `coat human approve`, `coat human
+resume-thunk`, or `coat goal steer`; blocked, failed, waiting, and
+budget-exhausted states are meant to remain recoverable.
 
 The selected-goal outline includes projected subgoals, visible tasks, and
 compute graph nodes such as wait states. This is the terminal counterpart to
@@ -179,15 +233,17 @@ coat tui --control-gateway-url http://localhost:9090
 Key bindings:
 
 - `Tab`, `Shift-Tab`: move focus across dashboard, chat, and input panels.
-- `Left`, `Right`, or `1` through `4` while the control panel is focused:
-  switch Overview, Goals, Approvals, and Events.
+- `Left`, `Right`, or `1` through `6` while the control panel is focused:
+  switch Overview, Goals, Approvals, Events, Adversarial, and Commands.
 - `Enter`: send the chat input to `/api/chat` only when the input panel is focused; from another panel it focuses the input first.
+- `Enter` or `a` in the Approvals view: apply the selected action queue row.
 - `Ctrl-T`: switch chat mode across general, goal, plan, and search.
 - `Ctrl-N`, `Ctrl-P`: cycle to the next or previous projected goal.
 - `Ctrl-O`: clear the selected goal and return chat to the operator workspace session.
 - `Ctrl-R`: refresh the dashboard projection for the current goal.
 - `Up`, `Down`: scroll the focused control view, scroll chat history, or
-  cycle projected goals while the Goals view is focused.
+  cycle projected goals while the Goals view is focused; in Approvals they
+  select the action queue row.
 - `PageUp`, `PageDown`, `Home`, `End`: scroll the focused control view or
   chat history.
 - `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.

@@ -1,0 +1,391 @@
+{
+  "title": "Adversarial actor critic shortcut",
+  "objective": "Represent an adversarial actor, critic, research, branch-voting, and unifier workflow using the existing GoalSpec, BranchRequest, ReviewPolicy, MechanismPolicy, TaskPurpose, PersonaSpec, and ExecutionProfile contracts.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 800000,
+    "remaining_tokens": 800000,
+    "max_runtime_seconds": 7200,
+    "remaining_runtime_seconds": 7200,
+    "max_tool_calls": 600,
+    "remaining_tool_calls": 600,
+    "max_child_tasks": 48,
+    "remaining_child_tasks": 48,
+    "max_patch_size": 180000
+  },
+  "done_criteria": {
+    "tests_pass": true,
+    "artifact_exists": true,
+    "validator_score_min": 0.9
+  },
+  "review_policy": {
+    "enabled": true,
+    "min_reviews": 2,
+    "max_review_rounds": 3,
+    "join_strategy": "all_required",
+    "require_unification": true,
+    "reviewer_roles": ["reviewer", "tester"],
+    "unifier_role": "patch_merger",
+    "min_satisfaction_score": 0.9,
+    "actor_critic": {
+      "enabled": true,
+      "critic_role": "reviewer",
+      "actor_retry_role": "codex",
+      "max_actor_retries": 2,
+      "reward_threshold": 0.9
+    },
+    "doctrine": {
+      "enabled": true,
+      "presets": ["core_engineering", "testing", "laziness_lost"],
+      "coverage": {
+        "require_objective_results": true,
+        "require_gate_results": true,
+        "require_required_evidence": true,
+        "allow_not_applicable": true,
+        "min_objective_score": 0.85
+      },
+      "custom_objectives": [
+        {
+          "id": "adversarial.branch_contract",
+          "category": "custom",
+          "title": "Adversarial branch contract",
+          "description": "Actor candidates, critic review, branch votes, research, and unifier decisions remain typed task purposes inside the coordinator-owned graph.",
+          "required": true,
+          "min_score": 0.9,
+          "severity_if_failed": "high",
+          "evidence_requirement_ids": ["evidence.compute_graph_mapping"],
+          "tags": ["branching", "actor_critic", "mechanism"]
+        }
+      ],
+      "custom_evidence_requirements": [
+        {
+          "id": "evidence.compute_graph_mapping",
+          "kind": "custom",
+          "description": "Evidence maps each actor, critic, research, vote, and unifier step to TaskPurpose, BranchGroup, MechanismRound, or ReviewRound state.",
+          "required": true,
+          "commands": [],
+          "artifact_kinds": ["report", "artifact_manifest"],
+          "applies_to_objective_ids": ["adversarial.branch_contract"]
+        }
+      ],
+      "custom_style_doctrines": [],
+      "custom_validation_gates": [
+        {
+          "id": "gate.no_parallel_state_machine",
+          "kind": "architecture_review",
+          "description": "Reviewer confirms the shortcut uses existing coordinator state instead of introducing hidden runner-local workflow state.",
+          "required": true,
+          "min_score": 0.9,
+          "failure_blocks": true,
+          "evidence_requirement_ids": ["evidence.compute_graph_mapping"],
+          "applies_to_roles": ["reviewer", "tester", "patch_merger"]
+        }
+      ],
+      "custom_subagents": [
+        {
+          "id": "profile.actor",
+          "role": "codex",
+          "name": "Bounded actor",
+          "objective_ids": ["adversarial.branch_contract"],
+          "evidence_requirement_ids": ["evidence.compute_graph_mapping"],
+          "validation_gate_ids": ["gate.no_parallel_state_machine"],
+          "required_capabilities": ["code", "git_worktree", "workspace_sandbox", "durable_child_tasks"],
+          "required_model_features": ["tool_use", "json_schema"],
+          "prompt_hints": ["Produce one candidate implementation branch and return child work only through AgentRunResult.child_requests."],
+          "inherited_by_default": true
+        },
+        {
+          "id": "profile.critic",
+          "role": "reviewer",
+          "name": "Adversarial critic",
+          "objective_ids": ["adversarial.branch_contract"],
+          "evidence_requirement_ids": ["evidence.compute_graph_mapping"],
+          "validation_gate_ids": ["gate.no_parallel_state_machine"],
+          "required_capabilities": ["review", "mcp_tools"],
+          "required_model_features": ["tool_use", "json_schema", "reasoning"],
+          "prompt_hints": ["Attack the actor evidence, score the reward, and recommend retry only through ReviewOutput and structured findings."],
+          "inherited_by_default": true
+        },
+        {
+          "id": "profile.researcher",
+          "role": "research",
+          "name": "Adversarial researcher",
+          "objective_ids": ["adversarial.branch_contract"],
+          "evidence_requirement_ids": ["evidence.compute_graph_mapping"],
+          "validation_gate_ids": ["gate.no_parallel_state_machine"],
+          "required_capabilities": ["research", "web_search", "mcp_tools"],
+          "required_model_features": ["tool_use", "json_schema", "long_context"],
+          "prompt_hints": ["Return sourced ResearchOutput plus an InformationUsePlan for reviewers and branch unifiers."],
+          "inherited_by_default": false
+        },
+        {
+          "id": "profile.unifier",
+          "role": "patch_merger",
+          "name": "Branch unifier",
+          "objective_ids": ["adversarial.branch_contract"],
+          "evidence_requirement_ids": ["evidence.compute_graph_mapping"],
+          "validation_gate_ids": ["gate.no_parallel_state_machine"],
+          "required_capabilities": ["review", "git_worktree", "mcp_tools"],
+          "required_model_features": ["tool_use", "json_schema", "reasoning"],
+          "prompt_hints": ["Join critic, voter, and research evidence into a single BranchUnification or Unification decision."],
+          "inherited_by_default": true
+        }
+      ],
+      "overrides": []
+    }
+  },
+  "research_policy": {
+    "enabled": true,
+    "question_first": true,
+    "require_sources": true,
+    "require_use_plan": true,
+    "max_search_depth": 5,
+    "min_confidence": 0.8,
+    "allowed_providers": ["web", "docs", "mcp", "memory", "repo"],
+    "source_quality_order": ["primary", "official_docs", "peer_reviewed", "reputable_secondary"]
+  },
+  "memory_policy": {
+    "enabled": true,
+    "store": {
+      "kind": "zep_graphiti",
+      "endpoint": "http://graphiti-mcp:8000/mcp/",
+      "namespace": "adversarial_actor_critic",
+      "mcp_server_name": "coat-memory-gateway",
+      "secret_refs": []
+    },
+    "vector": {
+      "enabled": false,
+      "store": {
+        "kind": "qdrant",
+        "endpoint": "http://qdrant:6333",
+        "namespace": "adversarial_actor_critic",
+        "mcp_server_name": "qdrant-memory",
+        "secret_refs": []
+      },
+      "collection": "adversarial_actor_critic",
+      "write_embeddings": false,
+      "search_embeddings": false,
+      "hybrid_search": false,
+      "top_k": 8,
+      "min_score": 0.2
+    },
+    "embedding": {
+      "provider": "open_ai",
+      "model": "text-embedding-3-large",
+      "endpoint": "https://api.openai.com/v1/embeddings",
+      "dimensions": 3072,
+      "batch_size": 64,
+      "normalize": true,
+      "secret_refs": [
+        {
+          "provider": "env",
+          "name": "OPENAI_API_KEY",
+          "key": null,
+          "namespace": null,
+          "audience": "embedding-provider"
+        }
+      ]
+    },
+    "retrieval": {
+      "retrieve_before_task": true,
+      "max_hits": 8,
+      "min_score": 0.2,
+      "include_branch_memories": true,
+      "rerank": false,
+      "fusion": "graph_then_vector"
+    },
+    "write_policy": "reviewed_facts_only",
+    "fork_join": {
+      "inherit_parent_context": true,
+      "write_branch_memories": true,
+      "join_strategy": "unifier_curated"
+    },
+    "scopes": ["goal", "task", "repo", "persona"]
+  },
+  "branching_policy": {
+    "enabled": true,
+    "max_branch_groups": 4,
+    "max_candidates_per_group": 4,
+    "branch_on_root": true,
+    "branch_on_subgoals": true,
+    "cancel_original_on_branch": true,
+    "require_model_diversity": false,
+    "default_selection_strategy": "voter_quorum",
+    "voting": {
+      "enabled": true,
+      "min_votes": 2,
+      "voter_roles": ["reviewer", "tester"],
+      "require_unification": true,
+      "unifier_role": "patch_merger"
+    }
+  },
+  "mechanism_policy": {
+    "enabled": true,
+    "allow_human_participants": true,
+    "allow_agent_participants": true,
+    "allow_coordinator_participants": true,
+    "default_mechanism": "ranked_choice",
+    "quorum": 3,
+    "min_participants": 3,
+    "max_rounds": 4,
+    "max_ballots_per_participant": 1,
+    "require_human_ratification": true
+  },
+  "default_execution": {
+    "runner": {
+      "worker": "codex",
+      "runner_id": null,
+      "required_capabilities": ["code", "mcp_tools", "durable_child_tasks", "workspace_sandbox", "git_worktree"],
+      "required_labels": {},
+      "locality": "any_node"
+    },
+    "model": {
+      "strategy": "highest_quality",
+      "required_features": ["tool_use", "json_schema"],
+      "candidates": [
+        {
+          "provider": "codex",
+          "model": "codex-default",
+          "endpoint": null,
+          "priority": 10,
+          "weight": 1,
+          "context_window": null,
+          "features": ["tool_use", "json_schema", "reasoning"],
+          "labels": {"quality_tier": "frontier"}
+        }
+      ],
+      "fallback": "allow_fallback"
+    },
+    "persona": {
+      "name": "bounded-actor",
+      "instructions_ref": "docs/personas/adversarial-actor-critic.md",
+      "inline_instructions": [
+        "Actors produce candidate artifacts; critics, voters, and unifiers are separate durable tasks.",
+        "Requests for subagents become AgentRunResult.child_requests for the coordinator to materialize.",
+        "Use MCP and memory through references only; do not copy raw credentials or hidden state into prompts."
+      ],
+      "risk_tolerance": "conservative"
+    },
+    "subagents": {
+      "mode": "coordinator_durable_tasks",
+      "native_spawn": "disabled",
+      "child_request_channel": "agent_run_result_child_requests",
+      "inject_runner_context": true
+    },
+    "mcp": {
+      "context_id": "adversarial-workflow-context",
+      "access_mode": "single_user",
+      "user": null,
+      "oidc_delegation": null,
+      "servers": [
+        {
+          "name": "coat-memory-gateway",
+          "transport": "http",
+          "uri": "http://memory-gateway:9087/mcp",
+          "allowed_tools": ["coat_memory_context", "coat_memory_search", "coat_memory_write"],
+          "auth": {
+            "kind": "secret",
+            "secret": {
+              "provider": "env",
+              "name": "MCP_TOOL_TOKEN",
+              "key": null,
+              "namespace": null,
+              "audience": "memory-gateway"
+            }
+          }
+        },
+        {
+          "name": "coat-tool-registry",
+          "transport": "http",
+          "uri": "http://tool-registry:9084/mcp",
+          "allowed_tools": ["repo_status", "test_command", "artifact_manifest"],
+          "auth": {
+            "kind": "secret",
+            "secret": {
+              "provider": "env",
+              "name": "MCP_TOOL_TOKEN",
+              "key": null,
+              "namespace": null,
+              "audience": "tool-registry"
+            }
+          }
+        }
+      ],
+      "secret_refs": [],
+      "propagation": "runner_resolves_refs",
+      "token_ttl_seconds": 900,
+      "auth_distribution": {
+        "mode": "runner_resolves_refs",
+        "allowed_materials": ["mcp_bearer_token", "workload_identity_token"],
+        "required_runner_labels": {},
+        "lease_ttl_seconds": 900,
+        "renewal": "manual_or_brokered",
+        "allow_node_local_device_session": false,
+        "allow_secret_sync": false,
+        "require_human_approval_for_brokered_user_auth": true
+      }
+    },
+    "notifications": {
+      "events": ["approval_requested", "human_feedback_requested", "task_blocked", "goal_completed"],
+      "targets": [],
+      "feedback_thread_key": "adversarial-actor-critic",
+      "escalation_seconds": 3600
+    },
+    "results": {
+      "git": {
+        "enabled": true,
+        "remote": "origin",
+        "base_ref": "HEAD",
+        "branch_prefix": "jattg/task",
+        "worktree_root": "/worktrees",
+        "push_on_success": false,
+        "require_clean_diff": true,
+        "include_patch_artifact": true
+      },
+      "object_storage": {
+        "enabled": false,
+        "store": null,
+        "key_prefix_template": "goals/{goal_id}/tasks/{task_id}",
+        "require_manifest": true,
+        "max_inline_bytes": 262144
+      }
+    }
+  },
+  "initial_tasks": [
+    {
+      "role": "codex",
+      "purpose": {"kind": "work"},
+      "title": "Actor seed",
+      "subgoal_id": "actor-seed",
+      "prompt": "Produce the baseline actor artifact and evidence. Request critic, research, or branch work only as structured ChildTaskRequest values.",
+      "reason": "Seed the actor side of the adversarial loop inside coordinator-owned task state.",
+      "dependencies": [],
+      "budget": null,
+      "sandbox": null,
+      "done_criteria": null,
+      "review_doctrine": null,
+      "execution": null,
+      "priority": "normal",
+      "tags": ["actor", "adversarial"]
+    },
+    {
+      "role": "research",
+      "purpose": {
+        "kind": "research",
+        "question": "What current implementation or review evidence should actor candidates and critics use before branch selection?"
+      },
+      "title": "Research seed",
+      "subgoal_id": "research-seed",
+      "prompt": "Return sourced ResearchOutput and an InformationUsePlan that reviewers and branch unifiers can apply.",
+      "reason": "Represent research as a normal coordinator-owned task purpose.",
+      "dependencies": [],
+      "budget": null,
+      "sandbox": null,
+      "done_criteria": null,
+      "review_doctrine": null,
+      "execution": null,
+      "priority": "normal",
+      "tags": ["research", "adversarial"]
+    }
+  ]
+}

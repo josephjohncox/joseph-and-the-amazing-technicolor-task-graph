@@ -1,0 +1,45 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "title": "Select adversarial actor branch and review panel",
+  "mechanism": "ranked_choice",
+  "target": "branch_selection",
+  "reason": "Use coordinator-owned mechanism state to rank candidate actor branches and choose the review/unification path. Agent ballots are recommendations until the coordinator or a human applies the selection.",
+  "proposals": [
+    {
+      "label": "minimal-actor",
+      "description": "Prefer the smallest validated actor patch and send it through the standard critic and tester panel.",
+      "proposer": "branch-voter.reviewer",
+      "metadata": {
+        "task_purpose": "candidate_branch",
+        "persona": "minimal-correct-actor",
+        "review_panel": "reviewer,tester",
+        "unifier": "patch_merger"
+      }
+    },
+    {
+      "label": "traceable-actor",
+      "description": "Prefer the actor branch with the clearest evidence, checkpoint refs, and contract-level audit trail.",
+      "proposer": "branch-voter.tester",
+      "metadata": {
+        "task_purpose": "candidate_branch",
+        "persona": "traceability-actor",
+        "review_panel": "reviewer,tester,validator",
+        "unifier": "patch_merger"
+      }
+    },
+    {
+      "label": "research-first",
+      "description": "Pause branch selection long enough to run a sourced research task, then let the unifier apply the information-use plan to the candidate comparison.",
+      "proposer": "research",
+      "metadata": {
+        "task_purpose": "research",
+        "persona": "adversarial-researcher",
+        "review_panel": "reviewer",
+        "unifier": "patch_merger"
+      }
+    }
+  ],
+  "quorum": 3,
+  "min_participants": 3,
+  "require_human_ratification": true
+}

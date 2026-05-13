@@ -2313,10 +2313,11 @@ impl GoalState {
 
     pub fn is_done(&self) -> bool {
         self.status == GoalStatus::Done
-            || self
-                .satisfaction
-                .as_ref()
-                .is_some_and(|report| report.satisfied)
+            || (self.status != GoalStatus::Cancelled
+                && self
+                    .satisfaction
+                    .as_ref()
+                    .is_some_and(|report| report.satisfied))
     }
 
     pub fn budget_exhausted(&self) -> bool {
@@ -2995,7 +2996,12 @@ impl GoalState {
         if let Some(task_id) = task_id {
             let task = self.task_mut(task_id)?;
             match updated.status {
-                ApprovalStatus::Approved if task.status == TaskStatus::WaitingApproval => {
+                ApprovalStatus::Approved
+                    if matches!(
+                        task.status,
+                        TaskStatus::WaitingApproval | TaskStatus::Blocked
+                    ) =>
+                {
                     task.status = TaskStatus::Runnable;
                 }
                 ApprovalStatus::Rejected => {
@@ -3865,6 +3871,13 @@ impl GoalState {
                 "steering directive goal_id does not match workflow goal".to_string(),
             ));
         }
+        if let SteeringDirectiveKind::Cancel { reason } = &directive.kind {
+            let event_message = format!("steering_cancelled:{reason}");
+            self.cancel(reason.clone());
+            self.steering_directives.push(directive);
+            self.events.push(StateEvent::new(event_message));
+            return Ok(());
+        }
         if !self.goal.control_policy.human_steering_enabled {
             return Err(DomainError::SteeringDenied(
                 "human steering is disabled for this goal".to_string(),
@@ -4087,10 +4100,7 @@ impl GoalState {
                 }
                 format!("steering_resumed:{reason}")
             }
-            SteeringDirectiveKind::Cancel { reason } => {
-                self.cancel(reason.clone());
-                format!("steering_cancelled:{reason}")
-            }
+            SteeringDirectiveKind::Cancel { reason } => format!("steering_cancelled:{reason}"),
         };
 
         self.steering_directives.push(directive);
@@ -5143,6 +5153,9 @@ impl GoalState {
     }
 
     fn refresh_goal_status(&mut self) {
+        if self.status == GoalStatus::Cancelled {
+            return;
+        }
         let report = self.satisfaction_report();
         self.satisfaction = Some(report.clone());
         self.status = if self
@@ -5372,10 +5385,7 @@ pub enum TaskStatus {
 
 impl TaskStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Done | Self::Blocked | Self::Failed | Self::Cancelled
-        )
+        matches!(self, Self::Done | Self::Cancelled)
     }
 
     pub fn is_terminal_ok(&self) -> bool {
@@ -7754,6 +7764,8 @@ impl Default for RestartPolicy {
                 RestartScope::Goal,
                 RestartScope::Task,
                 RestartScope::Blocked,
+                RestartScope::Failed,
+                RestartScope::TimedOut,
             ],
             allowed_reasons: vec![
                 RestartReason::OperatorRequested,
@@ -15572,6 +15584,69 @@ mod tests {
 
         assert_eq!(record.restarted_task_ids, vec![root_id]);
         assert_eq!(state.tasks[&root_id].status, TaskStatus::Runnable);
+        assert_eq!(state.status, GoalStatus::Running);
+    }
+
+    #[test]
+    fn task_terminal_semantics_keep_blocked_and_failed_recoverable() {
+        assert!(TaskStatus::Done.is_terminal());
+        assert!(TaskStatus::Cancelled.is_terminal());
+        assert!(!TaskStatus::Blocked.is_terminal());
+        assert!(!TaskStatus::Failed.is_terminal());
+        assert!(!TaskStatus::WaitingInput.is_terminal());
+        assert!(TaskStatus::Done.is_terminal_ok());
+        assert!(!TaskStatus::Cancelled.is_terminal_ok());
+    }
+
+    #[test]
+    fn cancel_marks_recoverable_tasks_cancelled() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "cancel",
+            "cancel should be the explicit terminal stop path",
+        ));
+        let root_id = state.runnable_tasks().remove(0).id;
+        state.tasks.get_mut(&root_id).unwrap().status = TaskStatus::Blocked;
+        state.status = GoalStatus::Blocked;
+
+        state.cancel("operator stop");
+
+        assert_eq!(state.status, GoalStatus::Cancelled);
+        assert_eq!(state.tasks[&root_id].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn later_approval_can_reopen_a_rejected_blocked_task() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "approval reopen",
+            "approving after rejection should recover the task",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+        let approval_id = Uuid::new_v4();
+        state.approvals.push(ApprovalRequest {
+            id: approval_id,
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            attempt: 1,
+            reason: "dangerous action".to_string(),
+            status: ApprovalStatus::Rejected,
+            risk: ApprovalRisk::High,
+            reason_codes: vec![ApprovalReasonCode::SandboxPolicyAlways],
+            sandbox: state.tasks[&task_id].sandbox.clone(),
+            requested_action: "run task".to_string(),
+            notification_reports: Vec::new(),
+        });
+        state.tasks.get_mut(&task_id).unwrap().status = TaskStatus::Blocked;
+        state.status = GoalStatus::Blocked;
+
+        state
+            .apply_human_approval(HumanApproval {
+                approval_id,
+                approved: true,
+                note: Some("operator changed decision".to_string()),
+            })
+            .expect("approval reopens task");
+
+        assert_eq!(state.tasks[&task_id].status, TaskStatus::Runnable);
         assert_eq!(state.status, GoalStatus::Running);
     }
 

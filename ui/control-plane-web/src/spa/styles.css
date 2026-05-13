@@ -467,6 +467,32 @@ label {
   padding: 18px;
 }
 
+.draft-review-dock {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 18px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+
+.draft-review-dock > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.draft-review-dock strong,
+.draft-review-dock small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .command-panel,
 .panel,
 .metric-card {
@@ -1080,6 +1106,25 @@ label {
   gap: 12px;
 }
 
+.approval-card {
+  align-items: center;
+}
+
+.approval-card > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.inline-action-input {
+  min-width: min(280px, 100%);
+  margin: 0;
+}
+
+.inline-action-input textarea {
+  min-height: 54px;
+}
+
 .continuation-list {
   display: grid;
   gap: 12px;
@@ -1672,6 +1717,40 @@ th {
 .compact-list li {
   display: grid;
   gap: 3px;
+}
+
+.action-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.action-catalog-card {
+  display: flex;
+  min-height: 150px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.action-catalog-card > div {
+  display: grid;
+  gap: 8px;
+}
+
+.action-catalog-card code {
+  overflow-wrap: anywhere;
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+
+.action-catalog-card p {
+  margin: 0;
+  color: var(--muted);
 }
 
 .dialog-overlay {

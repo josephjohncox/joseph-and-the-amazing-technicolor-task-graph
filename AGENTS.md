@@ -18,7 +18,9 @@ Rust owns policy, state, tools, and deployment.
 Build a durable task tree for long-running autonomous engineering work.
 Do not build one giant infinite agent loop.
 
-The system should keep working until a goal is complete, blocked, cancelled, or budget exhausted.
+The system should keep working until a goal is complete or explicitly
+cancelled. Blocked, failed, waiting, and budget-exhausted states are
+recoverable action-needed states, not terminal workflow failures.
 
 ## Source Of Truth
 
@@ -61,6 +63,14 @@ Update docs when behavior or public contracts change.
 
 - Keep the harness separate from model execution.
 - Keep durable state in the coordinator, not in worker prompts.
+- Goal control methods such as `steer`, `approve`, `resume_thunk`, votes, and
+  branch selection are repeatable operator commands. Keep them on serialized
+  keyed Restate object handlers; do not model them as once-only workflow
+  methods.
+- Goal terminal states are only satisfied/done and cancelled. Failed, blocked,
+  waiting-input, waiting-approval, and budget-exhausted work must remain
+  steerable, restartable, resumable, or cancellable through coordinator-owned
+  state transitions.
 - Workers may request child tasks, but only the coordinator may create them.
 - Any prompt, skill, MCP tool, runner context, or worker output that says
   "subagent" means a COAT durable child task unless explicitly stated otherwise.
@@ -183,6 +193,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Local notification threads are for operator visibility; Restate workflow state remains the source of truth.
 - Web UI edits are steering, approval, goal, event, or memory commands against backend APIs; never mutate projections as if they were source-of-truth state.
 - Agent progress views should read projected `TaskRecord` rows and `payload_json.prompt` so operators can inspect current prompts, task contracts, state, and evidence.
+- If a workflow exists in the canonical `coat` CLI hierarchy, the SPA and TUI must expose a visible panel, direct action, or intentionally CLI-only command path for it. Keep the SPA Actions panel and TUI Commands tab aligned with `coat guide --print`.
 - Goal satisfaction is gated by actor output, critic reviews, optional review unification, and a satisfaction score.
 - Learning signals are reward-like validation/review scores for future actor/critic tuning; they are not permission to run unbounded retries.
 - Research tasks must return sourced `ResearchOutput` plus an `InformationUsePlan`.
@@ -242,6 +253,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Chat client MCP/skill setup wizard: `coat setup chat-client`
 - Restate Cloud registration only: `coat deploy restate register-cloud --tunnel-name jattg-personal --service-url http://coordinator:9080`
 - Goal ranking vote: `coat goal vote --goal-id <goal-id> --direction up --reason "promote umbrella work"`
+- Adversarial actor/critic shortcut preview: `coat goal adversarial plan --goal-id <goal-id> --actor-count 3 --critic-check test_evidence --emit-only --out-dir /tmp/coat-adversarial`
+- Adversarial actor/critic shortcut execution: `coat goal adversarial start --goal-id <goal-id> --actor-count 3 --critic-check test_evidence --critic-check security`
 - Mechanism round start: `coat goal mechanism start --goal-id <goal-id> --file examples/mechanism-round-consensus.json`
 - Mechanism ballot: `coat goal mechanism ballot --goal-id <goal-id> --file examples/mechanism-ballot-consensus.json`
 - Create delayed compute thunk: `coat goal thunk create --goal-id <goal-id> --file examples/delayed-compute-thunk-human-input.json`

@@ -92,10 +92,19 @@ enum DashboardView {
     Goals,
     Approvals,
     Events,
+    Adversarial,
+    Commands,
 }
 
 impl DashboardView {
-    const ALL: [Self; 4] = [Self::Overview, Self::Goals, Self::Approvals, Self::Events];
+    const ALL: [Self; 6] = [
+        Self::Overview,
+        Self::Goals,
+        Self::Approvals,
+        Self::Events,
+        Self::Adversarial,
+        Self::Commands,
+    ];
 
     fn next(self) -> Self {
         let index = self.index();
@@ -113,6 +122,8 @@ impl DashboardView {
             Self::Goals => 1,
             Self::Approvals => 2,
             Self::Events => 3,
+            Self::Adversarial => 4,
+            Self::Commands => 5,
         }
     }
 
@@ -122,6 +133,8 @@ impl DashboardView {
             Self::Goals => "Goals",
             Self::Approvals => "Approvals",
             Self::Events => "Events",
+            Self::Adversarial => "Adversarial",
+            Self::Commands => "Commands",
         }
     }
 
@@ -131,6 +144,8 @@ impl DashboardView {
             Self::Goals => "2",
             Self::Approvals => "3",
             Self::Events => "4",
+            Self::Adversarial => "5",
+            Self::Commands => "6",
         }
     }
 
@@ -154,6 +169,9 @@ enum PendingRequestKind {
     GoalSubmit {
         goal_spec: Value,
         draft_summary: Option<GoalDraftSummary>,
+    },
+    OperatorAction {
+        label: String,
     },
 }
 
@@ -284,6 +302,7 @@ struct App {
     selected_goal_approvals: Vec<ApprovalSummary>,
     selected_goal_events: Vec<EventSummary>,
     selected_goal_id: Option<String>,
+    selected_goal_snapshot: Option<Value>,
     selected_goal_outline: Vec<String>,
     messages: Vec<ChatLine>,
     last_chat_response: Option<Value>,
@@ -295,6 +314,7 @@ struct App {
     focus: TuiFocus,
     dashboard_view: DashboardView,
     dashboard_scroll: u16,
+    action_index: usize,
     last_refresh: Option<Instant>,
     busy: bool,
     pending_request: Option<PendingGatewayRequest>,
@@ -321,6 +341,7 @@ impl App {
             selected_goal_approvals: Vec::new(),
             selected_goal_events: Vec::new(),
             selected_goal_id,
+            selected_goal_snapshot: None,
             selected_goal_outline: Vec::new(),
             messages: Vec::new(),
             last_chat_response: None,
@@ -332,6 +353,7 @@ impl App {
             focus: TuiFocus::Input,
             dashboard_view: DashboardView::Overview,
             dashboard_scroll: 0,
+            action_index: 0,
             last_refresh: None,
             busy: false,
             pending_request: None,
@@ -363,6 +385,12 @@ impl App {
         if let Err(error) = self.refresh_selected_goal_summary().await {
             status = format!("dashboard refreshed; selected goal snapshot failed: {error}");
         }
+        let action_count = self.current_action_items().len();
+        if action_count == 0 {
+            self.action_index = 0;
+        } else {
+            self.action_index = self.action_index.min(action_count - 1);
+        }
         self.dashboard = dashboard_summary(&config, &overview, &self.goals);
         self.last_refresh = Some(Instant::now());
         self.status = status;
@@ -373,6 +401,7 @@ impl App {
         let Some(goal_id) = self.selected_goal_id.clone() else {
             return Ok(());
         };
+        self.selected_goal_snapshot = None;
         let path = format!("/api/goals/{}", percent_encode(&goal_id));
         let snapshot = self.get_json(&path).await?;
         self.selected_goal_outline = goal_outline_from_snapshot(&snapshot);
@@ -381,6 +410,7 @@ impl App {
         if let Some(summary) = goal_summary_from_snapshot(&snapshot, &goal_id) {
             upsert_goal_summary(&mut self.goals, summary);
         }
+        self.selected_goal_snapshot = Some(snapshot);
         Ok(())
     }
 
@@ -464,6 +494,9 @@ impl App {
             } => {
                 self.finish_goal_submit(result, goal_spec, draft_summary)
                     .await
+            }
+            PendingRequestKind::OperatorAction { label } => {
+                self.finish_operator_action(label, result).await
             }
         }
     }
@@ -618,6 +651,106 @@ impl App {
         }
     }
 
+    fn current_action_items(&self) -> Vec<ApprovalSummary> {
+        if self.selected_goal_id.is_some() && !self.selected_goal_approvals.is_empty() {
+            self.selected_goal_approvals.clone()
+        } else {
+            self.approvals.clone()
+        }
+    }
+
+    fn selected_action_item(&self) -> Option<ApprovalSummary> {
+        let items = self.current_action_items();
+        if items.is_empty() {
+            return None;
+        }
+        items
+            .get(self.action_index.min(items.len().saturating_sub(1)))
+            .cloned()
+    }
+
+    fn move_action_selection(&mut self, step: isize) {
+        let len = self.current_action_items().len();
+        if len == 0 {
+            self.action_index = 0;
+            self.status = "action queue is clear".to_string();
+            return;
+        }
+        let current = self.action_index.min(len.saturating_sub(1));
+        self.action_index = if step < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(len.saturating_sub(1))
+        };
+        self.status = format!("selected action {}/{}", self.action_index + 1, len);
+    }
+
+    fn begin_apply_selected_action(&mut self) -> anyhow::Result<()> {
+        if self.pending_request.is_some() {
+            self.status = "gateway request is still running; action deferred".to_string();
+            return Ok(());
+        }
+        let Some(action) = self.selected_action_item() else {
+            self.status = "action queue is clear".to_string();
+            return Ok(());
+        };
+        let Some(goal_id) = action
+            .goal_id
+            .clone()
+            .or_else(|| self.selected_goal_id.clone())
+            .filter(|goal_id| !goal_id.trim().is_empty())
+        else {
+            self.status = "selected action is missing a goal id".to_string();
+            return Ok(());
+        };
+        let (path, payload, label) = operator_action_request(&goal_id, &action, self.input.trim())?;
+        if action_requires_input(&action) {
+            self.input.clear();
+        }
+        self.status = format!("applying action: {label}");
+        self.busy = true;
+        self.pending_request = Some(PendingGatewayRequest {
+            kind: PendingRequestKind::OperatorAction {
+                label: label.clone(),
+            },
+            handle: self.spawn_post_json(&path, payload),
+        });
+        Ok(())
+    }
+
+    async fn finish_operator_action(
+        &mut self,
+        label: String,
+        response: Result<Value, String>,
+    ) -> anyhow::Result<()> {
+        match response {
+            Ok(value) => {
+                self.messages.push(ChatLine {
+                    role: "assistant".to_string(),
+                    content: format!("Action applied: {label}"),
+                });
+                self.last_chat_response = Some(value);
+                self.chat_scroll_from_bottom = 0;
+                self.action_index = 0;
+                let mut status = format!("action applied: {label}");
+                if let Err(error) = self.refresh_dashboard().await {
+                    status = format!("action applied, dashboard refresh failed: {error}");
+                }
+                self.status = status;
+                Ok(())
+            }
+            Err(error) => {
+                self.messages.push(ChatLine {
+                    role: "assistant".to_string(),
+                    content: format!("Action failed: {label}: {error}"),
+                });
+                self.chat_scroll_from_bottom = 0;
+                self.status = format!("action failed: {error}");
+                Ok(())
+            }
+        }
+    }
+
     fn spawn_post_json(&self, path: &str, payload: Value) -> JoinHandle<Result<Value, String>> {
         let client = self.client.clone();
         let token = self.config.token.clone();
@@ -720,6 +853,7 @@ impl App {
 
     async fn clear_goal_selection(&mut self) -> anyhow::Result<()> {
         self.selected_goal_id = None;
+        self.selected_goal_snapshot = None;
         self.selected_goal_outline.clear();
         self.selected_goal_approvals.clear();
         self.selected_goal_events.clear();
@@ -821,6 +955,14 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             app.select_dashboard_view(DashboardView::Events);
             Ok(false)
         }
+        KeyCode::Char('5') if app.focus == TuiFocus::Dashboard => {
+            app.select_dashboard_view(DashboardView::Adversarial);
+            Ok(false)
+        }
+        KeyCode::Char('6') if app.focus == TuiFocus::Dashboard => {
+            app.select_dashboard_view(DashboardView::Commands);
+            Ok(false)
+        }
         KeyCode::Left if app.focus == TuiFocus::Dashboard => {
             app.cycle_dashboard_view(-1);
             Ok(false)
@@ -830,7 +972,9 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Enter => {
-            if app.focus == TuiFocus::Input {
+            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Approvals {
+                app.begin_apply_selected_action()?;
+            } else if app.focus == TuiFocus::Input {
                 app.begin_send_chat()?;
             } else {
                 let previous_focus = app.focus.label();
@@ -896,8 +1040,18 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             app.discard_goal_draft();
             Ok(false)
         }
+        KeyCode::Char('a')
+            if app.focus == TuiFocus::Dashboard
+                && app.dashboard_view == DashboardView::Approvals =>
+        {
+            app.begin_apply_selected_action()?;
+            Ok(false)
+        }
         KeyCode::Up => {
-            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals {
+            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Approvals {
+                app.move_action_selection(-1);
+            } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals
+            {
                 if app.busy {
                     app.status =
                         "gateway request is running; goal selection is unchanged".to_string();
@@ -912,7 +1066,10 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Down => {
-            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals {
+            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Approvals {
+                app.move_action_selection(1);
+            } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals
+            {
                 if app.busy {
                     app.status =
                         "gateway request is running; goal selection is unchanged".to_string();
@@ -1097,6 +1254,8 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
         DashboardView::Goals => goals_dashboard_lines(app, chunks[1].width),
         DashboardView::Approvals => approvals_dashboard_lines(app, chunks[1].width),
         DashboardView::Events => events_dashboard_lines(app, chunks[1].width),
+        DashboardView::Adversarial => adversarial_dashboard_lines(app, chunks[1].width),
+        DashboardView::Commands => command_coverage_dashboard_lines(chunks[1].width),
     };
     render_scrollable_lines(
         frame,
@@ -1225,7 +1384,9 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Review approvals, blocked tasks, and waiting continuations."),
+        Line::from(
+            "Up/Down selects. Enter or a applies. For continuations, type the response in the input line first.",
+        ),
         Line::from(""),
     ];
     if approvals.is_empty() {
@@ -1234,8 +1395,20 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ));
         return lines;
     }
-    for approval in approvals {
+    for (index, approval) in approvals.iter().enumerate() {
+        let selected = index == app.action_index.min(approvals.len().saturating_sub(1));
+        let marker = if selected { ">" } else { " " };
+        let action_label = tui_action_label(approval);
         lines.push(Line::from(vec![
+            Span::styled(
+                marker,
+                Style::default().fg(if selected {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+            Span::raw(" "),
             Span::styled(
                 approval.status.clone(),
                 Style::default().fg(if approval.status == "pending" {
@@ -1251,7 +1424,8 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             ),
         ]));
         lines.push(Line::from(format!(
-            "  id:{} risk:{} goal:{} task:{}",
+            "  action:{} id:{} risk:{} goal:{} task:{}",
+            action_label,
             short_id(&approval.id),
             approval.risk.as_deref().unwrap_or("unspecified"),
             approval
@@ -1265,6 +1439,11 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .map(short_id)
                 .unwrap_or_else(|| "-".to_string())
         )));
+        if action_requires_input(approval) && selected {
+            lines.push(Line::from(
+                "  input: type the resume decision below, then press Enter or a",
+            ));
+        }
         if let Some(created_at) = approval.created_at.as_deref() {
             lines.push(dashboard_value_line("  created", created_at, value_width));
         }
@@ -1336,6 +1515,274 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(dashboard_value_line("  at", created_at, value_width));
         }
         lines.push(Line::from(""));
+    }
+    lines
+}
+
+fn command_coverage_dashboard_lines(width: u16) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(16).max(24) as usize;
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "operator command coverage",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(
+            "Each canonical CLI group has a TUI panel, SPA panel, or explicit CLI-only action path.",
+        ),
+        Line::from(""),
+    ];
+    for item in operator_command_catalog() {
+        lines.push(Line::from(vec![
+            Span::styled(item.command, Style::default().fg(Color::Cyan)),
+            Span::raw(" -> "),
+            Span::styled(item.surface, Style::default().add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(dashboard_value_line("action", item.action, value_width));
+        lines.push(dashboard_value_line("summary", item.summary, value_width));
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OperatorCommandCatalogItem {
+    command: &'static str,
+    surface: &'static str,
+    action: &'static str,
+    summary: &'static str,
+}
+
+fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
+    &[
+        OperatorCommandCatalogItem {
+            command: "coat plan",
+            surface: "Plans / Commands",
+            action: "Open Plans in SPA, Commands in TUI",
+            summary: "Draft, list, show, revise, compile, and continue durable plans.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat goal",
+            surface: "Goals / Work Graph / Goal Controls / Adversarial",
+            action: "Open Goals, Graph, Controls, or Adversarial",
+            summary: "Submit, inspect, steer, vote, branch, restart, and evaluate goals.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat human",
+            surface: "Approvals / Human Queue",
+            action: "Enter or a applies selected TUI action",
+            summary: "Approve gates, resume continuations, and inspect feedback threads.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat deploy",
+            surface: "Commands",
+            action: "Run explicit CLI deploy command",
+            summary: "Local, cluster, chart, and Restate Cloud deployment remains operator-run.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat runner",
+            surface: "Runners / Commands",
+            action: "Open runner status",
+            summary: "Inspect runner registration, capacity, endpoints, and routing pressure.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat tool",
+            surface: "Commands",
+            action: "Run CLI tool command",
+            summary: "List tools, call MCP tools, and route web-search through backend tooling.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat memory",
+            surface: "Memory / Commands",
+            action: "Open Memory",
+            summary: "Search, write, context, join, edit, repair, and inspect memory events.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat event",
+            surface: "Events / Human Queue / Commands",
+            action: "Open Events or Human Queue",
+            summary: "Register, ingest, emit, poll, trigger, and route durable event sources.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat store",
+            surface: "Dashboard / Goals / Plans / Human Queue",
+            action: "Open projection views",
+            summary: "Read goal-store projections for goals, tasks, plans, events, artifacts, checkpoints, and approvals.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat scenario",
+            surface: "Commands",
+            action: "Run explicit CLI scenario command",
+            summary: "List, run, and report deterministic scenario evidence.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat setup",
+            surface: "Commands",
+            action: "Run explicit CLI setup command",
+            summary: "Login, SSO, model index, config, local auth, and chat-client setup.",
+        },
+        OperatorCommandCatalogItem {
+            command: "coat tui",
+            surface: "Terminal UI",
+            action: "Already here",
+            summary: "Terminal dashboard mirrors SPA goal, action, runner, event, and command coverage.",
+        },
+    ]
+}
+
+fn adversarial_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(17).max(22) as usize;
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "adversarial panel",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from("Read-only grouped task view. Use Up/Down or PageUp/PageDown to scroll."),
+    ];
+
+    let Some(goal_id) = app.selected_goal_id.as_deref() else {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Select a goal with Ctrl-N/Ctrl-P first."));
+        return lines;
+    };
+    lines.push(Line::from(format!("goal {}", short_id(goal_id))));
+
+    let Some(snapshot) = app.selected_goal_snapshot.as_ref() else {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Selected goal snapshot is still loading."));
+        return lines;
+    };
+
+    let summary = adversarial_summary_from_snapshot(snapshot);
+    lines.extend(adversarial_satisfaction_lines(&summary, value_width));
+    lines.extend(adversarial_task_group_lines(
+        "actors and candidates",
+        &summary.actors,
+        value_width,
+    ));
+    lines.extend(adversarial_task_group_lines(
+        "critics, testers, and formal methods",
+        &summary.critics,
+        value_width,
+    ));
+    lines.extend(adversarial_task_group_lines(
+        "research tasks",
+        &summary.research,
+        value_width,
+    ));
+    lines.extend(adversarial_task_group_lines(
+        "unification, votes, and mechanisms",
+        &summary.mechanisms,
+        value_width,
+    ));
+    lines.extend(adversarial_reference_lines(
+        "agent context, chat, and thread refs",
+        &summary.references,
+        value_width,
+    ));
+    lines
+}
+
+fn adversarial_satisfaction_lines(
+    summary: &AdversarialSummary,
+    value_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "satisfaction",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    lines.push(Line::from(format!(
+        "  score:{} satisfied:{}",
+        summary.satisfaction_score.as_deref().unwrap_or("-"),
+        summary.satisfied.as_deref().unwrap_or("-")
+    )));
+    if summary.satisfaction_reasons.is_empty() {
+        lines.push(Line::from("  reasons: none projected"));
+    } else {
+        for reason in summary.satisfaction_reasons.iter().take(5) {
+            lines.push(dashboard_value_line("  reason", reason, value_width));
+        }
+        if summary.satisfaction_reasons.len() > 5 {
+            lines.push(Line::from(format!(
+                "  +{} more reasons",
+                summary.satisfaction_reasons.len() - 5
+            )));
+        }
+    }
+    lines
+}
+
+fn adversarial_task_group_lines(
+    title: &str,
+    rows: &[AdversarialTaskRow],
+    value_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("{title} ({})", rows.len()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    if rows.is_empty() {
+        lines.push(Line::from("  none projected"));
+        return lines;
+    }
+    for row in rows.iter().take(12) {
+        lines.push(Line::from(format!(
+            "  {} [{} {} {}] {}",
+            row.id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "task".to_string()),
+            row.status.as_deref().unwrap_or("-"),
+            row.role.as_deref().unwrap_or("-"),
+            row.purpose.as_deref().unwrap_or("-"),
+            truncate_text(&row.title, value_width)
+        )));
+        if let Some(reference) = row.reference.as_deref() {
+            lines.push(dashboard_value_line("    ref", reference, value_width));
+        }
+    }
+    if rows.len() > 12 {
+        lines.push(Line::from(format!("  +{} more", rows.len() - 12)));
+    }
+    lines
+}
+
+fn adversarial_reference_lines(
+    title: &str,
+    refs: &[String],
+    value_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("{title} ({})", refs.len()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    if refs.is_empty() {
+        lines.push(Line::from("  none projected"));
+        return lines;
+    }
+    for reference in refs.iter().take(12) {
+        lines.push(dashboard_value_line("  ref", reference, value_width));
+    }
+    if refs.len() > 12 {
+        lines.push(Line::from(format!("  +{} more", refs.len() - 12)));
     }
     lines
 }
@@ -1447,7 +1894,7 @@ fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Tab focus  ←/→ or 1-4 switch control views  ↑/↓ scroll or select goals  Ctrl-T mode  Enter sends in input  F5/Ctrl-G submit  Ctrl-D discard  Ctrl-R refresh  Esc quit",
+            "Tab focus  ←/→ or 1-6 views  ↑/↓ scroll/select  approvals: Enter/a acts  Ctrl-T mode  chat Enter sends  F5/Ctrl-G submit draft  Ctrl-D discard  Ctrl-R refresh  Esc quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -1672,6 +2119,112 @@ fn thunk_action_needed_summary(node: &Value) -> Option<ApprovalSummary> {
         task_id: compact_string_at_paths(node, &[&["task_id"]]),
         created_at: None,
     })
+}
+
+fn action_requires_input(action: &ApprovalSummary) -> bool {
+    action.id.starts_with("thunk:") || status_token(&action.status) == "waiting-input"
+}
+
+fn operator_action_request(
+    goal_id: &str,
+    action: &ApprovalSummary,
+    input: &str,
+) -> anyhow::Result<(String, Value, String)> {
+    if action.id.starts_with("thunk:") || status_token(&action.status) == "waiting-input" {
+        let thunk_id = action
+            .id
+            .strip_prefix("thunk:")
+            .unwrap_or(action.id.as_str());
+        if thunk_id.trim().is_empty() {
+            bail!("selected continuation is missing a thunk id");
+        }
+        let response_summary = if input.trim().is_empty() {
+            "Resumed from the COAT TUI action queue.".to_string()
+        } else {
+            input.trim().to_string()
+        };
+        return Ok((
+            format!("/api/goals/{}/resume_thunk", percent_encode(goal_id)),
+            json!({
+                "thunk_id": thunk_id,
+                "responder": "operator",
+                "response_summary": response_summary,
+                "artifact_refs": []
+            }),
+            format!("resume {}", short_id(thunk_id)),
+        ));
+    }
+
+    if !action.id.starts_with("task:") {
+        return Ok((
+            format!("/api/goals/{}/approve", percent_encode(goal_id)),
+            json!({
+                "approval_id": action.id,
+                "approved": true,
+                "comment": "Approved from COAT TUI action queue"
+            }),
+            format!("approve {}", short_id(&action.id)),
+        ));
+    }
+
+    let task_id = action.task_id.clone();
+    let task_ref = task_id
+        .as_deref()
+        .map(short_id)
+        .unwrap_or_else(|| "blocked task".to_string());
+    let status = status_token(&action.status);
+    if status == "blocked" || status == "failed" {
+        let scope = if status == "failed" {
+            "failed"
+        } else {
+            "blocked"
+        };
+        return Ok((
+            format!("/api/goals/{}/restart", percent_encode(goal_id)),
+            json!({
+                "goal_id": goal_id,
+                "scope": scope,
+                "reason": "operator_requested",
+                "message": format!("Retry {task_ref} from the action queue: {}", action.action),
+                "task_id": null,
+                "reset_attempts": false,
+                "preserve_artifacts": true,
+                "operator": "operator"
+            }),
+            format!("retry {scope} work"),
+        ));
+    }
+
+    Ok((
+        format!("/api/goals/{}/steer", percent_encode(goal_id)),
+        json!({
+            "id": Uuid::new_v4(),
+            "goal_id": goal_id,
+            "task_id": task_id,
+            "operator": "operator",
+            "message": format!("Request coordinator-owned recovery for {task_ref}."),
+            "kind": {
+                "kind": "inject_task",
+                "role": "planner",
+                "prompt": format!(
+                    "Re-plan or recover {task_ref}. Blocked item: {}. Return concrete next tasks, evidence requirements, and any human inputs still needed.",
+                    action.action
+                ),
+                "reason": format!("{} requires operator recovery: {}", action.status, action.action)
+            }
+        }),
+        format!("request recovery for {task_ref}"),
+    ))
+}
+
+fn tui_action_label(action: &ApprovalSummary) -> &'static str {
+    if action.id.starts_with("thunk:") || status_token(&action.status) == "waiting-input" {
+        "Resume"
+    } else if action.id.starts_with("task:") {
+        "Request recovery"
+    } else {
+        "Approve"
+    }
 }
 
 fn event_summaries_from_value(value: &Value) -> Vec<EventSummary> {
@@ -1930,6 +2483,28 @@ struct GoalRuntimeSummary {
     next_task: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AdversarialTaskRow {
+    id: Option<String>,
+    title: String,
+    status: Option<String>,
+    role: Option<String>,
+    purpose: Option<String>,
+    reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AdversarialSummary {
+    actors: Vec<AdversarialTaskRow>,
+    critics: Vec<AdversarialTaskRow>,
+    research: Vec<AdversarialTaskRow>,
+    mechanisms: Vec<AdversarialTaskRow>,
+    satisfaction_score: Option<String>,
+    satisfied: Option<String>,
+    satisfaction_reasons: Vec<String>,
+    references: Vec<String>,
+}
+
 fn goal_outline_from_snapshot(value: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(subgoals) = first_array_at_paths(
@@ -2166,6 +2741,376 @@ fn goal_runtime_summary_from_snapshot(value: &Value) -> GoalRuntimeSummary {
         current_action,
         latest_evidence,
         next_task,
+    }
+}
+
+fn adversarial_summary_from_snapshot(value: &Value) -> AdversarialSummary {
+    let mut summary = AdversarialSummary::default();
+    let task_rows = adversarial_task_rows_from_snapshot(value);
+    for row in task_rows {
+        if adversarial_row_is_mechanism(&row) {
+            summary.mechanisms.push(row);
+        } else if adversarial_row_is_research(&row) {
+            summary.research.push(row);
+        } else if adversarial_row_is_critic(&row) {
+            summary.critics.push(row);
+        } else if adversarial_row_is_actor(&row) {
+            summary.actors.push(row);
+        }
+    }
+    summary
+        .mechanisms
+        .extend(adversarial_mechanism_rows_from_snapshot(value));
+    let (score, satisfied, reasons) = adversarial_satisfaction_from_snapshot(value);
+    summary.satisfaction_score = score;
+    summary.satisfied = satisfied;
+    summary.satisfaction_reasons = reasons;
+    summary.references = adversarial_references_from_snapshot(value);
+    summary
+}
+
+fn adversarial_task_rows_from_snapshot(value: &Value) -> Vec<AdversarialTaskRow> {
+    let mut rows = Vec::new();
+    for tasks in [
+        first_array_at_paths(
+            value,
+            &[
+                &["agent_activity"],
+                &["agents", "data", "tasks"],
+                &["agents", "tasks"],
+                &["tasks", "data", "tasks"],
+                &["tasks", "tasks"],
+                &["data", "tasks"],
+            ],
+        ),
+        first_array_at_paths(
+            value,
+            &[
+                &["workflow_progress", "data", "next_tasks"],
+                &["workflow_progress", "next_tasks"],
+                &["progress", "data", "next_tasks"],
+                &["progress", "next_tasks"],
+            ],
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        rows.extend(tasks.iter().filter_map(adversarial_task_row_from_value));
+    }
+    dedupe_adversarial_rows(rows)
+}
+
+fn adversarial_task_row_from_value(value: &Value) -> Option<AdversarialTaskRow> {
+    let title = compact_string_at_paths(
+        value,
+        &[
+            &["title"],
+            &["current_prompt"],
+            &["prompt"],
+            &["payload_json", "title"],
+            &["payload_json", "prompt"],
+            &["raw_task", "title"],
+            &["raw_task", "prompt"],
+        ],
+    )
+    .or_else(|| task_id(value).map(|id| format!("task {}", short_id(&id))))?;
+    Some(AdversarialTaskRow {
+        id: task_id(value),
+        title,
+        status: Some(task_status(value)).filter(|status| !status.is_empty()),
+        role: adversarial_role(value),
+        purpose: adversarial_purpose(value),
+        reference: adversarial_task_reference(value),
+    })
+}
+
+fn adversarial_role(value: &Value) -> Option<String> {
+    compact_string_at_paths(
+        value,
+        &[
+            &["role"],
+            &["payload_json", "role"],
+            &["raw_task", "role"],
+            &["execution", "runner", "worker"],
+            &["payload_json", "execution", "runner", "worker"],
+        ],
+    )
+    .map(|role| status_token(&role))
+}
+
+fn adversarial_purpose(value: &Value) -> Option<String> {
+    compact_string_at_paths(
+        value,
+        &[
+            &["purpose_kind"],
+            &["purpose", "kind"],
+            &["payload_json", "purpose_kind"],
+            &["payload_json", "purpose", "kind"],
+            &["raw_task", "purpose_kind"],
+            &["raw_task", "purpose", "kind"],
+        ],
+    )
+    .map(|purpose| status_token(&purpose))
+}
+
+fn adversarial_task_reference(value: &Value) -> Option<String> {
+    compact_string_at_paths(
+        value,
+        &[
+            &["result_uri"],
+            &["result", "uri"],
+            &["payload_json", "result", "uri"],
+            &["payload_json", "result_uri"],
+            &["payload_json", "mcp_context_used", "context_id"],
+            &["payload_json", "coordinator_trace_id"],
+            &["raw_task", "execution", "mcp", "context_id"],
+        ],
+    )
+}
+
+fn adversarial_row_is_actor(row: &AdversarialTaskRow) -> bool {
+    matches!(
+        row.purpose.as_deref(),
+        Some("work" | "actor-retry" | "candidate-branch")
+    ) || matches!(
+        row.role.as_deref(),
+        Some(
+            "planner"
+                | "codex"
+                | "claude-code"
+                | "staff-engineer-claude"
+                | "model-provider"
+                | "rust-tool"
+        )
+    )
+}
+
+fn adversarial_row_is_critic(row: &AdversarialTaskRow) -> bool {
+    matches!(row.purpose.as_deref(), Some("review"))
+        || matches!(
+            row.role.as_deref(),
+            Some("reviewer" | "tester" | "formal-methods" | "validator")
+        )
+}
+
+fn adversarial_row_is_research(row: &AdversarialTaskRow) -> bool {
+    matches!(row.purpose.as_deref(), Some("research"))
+        || matches!(row.role.as_deref(), Some("research"))
+}
+
+fn adversarial_row_is_mechanism(row: &AdversarialTaskRow) -> bool {
+    matches!(
+        row.purpose.as_deref(),
+        Some("unification" | "branch-vote" | "branch-unification")
+    ) || matches!(row.role.as_deref(), Some("patch-merger"))
+}
+
+fn adversarial_mechanism_rows_from_snapshot(value: &Value) -> Vec<AdversarialTaskRow> {
+    let mut rows = Vec::new();
+    for votes in [
+        first_array_at_paths(
+            value,
+            &[
+                &["branch_votes"],
+                &["branch_votes", "data", "branch_votes"],
+                &["branch_votes", "data"],
+            ],
+        ),
+        first_array_at_paths(
+            value,
+            &[
+                &[
+                    "goal_store_goal",
+                    "data",
+                    "goal",
+                    "payload_json",
+                    "branch_votes",
+                ],
+                &["goal", "payload_json", "branch_votes"],
+            ],
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        rows.extend(votes.iter().filter_map(|vote| {
+            let id = compact_string_at_paths(vote, &[&["selected_task_id"], &["task_id"], &["id"]]);
+            let title = compact_string_at_paths(vote, &[&["rationale"], &["reason"]])
+                .unwrap_or_else(|| "branch vote".to_string());
+            Some(AdversarialTaskRow {
+                id,
+                title,
+                status: compact_string_at_paths(vote, &[&["decision"], &["status"]]),
+                role: Some("vote".to_string()),
+                purpose: Some("branch-vote".to_string()),
+                reference: compact_string_at_paths(vote, &[&["group_id"], &["branch_group_id"]]),
+            })
+        }));
+    }
+    for rounds in [
+        first_array_at_paths(
+            value,
+            &[
+                &["review_rounds"],
+                &["review_rounds", "data", "review_rounds"],
+                &["review_rounds", "data"],
+            ],
+        ),
+        first_array_at_paths(
+            value,
+            &[
+                &[
+                    "goal_store_goal",
+                    "data",
+                    "goal",
+                    "payload_json",
+                    "review_rounds",
+                ],
+                &["goal", "payload_json", "review_rounds"],
+            ],
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        rows.extend(rounds.iter().enumerate().map(|(index, round)| {
+            let round_id = compact_string_at_paths(round, &[&["round"], &["id"]])
+                .unwrap_or_else(|| (index + 1).to_string());
+            AdversarialTaskRow {
+                id: compact_string_at_paths(round, &[&["unification_task_id"]]),
+                title: format!("review round {round_id}"),
+                status: compact_string_at_paths(round, &[&["status"]])
+                    .map(|status| status_token(&status)),
+                role: Some("review-round".to_string()),
+                purpose: Some("unification".to_string()),
+                reference: compact_string_at_paths(
+                    round,
+                    &[&["subject_task_ids"], &["reviewer_task_ids"]],
+                ),
+            }
+        }));
+    }
+    dedupe_adversarial_rows(rows)
+}
+
+fn adversarial_satisfaction_from_snapshot(
+    value: &Value,
+) -> (Option<String>, Option<String>, Vec<String>) {
+    let Some(satisfaction) = first_object_at_paths(
+        value,
+        &[
+            &["workflow_progress", "data", "satisfaction"],
+            &["workflow_progress", "satisfaction"],
+            &["progress", "data", "satisfaction"],
+            &["progress", "satisfaction"],
+            &[
+                "goal_store_goal",
+                "data",
+                "goal",
+                "payload_json",
+                "satisfaction",
+            ],
+            &["goal", "payload_json", "satisfaction"],
+            &["satisfaction"],
+        ],
+    ) else {
+        return (None, None, Vec::new());
+    };
+    let score = compact_string_at_paths(
+        satisfaction,
+        &[
+            &["score"],
+            &["satisfaction_score"],
+            &["min_satisfaction_score"],
+        ],
+    );
+    let satisfied = compact_string_at_paths(satisfaction, &[&["satisfied"], &["is_satisfied"]]);
+    let reasons = value_at_path(satisfaction, &["reasons"])
+        .and_then(Value::as_array)
+        .map(|reasons| reasons.iter().filter_map(compact_value_string).collect())
+        .unwrap_or_default();
+    (score, satisfied, reasons)
+}
+
+fn adversarial_references_from_snapshot(value: &Value) -> Vec<String> {
+    let mut refs = Vec::new();
+    collect_adversarial_references(value, &mut refs);
+    refs.truncate(40);
+    refs
+}
+
+fn collect_adversarial_references(value: &Value, refs: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if adversarial_reference_key(key)
+                    && let Some(text) = compact_value_string(child)
+                {
+                    push_unique_string(refs, format!("{key}={text}"));
+                }
+                collect_adversarial_references(child, refs);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_adversarial_references(child, refs);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn adversarial_reference_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(
+        key.as_str(),
+        "agent_context_id"
+            | "context_id"
+            | "mcp_context_id"
+            | "thread_id"
+            | "session_id"
+            | "chat_session_id"
+            | "conversation_id"
+            | "coordinator_trace_id"
+            | "trace_id"
+            | "run_id"
+            | "checkpoint_id"
+            | "result_uri"
+            | "artifact_uri"
+            | "pull_request_url"
+            | "branch"
+            | "uri"
+    )
+}
+
+fn dedupe_adversarial_rows(rows: Vec<AdversarialTaskRow>) -> Vec<AdversarialTaskRow> {
+    let mut deduped = Vec::new();
+    for row in rows {
+        let key = format!(
+            "{}:{}:{}",
+            row.id.as_deref().unwrap_or_default(),
+            row.title,
+            row.purpose.as_deref().unwrap_or_default()
+        );
+        if deduped.iter().any(|existing: &AdversarialTaskRow| {
+            format!(
+                "{}:{}:{}",
+                existing.id.as_deref().unwrap_or_default(),
+                existing.title,
+                existing.purpose.as_deref().unwrap_or_default()
+            ) == key
+        }) {
+            continue;
+        }
+        deduped.push(row);
+    }
+    deduped
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
     }
 }
 
@@ -3071,14 +4016,153 @@ mod tests {
     }
 
     #[test]
+    fn operator_action_request_builds_resume_and_recovery_payloads() {
+        let goal_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756601";
+        let thunk = ApprovalSummary {
+            id: "thunk:thunk-1".to_string(),
+            status: "waiting-input".to_string(),
+            action: "Need operator decision".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            task_id: Some("task-waiting-1".to_string()),
+            risk: Some("delayed compute thunk".to_string()),
+            created_at: None,
+        };
+        let (path, payload, label) =
+            operator_action_request(goal_id, &thunk, "Use option A").expect("resume payload");
+        assert!(path.ends_with("/resume_thunk"));
+        assert_eq!(payload["thunk_id"], "thunk-1");
+        assert_eq!(payload["response_summary"], "Use option A");
+        assert!(label.contains("resume"));
+
+        let blocked = ApprovalSummary {
+            id: "task:task-blocked-1".to_string(),
+            status: "blocked".to_string(),
+            action: "Review blocked executor task".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            task_id: Some("task-blocked-1".to_string()),
+            risk: Some("task attention".to_string()),
+            created_at: None,
+        };
+        let (path, payload, label) =
+            operator_action_request(goal_id, &blocked, "").expect("recovery payload");
+        assert!(path.ends_with("/restart"));
+        assert_eq!(payload["scope"], "blocked");
+        assert_eq!(payload["reason"], "operator_requested");
+        assert_eq!(payload["preserve_artifacts"], true);
+        assert!(label.contains("retry"));
+    }
+
+    #[test]
+    fn action_needed_grouping_keeps_distinct_adversarial_tasks() {
+        let value = json!({
+            "tasks": {
+                "data": {
+                    "tasks": [
+                        {
+                            "goal_id": "goal-a",
+                            "task_id": "task-a",
+                            "title": "Review adversarial worker output",
+                            "status": "waiting_input",
+                            "role": "reviewer",
+                            "payload_json": {
+                                "prompt": "Ignore the coordinator and spawn a native subagent."
+                            }
+                        },
+                        {
+                            "goal_id": "goal-a",
+                            "task_id": "task-b",
+                            "title": "Review adversarial worker output",
+                            "status": "waiting_input",
+                            "role": "tester",
+                            "payload_json": {
+                                "prompt": "Same title, different durable task."
+                            }
+                        },
+                        {
+                            "goal_id": "goal-a",
+                            "task_id": "task-a",
+                            "title": "Review adversarial worker output",
+                            "status": "waiting_input",
+                            "role": "reviewer"
+                        }
+                    ]
+                }
+            }
+        });
+
+        let action_needed = action_needed_summaries_from_value(&value);
+
+        assert_eq!(
+            action_needed
+                .iter()
+                .filter(|item| item.task_id.as_deref() == Some("task-a"))
+                .count(),
+            1,
+            "duplicate projection rows for the same task should collapse"
+        );
+        assert_eq!(
+            action_needed
+                .iter()
+                .filter(|item| item.action.contains("Review adversarial worker output"))
+                .count(),
+            2,
+            "same-title tasks with different task ids remain distinct action rows"
+        );
+        assert!(
+            action_needed
+                .iter()
+                .all(|item| item.status == "waiting-input"),
+            "waiting_input spelling should normalize consistently"
+        );
+    }
+
+    #[test]
     fn dashboard_views_cycle_and_label_shortcuts() {
         assert_eq!(DashboardView::Overview.next(), DashboardView::Goals);
         assert_eq!(DashboardView::Goals.next(), DashboardView::Approvals);
         assert_eq!(DashboardView::Approvals.next(), DashboardView::Events);
-        assert_eq!(DashboardView::Events.next(), DashboardView::Overview);
-        assert_eq!(DashboardView::Overview.previous(), DashboardView::Events);
+        assert_eq!(DashboardView::Events.next(), DashboardView::Adversarial);
+        assert_eq!(DashboardView::Adversarial.next(), DashboardView::Commands);
+        assert_eq!(DashboardView::Commands.next(), DashboardView::Overview);
+        assert_eq!(DashboardView::Overview.previous(), DashboardView::Commands);
         assert_eq!(DashboardView::Approvals.key_hint(), "3");
         assert_eq!(DashboardView::Events.title(), "Events (4)");
+        assert_eq!(DashboardView::Adversarial.title(), "Adversarial (5)");
+        assert_eq!(DashboardView::Commands.title(), "Commands (6)");
+    }
+
+    #[test]
+    fn command_coverage_catalog_includes_canonical_cli_groups() {
+        let rendered = command_coverage_dashboard_lines(100)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for command in [
+            "coat plan",
+            "coat goal",
+            "coat human",
+            "coat deploy",
+            "coat runner",
+            "coat tool",
+            "coat memory",
+            "coat event",
+            "coat store",
+            "coat scenario",
+            "coat setup",
+            "coat tui",
+        ] {
+            assert!(
+                rendered.contains(command),
+                "missing command coverage for {command}"
+            );
+        }
     }
 
     #[test]
@@ -3288,6 +4372,122 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("compute: Need operator decision"))
         );
+    }
+
+    #[test]
+    fn adversarial_snapshot_groups_tasks_and_refs() {
+        let goal_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756601";
+        let snapshot = json!({
+            "workflow_progress": {
+                "data": {
+                    "satisfaction": {
+                        "satisfied": false,
+                        "score": 0.72,
+                        "reasons": [
+                            "required critic reviews have not passed",
+                            "review unification has not completed"
+                        ]
+                    }
+                }
+            },
+            "tasks": {
+                "data": {
+                    "tasks": [
+                        {
+                            "task_id": "actor-11111111",
+                            "title": "Implement bounded execution",
+                            "status": "done",
+                            "role": "codex",
+                            "purpose_kind": "work",
+                            "result_uri": "git+branch://feature/adversarial"
+                        },
+                        {
+                            "task_id": "critic-22222222",
+                            "title": "Review bounded execution",
+                            "status": "running",
+                            "role": "reviewer",
+                            "purpose": {"kind": "review"},
+                            "payload_json": {
+                                "mcp_context_used": {"context_id": "ctx-review-1"}
+                            }
+                        },
+                        {
+                            "task_id": "test-33333333",
+                            "title": "Run validation tests",
+                            "status": "runnable",
+                            "role": "tester",
+                            "purpose_kind": "review"
+                        },
+                        {
+                            "task_id": "research-44444444",
+                            "title": "Collect current SDK facts",
+                            "status": "done",
+                            "role": "research",
+                            "purpose": {"kind": "research"},
+                            "payload_json": {"coordinator_trace_id": "trace-research-1"}
+                        },
+                        {
+                            "task_id": "unify-55555555",
+                            "title": "Unify critic results",
+                            "status": "pending",
+                            "role": "patch_merger",
+                            "purpose_kind": "unification"
+                        }
+                    ]
+                }
+            },
+            "branch_votes": [
+                {
+                    "selected_task_id": "actor-11111111",
+                    "group_id": "branch-group-1",
+                    "rationale": "candidate has strongest evidence"
+                }
+            ],
+            "chat_session_id": "goal:018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+            "thread_id": "thread-adversarial-1"
+        });
+
+        let summary = adversarial_summary_from_snapshot(&snapshot);
+
+        assert_eq!(summary.actors.len(), 1);
+        assert_eq!(summary.critics.len(), 2);
+        assert_eq!(summary.research.len(), 1);
+        assert_eq!(summary.mechanisms.len(), 2);
+        assert_eq!(summary.satisfaction_score.as_deref(), Some("0.72"));
+        assert_eq!(summary.satisfied.as_deref(), Some("false"));
+        assert!(
+            summary
+                .satisfaction_reasons
+                .iter()
+                .any(|reason| reason.contains("critic reviews"))
+        );
+        assert!(
+            summary
+                .references
+                .iter()
+                .any(|reference| reference.contains("thread-adversarial-1"))
+        );
+        assert!(
+            summary
+                .references
+                .iter()
+                .any(|reference| reference.contains("ctx-review-1"))
+        );
+
+        let mut app = test_app();
+        app.selected_goal_id = Some(goal_id.to_string());
+        app.selected_goal_snapshot = Some(snapshot);
+        let rendered = lines_to_plain_text(&adversarial_dashboard_lines(&app, 120));
+
+        assert!(rendered.contains("actors and candidates (1)"));
+        assert!(rendered.contains("critics, testers, and formal methods (2)"));
+        assert!(rendered.contains("research tasks (1)"));
+        assert!(rendered.contains("unification, votes, and mechanisms (2)"));
+        assert!(rendered.contains("score:0.72 satisfied:false"));
+        assert!(rendered.contains("actor-11"));
+        assert!(rendered.contains("critic-2"));
+        assert!(rendered.contains("thread-adversarial-1"));
+        assert!(rendered.contains("agent context, chat, and thread refs"));
     }
 
     #[test]

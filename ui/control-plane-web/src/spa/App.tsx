@@ -51,8 +51,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  api,
   approvals,
+  approve,
   at,
   authToken,
   branchGoal,
@@ -86,7 +86,7 @@ import {
 } from "./api";
 import type { ChatMessage, ChatResponse, ChatRunTrace, ColorRef, ComputeGraphNode, GoalRow, GoalSnapshot, JsonRecord, Overview, TaskRow } from "./types";
 
-type ViewKey = "dashboard" | "goals" | "graph" | "control" | "memory" | "plans" | "human" | "runners";
+type ViewKey = "dashboard" | "goals" | "graph" | "control" | "memory" | "plans" | "human" | "runners" | "actions";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type GraphFilter = "all" | "attention" | "active" | "completed";
@@ -106,6 +106,10 @@ type ActionNeededItem = {
   thunkId: string;
   risk: string;
   actionLabel: string;
+};
+type ActionMutationInput = {
+  item: ActionNeededItem;
+  responseSummary?: string;
 };
 type ActiveDraftState = {
   kind: DraftKind;
@@ -231,6 +235,121 @@ const views: Array<{ key: ViewKey; label: string; icon: typeof Route }> = [
   { key: "plans", label: "Plans", icon: GitBranch },
   { key: "human", label: "Human Queue", icon: Bell },
   { key: "runners", label: "Runners", icon: Server },
+  { key: "actions", label: "Actions", icon: Monitor },
+];
+
+const operatorActionCatalog: Array<{
+  command: string;
+  panel: string;
+  view: ViewKey;
+  summary: string;
+  primary: string;
+}> = [
+  {
+    command: "coat plan <draft|list|show|revise|compile|follow-ups>",
+    panel: "Plans",
+    view: "plans",
+    summary: "Author and inspect durable plans before they become goals.",
+    primary: "Open plans",
+  },
+  {
+    command: "coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|adversarial|mechanism|thunk|branch|restart|cancel>",
+    panel: "Goals, Work Graph, Goal Controls",
+    view: "control",
+    summary: "Submit goals, inspect progress, steer, vote, branch, restart, and evaluate completion.",
+    primary: "Open controls",
+  },
+  {
+    command: "coat human <approve|resume-thunk|notify>",
+    panel: "Human Queue",
+    view: "human",
+    summary: "Approve gates, resume delayed continuations, and inspect operator feedback threads.",
+    primary: "Open queue",
+  },
+  {
+    command: "coat deploy local <preflight|up|config|logs|down>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Local stack lifecycle remains a CLI operation; this panel keeps the command visible.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Cluster rendering, apply, rollout, and executor job operations are tracked as operator commands.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat deploy chart <lint|template|upgrade|rollback|package>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Helm validation and release chart actions stay explicit and auditable.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat deploy restate <cloud-env|tunnel-docker|register-cloud>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Restate Cloud setup and registration remain operator-run deployment actions.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat runner <list|status|register|dispatch|capacity-plan>",
+    panel: "Runners",
+    view: "runners",
+    summary: "Inspect runner registration, endpoint, capacity, and routing state.",
+    primary: "Open runners",
+  },
+  {
+    command: "coat tool <list|call|web-search>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Tool registry and web-search commands are visible here; live calls stay backend mediated.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>",
+    panel: "Memory",
+    view: "memory",
+    summary: "Search, write, preview, edit, repair, and inspect durable memory events.",
+    primary: "Open memory",
+  },
+  {
+    command: "coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>",
+    panel: "Human Queue / Actions",
+    view: "human",
+    summary: "Events become durable sources, triggers, approvals, and action-queue items.",
+    primary: "Open events",
+  },
+  {
+    command: "coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>",
+    panel: "Dashboard, Goals, Plans, Human Queue",
+    view: "dashboard",
+    summary: "Goal-store projections are surfaced through the read-only operator views.",
+    primary: "Open dashboard",
+  },
+  {
+    command: "coat scenario <list|run|report>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Scenario runs are CLI evidence commands; reports should feed back into dashboard artifacts.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat setup <login|sso|model-index|config|local-auth|chat-client>",
+    panel: "Actions",
+    view: "actions",
+    summary: "Setup and auth flows stay explicit, with preflight state reflected in service panels.",
+    primary: "Use CLI",
+  },
+  {
+    command: "coat tui",
+    panel: "Terminal UI",
+    view: "actions",
+    summary: "Terminal dashboard mirrors the same goal, action queue, runner, event, and command coverage model.",
+    primary: "Use TUI",
+  },
 ];
 
 const starterMessages: ChatMessage[] = [
@@ -557,6 +676,16 @@ export function App() {
           />
           <ServiceStrip services={serviceRows} />
         </header>
+        <DraftReviewDock
+          activeDraft={activeDraftForSession}
+          goalDraft={latestGoalDraft}
+          selectedGoal={selectedGoal}
+          busy={sendChat.isPending || submitGoalDraft.isPending}
+          submitResult={submitGoalDraft.data?.response}
+          onSubmitGoalDraft={() => submitGoalDraft.mutate()}
+          onDiscardGoalDraft={discardActiveGoalDraft}
+          onOpenChat={() => setActiveView("dashboard")}
+        />
 
         <section className="content-grid">
           <CommandPanel
@@ -619,6 +748,7 @@ export function App() {
           {activeView === "plans" && <PlansView />}
           {activeView === "human" && <HumanQueueView selectedGoalId={selectedGoalId} />}
           {activeView === "runners" && <RunnersView overview={overviewData} />}
+          {activeView === "actions" && <OperatorActionsView onOpenView={setActiveView} />}
         </section>
       </main>
     </div>
@@ -629,6 +759,57 @@ function modeForDraftKind(kind: DraftKind): string {
   if (kind === "goal") return "draft_goal";
   if (kind === "search") return "draft_search";
   return "draft_plan";
+}
+
+function DraftReviewDock(props: {
+  activeDraft: ActiveDraftState | null;
+  goalDraft: JsonRecord | null;
+  selectedGoal: GoalSummary | null;
+  busy: boolean;
+  submitResult?: unknown;
+  onSubmitGoalDraft: () => void;
+  onDiscardGoalDraft: () => void;
+  onOpenChat: () => void;
+}) {
+  if (!props.activeDraft) {
+    return null;
+  }
+  const submittedGoalId = goalIdFromSubmitResponse(props.submitResult);
+  const title = props.goalDraft
+    ? stringValue(props.goalDraft.title) || "Untitled goal draft"
+    : `${draftKindLabel(props.activeDraft.kind)} ready`;
+  const context = props.selectedGoal
+    ? `Context: ${props.selectedGoal.title}`
+    : props.activeDraft.selectedGoalId
+      ? `Context: ${friendlyRef(props.activeDraft.selectedGoalId)}`
+      : "Workspace draft";
+  return (
+    <section className="draft-review-dock" aria-label="Active draft">
+      <div>
+        <span className="goal-context-kicker">Active draft</span>
+        <strong>{title}</strong>
+        <small>{context}</small>
+      </div>
+      <div className="button-row">
+        <InspectButton title="Active draft" payload={props.goalDraft ?? props.activeDraft.response} buttonLabel="Review" />
+        <button type="button" className="secondary-button" disabled={props.busy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
+          <XCircle size={15} />
+          Discard
+        </button>
+        {props.goalDraft ? (
+          <button type="button" className="primary-button" disabled={props.busy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
+            <ListChecks size={15} />
+            {submittedGoalId ? "Submitted" : props.busy ? "Submitting" : "Submit goal"}
+          </button>
+        ) : (
+          <button type="button" className="secondary-button" onClick={props.onOpenChat}>
+            <MessageSquareText size={15} />
+            Open chat
+          </button>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function createRunId(): string {
@@ -974,7 +1155,40 @@ function titleFor(view: ViewKey): string {
     plans: "Durable Plans",
     human: "Human Queue",
     runners: "Runner Fleet",
+    actions: "Operator Actions",
   }[view];
+}
+
+function OperatorActionsView({ onOpenView }: { onOpenView: (view: ViewKey) => void }) {
+  return (
+    <section className="panel operator-actions-panel">
+      <div className="section-heading">
+        <div>
+          <h2>Operator actions</h2>
+          <span className="muted-small">Every canonical CLI group has a visible SPA panel or explicit operator command path.</span>
+        </div>
+        <InspectButton title="CLI coverage" payload={{ commands: operatorActionCatalog }} buttonLabel="Inspect coverage" />
+      </div>
+      <div className="action-catalog-grid">
+        {operatorActionCatalog.map((item) => (
+          <article key={item.command} className="action-catalog-card">
+            <div>
+              <code>{item.command}</code>
+              <strong>{item.panel}</strong>
+              <p>{item.summary}</p>
+            </div>
+            {item.view === "actions" ? (
+              <span className="status-pill muted">{item.primary}</span>
+            ) : (
+              <button type="button" className="secondary-button" onClick={() => onOpenView(item.view)}>
+                {item.primary}
+              </button>
+            )}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function ServiceStrip({ services }: { services: Overview["services"] }) {
@@ -1985,20 +2199,7 @@ function ActionNeededPanel({ items }: { items: ActionNeededItem[] }) {
         <h3>Action needed</h3>
         <span className="muted-small">{items.length} waiting</span>
       </div>
-      <div className="approval-list">
-        {items.slice(0, 5).map((item) => (
-          <div key={item.key} className="approval-card">
-            <div>
-              <strong>{item.label}</strong>
-              <span>{statusLabel(item.status)} · {item.goalId ? friendlyRef(item.goalId) : "selected goal"}</span>
-              {item.detail && <small>{item.detail}</small>}
-            </div>
-            <span className={clsx("operator-state-pill", stateTone(item.kind === "approval" || statusToken(item.status) === "waiting-approval" ? "action-needed" : "waiting"))}>
-              {item.actionLabel}
-            </span>
-          </div>
-        ))}
-      </div>
+      <OperatorActionList items={items.slice(0, 5)} compact />
     </section>
   );
 }
@@ -2271,8 +2472,8 @@ function actionNeededItemsFromTasks(rows: JsonRecord[], selectedGoalId = ""): Ac
         detail: taskDetail(task, status),
         goalId,
         taskId: id,
-        approvalId: "",
-        thunkId: "",
+        approvalId: stringValue(task.approval_id) || stringValue(task.approval_ref) || stringValue(at(task, ["payload_json", "approval_id"])) || stringValue(at(task, ["payload_json", "approval_ref"])),
+        thunkId: stringValue(task.thunk_id) || stringValue(task.continuation_id) || stringValue(at(task, ["payload_json", "thunk_id"])) || stringValue(at(task, ["payload_json", "continuation_id"])),
         risk: "",
         actionLabel: status === "waiting-approval" ? "Approve" : status === "waiting-input" ? "Provide input" : "Review",
       };
@@ -2879,6 +3080,45 @@ function steeringKindPayload(kind: string, topic: string, reason: string, review
     return { kind, role: "reviewer", prompt: topic || reason, reason };
   }
   return { kind: "evaluate_goal_completion", reason };
+}
+
+function blockedTaskReplanPayload(item: ActionNeededItem): JsonRecord {
+  const subject = item.taskId ? `task ${friendlyRef(item.taskId)}` : "the blocked work";
+  const reason = `${statusLabel(item.status)} requires operator recovery: ${item.detail || item.label}`;
+  return {
+    id: createRunId(),
+    goal_id: item.goalId,
+    task_id: item.taskId || null,
+    operator: "operator",
+    message: `Request coordinator-owned recovery for ${subject}.`,
+    kind: {
+      kind: "inject_task",
+      role: "planner",
+      prompt: [
+        `Re-plan or recover ${subject}.`,
+        `Blocked item: ${item.label}.`,
+        item.detail ? `Detail: ${item.detail}.` : "",
+        "Return concrete next tasks, evidence requirements, and any human inputs still needed.",
+      ].filter(Boolean).join(" "),
+      reason,
+    },
+  };
+}
+
+function blockedTaskRecoveryPayload(item: ActionNeededItem): JsonRecord {
+  const status = statusToken(item.status);
+  const scope = status === "failed" ? "failed" : "blocked";
+  const subject = item.taskId ? `task ${friendlyRef(item.taskId)}` : `${scope} work`;
+  return {
+    goal_id: item.goalId,
+    scope,
+    reason: "operator_requested",
+    message: `Retry ${subject} from the action queue: ${item.detail || item.label}`,
+    task_id: null,
+    reset_attempts: false,
+    preserve_artifacts: true,
+    operator: "operator",
+  };
 }
 
 function flowActionButtonLabel(flowMode: string): string {
@@ -3518,16 +3758,6 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
     return mergeActionNeededItems([...approvalItems, ...selectedGoalItems, ...overviewItems]);
   }, [approvalRows, overviewQuery.data, selectedGoalId, selectedGoalQuery.data]);
   const threadRows = rowsFrom(at(threadQuery.data, ["data"]) ?? threadQuery.data);
-  const approvalMutation = useMutation({
-    mutationFn: ({ approvalId, goalId }: { approvalId: string; goalId: string }) => {
-      if (!goalId) throw new Error("Approval row is missing a goal id.");
-      return api(`/api/goals/${encodeURIComponent(goalId)}/approve`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ approval_id: approvalId, approved: true, comment: "Approved from Task Graph Manager" }),
-      });
-    },
-  });
   return (
     <section className="dashboard-grid">
       <div className="panel span-2">
@@ -3535,11 +3765,7 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
           <h2>Action queue</h2>
           <span className="muted-small">Approvals, blockers, and waiting continuations</span>
         </div>
-        <ApprovalList
-          items={actionItems}
-          busy={approvalMutation.isPending}
-          onApprove={(approvalId, goalId) => approvalMutation.mutate({ approvalId, goalId })}
-        />
+        <OperatorActionList items={actionItems} />
       </div>
       <div className="panel">
         <div className="section-heading">
@@ -3554,19 +3780,33 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
   );
 }
 
-function ApprovalList({
-  items,
-  busy,
-  onApprove,
-}: {
-  items: ActionNeededItem[];
-  busy: boolean;
-  onApprove?: (approvalId: string, goalId: string) => void;
-}) {
+function OperatorActionList({ items, compact = false }: { items: ActionNeededItem[]; compact?: boolean }) {
+  const queryClient = useQueryClient();
+  const [responses, setResponses] = useState<Record<string, string>>({});
+  const actionMutation = useMutation({
+    mutationFn: ({ item, responseSummary }: ActionMutationInput) => runOperatorAction(item, responseSummary),
+    onSuccess: (_result, variables) => {
+      setResponses((current) => {
+        const next = { ...current };
+        delete next[variables.item.key];
+        return next;
+      });
+      const goalId = variables.item.goalId;
+      if (goalId) {
+        void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["approvals"] });
+      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+      void queryClient.invalidateQueries({ queryKey: ["goals"] });
+    },
+  });
   return (
     <div className="approval-list">
       {items.length ? items.map((item) => {
-        const canApprove = item.kind === "approval" && item.approvalId && item.goalId;
+        const affordance = actionAffordanceForItem(item);
+        const responseSummary = responses[item.key] ?? "";
+        const needsResponse = affordance === "resume";
+        const disabled = actionMutation.isPending || !item.goalId || (affordance === "approve" && !item.approvalId) || (affordance === "resume" && (!item.thunkId || !responseSummary.trim()));
         return (
           <div key={item.key} className="approval-card">
             <div>
@@ -3574,25 +3814,71 @@ function ApprovalList({
               <span>{statusLabel(item.status)} · {item.goalId ? friendlyRef(item.goalId) : "no goal selected"}</span>
               {item.detail && <small>{item.detail}</small>}
             </div>
-            {canApprove ? (
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={busy || !onApprove}
-                onClick={() => onApprove?.(item.approvalId, item.goalId)}
-              >
-                Approve
-              </button>
-            ) : (
-              <span className={clsx("operator-state-pill", stateTone(item.kind === "blocked-task" ? "action-needed" : "waiting"))}>
-                {item.actionLabel}
-              </span>
+            {needsResponse && (
+              <label className="inline-action-input">
+                Response
+                <textarea
+                  value={responseSummary}
+                  onChange={(event) => setResponses((current) => ({ ...current, [item.key]: event.target.value }))}
+                  placeholder="Decision or missing input"
+                  rows={compact ? 2 : 3}
+                />
+              </label>
             )}
+            <button
+              type="button"
+              className={affordance === "approve" || affordance === "resume" ? "primary-button" : "secondary-button"}
+              disabled={disabled}
+              onClick={() => actionMutation.mutate({ item, responseSummary: responseSummary.trim() })}
+            >
+              {operatorActionLabel(item, affordance)}
+            </button>
           </div>
         );
       }) : <EmptyState title="Action queue clear" detail="Approvals, blocked tasks, and waiting continuations appear here." />}
+      {actionMutation.error && <span className="error-text">{(actionMutation.error as Error).message}</span>}
     </div>
   );
+}
+
+function actionAffordanceForItem(item: ActionNeededItem): "approve" | "resume" | "replan" {
+  const status = statusToken(item.status);
+  if ((item.kind === "approval" || status === "waiting-approval") && item.approvalId) return "approve";
+  if (item.kind === "thunk" || (status === "waiting-input" && item.thunkId)) return "resume";
+  return "replan";
+}
+
+function operatorActionLabel(item: ActionNeededItem, affordance = actionAffordanceForItem(item)): string {
+  if (affordance === "approve") return "Approve";
+  if (affordance === "resume") return "Resume";
+  if (statusToken(item.status) === "failed") return "Retry failed work";
+  if (statusToken(item.status) === "blocked") return "Retry blocked work";
+  return "Request replan";
+}
+
+function runOperatorAction(item: ActionNeededItem, responseSummary = ""): Promise<unknown> {
+  if (!item.goalId) {
+    throw new Error("This action is missing a goal id.");
+  }
+  const affordance = actionAffordanceForItem(item);
+  if (affordance === "approve") {
+    if (!item.approvalId) throw new Error("This approval is missing an approval id.");
+    return approve(item.goalId, { approval_id: item.approvalId, approved: true, comment: "Approved from Task Graph Manager" });
+  }
+  if (affordance === "resume") {
+    if (!item.thunkId) throw new Error("This continuation is missing a thunk id.");
+    return resumeThunk(item.goalId, {
+      thunk_id: item.thunkId,
+      responder: "operator",
+      response_summary: responseSummary.trim(),
+      artifact_refs: [],
+    });
+  }
+  const status = statusToken(item.status);
+  if (status === "blocked" || status === "failed") {
+    return restartGoal(item.goalId, blockedTaskRecoveryPayload(item));
+  }
+  return steer(item.goalId, blockedTaskReplanPayload(item));
 }
 
 function RunnersView({ overview }: { overview?: Overview }) {
@@ -3641,7 +3927,7 @@ function runnerTableRow(row: JsonRecord): string[] {
   const displayName = stringValue(row.display_name)
     || stringValue(labels.display_name)
     || stringValue(labels.name)
-    || [stringValue(labels.runtime), stringValue(labels.lane)].filter(Boolean).join(" / ")
+    || [stringValue(labels.runtime), stringValue(labels.pool)].filter(Boolean).join(" / ")
     || runnerId;
   const nodeId = stringValue(row.node_id) || stringValue(registration.node_id) || "unknown node";
   const endpoint = stringValue(row.endpoint) || stringValue(registration.endpoint) || "no endpoint advertised";

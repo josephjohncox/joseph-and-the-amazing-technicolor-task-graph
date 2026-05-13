@@ -475,7 +475,7 @@ function normalizeRunnerRow(value: unknown): JsonMap {
   const displayName = stringField(row, "display_name")
     || stringField(labels, "display_name")
     || stringField(labels, "name")
-    || [runtime, lane].filter(Boolean).join(" / ")
+    || [runtime, pool].filter(Boolean).join(" / ")
     || runnerId;
   return {
     ...row,
@@ -601,7 +601,7 @@ function followUpDraftPrompt(item: FollowUpItem): string {
 
 async function goalSnapshot(goalId: string): Promise<JsonMap> {
   const encodedGoalId = encodeURIComponent(goalId);
-  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph] = await Promise.all([
+  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph, humanThreads, goalChatSession] = await Promise.all([
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/tasks`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/events`, { method: "GET" }),
@@ -611,7 +611,11 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     workflowReadPost(goalId, "status", {}),
     workflowReadPost(goalId, "progress", {}),
     workflowReadPost(goalId, "compute_graph", {}),
+    proxyJson(notifierUrl, "/threads", { method: "GET" }),
+    chatSession(`goal:${goalId}`),
   ]);
+  const agentActivity = buildAgentActivity(tasks.data, progress.data, events.data, artifacts.data);
+  const agentContext = buildAgentContext(goalId, agentActivity, goalChatSession, humanThreads.data);
   return {
     generated_at: new Date().toISOString(),
     goal_id: goalId,
@@ -624,7 +628,27 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     artifacts,
     checkpoints,
     approvals,
-    agent_activity: buildAgentActivity(tasks.data, progress.data, events.data, artifacts.data),
+    human_threads: humanThreads,
+    chat_session: goalChatSession,
+    agent_activity: agentActivity,
+    agent_context: agentContext,
+  };
+}
+
+async function goalAgentContext(goalId: string, taskId: string | null): Promise<JsonMap> {
+  const snapshot = await goalSnapshot(goalId);
+  const context = asRecord(snapshot.agent_context);
+  if (!taskId) {
+    return context;
+  }
+  const tasks = arrayField(context, "tasks")
+    .map(asRecord)
+    .filter((task) => String(task.task_id ?? "") === taskId);
+  return {
+    ...context,
+    task_id: taskId,
+    tasks,
+    found: tasks.length > 0,
   };
 }
 
@@ -825,6 +849,9 @@ function buildAgentActivity(
       runnable: task.runnable ?? progress?.runnable ?? false,
       prompt: payload.prompt ?? null,
       current_prompt: payload.prompt ?? null,
+      persona: projectedPersona(payload),
+      model: projectedModel(payload),
+      runner: projectedRunner(payload),
       execution: payload.execution ?? null,
       budget: payload.budget ?? null,
       sandbox: payload.sandbox ?? null,
@@ -838,6 +865,152 @@ function buildAgentActivity(
       raw_task: task,
     };
   });
+}
+
+function buildAgentContext(
+  goalId: string,
+  agentActivity: unknown[],
+  chatSessionResponse: JsonMap,
+  humanThreadsResponse: unknown,
+): JsonMap {
+  const notificationThreads = relevantNotificationThreads(goalId, humanThreadsResponse);
+  const entries = arrayField(chatSessionResponse, "entries").map(asRecord);
+  return {
+    generated_at: new Date().toISOString(),
+    goal_id: goalId,
+    source: {
+      tasks: "goal-store task projection payload_json",
+      chat_session: `goal:${goalId}`,
+      notification_threads: "notifier thread projection",
+      durable_state: "not owned by control gateway",
+    },
+    chat_session: {
+      session_id: String(chatSessionResponse.session_id ?? `goal:${goalId}`),
+      durable: Boolean(chatSessionResponse.durable),
+      chat_log: asRecord(chatSessionResponse.chat_log),
+      message_count: arrayField(chatSessionResponse, "messages").length,
+      latest_turns: entries.slice(-8).map((entry) => ({
+        role: entry.role ?? "",
+        content: entry.content ?? "",
+        created_at: entry.created_at ?? null,
+        provider: entry.provider ?? null,
+        model: entry.model ?? null,
+      })),
+    },
+    notification_threads: notificationThreads,
+    tasks: agentActivity.map((item) => agentContextTask(goalId, asRecord(item), notificationThreads)),
+  };
+}
+
+function agentContextTask(goalId: string, activity: JsonMap, notificationThreads: JsonMap[]): JsonMap {
+  const taskId = String(activity.task_id ?? "");
+  const execution = asRecord(activity.execution);
+  const rawTask = asRecord(activity.raw_task);
+  const payload = asRecord(rawTask.payload_json);
+  const result = asRecord(activity.result);
+  const taskThreads = notificationThreads.filter((thread) => {
+    const threadTaskId = String(thread.task_id ?? "");
+    const threadKey = String(thread.thread_key ?? "");
+    return threadTaskId === taskId || Boolean(taskId && threadKey.includes(taskId));
+  });
+  const goalThreads = notificationThreads.filter((thread) => !thread.task_id || String(thread.task_id) === "");
+
+  return {
+    goal_id: activity.goal_id ?? goalId,
+    task_id: taskId,
+    parent_task_id: activity.parent_task_id ?? null,
+    subgoal_id: activity.subgoal_id ?? null,
+    title: activity.title ?? "",
+    role: activity.role ?? "",
+    purpose: activity.purpose ?? null,
+    status: activity.status ?? "",
+    current_prompt: activity.current_prompt ?? activity.prompt ?? null,
+    prompt: activity.prompt ?? null,
+    persona: activity.persona ?? projectedPersona(payload),
+    model: activity.model ?? projectedModel(payload),
+    runner: activity.runner ?? projectedRunner(payload),
+    runner_id: result.runner_id ?? rawTask.runner_id ?? null,
+    execution_profile: execution,
+    task_purpose: payload.purpose ?? activity.purpose ?? null,
+    session_refs: sessionRefs(goalId, taskId, payload, result),
+    thread_refs: threadRefs(taskId, payload, result, taskThreads, goalThreads),
+    chat_session_ref: `goal:${goalId}`,
+    notification_threads: taskThreads.length ? taskThreads : goalThreads,
+    artifacts: activity.artifacts ?? [],
+    recent_events: activity.recent_events ?? [],
+    source: {
+      task_projection: "goal-store",
+      notifications: "notifier",
+      chat: "goal-store chat session or configured gateway fallback",
+    },
+  };
+}
+
+function projectedPersona(payload: JsonMap): unknown {
+  const execution = asRecord(payload.execution);
+  return execution.persona ?? payload.persona ?? null;
+}
+
+function projectedModel(payload: JsonMap): unknown {
+  const execution = asRecord(payload.execution);
+  return execution.model ?? execution.model_route ?? payload.model ?? null;
+}
+
+function projectedRunner(payload: JsonMap): unknown {
+  const execution = asRecord(payload.execution);
+  return execution.runner ?? execution.runner_ref ?? execution.runner_id ?? payload.runner ?? null;
+}
+
+function sessionRefs(goalId: string, taskId: string, payload: JsonMap, result: JsonMap): JsonMap {
+  return compactRecord({
+    goal_chat_session: `goal:${goalId}`,
+    task_session_id: payload.session_id ?? result.session_id ?? null,
+    runner_session_id: result.runner_session_id ?? null,
+    thread_id: payload.thread_id ?? result.thread_id ?? null,
+    task_id: taskId || null,
+  });
+}
+
+function threadRefs(taskId: string, payload: JsonMap, result: JsonMap, taskThreads: JsonMap[], goalThreads: JsonMap[]): JsonMap {
+  return compactRecord({
+    task_id: taskId || null,
+    payload_thread_id: payload.thread_id ?? null,
+    result_thread_id: result.thread_id ?? null,
+    notification_thread_keys: (taskThreads.length ? taskThreads : goalThreads).map((thread) => thread.thread_key).filter(Boolean),
+  });
+}
+
+function relevantNotificationThreads(goalId: string, response: unknown): JsonMap[] {
+  return extractFlexibleArray(response, ["threads", "data"]).map(asRecord).filter((thread) => {
+    const threadGoalId = String(thread.goal_id ?? "");
+    const threadKey = String(thread.thread_key ?? "");
+    return threadGoalId === goalId || threadKey.includes(goalId) || !threadGoalId;
+  });
+}
+
+function extractFlexibleArray(value: unknown, keys: string[]): unknown[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  const record = asRecord(value);
+  for (const key of keys) {
+    const items = arrayField(record, key);
+    if (items.length) {
+      return items;
+    }
+  }
+  return [];
+}
+
+function compactRecord(record: JsonMap): JsonMap {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => {
+      if (value === null || value === undefined || value === "") {
+        return false;
+      }
+      return !(Array.isArray(value) && value.length === 0);
+    }),
+  );
 }
 
 function extractArray(value: unknown, path: string[]): unknown[] {
@@ -2237,6 +2410,10 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
       sendJson(res, 200, await goalSnapshot(goalId));
       return;
     }
+    if (req.method === "GET" && segments[3] === "agent-context") {
+      sendJson(res, 200, await goalAgentContext(goalId, url.searchParams.get("task_id")));
+      return;
+    }
     if (req.method === "POST" && segments.length === 4) {
       const handler = segments[3];
       if (!workflowHandlers.has(handler)) {
@@ -2640,6 +2817,16 @@ function mcpTools(): unknown[] {
       },
     },
     {
+      name: "coat_agent_context",
+      description: "Read drill-down task context for a goal from existing task, chat-session, artifact, and notification-thread projections.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["goal_id"],
+        properties: { goal_id: { type: "string" }, task_id: { type: "string" } },
+      },
+    },
+    {
       name: "coat_plan_list",
       description: "List durable planning-mode drafts and compiled plans.",
       inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1 } } },
@@ -2891,6 +3078,14 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       return goalSnapshot(goalId);
     }
     return proxyJson(goalStoreUrl, `/goal-store/tasks?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
+  }
+  if (name === "coat_agent_context") {
+    const goalId = String(args.goal_id ?? "");
+    if (!goalId) {
+      throw new Error("goal_id is required");
+    }
+    const taskId = typeof args.task_id === "string" ? args.task_id : null;
+    return goalAgentContext(goalId, taskId);
   }
   if (name === "coat_plan_list") {
     const limit = typeof args.limit === "number" ? args.limit : 25;

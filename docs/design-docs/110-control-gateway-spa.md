@@ -33,6 +33,7 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `POST /api/plans/{plan_id}/revisions`: append a plan revision.
 - `POST /api/plans/{plan_id}/compile`: compile a plan into `GoalSpec`.
 - `GET /api/goals/{goal_id}`: composed Restate plus goal-store snapshot.
+- `GET /api/goals/{goal_id}/agent-context`: composed drill-down over projected task context, `goal:{goal_id}` chat session turns, artifacts/events, and notifier thread summaries. Optional `task_id` narrows the returned task list.
 - `POST /api/goals/submit`: submits a `GoalSpec` through `GoalWorkflow/run`.
 - `POST /api/goals/{goal_id}/{handler}`: calls approved workflow handlers such as `steer`, `vote`, `approve`, `cancel`, `restart`, `branch`, `select_branch`, `create_thunk`, `resume_thunk`, `mechanism_start`, `mechanism_ballot`, `tasks`, `status`, `progress`, and `compute_graph`.
 - `GET /api/agents`: projected task/agent rows across goals.
@@ -85,6 +86,11 @@ must not ask for raw UUID entry in each panel. After `/api/goals/submit`
 returns, the SPA selects the returned `goal_id` immediately and shows the
 submitted-draft overlay until goal-store projects the durable task graph.
 
+The SPA also has an Actions panel that maps every canonical CLI command group
+to a visible panel or explicit CLI-only operator action. The rule is simple: if
+an action exists in `coat`, an operator should be able to find its equivalent
+SPA panel, TUI panel, or intentionally CLI-only command path without guessing.
+
 The SPA may edit text in browser forms, but edits become backend commands:
 
 - new goal: `GoalWorkflow/run`;
@@ -102,11 +108,19 @@ The SPA may edit text in browser forms, but edits become backend commands:
 - research application: `GoalWorkflow/steer` directives derived from the sourced `InformationUsePlan`;
 - event source or trigger: `coat-event-gateway`.
 
-The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns draft payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. Chat inherits the current goal: with a selected goal it uses the `goal:<goal_id>` session and sends `goal_id` context, otherwise it uses the operator workspace session. Durable mutations still require the operator to press an explicit control. For GoalSpec drafts, the chat panel may show a `Submit goal` action only when the latest response contains `drafts.goal_spec`; that action calls `/api/goals/submit`, then the coordinator remains responsible for projecting the workflow state into goal-store.
+The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns draft payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. Chat inherits the current goal: with a selected goal it uses the `goal:<goal_id>` session and sends `goal_id` context, otherwise it uses the operator workspace session. Durable mutations still require the operator to press an explicit control. For GoalSpec drafts, the SPA shows a persistent active-draft dock plus the chat-panel draft editor when the latest response contains `drafts.goal_spec`; `Submit goal` calls `/api/goals/submit`, then the coordinator remains responsible for projecting the workflow state into goal-store.
 
 Chat supports three primary authoring modes: durable plan draft, GoalSpec draft, and search request. Search mode emits a structured `search_request` plus an optional coordinator-owned research steering directive. It must not claim live memory, web, or reference search occurred unless a backend tool result is present.
 
 The primary operator flow is chat first, control second. The chat panel can help explain a selected goal's compute graph, draft steering, or identify research gaps. The Flow Control view then submits the same typed workflow actions exposed by `coat goal vote`, `coat goal steer`, `coat goal restart`, `coat goal branch`, `coat goal thunk`, `coat goal mechanism`, `coat goal cancel`, and `coat human resume-thunk`. The UI should make the task graph feel like an AI-driven compiler: chat authors intent, the compute graph shows wait states and continuations, and explicit controls compile the operator decision into durable workflow commands.
+
+The Human Queue and graph Action Needed panels must be directly actionable. Approval rows call `GoalWorkflow/approve`; delayed compute thunk rows include an inline response field and call `GoalWorkflow/resume_thunk`; blocked or failed task rows request a coordinator-owned planner recovery task through `GoalWorkflow/steer` with an `inject_task` directive. These controls are not chat prompts and must refresh goal, approval, and overview projections after mutation.
+
+Flow Control should expose shortcut actions as wrappers over those same typed
+commands, not as special UI-only behavior. Useful defaults are `strict_review`,
+`red_team`, `model_bakeoff`, `research_first`, `test_first`, `cheap_then_deep`,
+and `operator_review`. Each shortcut should preview the generated steering,
+branch, vote, research, approval, or unifier request before submission.
 
 The terminal TUI follows the same split at smaller scope: chat uses
 `/api/chat`, dashboard cards are derived from `/api/overview`, and durable
@@ -115,6 +129,11 @@ projected goals, `Ctrl-O` clears the selected goal, and
 `Ctrl-R` refreshes projection state. With a selected goal, the TUI uses the
 `goal:<goal_id>` chat session and sends the goal id to `/api/chat`; after it
 submits a chat-authored `drafts.goal_spec`, it selects the returned goal id.
+The TUI action queue mirrors the SPA: the Approvals tab lets operators select
+an action with Up/Down and apply it with Enter or `a`; continuation responses
+come from the input line; active GoalSpec drafts are submitted with `F5` or
+`Ctrl-G`. The Commands tab mirrors the SPA Actions panel and keeps the
+canonical CLI hierarchy visible from the terminal dashboard.
 
 Scenario E2E treats this selected-goal model as a product contract. Browser
 scenarios should create or select goals through `/api/goals/submit` and the
@@ -192,13 +211,29 @@ The gateway must not write Restate state, runner rows, or memory storage directl
 ## Agent Visibility
 
 Agent state comes from projected `TaskRecord` rows plus the full `TaskNode` stored in `TaskRecord.payload_json`.
+Agent-to-agent context visibility is a composed read model. `GET /api/goals/{goal_id}` includes `agent_context`, and `GET /api/goals/{goal_id}/agent-context` returns the same focused projection for UI/TUI drill-down. The gateway reads the current prompt, persona, model route, runner route, purpose, budget, sandbox, and done criteria from goal-store task payloads; it reads `goal:{goal_id}` chat turns through the goal-store chat-session API or configured chat fallback; it reads relevant human/chat notification summaries from notifier `/threads`; and it attaches task-local events and artifacts already present in the goal snapshot. The gateway must not create a new conversation store or durable task state for this view.
 
 The UI should show:
 
 - task ID, goal ID, parent task, subgoal, role, purpose, status, depth, priority, attempts, and runnable flag;
 - current prompt from `payload_json.prompt`;
 - execution profile, model route, persona, MCP refs, result channels, budget, sandbox profile, and done criteria;
+- session and thread refs from task payloads, runner results, `goal:{goal_id}` chat, and notifier threads;
 - result refs, git refs, object artifacts, checkpoint history, recent task events, and child task IDs.
+
+Task drill-down should make adversarial workflows inspectable. From any actor,
+critic, research, branch-vote, or unifier node, the operator should be able to
+open the task contract, current or final prompt, persona, model route, memory
+context refs, MCP refs, sandbox and local-tool policy, chat/session refs,
+command evidence, child requests, reviewer output, vote records, and unifier
+decision. Related nodes should link across fork and join boundaries so a losing
+candidate, winning candidate, critic finding, vote, and unifier result can be
+read as one workflow.
+
+Agent chats are context views, not hidden control channels. A selected task or
+goal can open the associated `goal:<goal_id>` chat session and any task/session
+refs returned by the runner, but new work still becomes `steer`, `branch`,
+`mechanism`, `approve`, `resume-thunk`, or `research/apply` commands.
 
 This is intentionally projection-based. If exact live state is needed, the gateway also calls `GoalWorkflow/status`, `GoalWorkflow/progress`, and `GoalWorkflow/compute_graph`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
 
@@ -241,6 +276,7 @@ The gateway exposes MCP tools so agent/chat clients can inspect and steer the sy
 - `coat_overview`;
 - `coat_goal_snapshot`;
 - `coat_agent_activity`;
+- `coat_agent_context`;
 - `coat_plan_list`;
 - `coat_plan_draft`;
 - `coat_plan_get`;

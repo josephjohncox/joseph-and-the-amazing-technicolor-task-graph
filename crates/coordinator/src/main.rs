@@ -16,8 +16,8 @@ use coat_domain::{
     GoalState, GoalStoreSnapshotUpsertRequest, HumanApproval, HumanFeedback,
     MechanismBallotRequest, MechanismRoundRequest, NotificationDeliveryReport, NotificationEvent,
     NotificationRequest, RestartRequest, RunnerDispatchDecision, RunnerDispatchRequest,
-    RunnerDispatchStatus, SpawnPolicy, SteeringDirective, TaskList, TaskQuery, TaskStatus,
-    ValidationReport, ValidationRequest, WorkerRunStatus,
+    RunnerDispatchStatus, SpawnPolicy, StateEvent, SteeringDirective, SteeringDirectiveKind,
+    TaskList, TaskQuery, TaskStatus, ValidationReport, ValidationRequest, WorkerRunStatus,
 };
 use restate_sdk::{prelude::*, serde::Json};
 
@@ -25,14 +25,12 @@ const STATE_KEY: &str = "state";
 const MAX_FRONTIER_ROUNDS: usize = 32;
 const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
 
-#[restate_sdk::workflow]
+#[restate_sdk::object]
 pub trait GoalWorkflow {
     async fn run(goal: Json<GoalSpec>) -> HandlerResult<Json<GoalState>>;
 
-    #[shared]
     async fn cancel(reason: String) -> HandlerResult<String>;
 
-    #[shared]
     async fn inject_feedback(feedback: Json<HumanFeedback>) -> HandlerResult<String>;
 
     async fn steer(directive: Json<SteeringDirective>) -> HandlerResult<Json<Option<GoalState>>>;
@@ -103,7 +101,7 @@ impl Default for GoalWorkflowImpl {
 impl GoalWorkflowImpl {
     async fn drive_state(
         &self,
-        ctx: &WorkflowContext<'_>,
+        ctx: &ObjectContext<'_>,
         mut state: GoalState,
     ) -> HandlerResult<GoalState> {
         ctx.set(STATE_KEY, Json(state.clone()));
@@ -122,10 +120,18 @@ impl GoalWorkflowImpl {
                 return Ok(state);
             }
             if state.budget_exhausted() {
-                state.status = coat_domain::GoalStatus::Failed;
+                state.status = coat_domain::GoalStatus::Blocked;
+                for task in state.tasks.values_mut() {
+                    if !task.status.is_terminal() && task.budget.is_exhausted() {
+                        task.status = TaskStatus::Blocked;
+                    }
+                }
+                state
+                    .events
+                    .push(coat_domain::StateEvent::new("budget_exhausted"));
                 ctx.set(STATE_KEY, Json(state.clone()));
                 self.project_state(ctx, &state, "budget_exhausted").await?;
-                return Err(TerminalError::new("budget exhausted").into());
+                return Ok(state);
             }
 
             let runnable = state.runnable_tasks();
@@ -263,7 +269,7 @@ impl GoalWorkflowImpl {
 
     async fn project_state(
         &self,
-        ctx: &WorkflowContext<'_>,
+        ctx: &ObjectContext<'_>,
         state: &GoalState,
         reason: &'static str,
     ) -> HandlerResult<()> {
@@ -400,57 +406,86 @@ fn emit_transition_observation(observation: &CoordinatorTransitionObservation) {
     );
 }
 
+fn steering_should_drive(kind: &SteeringDirectiveKind) -> bool {
+    matches!(
+        kind,
+        SteeringDirectiveKind::InjectTask { .. }
+            | SteeringDirectiveKind::RequestResearch { .. }
+            | SteeringDirectiveKind::RequestStandardReview { .. }
+            | SteeringDirectiveKind::Resume { .. }
+            | SteeringDirectiveKind::UpdateDoneCriteria { .. }
+            | SteeringDirectiveKind::ExpandDoneCriteria { .. }
+    )
+}
+
 impl GoalWorkflow for GoalWorkflowImpl {
     async fn run(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         goal: Json<GoalSpec>,
     ) -> HandlerResult<Json<GoalState>> {
         let incoming_goal = goal.into_inner();
         let state = match ctx.get::<Json<GoalState>>(STATE_KEY).await? {
-            Some(Json(existing)) if existing.goal.id == incoming_goal.id => existing,
+            Some(Json(existing)) => existing,
             _ => GoalState::new(incoming_goal),
         };
         Ok(Json(self.drive_state(&ctx, state).await?))
     }
 
-    async fn cancel(
-        &self,
-        ctx: SharedWorkflowContext<'_>,
-        reason: String,
-    ) -> HandlerResult<String> {
-        ctx.resolve_promise("cancel", reason.clone());
+    async fn cancel(&self, ctx: ObjectContext<'_>, reason: String) -> HandlerResult<String> {
+        if let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? {
+            state.cancel(reason.clone());
+            ctx.set(STATE_KEY, Json(state.clone()));
+            self.project_state(&ctx, &state, "cancelled").await?;
+        }
         Ok(format!("cancel requested: {reason}"))
     }
 
     async fn inject_feedback(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         feedback: Json<HumanFeedback>,
     ) -> HandlerResult<String> {
-        ctx.resolve_promise("feedback", feedback.into_inner().message);
-        Ok("feedback accepted".to_string())
+        let feedback = feedback.into_inner();
+        if let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? {
+            let task_suffix = feedback
+                .task_id
+                .map(|task_id| format!(":{task_id}"))
+                .unwrap_or_default();
+            state
+                .events
+                .push(StateEvent::new(format!("human_feedback{task_suffix}")));
+            ctx.set(STATE_KEY, Json(state.clone()));
+            self.project_state(&ctx, &state, "human_feedback").await?;
+        }
+        Ok(format!("feedback accepted: {}", feedback.message))
     }
 
     async fn steer(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         directive: Json<SteeringDirective>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
             return Ok(Json(None));
         };
+        let directive = directive.into_inner();
+        let should_drive = steering_should_drive(&directive.kind);
         state
-            .apply_steering(directive.into_inner(), &self.spawn_policy)
+            .apply_steering(directive, &self.spawn_policy)
             .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "steering_applied").await?;
+        if should_drive {
+            state = self.drive_state(&ctx, state).await?;
+        } else {
+            ctx.set(STATE_KEY, Json(state.clone()));
+            self.project_state(&ctx, &state, "steering_applied").await?;
+        }
         Ok(Json(Some(state)))
     }
 
     async fn approve(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         approval: Json<HumanApproval>,
     ) -> HandlerResult<String> {
         let approval = approval.into_inner();
@@ -480,22 +515,30 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn restart(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<RestartRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
             return Ok(Json(None));
         };
-        state
-            .apply_restart_request(request.into_inner())
-            .map_err(domain_error)?;
+        match state.apply_restart_request(request.into_inner()) {
+            Ok(_) => {}
+            Err(DomainError::RestartDenied(message))
+                if message == "no restartable tasks matched the request" =>
+            {
+                state
+                    .events
+                    .push(StateEvent::new("restart_skipped:no_restartable_tasks"));
+            }
+            Err(error) => return Err(domain_error(error)),
+        }
         let state = self.drive_state(&ctx, state).await?;
         Ok(Json(Some(state)))
     }
 
     async fn branch(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<BranchRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
@@ -511,7 +554,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn select_branch(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<BranchSelectionRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
@@ -526,7 +569,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn vote(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<GoalPriorityVoteRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
@@ -543,22 +586,31 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn resume_thunk(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<DelayedComputeThunkResumeRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
             return Ok(Json(None));
         };
-        state
-            .resume_delayed_compute_thunk(request.into_inner())
-            .map_err(domain_error)?;
+        match state.resume_delayed_compute_thunk(request.into_inner()) {
+            Ok(_) => {}
+            Err(DomainError::SteeringDenied(message))
+                if message.contains("delayed compute thunk")
+                    && message.contains("is not pending") =>
+            {
+                state
+                    .events
+                    .push(StateEvent::new("resume_thunk_skipped:not_pending"));
+            }
+            Err(error) => return Err(domain_error(error)),
+        }
         let state = self.drive_state(&ctx, state).await?;
         Ok(Json(Some(state)))
     }
 
     async fn create_thunk(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<DelayedComputeThunkRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
@@ -575,7 +627,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn mechanism_start(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<MechanismRoundRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
@@ -592,7 +644,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn mechanism_ballot(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<MechanismBallotRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
         let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
@@ -607,10 +659,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
         Ok(Json(Some(state)))
     }
 
-    async fn status(
-        &self,
-        ctx: SharedWorkflowContext<'_>,
-    ) -> HandlerResult<Json<Option<GoalState>>> {
+    async fn status(&self, ctx: SharedObjectContext<'_>) -> HandlerResult<Json<Option<GoalState>>> {
         Ok(Json(
             ctx.get::<Json<GoalState>>(STATE_KEY)
                 .await?
@@ -620,7 +669,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn progress(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: SharedObjectContext<'_>,
     ) -> HandlerResult<Json<Option<GoalProgress>>> {
         Ok(Json(
             ctx.get::<Json<GoalState>>(STATE_KEY)
@@ -632,7 +681,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn compute_graph(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: SharedObjectContext<'_>,
     ) -> HandlerResult<Json<Option<ComputeGraphSnapshot>>> {
         Ok(Json(
             ctx.get::<Json<GoalState>>(STATE_KEY)
@@ -644,7 +693,7 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn tasks(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: SharedObjectContext<'_>,
         query: Json<TaskQuery>,
     ) -> HandlerResult<Json<Option<TaskList>>> {
         Ok(Json(
@@ -1172,6 +1221,35 @@ mod tests {
             None
         );
         assert_eq!(configured_goal_store_url(Some(String::new())), None);
+    }
+
+    #[test]
+    fn steering_drive_policy_only_runs_progressing_controls() {
+        assert!(steering_should_drive(&SteeringDirectiveKind::InjectTask {
+            role: coat_domain::WorkerKind::Planner,
+            prompt: "recover blocked work".to_string(),
+            reason: "operator requested recovery".to_string(),
+        }));
+        assert!(steering_should_drive(
+            &SteeringDirectiveKind::RequestResearch {
+                question: "what changed?".to_string(),
+                reason: "operator requested current facts".to_string(),
+            }
+        ));
+        assert!(steering_should_drive(&SteeringDirectiveKind::Resume {
+            reason: "continue".to_string(),
+        }));
+        assert!(!steering_should_drive(&SteeringDirectiveKind::Pause {
+            reason: "hold".to_string(),
+        }));
+        assert!(!steering_should_drive(&SteeringDirectiveKind::Cancel {
+            reason: "stop".to_string(),
+        }));
+        assert!(!steering_should_drive(
+            &SteeringDirectiveKind::EvaluateGoalCompletion {
+                reason: "inspect only".to_string(),
+            }
+        ));
     }
 
     #[test]

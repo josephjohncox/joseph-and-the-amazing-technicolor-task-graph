@@ -138,6 +138,79 @@ coat plan select-candidate \
   --file examples/plan-candidate-selection.json
 ```
 
+## Adversarial Workflows
+
+Use adversarial workflows when one answer is not enough: high-risk code,
+ambiguous designs, safety-sensitive changes, model bakeoffs, or work that
+benefits from independent disagreement.
+
+Start from the shortcut command when possible:
+
+```sh
+coat goal adversarial plan \
+  --goal-id <goal-id> \
+  --actor-count 3 \
+  --critic-check test_evidence \
+  --critic-check security \
+  --research-topic "current dependency and sandbox risks" \
+  --unifier \
+  --emit-only \
+  --out-dir /tmp/coat-adversarial
+
+coat goal adversarial start \
+  --goal-id <goal-id> \
+  --actor-count 3 \
+  --critic-check test_evidence \
+  --critic-check security \
+  --min-satisfaction 0.9
+```
+
+Operational flow:
+
+1. Seed an actor task for the intended artifact and keep the done criteria
+   objective.
+2. Add critic tasks through `review_policy`, `request_standard_review`, or
+   explicit child tasks. Critics inspect artifacts, tests, scope, safety, and
+   missing evidence; they do not rewrite the actor output silently.
+3. Fork candidate branches with `branching_policy` when multiple approaches
+   should compete. Candidates may use different roles, personas, model routes,
+   sandbox profiles, or prompts, but each must return artifacts and evidence.
+4. Add research tasks when external or current facts matter. Research returns
+   sourced `ResearchOutput` and an `InformationUsePlan`; actors and critics use
+   that plan instead of copying raw research into prompts.
+5. Vote on candidates with `branch_vote` tasks or `coat goal branch` followed
+   by `coat goal select-branch`. Votes must be structured `BranchVoteOutput`
+   records with reasons, scores, and evidence references.
+6. Join accepted work through a unifier. The unifier resolves conflicts,
+   preserves the selected artifacts, promotes only reviewed branch memory, and
+   records why losing branches were rejected.
+7. Validate completion from durable task state, not from a worker claim. Use
+   `evaluate_goal_completion` before adding more work or marking the goal done.
+
+Personas are task-local. Use them to create useful disagreement such as
+`implementer`, `security_critic`, `test_critic`, `formal_methods_reviewer`,
+`operator_experience_reviewer`, `cost_reviewer`, or `researcher`. Do not infer
+persona from role alone: a `codex` role can run a cautious maintainer persona,
+and a reviewer role can run a product-risk persona. Keep personas short,
+bounded, and tied to evidence they must produce.
+
+Drill into task context before steering. Inspect the selected task's prompt,
+execution profile, persona, MCP refs, memory context, result refs, child
+requests, chat/session refs, command evidence, and reviewer output. If the
+operator needs more context, request a research task, a standard review, or a
+branch vote instead of asking an existing worker to improvise hidden work.
+
+Recommended shortcut flows:
+
+- `strict_review`: actor, tests, critic, and unifier for code or policy changes.
+- `red_team`: actor plus security/safety critic before validation.
+- `model_bakeoff`: fork two or more model/persona candidates, vote, then unify.
+- `research_first`: research task, information-use plan, actor, critic.
+- `test_first`: tester drafts failing evidence, actor fixes, critic verifies.
+- `cheap_then_deep`: fast actor attempt, deep critic only when evidence is weak.
+- `operator_review`: pause after critic output and require human branch
+  selection before unification.
+
 ## Copyable LLM Prompts
 
 Goal intake prompt:
@@ -257,7 +330,7 @@ Standard review steering: Use `request_standard_review` to inject bounded checks
 
 `control_policy`: Use `human_steered_continuous` for long-running initiatives that need operator steering. Use explicit stop conditions; do not rely on a free-running loop.
 
-`restart_policy`: Enable for work that may be resumed after runner loss, timeouts, config repair, model changes, or operator steering. Keep max restart counts finite. Use `scope = task` for a single failed task, `scope = blocked` for all blocked tasks, and `scope = goal` only when the whole frontier should be requeued.
+`restart_policy`: Enable for work that may be resumed after runner loss, timeouts, config repair, model changes, or operator steering. Keep max restart counts finite. Use `scope = task` for one specific task, `scope = blocked` for all blocked tasks, `scope = failed` for failed tasks, `scope = timed_out` for timeout-backed work, and `scope = goal` only when the whole frontier should be requeued. Blocked, failed, waiting, and budget-exhausted states are recoverable; use `cancel` only when the goal should stop.
 
 `timeout_policy`: Set task and runner-call timeouts so sidecars cannot hold a durable frontier forever. The coordinator records timed-out tasks as structured worker results, then applies `on_task_timeout`; the default is `restart_if_allowed`.
 

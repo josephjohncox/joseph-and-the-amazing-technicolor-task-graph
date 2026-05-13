@@ -297,7 +297,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ApprovalList, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSnapshotHasProjectedTasks, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
+            return `${code}\nexport { CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, DraftReviewDock, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, OperatorActionList, OperatorActionsView, RunnersView, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSnapshotHasProjectedTasks, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -310,18 +310,20 @@ async function assertOperatorWorkflowRender() {
 
   try {
     const {
-      ApprovalList,
       CommandPanel,
       CompilerControlPanel,
       ComputeGraphDetails,
       ContinuationQueue,
       Dashboard,
+      DraftReviewDock,
       EventSourcesPanel,
       EvidenceNextActionPanel,
       GoalContextBar,
       GoalList,
       GraphStatusPanel,
       MemoryEventsTable,
+      OperatorActionList,
+      OperatorActionsView,
       RunnersView,
       SubgoalPlanPanel,
       TaskSummary,
@@ -808,24 +810,23 @@ async function assertOperatorWorkflowRender() {
     );
     assert(emptyContinuationMarkup.includes("Continuations clear"), "empty continuation queue renders stable empty state");
 
+    const approvalItems = approvals.map((approval) => ({
+      key: `approval:${approval.approval_id}`,
+      kind: "approval",
+      label: approval.risk,
+      status: approval.status,
+      detail: `Risk: ${approval.risk}`,
+      goalId: approval.goal_id,
+      taskId: "",
+      approvalId: approval.approval_id,
+      thunkId: "",
+      risk: approval.risk,
+      actionLabel: "Approve",
+    }));
     const approvalMarkup = renderToStaticMarkup(
-      React.createElement(ApprovalList, {
-        items: approvals.map((approval) => ({
-          key: `approval:${approval.approval_id}`,
-          kind: "approval",
-          label: approval.risk,
-          status: approval.status,
-          detail: `Risk: ${approval.risk}`,
-          goalId: approval.goal_id,
-          taskId: "",
-          approvalId: approval.approval_id,
-          thunkId: "",
-          risk: approval.risk,
-          actionLabel: "Approve",
-        })),
-        busy: false,
-        onApprove: () => {},
-      }),
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, { items: approvalItems }),
+      ),
     );
     assert(approvalMarkup.includes("deployment"), "approval list renders risk");
     assert(approvalMarkup.includes("Pending · Ref 018f8f2f"), "approval list renders goal-scoped pending state");
@@ -833,30 +834,53 @@ async function assertOperatorWorkflowRender() {
     assert(!approvalMarkup.includes("disabled=\"\""), "approval command is enabled when approval and goal ids exist");
 
     const disabledApprovalMarkup = renderToStaticMarkup(
-      React.createElement(ApprovalList, {
-        items: [{
-          key: "approval:missing",
-          kind: "approval",
-          label: "unknown gate",
-          status: "pending",
-          detail: "Risk: unknown gate",
-          goalId: "",
-          taskId: "",
-          approvalId: "",
-          thunkId: "",
-          risk: "unknown gate",
-          actionLabel: "Approve",
-        }],
-        busy: false,
-        onApprove: () => {},
-      }),
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, {
+          items: [{
+            key: "approval:missing",
+            kind: "approval",
+            label: "unknown gate",
+            status: "pending",
+            detail: "Risk: unknown gate",
+            goalId: "",
+            taskId: "",
+            approvalId: "",
+            thunkId: "",
+            risk: "unknown gate",
+            actionLabel: "Approve",
+          }],
+        }),
+      ),
     );
     assert(disabledApprovalMarkup.includes("unknown gate"), "action queue still renders incomplete approval rows");
-    assert(!disabledApprovalMarkup.includes("<button"), "approval command is hidden when an approval cannot be acted on");
+    assert(disabledApprovalMarkup.includes("disabled=\"\""), "approval command is disabled when an approval cannot be acted on");
+
+    const thunkMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, {
+          items: [{
+            key: "thunk:wait-on-human",
+            kind: "thunk",
+            label: "Need rollout decision",
+            status: "waiting-input",
+            detail: "Wait: human_thread",
+            goalId,
+            taskId: "task-wait",
+            approvalId: "",
+            thunkId: "wait-on-human",
+            risk: "",
+            actionLabel: "Resume",
+          }],
+        }),
+      ),
+    );
+    assert(thunkMarkup.includes("Need rollout decision"), "action queue renders waiting continuation text");
+    assert(thunkMarkup.includes("Response"), "action queue renders resume input for thunks");
+    assert(thunkMarkup.includes(">Resume<"), "action queue renders resume command");
 
     const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { overview }));
     for (const expected of [
-      "model-provider / work (Ref codex-runner-a)",
+      "model-provider (Ref codex-runner-a)",
       "local-dev-a",
       "Active",
       "2/3 free, 1 running",
@@ -865,8 +889,27 @@ async function assertOperatorWorkflowRender() {
       assert(runnersMarkup.includes(expected), `runner fleet markup includes ${expected}`);
     }
     const runnerRow = runnerTableRow(runnerRows[0]);
-    assertEqual(runnerRow[0], "model-provider / work (Ref codex-runner-a)", "runner row derives display name from labels");
+    assertEqual(runnerRow[0], "model-provider (Ref codex-runner-a)", "runner row derives display name without exposing lane labels");
     assertEqual(runnerRow[3], "2/3 free, 1 running", "runner row derives remaining capacity");
+
+    const actionsMarkup = renderToStaticMarkup(React.createElement(OperatorActionsView, { onOpenView: () => {} }));
+    for (const expected of [
+      "coat plan",
+      "coat goal",
+      "coat human",
+      "coat deploy",
+      "coat runner",
+      "coat tool",
+      "coat memory",
+      "coat event",
+      "coat store",
+      "coat scenario",
+      "coat setup",
+      "coat tui",
+    ]) {
+      assert(actionsMarkup.includes(expected), `operator actions panel includes ${expected}`);
+    }
+    assert(actionsMarkup.includes("Every canonical CLI group"), "operator actions panel explains CLI coverage");
 
     const eventsMarkup = renderToStaticMarkup(
       React.createElement(MemoryEventsTable, {
@@ -1170,7 +1213,7 @@ async function assertChatApiDiscoversRegisteredModel() {
     assertEqual(runnerRows[0].runner_id, "unlabeled-work-runner", "runners api flattens nested runner id");
     assertEqual(runnerRows[0].node_id, "worker-node-a", "runners api flattens nested node id");
     assertEqual(runnerRows[0].endpoint, "http://work-runner.example:9093", "runners api flattens nested endpoint");
-    assertEqual(runnerRows[0].display_name, "model-provider / work", "runners api derives readable runner display name");
+    assertEqual(runnerRows[0].display_name, "model-provider", "runners api derives readable runner display name without exposing lane labels");
     assertEqual(runnerRows[0].status, "active", "runners api derives active status");
     assertEqual(runnerRows[0].capacity_remaining, 3, "runners api preserves remaining capacity");
     assertEqual(runnerRows[0].max_concurrency, 4, "runners api exposes registration max concurrency");
@@ -1287,12 +1330,47 @@ async function assertBackendBackedControlSurfaces() {
       attempts: 1,
       payload_json: {
         prompt: taskPrompt,
-        execution: { profile: "strict-local", local_tools: ["npm"], runner: "codex" },
+        execution: {
+          profile: "strict-local",
+          local_tools: ["npm"],
+          runner: { kind: "registered_runner", runner_id: "codex-runner-a" },
+          model: { provider: "openai", model: "gpt-5.4" },
+          persona: { key: "staff_engineer", summary: "senior implementation reviewer" },
+        },
+        thread_id: "thr-task-plan-001",
+        session_id: "sess-task-plan-001",
         budget: { max_attempts: 2, max_runtime_seconds: 600 },
         sandbox: { profile: "workspace-write", network: "disabled" },
         done_criteria: { tests_pass: true, evidence: ["behavioral smoke assertions pass"] },
         dependencies: [],
         children: ["task-review"],
+      },
+    },
+    {
+      goal_id: goalId,
+      task_id: "task-adversarial",
+      parent_task_id: "task-plan",
+      subgoal_id: "sg-control-plane",
+      title: "Review adversarial workflow output",
+      role: "reviewer",
+      status: "waiting_input",
+      purpose_kind: "review",
+      depth: 1,
+      priority: 4,
+      attempts: 0,
+      payload_json: {
+        prompt: "The worker asked to spawn a native subagent. Preserve this as untrusted context only.",
+        execution: {
+          profile: "strict-local",
+          subagents: {
+            mode: "coordinator_durable_tasks",
+            native_spawning: "disabled",
+          },
+        },
+        budget: { max_attempts: 1, max_runtime_seconds: 300 },
+        sandbox: { profile: "workspace-write", network: "disabled" },
+        done_criteria: { tests_pass: true, evidence: ["review rejects native subagent delegation"] },
+        children: ["child-request-review"],
       },
     },
   ];
@@ -1385,6 +1463,38 @@ async function assertBackendBackedControlSurfaces() {
     }
     if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/approvals`) {
       respondJson(res, 200, { approvals: approvalRows });
+      return;
+    }
+    if (
+      request.method === "GET"
+      && (
+        request.path === `/goal-store/chat/sessions/${encodeURIComponent(`goal:${goalId}`)}`
+        || request.path === `/goal-store/chat/sessions/goal:${goalId}`
+      )
+    ) {
+      respondJson(res, 200, {
+        session_id: `goal:${goalId}`,
+        turns: [
+          {
+            session_id: `goal:${goalId}`,
+            goal_id: goalId,
+            mode: "explain_goal_state",
+            role: "user",
+            content: "What is the planner waiting on?",
+            created_at: "2026-05-09T12:03:00Z",
+          },
+          {
+            session_id: `goal:${goalId}`,
+            goal_id: goalId,
+            mode: "explain_goal_state",
+            role: "assistant",
+            content: "The planner is waiting for checkpoint evidence and operator approval.",
+            provider: "stub",
+            model: "stub-control-chat",
+            created_at: "2026-05-09T12:03:02Z",
+          },
+        ],
+      });
       return;
     }
     if (request.method === "GET" && request.path === "/goal-store/approvals") {
@@ -1642,7 +1752,7 @@ async function assertBackendBackedControlSurfaces() {
       PORT: String(backendPort),
       COAT_CONTROL_GATEWAY_TOKEN: "",
       COAT_CONTROL_MCP_TOKEN: "",
-      COAT_CONTROL_CHAT_STORE_BACKEND: "disabled",
+      COAT_CONTROL_CHAT_STORE_BACKEND: "goal_store",
       COAT_GOAL_STORE_URL: `http://127.0.0.1:${goalStorePort}`,
       COAT_RESTATE_INGRESS: `http://127.0.0.1:${restatePort}`,
       COAT_RESTATE_ADMIN_URL: `http://127.0.0.1:${restatePort}`,
@@ -1725,10 +1835,13 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "goal snapshot includes actionable continuation thunk id");
     assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "goal snapshot includes checkpoint refs");
     assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "goal snapshot includes human approval gates");
-    assertEqual(snapshot.agent_activity.length, 1, "goal snapshot derives one agent activity row from projected tasks");
+    assertEqual(snapshot.agent_activity.length, 2, "goal snapshot derives agent activity rows from projected tasks");
     const activity = snapshot.agent_activity[0];
     assertEqual(activity.task_id, "task-plan", "agent activity preserves task id");
     assertEqual(activity.current_prompt, taskPrompt, "agent activity exposes current prompt payload");
+    assertEqual(activity.persona.key, "staff_engineer", "agent activity exposes task persona");
+    assertEqual(activity.model.model, "gpt-5.4", "agent activity exposes task model route");
+    assertEqual(activity.runner.runner_id, "codex-runner-a", "agent activity exposes task runner route");
     assertEqual(activity.runnable, true, "agent activity merges Restate progress runnable state");
     assertEqual(activity.progress.reason, "checkpoint evidence pending", "agent activity preserves progress reason");
     assertEqual(activity.recent_events[0].event_type, "TaskStarted", "agent activity attaches task-local events");
@@ -1737,10 +1850,51 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(activity.budget.max_attempts, 2, "agent activity exposes task budget");
     assertEqual(activity.sandbox.network, "disabled", "agent activity exposes sandbox policy");
     assertEqual(activity.done_criteria.tests_pass, true, "agent activity exposes done criteria");
+    assertEqual(snapshot.chat_session.entries[0].content, "What is the planner waiting on?", "goal snapshot includes goal chat session turns");
+    assertEqual(snapshot.agent_context.chat_session.session_id, `goal:${goalId}`, "agent context advertises goal chat session ref");
+    assertEqual(snapshot.agent_context.tasks[0].current_prompt, taskPrompt, "agent context exposes drill-down current prompt");
+    assertEqual(snapshot.agent_context.tasks[0].persona.key, "staff_engineer", "agent context exposes drill-down persona");
+    assertEqual(snapshot.agent_context.tasks[0].model.model, "gpt-5.4", "agent context exposes drill-down model");
+    assertEqual(snapshot.agent_context.tasks[0].runner.runner_id, "codex-runner-a", "agent context exposes drill-down runner");
+    assertEqual(snapshot.agent_context.tasks[0].purpose, "work", "agent context exposes task purpose");
+    assertEqual(snapshot.agent_context.tasks[0].session_refs.task_session_id, "sess-task-plan-001", "agent context exposes task session ref");
+    assertEqual(snapshot.agent_context.tasks[0].thread_refs.payload_thread_id, "thr-task-plan-001", "agent context exposes payload thread ref");
+    assertEqual(snapshot.agent_context.notification_threads[0].thread_key, `approval:${approvalId}`, "agent context includes relevant notifier thread summary");
+
+    const agentContextResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/agent-context?task_id=task-plan`);
+    assert(agentContextResponse.ok, "agent context api returns ok");
+    const agentContext = await agentContextResponse.json();
+    assertEqual(agentContext.found, true, "agent context task filter finds projected task");
+    assertEqual(agentContext.tasks.length, 1, "agent context task filter narrows to one task");
+    assertEqual(agentContext.tasks[0].chat_session_ref, `goal:${goalId}`, "agent context endpoint returns chat session ref");
+    assertEqual(agentContext.tasks[0].notification_threads[0].latest_status, "waiting_operator", "agent context endpoint returns relevant notification thread");
+    const adversarialActivity = snapshot.agent_activity.find((row) => row.task_id === "task-adversarial");
+    assert(adversarialActivity, "goal snapshot keeps adversarial review task visible");
+    assert(
+      adversarialActivity.current_prompt.includes("native subagent"),
+      "agent activity preserves adversarial prompt text as inspectable context",
+    );
+    assertEqual(
+      adversarialActivity.execution.subagents.mode,
+      "coordinator_durable_tasks",
+      "agent activity projects durable subagent mode from task execution context",
+    );
+    assertEqual(
+      adversarialActivity.execution.subagents.native_spawning,
+      "disabled",
+      "agent activity projects native subagent spawning as disabled",
+    );
+    assertEqual(adversarialActivity.children[0], "child-request-review", "agent activity preserves child request refs as data");
+    assertEqual(adversarialActivity.sandbox.network, "disabled", "adversarial task preserves sandbox network policy");
+    assertEqual(adversarialActivity.done_criteria.evidence[0], "review rejects native subagent delegation", "adversarial task preserves review evidence criteria");
 
     const mcpSnapshot = await callMcpAt(backendBaseUrl, "coat_goal_snapshot", { goal_id: goalId });
     assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp goal snapshot uses the same backend aggregation path");
+    assertEqual(mcpSnapshot.agent_activity[1].execution.subagents.native_spawning, "disabled", "mcp goal snapshot projects disabled native spawning");
     assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp goal snapshot includes compute graph continuation edge");
+    const mcpAgentContext = await callMcpAt(backendBaseUrl, "coat_agent_context", { goal_id: goalId, task_id: "task-plan" });
+    assertEqual(mcpAgentContext.tasks[0].current_prompt, taskPrompt, "mcp agent context uses the same drill-down aggregation path");
+    assertEqual(mcpAgentContext.tasks[0].runner.runner_id, "codex-runner-a", "mcp agent context exposes runner routing");
 
     const checkpointHistory = await callMcpAt(backendBaseUrl, "coat_checkpoint_history", { goal_id: goalId });
     assertEqual(checkpointHistory.data.checkpoints[0].git.commit, "abc1234", "checkpoint history returns git checkpoint commit");

@@ -401,7 +401,7 @@ services:
       RUNNER_ENDPOINT: http://codex-runner:9091
       RUNNER_ID: codex-runner-ts
       NODE_ID: compose-node
-      RUNNER_LABELS_JSON: ${CODEX_RUNNER_LABELS_JSON:-'{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"env","auth.mode":"env_api_key"}'}
+      RUNNER_LABELS_JSON: ${CODEX_RUNNER_LABELS_JSON:-{"pool":"default","runtime":"codex","auth.codex.device":"false","auth.codex.api_key":"env","auth.mode":"env_api_key"}}
       CODEX_AUTH_MODE: ${CODEX_AUTH_MODE:-env_api_key}
       CODEX_APP_SERVER_URL: ${CODEX_APP_SERVER_URL:-}
       CODEX_AUTH_STATE_PATH: ${CODEX_AUTH_STATE_PATH:-}
@@ -436,7 +436,7 @@ services:
       RUNNER_ID: codex-reviewer-runner-ts
       NODE_ID: compose-node-review
       RUNNER_ROLES_JSON: '["reviewer","tester","validator","formal_methods","research"]'
-      RUNNER_LABELS_JSON: ${CODEX_REVIEW_RUNNER_LABELS_JSON:-'{"pool":"default","runtime":"codex","lane":"review","auth.codex.device":"false","auth.codex.api_key":"env","auth.mode":"env_api_key"}'}
+      RUNNER_LABELS_JSON: ${CODEX_REVIEW_RUNNER_LABELS_JSON:-{"pool":"default","runtime":"codex","lane":"review","auth.codex.device":"false","auth.codex.api_key":"env","auth.mode":"env_api_key"}}
       CODEX_AUTH_MODE: ${CODEX_AUTH_MODE:-env_api_key}
       CODEX_APP_SERVER_URL: ${CODEX_APP_SERVER_URL:-}
       CODEX_AUTH_STATE_PATH: ${CODEX_AUTH_STATE_PATH:-}
@@ -467,7 +467,7 @@ services:
       RUNNER_ENDPOINT: http://claude-code-runner:9094
       RUNNER_ID: claude-code-runner-ts
       NODE_ID: compose-node
-      RUNNER_LABELS_JSON: ${CLAUDE_CODE_RUNNER_LABELS_JSON:-'{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"env","auth.mode":"env_api_key"}'}
+      RUNNER_LABELS_JSON: ${CLAUDE_CODE_RUNNER_LABELS_JSON:-{"pool":"default","runtime":"claude-code","auth.claude.device":"false","auth.claude.api_key":"env","auth.mode":"env_api_key"}}
       CLAUDE_CODE_AUTH_MODE: ${CLAUDE_CODE_AUTH_MODE:-env_api_key}
       CLAUDE_CODE_AUTH_STATE_PATH: ${CLAUDE_CODE_AUTH_STATE_PATH:-}
       COAT_WEB_SEARCH_ENABLED: ${COAT_WEB_SEARCH_ENABLED:-false}
@@ -641,7 +641,7 @@ services:
       RUNNER_ENDPOINT: http://staff-engineer-runner:9092
       RUNNER_ID: staff-engineer-runner-ts
       NODE_ID: compose-node
-      RUNNER_LABELS_JSON: ${STAFF_ENGINEER_RUNNER_LABELS_JSON:-'{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"env","auth.mode":"env_api_key"}'}
+      RUNNER_LABELS_JSON: ${STAFF_ENGINEER_RUNNER_LABELS_JSON:-{"pool":"default","runtime":"staff-engineer","auth.claude.device":"false","auth.claude.api_key":"env","auth.mode":"env_api_key"}}
       CLAUDE_CODE_AUTH_MODE: ${STAFF_ENGINEER_AUTH_MODE:-env_api_key}
       CLAUDE_CODE_AUTH_STATE_PATH: ${CLAUDE_CODE_AUTH_STATE_PATH:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

@@ -10,6 +10,9 @@
 //! - `docs/operations/local-dev.md` for local smoke workflows.
 //! - `docs/operations/goal-authoring.md` for structured goal authoring.
 
+mod scenario;
+mod tui;
+
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -43,6 +46,8 @@ use coat_domain::{
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use uuid::Uuid;
 
+use scenario::ScenarioCommand;
+
 const COAT_PROJECT_MARKER: &str = ".coat/project.json";
 const DEFAULT_USER_CONFIG: &str = "~/.coat/config.json";
 const DEFAULT_LOCAL_PROVIDER_ENV: &str = "infra/compose/local-providers.env";
@@ -64,6 +69,7 @@ const DEFAULT_NOTIFIER_URL: &str = "http://localhost:9086";
 const DEFAULT_MEMORY_GATEWAY_URL: &str = "http://localhost:9087";
 const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
 const DEFAULT_EVENT_GATEWAY_URL: &str = "http://localhost:9089";
+const DEFAULT_CONTROL_GATEWAY_URL: &str = "http://localhost:9090";
 const DEFAULT_CONTROL_MCP_URL: &str = "http://localhost:9090/mcp";
 const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
 const DEFAULT_PROJECT_MODEL_INDEX: &str = ".coat/model-index.json";
@@ -95,6 +101,8 @@ struct Cli {
 enum Commands {
     #[command(about = "Open guided setup and human-queue workflows")]
     Guide(GuideArgs),
+    #[command(about = "Open the terminal dashboard and control-gateway chat")]
+    Tui(TuiArgs),
     #[command(about = "Plan, inspect, and compile durable planning artifacts")]
     Plan(PlanCommand),
     #[command(about = "Submit, steer, inspect, branch, and cancel durable goals")]
@@ -113,6 +121,8 @@ enum Commands {
     Memory(MemoryCommand),
     #[command(about = "Inspect goal-store projections and audit records")]
     Store(StoreCommand),
+    #[command(about = "Run deterministic durable task graph E2E scenarios")]
+    Scenario(ScenarioCommand),
     #[command(about = "Plan, create, snapshot, and clean sandbox workspaces")]
     Sandbox(SandboxCommand),
     #[command(about = "Plan, bump, and cut binary or chart releases")]
@@ -126,6 +136,24 @@ enum Commands {
 struct GuideArgs {
     #[arg(long)]
     print: bool,
+}
+
+#[derive(Debug, Args)]
+struct TuiArgs {
+    #[arg(
+        long,
+        env = "COAT_CONTROL_GATEWAY_URL",
+        default_value = "http://localhost:9090"
+    )]
+    control_gateway_url: String,
+    #[arg(long, env = "COAT_CONTROL_GATEWAY_TOKEN")]
+    token: Option<String>,
+    #[arg(long)]
+    goal_id: Option<String>,
+    #[arg(long, default_value = "operator:default")]
+    session_id: String,
+    #[arg(long, default_value_t = 2500)]
+    refresh_ms: u64,
 }
 
 #[derive(Debug, Args)]
@@ -1416,7 +1444,7 @@ struct SsoArgs {
     write_env: bool,
     #[arg(
         long,
-        help = "Also configure the model-provider lane for live Bedrock routing"
+        help = "Also configure the model-provider runner for live Bedrock routing"
     )]
     bedrock_live: bool,
     #[arg(long, help = "Run local Compose preflight after AWS SSO login")]
@@ -1621,7 +1649,7 @@ impl Default for ChatClientArgs {
 #[derive(Debug, Args)]
 #[command(
     about = "Run and inspect the local Docker Compose stack",
-    after_help = "Examples:\n  coat deploy local preflight --allow-stub-runners\n  coat deploy local up --allow-stub-runners\n  coat deploy local config --env-file infra/compose/local-providers.env\n  coat deploy local down"
+    after_help = "Examples:\n  coat deploy local preflight --allow-stub-runners\n  coat deploy local up --allow-stub-runners\n  coat deploy local logs --follow coordinator runner-registry control-web\n  coat deploy local config --env-file infra/compose/local-providers.env\n  coat deploy local down"
 )]
 struct ComposeCommand {
     #[command(subcommand)]
@@ -1636,6 +1664,8 @@ enum ComposeSubcommand {
     Up(ComposeUpArgs),
     #[command(about = "Print the resolved docker compose config")]
     Config(ComposeConfigArgs),
+    #[command(about = "Show local Compose service logs with the resolved COAT config")]
+    Logs(ComposeLogsArgs),
     #[command(about = "Stop the local Compose stack")]
     Down(ComposeDownArgs),
 }
@@ -1725,6 +1755,27 @@ struct ComposeConfigArgs {
     profile: Vec<String>,
     #[arg(long)]
     allow_placeholder_env: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+struct ComposeLogsArgs {
+    #[arg(long)]
+    restate_cloud: bool,
+    #[arg(
+        long = "restate-cloud-env-file",
+        default_value = "infra/compose/restate-cloud.env"
+    )]
+    restate_cloud_env_file: PathBuf,
+    #[arg(long = "env-file")]
+    env_file: Vec<PathBuf>,
+    #[arg(long)]
+    profile: Vec<String>,
+    #[arg(long, short = 'f')]
+    follow: bool,
+    #[arg(long, default_value = "200")]
+    tail: String,
+    #[arg(value_name = "SERVICE")]
+    services: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -2158,7 +2209,7 @@ const MODEL_PARAM_PRESETS: [ModelParamPreset; 9] = [
         custom: false,
     },
     ModelParamPreset {
-        label: "Speed tier / fastest provider lane",
+        label: "Speed tier / fastest provider route",
         latency_class: Some("fast"),
         speed_tier: Some("speed"),
         temperature: Some("0.2"),
@@ -2251,6 +2302,7 @@ async fn main() -> anyhow::Result<()> {
     warn_if_project_not_initialized(&command)?;
     match command {
         Commands::Guide(args) => guide(args).await,
+        Commands::Tui(args) => tui(args).await,
         Commands::Init(args) => init(args),
         Commands::Plan(args) => plan(args).await,
         Commands::Goal(args) => goal(args).await,
@@ -2261,10 +2313,23 @@ async fn main() -> anyhow::Result<()> {
         Commands::Tool(args) => tool(args).await,
         Commands::Memory(args) => memory(args).await,
         Commands::Store(args) => store(args).await,
+        Commands::Scenario(args) => scenario::run(args).await,
         Commands::Sandbox(args) => sandbox(args).await,
         Commands::Release(args) => release(args),
         Commands::Setup(args) => setup(args).await,
     }
+}
+
+async fn tui(args: TuiArgs) -> anyhow::Result<()> {
+    let control_gateway_url = effective_control_gateway_url(&args.control_gateway_url)?;
+    tui::run(tui::TuiConfig {
+        control_gateway_url,
+        token: args.token,
+        session_id: args.session_id,
+        goal_id: args.goal_id,
+        refresh: Duration::from_millis(args.refresh_ms.max(250)),
+    })
+    .await
 }
 
 async fn guide(args: GuideArgs) -> anyhow::Result<()> {
@@ -2379,12 +2444,13 @@ async fn guide(args: GuideArgs) -> anyhow::Result<()> {
 fn print_command_map() {
     println!("COAT command map");
     println!("  coat guide                         guided setup and human-queue picker");
+    println!("  coat tui                           terminal dashboard and gateway chat");
     println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
     println!(
         "  coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>"
     );
     println!("  coat human <approve|resume-thunk|notify>");
-    println!("  coat deploy local <preflight|up|config|down>");
+    println!("  coat deploy local <preflight|up|config|logs|down>");
     println!("  coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>");
     println!("  coat deploy chart <lint|template|upgrade|rollback|package>");
     println!("  coat deploy restate <cloud-env|tunnel-docker|register-cloud>");
@@ -2393,6 +2459,7 @@ fn print_command_map() {
     println!("  coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>");
     println!("  coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>");
     println!("  coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>");
+    println!("  coat scenario <list|run|report>");
     println!("  coat setup <login|sso|model-index|config|local-auth|chat-client>");
 }
 
@@ -4080,6 +4147,7 @@ enum ProjectInitAction {
 fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
     match command {
         Commands::Init(_) | Commands::Setup(_) | Commands::Guide(_) => ProjectInitCheck::None,
+        Commands::Tui(_) => ProjectInitCheck::WarnOnly,
         Commands::Goal(command) => match &command.command {
             GoalSubcommand::Draft(_) | GoalSubcommand::Lint(_) | GoalSubcommand::ReviewChecks => {
                 ProjectInitCheck::WarnOnly
@@ -4118,6 +4186,12 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
             DeploySubcommand::Cluster(_)
             | DeploySubcommand::Chart(_)
             | DeploySubcommand::Restate(_) => ProjectInitCheck::Durable,
+        },
+        Commands::Scenario(command) => match &command.command {
+            scenario::ScenarioSubcommand::Run(_) => ProjectInitCheck::Durable,
+            scenario::ScenarioSubcommand::List(_) | scenario::ScenarioSubcommand::Report(_) => {
+                ProjectInitCheck::WarnOnly
+            }
         },
         Commands::Human(_)
         | Commands::Event(_)
@@ -4641,6 +4715,24 @@ fn effective_control_mcp_url(value: &str) -> anyhow::Result<String> {
         value,
         DEFAULT_CONTROL_MCP_URL,
         config.service_endpoints.control_mcp_url,
+    ))
+}
+
+fn effective_control_gateway_url(value: &str) -> anyhow::Result<String> {
+    if value != DEFAULT_CONTROL_GATEWAY_URL {
+        return Ok(value.trim_end_matches('/').to_string());
+    }
+    let config = load_resolved_coat_config()?.config;
+    let configured = config.service_endpoints.control_mcp_url.map(|value| {
+        value
+            .trim_end_matches("/mcp")
+            .trim_end_matches('/')
+            .to_string()
+    });
+    Ok(endpoint_from_config(
+        value,
+        DEFAULT_CONTROL_GATEWAY_URL,
+        configured,
     ))
 }
 
@@ -5843,7 +5935,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         "Codex runners",
         "Claude Code and staff-engineer runners",
         "Shared LLM gateway for work, research, chat, and embeddings",
-        "OpenAI hosted model, research, and embedding lanes",
+        "OpenAI hosted model, research, and embedding routes",
         "AWS Bedrock",
         "Host-local Ollama",
         "Host-local vLLM/OpenAI-compatible server",
@@ -6065,7 +6157,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
             "Custom gateway model id",
         )?;
         let work_model = if Confirm::with_theme(&theme)
-            .with_prompt("Use default gateway model for work lane?")
+            .with_prompt("Use default gateway model for the work route?")
             .default(
                 !env_present(&current_values, "COAT_LLM_GATEWAY_WORK_MODEL")
                     || env_value_is_value(
@@ -6089,7 +6181,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
             )?
         };
         let research_model = if Confirm::with_theme(&theme)
-            .with_prompt("Use default gateway model for research/review lane?")
+            .with_prompt("Use default gateway model for the research/review route?")
             .default(
                 !env_present(&current_values, "COAT_LLM_GATEWAY_RESEARCH_MODEL")
                     || env_value_is_value(
@@ -6247,7 +6339,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         primary_model_provider_configured = true;
 
         let enable_research = Confirm::with_theme(&theme)
-            .with_prompt("Use OpenAI hosted model provider for the research lane too?")
+            .with_prompt("Use OpenAI hosted model provider for the research route too?")
             .default(if existing_env_file {
                 env_value_is(&current_values, "MODEL_PROVIDER_RESEARCH_KIND", "open_ai")
                     || env_value_is(
@@ -6460,7 +6552,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         }
         if !primary_model_provider_configured
             && Confirm::with_theme(&theme)
-                .with_prompt("Use this local model for the primary model-provider lane too?")
+                .with_prompt("Use this local model for the primary model-provider runner too?")
                 .default(
                     !existing_env_file
                         || env_value_is(&current_values, "MODEL_PROVIDER_KIND", preset.kind),
@@ -6476,7 +6568,7 @@ async fn interactive_local_auth_setup(args: LocalAuthArgs) -> anyhow::Result<()>
         }
         if !research_model_provider_configured
             && Confirm::with_theme(&theme)
-                .with_prompt("Use this local model for the research model-provider lane too?")
+                .with_prompt("Use this local model for the research model-provider runner too?")
                 .default(
                     !existing_env_file
                         || env_value_is(
@@ -6852,7 +6944,7 @@ fn configure_web_search_routing(
         ),
     ];
     let selected_runners = MultiSelect::with_theme(theme)
-        .with_prompt("Which runner lanes may advertise web_search?")
+        .with_prompt("Which runners may advertise web_search?")
         .items(&runner_choices)
         .defaults(&runner_defaults)
         .interact()?;
@@ -8919,6 +9011,13 @@ fn compose(args: ComposeCommand) -> anyhow::Result<()> {
                 "run docker compose config",
             )
         }
+        ComposeSubcommand::Logs(mut args) => {
+            args.env_file = effective_compose_env_files(args.env_file)?;
+            args.profile = effective_compose_profiles(args.profile)?;
+            args.restate_cloud_env_file =
+                effective_restate_cloud_env_file(&args.restate_cloud_env_file)?;
+            run_docker_compose(compose_logs_command_args(&args), "show docker compose logs")
+        }
         ComposeSubcommand::Down(mut args) => {
             args.env_file = effective_compose_env_files(args.env_file)?;
             run_docker_compose(compose_down_command_args(&args), "run docker compose down")
@@ -9200,17 +9299,17 @@ fn compose_model_preflight_findings(
         .map(|(name, key, _)| format!("{name} ({key})"))
         .collect::<Vec<_>>();
     if stub_lanes.len() == runner_modes.len() {
-        let message = format!(
-            "all Compose agent lanes are stubbed: {}",
-            stub_lanes.join(", ")
-        );
+        let message = format!("all Compose runners are stubbed: {}", stub_lanes.join(", "));
         if allow_stub_runners {
             warnings.push(message);
         } else {
             failures.push(message);
         }
     } else if !stub_lanes.is_empty() {
-        warnings.push(format!("stubbed Compose lanes: {}", stub_lanes.join(", ")));
+        warnings.push(format!(
+            "stubbed Compose runners: {}",
+            stub_lanes.join(", ")
+        ));
     }
 
     for (lane, key, mode) in runner_modes {
@@ -9267,7 +9366,7 @@ fn runner_mode_is_stub(mode: &str) -> bool {
 }
 
 fn live_runner_setup_issues(
-    lane: &'static str,
+    runner: &'static str,
     key: &'static str,
     values: &BTreeMap<String, String>,
 ) -> Vec<String> {
@@ -9277,7 +9376,7 @@ fn live_runner_setup_issues(
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but no Codex auth is configured; set OPENAI_API_KEY/CODEX_API_KEY, CODEX_AUTH_MODE=runner_local_device after `codex login`, or CODEX_APP_SERVER_URL with CODEX_AUTH_MODE=app_server"
+                    "{runner} runner is live but no Codex auth is configured; set OPENAI_API_KEY/CODEX_API_KEY, CODEX_AUTH_MODE=runner_local_device after `codex login`, or CODEX_APP_SERVER_URL with CODEX_AUTH_MODE=app_server"
                 )]
             }
         }
@@ -9291,26 +9390,26 @@ fn live_runner_setup_issues(
                 Vec::new()
             } else {
                 vec![format!(
-                    "{lane} is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `coat setup login --claude`"
+                    "{runner} runner is live but no Claude auth is configured; set ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/CLAUDE_CODE_OAUTH_TOKEN or {auth_mode_key}=runner_local_device after `coat setup login --claude`"
                 )]
             }
         }
         "MODEL_PROVIDER_RUNNER_MODE" => model_provider_setup_issues(
-            lane,
+            runner,
             values,
             "MODEL_PROVIDER_KIND",
             "MODEL_PROVIDER_MODEL",
             "MODEL_PROVIDER_ENDPOINT",
         ),
         "MODEL_PROVIDER_RESEARCH_RUNNER_MODE" => model_provider_setup_issues(
-            lane,
+            runner,
             values,
             "MODEL_PROVIDER_RESEARCH_KIND",
             "MODEL_PROVIDER_RESEARCH_MODEL",
             "MODEL_PROVIDER_RESEARCH_ENDPOINT",
         ),
         "MODEL_PROVIDER_LOCAL_RUNNER_MODE" => model_provider_setup_issues(
-            lane,
+            runner,
             values,
             "LOCAL_MODEL_PROVIDER_KIND",
             "LOCAL_MODEL_PROVIDER_MODEL",
@@ -9362,7 +9461,7 @@ fn auth_mode_is(values: &BTreeMap<String, String>, key: &str, expected: &str) ->
 }
 
 fn model_provider_setup_issues(
-    lane: &'static str,
+    runner: &'static str,
     values: &BTreeMap<String, String>,
     kind_key: &'static str,
     model_key: &'static str,
@@ -9371,7 +9470,9 @@ fn model_provider_setup_issues(
     let mut issues = Vec::new();
     let kind = env_value(values, kind_key).unwrap_or_else(|| "open_ai_compatible".to_string());
     if !model_provider_model_present(values, kind_key, model_key) {
-        issues.push(format!("{lane} is live but {model_key} is not set"));
+        issues.push(format!(
+            "{runner} runner is live but {model_key} is not set"
+        ));
     }
     let auth_mode_key = match kind_key {
         "MODEL_PROVIDER_RESEARCH_KIND" => "MODEL_PROVIDER_RESEARCH_AUTH_MODE",
@@ -9391,7 +9492,9 @@ fn model_provider_setup_issues(
     match kind.as_str() {
         "bedrock" => {
             if !any_env_present(values, &["AWS_REGION", "AWS_DEFAULT_REGION"]) {
-                issues.push(format!("{lane} is bedrock-backed but no AWS region is set"));
+                issues.push(format!(
+                    "{runner} runner is bedrock-backed but no AWS region is set"
+                ));
             }
             if !any_env_present(values, &["AWS_PROFILE", "AWS_ACCESS_KEY_ID"])
                 && !matches!(
@@ -9400,7 +9503,7 @@ fn model_provider_setup_issues(
                 )
             {
                 issues.push(format!(
-                    "{lane} is bedrock-backed but no AWS profile/access key or workload identity auth mode is set"
+                    "{runner} runner is bedrock-backed but no AWS profile/access key or workload identity auth mode is set"
                 ));
             }
         }
@@ -9409,13 +9512,15 @@ fn model_provider_setup_issues(
                 && !auth_mode_allows_non_env_secret(values, auth_mode_key)
             {
                 issues.push(format!(
-                    "{lane} is open_ai-backed but OPENAI_API_KEY or a brokered auth mode is not set"
+                    "{runner} runner is open_ai-backed but OPENAI_API_KEY or a brokered auth mode is not set"
                 ));
             }
         }
         "hugging_face" => {
             if !env_present(values, endpoint_key) {
-                issues.push(format!("{lane} is live but {endpoint_key} is not set"));
+                issues.push(format!(
+                    "{runner} runner is live but {endpoint_key} is not set"
+                ));
             }
             if auth_mode == "provider_token"
                 && !any_env_present(
@@ -9429,13 +9534,15 @@ fn model_provider_setup_issues(
                 )
             {
                 issues.push(format!(
-                    "{lane} uses provider_token auth but no Hugging Face/model-provider token is set"
+                    "{runner} runner uses provider_token auth but no Hugging Face/model-provider token is set"
                 ));
             }
         }
         _ => {
             if !model_provider_endpoint_present(values, endpoint_key, &kind) {
-                issues.push(format!("{lane} is live but {endpoint_key} is not set"));
+                issues.push(format!(
+                    "{runner} runner is live but {endpoint_key} is not set"
+                ));
             }
         }
     }
@@ -9536,7 +9643,7 @@ fn web_search_preflight_findings(values: &BTreeMap<String, String>) -> (Vec<Stri
         .any(|key| env_truthy_value(env_value(values, key).as_deref()))
     {
         warnings.push(
-            "COAT_WEB_SEARCH_ROUTE=runner_registry but no Compose runner lane advertises web_search; external runners may still satisfy it"
+            "COAT_WEB_SEARCH_ROUTE=runner_registry but no Compose runner advertises web_search; external runners may still satisfy it"
                 .to_string(),
         );
     }
@@ -9742,6 +9849,23 @@ fn compose_config_command_args(args: &ComposeConfigArgs) -> Vec<String> {
         &args.profile,
     );
     command_args.push("config".to_string());
+    command_args
+}
+
+fn compose_logs_command_args(args: &ComposeLogsArgs) -> Vec<String> {
+    let mut command_args = compose_base_args(
+        args.restate_cloud,
+        &args.restate_cloud_env_file,
+        &args.env_file,
+        &args.profile,
+    );
+    command_args.push("logs".to_string());
+    command_args.push("--tail".to_string());
+    command_args.push(args.tail.clone());
+    if args.follow {
+        command_args.push("--follow".to_string());
+    }
+    command_args.extend(args.services.iter().cloned());
     command_args
 }
 
@@ -10731,30 +10855,31 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeUpArgs,
-        DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs, ExecutorJobRenderArgs,
-        GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand, HelmTemplateArgs,
-        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec, LocalAuthAction,
-        LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand, ProjectInitAction,
-        ProjectInitCheck, SetupSubcommand, ToolSubcommand, apply_capacity_plan_policy_from_config,
-        apply_config_profile, apply_model_param_values, bump_release_versions,
-        chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
-        compose_config_command_args, compose_model_preflight_findings, compose_runner_modes,
-        compose_up_command_args, control_chat_default_choice, default_local_chat_completions_url,
-        default_local_model_provider_index, default_model_param_preset_index,
-        default_model_preset_index, endpoint_discovery_candidates, endpoint_from_config,
-        ensure_json_goal_id, executor_job_manifest, extract_follow_ups, helm_template_args,
-        helm_upgrade_args, kubectl_apply_args, kubectl_ephemeral_jobs_apply_args,
-        kubectl_rollout_status_args, latest_goal_id_from_value, live_model_presets,
-        load_fresh_model_index_from_paths, local_auth_action_command, local_auth_profile_defaults,
-        local_model_provider_preset, local_model_provider_preset_labels, login_actions_from_args,
-        merge_coat_config, model_index_cache_is_fresh, model_param_preset,
-        model_param_preset_labels, model_param_values_from_env, model_param_values_from_preset,
-        model_preset, model_preset_labels, model_presets_with_configured,
-        models_dev_embedding_dimensions, models_dev_embedding_presets, models_dev_provider_presets,
-        openai_embeddings_url, parse_env_file_content, preferred_operator_chat_model,
-        project_init_action, read_json_file, release_plan_json, replace_env_line,
-        replace_toml_section_value, replace_yaml_root_value, restate_cloud_env_placeholders,
+        CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeLogsArgs,
+        ComposeUpArgs, DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs,
+        ExecutorJobRenderArgs, GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand,
+        HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec,
+        LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
+        ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
+        apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
+        bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
+        compose_config_command_args, compose_logs_command_args, compose_model_preflight_findings,
+        compose_runner_modes, compose_up_command_args, control_chat_default_choice,
+        default_local_chat_completions_url, default_local_model_provider_index,
+        default_model_param_preset_index, default_model_preset_index,
+        endpoint_discovery_candidates, endpoint_from_config, ensure_json_goal_id,
+        executor_job_manifest, extract_follow_ups, helm_template_args, helm_upgrade_args,
+        kubectl_apply_args, kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args,
+        latest_goal_id_from_value, live_model_presets, load_fresh_model_index_from_paths,
+        local_auth_action_command, local_auth_profile_defaults, local_model_provider_preset,
+        local_model_provider_preset_labels, login_actions_from_args, merge_coat_config,
+        model_index_cache_is_fresh, model_param_preset, model_param_preset_labels,
+        model_param_values_from_env, model_param_values_from_preset, model_preset,
+        model_preset_labels, model_presets_with_configured, models_dev_embedding_dimensions,
+        models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
+        parse_env_file_content, preferred_operator_chat_model, project_init_action, read_json_file,
+        release_plan_json, replace_env_line, replace_toml_section_value, replace_yaml_root_value,
+        restate_cloud_env_placeholders,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
@@ -10803,8 +10928,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         for expected in [
-            "guide", "plan", "goal", "human", "deploy", "event", "runner", "tool", "memory",
-            "store", "sandbox", "release", "setup", "init",
+            "guide", "tui", "plan", "goal", "human", "deploy", "event", "runner", "tool", "memory",
+            "store", "scenario", "sandbox", "release", "setup", "init",
         ] {
             assert!(
                 visible.contains(&expected.to_string()),
@@ -10952,6 +11077,7 @@ mod tests {
         for expected in [
             "Check initialization, Docker, env files, runner modes, and model setup",
             "Run docker compose up after preflight unless --skip-preflight is set",
+            "Show local Compose service logs with the resolved COAT config",
             "coat deploy local config --env-file infra/compose/local-providers.env",
         ] {
             assert!(
@@ -11059,7 +11185,7 @@ mod tests {
             "--thunk-id",
             "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
             "--response-summary",
-            "continue with smoke lane",
+            "continue with smoke runner",
         ])
         .expect("parse human resume-thunk");
         assert!(matches!(
@@ -11148,6 +11274,17 @@ mod tests {
             Some(Commands::Plan(ref plan))
                 if matches!(plan.command, PlanSubcommand::FollowUps(_))
         ));
+
+        let tui = Cli::try_parse_from([
+            "coat",
+            "tui",
+            "--control-gateway-url",
+            "http://localhost:9090",
+            "--session-id",
+            "operator:default",
+        ])
+        .expect("parse tui");
+        assert!(matches!(tui.command, Some(Commands::Tui(_))));
 
         let login = Cli::try_parse_from([
             "coat",
@@ -11247,6 +11384,48 @@ mod tests {
     }
 
     #[test]
+    fn scenario_cli_parses_list_run_and_report() {
+        let list = Cli::try_parse_from(["coat", "scenario", "list"]).expect("parse scenario list");
+        assert!(matches!(
+            list.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::List(_))
+        ));
+
+        let run = Cli::try_parse_from([
+            "coat",
+            "scenario",
+            "run",
+            "--file",
+            "scenarios/e2e/basic.json",
+            "--gateway-url",
+            "http://localhost:9090",
+            "--timeout",
+            "30s",
+        ])
+        .expect("parse scenario run");
+        assert!(matches!(
+            run.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::Run(_))
+        ));
+
+        let report = Cli::try_parse_from([
+            "coat",
+            "scenario",
+            "report",
+            "--run-dir",
+            "target/coat-scenarios/basic",
+        ])
+        .expect("parse scenario report");
+        assert!(matches!(
+            report.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::Report(_))
+        ));
+    }
+
+    #[test]
     fn web_search_example_is_a_valid_structured_tool_request() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/web-search-request.json");
@@ -11278,7 +11457,7 @@ mod tests {
         assert!(
             failures
                 .iter()
-                .any(|failure| failure.contains("all Compose agent lanes are stubbed")),
+                .any(|failure| failure.contains("all Compose runners are stubbed")),
             "all-stub Compose should fail unless explicitly allowed: {failures:?}"
         );
     }
@@ -11296,7 +11475,7 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("all Compose agent lanes are stubbed")),
+                .any(|warning| warning.contains("all Compose runners are stubbed")),
             "allowed stubs should still be visible: {warnings:?}"
         );
     }
@@ -11361,7 +11540,7 @@ mod tests {
 
         assert!(
             failures.is_empty(),
-            "shared gateway model and endpoint refs should satisfy live model-provider lanes: {failures:?}"
+            "shared gateway model and endpoint refs should satisfy live model-provider runners: {failures:?}"
         );
     }
 
@@ -11474,12 +11653,12 @@ mod tests {
 
         assert!(
             failures.is_empty(),
-            "device/browser and brokered auth modes should unblock live runner lanes: {failures:?}"
+            "device/browser and brokered auth modes should unblock live runners: {failures:?}"
         );
     }
 
     #[test]
-    fn compose_preflight_accepts_local_model_reused_for_primary_and_research_lanes() {
+    fn compose_preflight_accepts_local_model_reused_for_primary_and_research_runners() {
         let values = BTreeMap::from([
             ("MODEL_PROVIDER_RUNNER_MODE".to_string(), "live".to_string()),
             ("MODEL_PROVIDER_KIND".to_string(), "ollama".to_string()),
@@ -11538,13 +11717,13 @@ mod tests {
 
         assert!(
             failures.is_empty(),
-            "local model reuse should satisfy all model-provider lanes: {failures:?}"
+            "local model reuse should satisfy all model-provider runners: {failures:?}"
         );
         assert!(
             !warnings
                 .iter()
                 .any(|warning| warning.contains("model-provider")),
-            "all model-provider lanes are live, so preflight should not report model-provider stubs: {warnings:?}"
+            "all model-provider runners are live, so preflight should not report model-provider stubs: {warnings:?}"
         );
     }
 
@@ -12061,6 +12240,38 @@ mod tests {
     }
 
     #[test]
+    fn compose_logs_uses_resolved_stack_files_profiles_and_tail() {
+        let args = ComposeLogsArgs {
+            restate_cloud: false,
+            restate_cloud_env_file: PathBuf::from("infra/compose/restate-cloud.env"),
+            env_file: vec![PathBuf::from("infra/compose/local-providers.env")],
+            profile: vec!["db".to_string()],
+            follow: true,
+            tail: "300".to_string(),
+            services: vec!["coordinator".to_string(), "runner-registry".to_string()],
+        };
+
+        assert_eq!(
+            compose_logs_command_args(&args),
+            vec![
+                "compose",
+                "--env-file",
+                "infra/compose/local-providers.env",
+                "-f",
+                "infra/compose/docker-compose.yml",
+                "--profile",
+                "db",
+                "logs",
+                "--tail",
+                "300",
+                "--follow",
+                "coordinator",
+                "runner-registry",
+            ]
+        );
+    }
+
+    #[test]
     fn restate_cloud_env_placeholder_detection_blocks_unsafe_up() {
         let placeholders = restate_cloud_env_placeholders(
             "RESTATE_ENVIRONMENT_ID=env_...\nRESTATE_BEARER_TOKEN=replace-me\nRESTATE_SIGNING_PUBLIC_KEY=publickeyv1_...\nRESTATE_IDENTITY_KEYS=publickeyv1_...\n",
@@ -12159,11 +12370,11 @@ mod tests {
         let defaults = local_auth_profile_defaults(true, &values);
         assert!(
             defaults[0],
-            "existing live Codex lane should be selected by default"
+            "existing live Codex runner should be selected by default"
         );
         assert!(
             defaults[5],
-            "existing Ollama lane should be selected by default"
+            "existing Ollama runner should be selected by default"
         );
         assert!(
             defaults[8],
@@ -12179,7 +12390,7 @@ mod tests {
         );
         assert!(
             !defaults[3],
-            "OpenAI hosted lane should not be selected when the existing env uses local Ollama"
+            "OpenAI hosted route should not be selected when the existing env uses local Ollama"
         );
 
         let params = model_param_values_from_env(&values, "LOCAL_MODEL_PROVIDER");
@@ -12217,12 +12428,12 @@ mod tests {
         let defaults = local_auth_profile_defaults(true, &values);
         assert!(
             defaults[8],
-            "existing live local model lane should re-open the Control Chat setup surface"
+            "existing live local model runner should re-open the Control Chat setup surface"
         );
         assert_eq!(
             control_chat_default_choice(&values),
             0,
-            "a live local model lane should repair stale stub chat config by default"
+            "a live local model runner should repair stale stub chat config by default"
         );
 
         let mut values_without_stub = values.clone();
@@ -12230,7 +12441,7 @@ mod tests {
         assert_eq!(
             control_chat_default_choice(&values_without_stub),
             0,
-            "a live local model lane should default Control Chat to runner-registry discovery"
+            "a live local model runner should default Control Chat to runner-registry discovery"
         );
         assert_eq!(
             preferred_operator_chat_model(&values_without_stub).as_deref(),
@@ -12412,25 +12623,25 @@ mod tests {
         let labels = model_param_preset_labels();
         assert!(
             labels.iter().any(|label| label.contains("Fast")),
-            "runtime param presets should expose a fast lane: {labels:?}"
+            "runtime param presets should expose a fast option: {labels:?}"
         );
         assert!(
             labels
                 .iter()
                 .any(|label| label.contains("Fast completions")),
-            "runtime param presets should expose a fast completions lane: {labels:?}"
+            "runtime param presets should expose a fast completions option: {labels:?}"
         );
         assert!(
             labels.iter().any(|label| label.contains("Speed tier")),
-            "runtime param presets should expose a provider speed tier lane: {labels:?}"
+            "runtime param presets should expose a provider speed tier option: {labels:?}"
         );
         assert!(
             labels.iter().any(|label| label.contains("Deep review")),
-            "runtime param presets should expose a deep review lane: {labels:?}"
+            "runtime param presets should expose a deep review option: {labels:?}"
         );
         assert!(
             labels.iter().any(|label| label.contains("XHigh")),
-            "runtime param presets should expose an xhigh reasoning lane: {labels:?}"
+            "runtime param presets should expose an xhigh reasoning option: {labels:?}"
         );
 
         let fast = model_param_preset(default_model_param_preset_index("fast"));

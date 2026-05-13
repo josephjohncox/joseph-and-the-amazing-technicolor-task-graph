@@ -1,0 +1,309 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "signal_driven_goal",
+  "title": "Signal driven goal",
+  "description": "Replay an external signal through the event gateway, create a deduplicated goal, run deterministic stub work, and verify terminal goal-store projection.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "clock_start": "2026-05-12T16:20:00Z",
+    "seed": 1301,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner",
+    "projection_mode": "fixture_replay"
+  },
+  "services": [
+    {
+      "name": "event_gateway",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["signal_driven_goal.external_event"]
+    },
+    {
+      "name": "coordinator",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["signal_driven_goal.goal_template"]
+    },
+    {
+      "name": "runner_registry",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["runner.scenario-stub-runner"]
+    },
+    {
+      "name": "goal_store",
+      "mode": "jsonl_projection",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["signal_driven_goal.projection"]
+    }
+  ],
+  "setup": {
+    "workspace": {
+      "mode": "ephemeral",
+      "requires_live_repo": false,
+      "write_policy": "scenario_tempdir_only"
+    },
+    "env": {
+      "COAT_ALLOW_LOCAL_STUB_FALLBACK": "true",
+      "COAT_SCENARIO_STUB_PROJECTIONS": "true",
+      "COAT_SCENARIO_ID": "signal_driven_goal"
+    },
+    "fixtures": [
+      {
+        "id": "runner.scenario-stub-runner",
+        "kind": "runner_registration",
+        "description": "Stub runner registered after the signal creates work.",
+        "value": {
+          "runner_id": "scenario-stub-runner",
+          "capabilities": ["stub_results", "event_replay"],
+          "labels": {
+            "stub": "true",
+            "network.egress": "disabled"
+          }
+        }
+      },
+      {
+        "id": "signal_driven_goal.external_event",
+        "kind": "external_event",
+        "description": "Deterministic CI failure signal routed into a new goal.",
+        "value": {
+          "id": "scenario-ci-signal-001",
+          "source_id": "scenario-ci",
+          "source_kind": "ci",
+          "event_type": "check.failed",
+          "subject": "Scenario CI signal",
+          "dedupe_key": "scenario:signal_driven_goal:ci:001",
+          "occurred_at": "2026-05-12T16:20:00Z",
+          "payload": {
+            "repository": "example/repo",
+            "branch": "scenario-signal",
+            "check_run": "deterministic-stub"
+          }
+        }
+      }
+    ],
+    "stub_projections": [
+      {
+        "id": "signal_driven_goal.projection",
+        "kind": "goal_store_snapshot",
+        "description": "Projected triggered goal after the signal is consumed exactly once.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000301",
+          "status": "done",
+          "triggered_by": "scenario:signal_driven_goal:ci:001",
+          "dedupe_hits": 0,
+          "task_counts": {
+            "done": 1,
+            "failed": 0
+          }
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000000301",
+      "creation": "event_route",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000000301",
+        "title": "Handle deterministic CI signal",
+        "objective": "Turn an external CI signal into one durable goal and satisfy it with deterministic stub evidence.",
+        "repo": "example/repo",
+        "root_budget": {
+          "max_tokens": 200000,
+          "remaining_tokens": 200000,
+          "max_runtime_seconds": 900,
+          "remaining_runtime_seconds": 900,
+          "max_tool_calls": 80,
+          "remaining_tool_calls": 80,
+          "max_child_tasks": 8,
+          "remaining_child_tasks": 8,
+          "max_patch_size": 50000
+        },
+        "done_criteria": {
+          "tests_pass": true,
+          "artifact_exists": true,
+          "validator_score_min": 0.85
+        },
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Summarize and satisfy CI signal",
+            "prompt": "Replay the deterministic CI signal fixture and return a structured result.",
+            "reason": "The event gateway created this goal from an external signal.",
+            "tags": ["scenario", "signal", "stub"]
+          }
+        ]
+      },
+      "projection_fixture": {
+        "initial_status": "running",
+        "terminal_status": "done",
+        "task_counts": {
+          "pending": 0,
+          "runnable": 1,
+          "running": 0,
+          "needs_validation": 0,
+          "waiting_approval": 0,
+          "waiting_input": 0,
+          "done": 0,
+          "blocked": 0,
+          "failed": 0,
+          "cancelled": 0
+        },
+        "notes": ["The event dedupe key must prevent duplicate goal creation."]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "emit_signal",
+      "type": "emit_external_event",
+      "description": "Emit the deterministic external CI signal.",
+      "service": "event_gateway",
+      "event": {
+        "fixture": "signal_driven_goal.external_event"
+      },
+      "expect": {
+        "route_mode": "create_goal",
+        "created_goals": 1
+      }
+    },
+    {
+      "id": "dispatch_signal_task",
+      "type": "inject_worker_result",
+      "description": "Replay the stub worker result for the task created from the signal.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000301",
+      "task_id": "00000000-0000-4000-8000-000000001301",
+      "after": ["emit_signal"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001301",
+        "status": "done",
+        "summary": "Handled deterministic CI signal fixture.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/signal_driven_goal/event-report.json",
+            "description": "Signal handling report"
+          }
+        ],
+        "diagnostics": ["source_dedupe_key=scenario:signal_driven_goal:ci:001"]
+      },
+      "expect": {
+        "task_status": "needs_validation"
+      }
+    },
+    {
+      "id": "emit_duplicate_signal",
+      "type": "emit_external_event",
+      "description": "Replay the same signal again to verify dedupe does not create a second goal.",
+      "service": "event_gateway",
+      "after": ["dispatch_signal_task"],
+      "event": {
+        "fixture": "signal_driven_goal.external_event"
+      },
+      "expect": {
+        "created_goals": 0,
+        "dedupe_hits": 1
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "description": "Validate the signal-created goal and project terminal done state.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000301",
+      "after": ["emit_duplicate_signal"],
+      "expect": {
+        "goal_status": "done"
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "pending": 0,
+      "runnable": 0,
+      "running": 0,
+      "needs_validation": 0,
+      "waiting_approval": 0,
+      "waiting_input": 0,
+      "done": 1,
+      "blocked": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The event gateway created exactly one deduplicated goal and the terminal projection includes the signal handling evidence artifact."
+    },
+    "required_events": ["external_event_received", "triggered_goal_created", "event_deduped", "goal_satisfied"],
+    "forbidden_events": ["duplicate_goal_created", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/signal_driven_goal/event-report.json"],
+    "created_goals": 1,
+    "dedupe_hits": 1
+  },
+  "evaluator_checks": [
+    {
+      "id": "created_once",
+      "kind": "event_dedupe",
+      "description": "The signal creates exactly one goal even after replay.",
+      "assertion": "created_goals == 1 && dedupe_hits == 1",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "event_lineage",
+      "kind": "projection_lineage",
+      "description": "The terminal projection preserves the external event dedupe key.",
+      "assertion": "goal.triggered_by == scenario:signal_driven_goal:ci:001",
+      "expected": "scenario:signal_driven_goal:ci:001",
+      "required": true
+    },
+    {
+      "id": "offline_event_flow",
+      "kind": "determinism",
+      "description": "The event flow runs without outbound network or provider credentials.",
+      "assertion": "network_calls == 0 && credential_requests == 0",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "timeout": {
+    "scenario_timeout_seconds": 180,
+    "action_timeout_seconds": 30,
+    "idle_timeout_seconds": 15,
+    "on_timeout": "fail_scenario"
+  },
+  "artifact_policy": {
+    "mode": "inline_manifest",
+    "retention": "keep_on_failure",
+    "allow_object_storage": false,
+    "require_manifest": true,
+    "max_inline_bytes": 65536,
+    "required_artifacts": [
+      {
+        "kind": "report",
+        "uri": "artifact://scenarios/signal_driven_goal/event-report.json",
+        "description": "Signal handling report",
+        "sha256": null
+      }
+    ],
+    "forbidden_artifacts": ["raw_provider_credentials", "ambient_home_tokens"]
+  }
+}

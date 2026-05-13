@@ -54,6 +54,12 @@ MCP, and static-file delivery. Product pages live as React components under
 `ui/control-plane-web/src/spa/`, with API access isolated in `src/spa/api.ts`
 and styling in `src/spa/styles.css`.
 
+`coat tui` is the terminal companion to the SPA. It is implemented in Rust with
+Ratatui and Crossterm, and it talks to the same control gateway APIs. It is for
+operators who want dashboard status and chat from a terminal; it must not call
+model providers, Restate, runners, memory, or projection stores directly when a
+control-gateway route exists for the same operator workflow.
+
 Appearance is a first-class shell concern. The SPA provides a light, dark, and
 system theme switcher, stores the operator preference locally, sets the
 document color scheme before React boots, and themes React Flow, dialogs,
@@ -72,6 +78,13 @@ The frontend stack is intentionally standard:
 - Radix primitives for accessible dialogs;
 - lucide-react for iconography.
 
+The SPA has one global current-goal selector in the top bar. Operators choose a
+projected goal there or submit a new chat-authored goal draft; normal Chat,
+Task Graph, Flow Control, Memory, and Human Queue use that current goal and
+must not ask for raw UUID entry in each panel. After `/api/goals/submit`
+returns, the SPA selects the returned `goal_id` immediately and shows the
+submitted-draft overlay until goal-store projects the durable task graph.
+
 The SPA may edit text in browser forms, but edits become backend commands:
 
 - new goal: `GoalWorkflow/run`;
@@ -89,11 +102,28 @@ The SPA may edit text in browser forms, but edits become backend commands:
 - research application: `GoalWorkflow/steer` directives derived from the sourced `InformationUsePlan`;
 - event source or trigger: `coat-event-gateway`.
 
-The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns draft payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. It can read optional goal context and fill existing JSON forms, but durable mutations still require the operator to press the normal submit, steer, approve, memory, or plan buttons.
+The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns draft payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. Chat inherits the current goal: with a selected goal it uses the `goal:<goal_id>` session and sends `goal_id` context, otherwise it uses the operator workspace session. Durable mutations still require the operator to press an explicit control. For GoalSpec drafts, the chat panel may show a `Submit goal` action only when the latest response contains `drafts.goal_spec`; that action calls `/api/goals/submit`, then the coordinator remains responsible for projecting the workflow state into goal-store.
 
 Chat supports three primary authoring modes: durable plan draft, GoalSpec draft, and search request. Search mode emits a structured `search_request` plus an optional coordinator-owned research steering directive. It must not claim live memory, web, or reference search occurred unless a backend tool result is present.
 
 The primary operator flow is chat first, control second. The chat panel can help explain a selected goal's compute graph, draft steering, or identify research gaps. The Flow Control view then submits the same typed workflow actions exposed by `coat goal vote`, `coat goal steer`, `coat goal restart`, `coat goal branch`, `coat goal thunk`, `coat goal mechanism`, `coat goal cancel`, and `coat human resume-thunk`. The UI should make the task graph feel like an AI-driven compiler: chat authors intent, the compute graph shows wait states and continuations, and explicit controls compile the operator decision into durable workflow commands.
+
+The terminal TUI follows the same split at smaller scope: chat uses
+`/api/chat`, dashboard cards are derived from `/api/overview`, and durable
+mutations remain explicit operator actions. `Ctrl-N` and `Ctrl-P` cycle through
+projected goals, `Ctrl-O` clears the selected goal, and
+`Ctrl-R` refreshes projection state. With a selected goal, the TUI uses the
+`goal:<goal_id>` chat session and sends the goal id to `/api/chat`; after it
+submits a chat-authored `drafts.goal_spec`, it selects the returned goal id.
+
+Scenario E2E treats this selected-goal model as a product contract. Browser
+scenarios should create or select goals through `/api/goals/submit` and the
+top-bar selector, then assert that Chat, Task Graph, Flow Control, Memory, and
+Human Queue inherit the same goal without local UUID entry fields. Terminal
+scenarios should use `coat tui` or its gateway contract to prove `Ctrl-N`,
+`Ctrl-P`, `Ctrl-O`, and submitted-draft selection change the same goal context.
+The evidence belongs under `target/coat-scenarios` with any Playwright traces
+or screenshots needed to explain failures.
 
 Every `/api/chat` request carries a `run_id`. The gateway records a short-lived operational trace with real stages such as goal-context load, backend resolution, model call or stub drafting, and chat-turn journaling. The SPA exposes this as "Chat activity"; it is an operational trace, not hidden model reasoning.
 

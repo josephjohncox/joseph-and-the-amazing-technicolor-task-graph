@@ -27,7 +27,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Add `tool_registry_url` as a standard service endpoint and `coat tool web-search` as the operator route for `coat_web_search` against the MCP tool registry.
 - Add sidecar `/capabilities` endpoints for model, MCP, capacity, and review-contract inspection.
 - Add generic Claude Code and model-provider sidecars beside Codex and staff-engineer wrappers.
-- Run a multi-agent default Compose pool with distinct runner IDs for coding, review/test, research, local-model, Claude Code, model-provider, and staff-engineer lanes.
+- Run a multi-agent default Compose pool with distinct runner IDs for coding, review/test, research, local-model, Claude Code, model-provider, and staff-engineer runners.
 - Add interactive local provider auth setup through `coat setup local-auth` and `scripts/coat-local-provider-setup.sh` so hosted keys, Bedrock routing, Ollama/vLLM endpoints, fast/speed-tier/balanced/deep model params, and Chat tab model settings are configured without printing secrets.
 - Extend local provider setup to cover memory-store adapters and embedding models, with hosted choices from models.dev and local choices from Ollama/OpenAI-compatible endpoint discovery.
 - Add interactive `coat setup chat-client` so Codex and Claude Code can register the remote control gateway as an HTTP MCP server and install the single-source `coat-control-plane` skill, while explicit flags keep automation non-interactive.
@@ -46,7 +46,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 - Optional `make compose-runner-smoke` uses the existing Compose services, validates sidecar `/capabilities`, waits for runner auto-registration, verifies explicit dispatch to `codex-runner-ts`, verifies `/capacity/plan`, and skips clearly when Docker is unavailable.
 - GitHub CI runs `make runner-smoke` on the normal build job and exposes `make compose-runner-smoke` through a Docker-capable manual workflow dispatch.
 - Tool-registry CLI tests cover `coat tool` help, generic tool call parsing, `coat_web_search` parsing, and the example `WebSearchRequest` contract.
-- Local auth setup offers an interactive wizard, prints secret-safe checks, writes `infra/compose/local-providers.env`, keeps non-interactive output stubbed by default, and flips selected interactive runner lanes to live mode.
+- Local auth setup offers an interactive wizard, prints secret-safe checks, writes `infra/compose/local-providers.env`, keeps non-interactive output stubbed by default, and flips selected interactive runners to live mode.
 - Login and SSO setup run as COAT commands, not documentation-only provider commands, and can immediately preflight the resulting env file.
 - Model routing tests cover indexed fast model choices and typed runtime params for latency class, temperature, top-p, max output tokens, reasoning effort, and timeout.
 - Memory setup tests cover hosted embedding model indexing, local OpenAI-compatible embedding URL derivation, Qdrant/embedding preflight pairing, and gateway failures before network I/O when model or dimensions are missing.
@@ -59,7 +59,7 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 ## Follow-Ups
 
 - Coordinate remaining live runner and provider verification proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Promote the manual `make compose-runner-smoke` workflow to required or scheduled CI once the runner has Docker build capacity and image caches.
+- Keep `make compose-runner-smoke` on pull-request CI and workflow dispatch; do not add cron-based test execution unless a future plan introduces a different non-PR maintenance workload.
 - Add live notification and event-source smoke tests for Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and additional provider adapters once test credentials are approved; SQS/LocalStack inbound/outbound proof is closed by the active plan's `make eventops-sqs-smoke` evidence.
 - Add live provider verification profiles for Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face endpoints, and OpenAI-compatible gateways after the auth setup command is exercised on real nodes.
 

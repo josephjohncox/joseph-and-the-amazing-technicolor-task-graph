@@ -79,6 +79,7 @@ docs/design-docs/100-strong-sandboxing-guardrails.md
 docs/design-docs/110-control-gateway-spa.md
 docs/design-docs/120-durable-planning-mode.md
 docs/operations/restate-cloud.md
+docs/operations/local-observability.md
 docs/operations/model-runner-clusters.md
 proto/coat/v1/common.proto
 proto/coat/v1/goal_store.proto
@@ -137,6 +138,35 @@ if search_repo "coat (compose|k8s|approve|notify|follow-ups)([^[:alnum:]_-]|$)|c
   exit 1
 fi
 
+ambiguous_lane_pattern='(^|[^[:alnum:]_-])((runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?|lanes? (use|uses|selected|stub|stubbed|live|advertise|configured))([^[:alnum:]_-]|$)'
+if command -v rg >/dev/null 2>&1; then
+  if rg -n -i "$ambiguous_lane_pattern" \
+    "$root/AGENTS.md" \
+    "$root/docs" \
+    "$root/crates/cli/src/main.rs" \
+    "$root/ui/control-plane-web/src" \
+    "$root/examples" \
+    --glob '!docs/exec-plans/completed/**' \
+    >/tmp/coat-doc-gardener-lanes.txt; then
+    cat /tmp/coat-doc-gardener-lanes.txt >&2
+    printf 'ambiguous lane terminology found; use runner, model route, task, or workstream in user-facing copy\n' >&2
+    exit 1
+  fi
+else
+  if git -C "$root" grep -n -i -E "$ambiguous_lane_pattern" -- \
+    AGENTS.md \
+    docs \
+    crates/cli/src/main.rs \
+    ui/control-plane-web/src \
+    examples \
+    ':(exclude)docs/exec-plans/completed/**' \
+    >/tmp/coat-doc-gardener-lanes.txt; then
+    cat /tmp/coat-doc-gardener-lanes.txt >&2
+    printf 'ambiguous lane terminology found; use runner, model route, task, or workstream in user-facing copy\n' >&2
+    exit 1
+  fi
+fi
+
 check_command_line() {
   command_line="$1"
   if ! grep -Fq "$command_line" "$root/crates/cli/src/main.rs"; then
@@ -152,7 +182,7 @@ check_command_line() {
 check_command_line 'coat plan <draft|list|show|revise|compile|follow-ups>'
 check_command_line 'coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>'
 check_command_line 'coat human <approve|resume-thunk|notify>'
-check_command_line 'coat deploy local <preflight|up|config|down>'
+check_command_line 'coat deploy local <preflight|up|config|logs|down>'
 check_command_line 'coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>'
 check_command_line 'coat deploy chart <lint|template|upgrade|rollback|package>'
 check_command_line 'coat deploy restate <cloud-env|tunnel-docker|register-cloud>'
@@ -161,7 +191,9 @@ check_command_line 'coat tool <list|call|web-search>'
 check_command_line 'coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>'
 check_command_line 'coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>'
 check_command_line 'coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>'
+check_command_line 'coat scenario <list|run|report>'
 check_command_line 'coat setup <login|sso|model-index|config|local-auth|chat-client>'
+check_command_line 'coat tui'
 
 if [ -f "$root/.envrc" ] && grep -nE '^export COAT_(RESTATE|COORDINATOR|SANDBOX|RUNNER|NOTIFIER|MEMORY|GOAL_STORE|EVENT|CONTROL)_' "$root/.envrc" >/tmp/coat-doc-gardener-direnv.txt; then
   cat /tmp/coat-doc-gardener-direnv.txt >&2

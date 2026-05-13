@@ -24,11 +24,12 @@ COAT builds a durable task-tree control plane for long-running agent work. The c
 5. `operations/cli.md`: command hierarchy, explicit subcommands, limited dialogue surfaces, and canonical command groups.
 6. `operations/configuration.md`: `.coat/project.json`, `~/.coat/config.json`, profile selection, and secret boundaries.
 7. `operations/local-dev.md`: local validation and smoke workflows.
-8. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
-9. `operations/chat-client-integration.md`: Codex, Claude Code, skill, and remote MCP chat-client setup.
-10. `operations/ephemeral-kubernetes-runners.md`: burst runners, temporary Restate executors, and toolbox injection.
-11. `operations/operator-install.md`: provider-neutral production installation path.
-12. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
+8. `operations/local-observability.md`: local debug logs, trace filters, and structured log knobs.
+9. `operations/runner-context-initialization.md`: runner, MCP, and skill context rules.
+10. `operations/chat-client-integration.md`: Codex, Claude Code, skill, and remote MCP chat-client setup.
+11. `operations/ephemeral-kubernetes-runners.md`: burst runners, temporary Restate executors, and toolbox injection.
+12. `operations/operator-install.md`: provider-neutral production installation path.
+13. `operations/releases.md`: version bumps, binary releases, and Helm chart releases.
 
 ## Design Docs
 
@@ -70,5 +71,10 @@ buf lint
 Update docs when behavior, service boundaries, public contracts, deployment knobs, or safety posture change.
 
 Active execution plans must include a `## Follow-Ups` section for developer doc gardening. Treat those bullets as repo-maintenance notes, not product workflow truth.
+
+Use `exec-plans/completed/170-usability-coherence-evaluation.md` as the scenario
+usability rubric for operator comprehension and cross-surface coherence.
+Residual UIE2E runtime work is tracked in
+`exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 User-facing continuation work belongs in durable plans, goal/task state, compute graph snapshots, delayed compute thunks, event projections, or human queue records. Use `coat plan follow-ups` when maintaining active execution-plan markdown; use the SPA, gateway APIs, or MCP tools for durable operator queues.

@@ -57,6 +57,14 @@ Workers return `AgentRunResult.object_artifacts`, each with store, key, URI, con
 
 Local Compose runs a MinIO S3-compatible service as `object-store` and initializes the `jattg-artifacts` bucket. Kubernetes includes the same development object-store Deployment and Job. In AWS/EKS, use real S3 by setting the object store endpoint/region/bucket and resolving credentials through IAM roles for service accounts or another `SecretRef` provider.
 
+Scenario E2E evidence uses the same reference-first rule even when the first
+storage location is local disk. `coat scenario run --output-dir
+target/coat-scenarios` writes `spec.json`, `evidence.json`, `report.json`, step
+results, API snapshots, Compose logs, command summaries, and browser evidence
+such as Playwright traces or screenshots. CI uploads that directory on failure,
+and longer-lived or larger scenario bundles should later be promoted to object
+storage with digest refs instead of copied into workflow state.
+
 ## Checkpoint Channel
 
 `ExecutionProfile.results.checkpoints` defines how much task history the worker should return:

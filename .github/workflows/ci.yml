@@ -1,12 +1,15 @@
 name: ci
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
     inputs:
       compose-runner-smoke:
         description: "Run Docker Compose runner/registry smoke"
+        type: boolean
+        default: false
+      event-gateway-compose-smoke:
+        description: "Run Docker Compose event gateway topology smoke"
         type: boolean
         default: false
 
@@ -24,8 +27,6 @@ env:
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
   RUST_BACKTRACE: short
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   build:
@@ -34,6 +35,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable Rust compiler cache
+        run: |
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-rust-ci
@@ -67,6 +74,32 @@ jobs:
         run: target/debug/coat deploy local config
       - name: Validate Restate Cloud Compose config
         run: target/debug/coat deploy local config --restate-cloud --restate-cloud-env-file infra/compose/restate-cloud.env.example --allow-placeholder-env
+      - name: Run deterministic scenario E2E
+        run: make scenario-e2e
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ui/control-plane-web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+      - name: Install Playwright browser
+        run: npx --prefix ui/control-plane-web playwright install --with-deps chromium
+      - name: Run operator UI E2E
+        run: make scenario-e2e-ui
+      - name: Upload scenario E2E failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            target/coat-scenarios
+            ui/control-plane-web/test-results
+            ui/control-plane-web/playwright-report
+            ui/control-plane-web/screenshots
+            ui/control-plane-web/traces
       - name: Check generated diffs and whitespace
         run: git diff --check
       - name: Print Rust compiler cache stats
@@ -91,6 +124,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable Rust compiler cache
+        run: |
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-rust-runner-targets
@@ -107,13 +146,51 @@ jobs:
         run: |
           "${SCCACHE_PATH:-sccache}" --show-stats || true
 
-  compose-runner-smoke:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs['compose-runner-smoke'] }}
+  compose-topology-smokes:
+    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs['compose-runner-smoke'] || inputs['event-gateway-compose-smoke'])) }}
     runs-on: ubuntu-latest
     env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
       BUILDKIT_PROGRESS: plain
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable Rust compiler cache
+        run: |
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-compose-topology
+          shared-key: compose-topology-${{ runner.os }}
+          key: ${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml') }}
+          workspaces: . -> target
+          cache-targets: true
+          cache-all-crates: true
+          cache-on-failure: true
       - uses: docker/setup-buildx-action@v3
       - run: docker compose version
-      - run: make compose-runner-smoke
+      - name: Run Compose runner smoke
+        if: ${{ github.event_name == 'pull_request' || inputs['compose-runner-smoke'] }}
+        run: make compose-runner-smoke
+      - name: Run Compose event gateway smoke
+        if: ${{ github.event_name == 'pull_request' || inputs['event-gateway-compose-smoke'] }}
+        run: make event-gateway-compose-smoke
+      - name: Upload Compose topology smoke failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-topology-smoke-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            target/coat-event-gateway-compose-smoke
+            target/coat-scenarios/latest/stack
+      - name: Print Rust compiler cache stats
+        if: always()
+        run: |
+          "${SCCACHE_PATH:-sccache}" --show-stats || true

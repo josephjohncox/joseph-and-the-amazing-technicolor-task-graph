@@ -377,6 +377,7 @@ function runnerMode(): RunnerMode {
 
 const server = http.createServer(async (req, res) => {
   try {
+    log("debug", "http_request", { method: req.method, url: req.url });
     if (req.method === "GET" && req.url === "/healthz") {
       return json(res, 200, { status: "ok", mode: runnerMode(), runner_id: runnerId });
     }
@@ -395,19 +396,28 @@ const server = http.createServer(async (req, res) => {
     }
     json(res, 404, { error: "not_found" });
   } catch (error) {
+    log("error", "http_request_failed", { method: req.method, url: req.url, error: errorMessage(error) });
     json(res, 500, { error: error instanceof Error ? error.message : String(error) });
   }
 });
 
 if (isMainModule()) {
   server.listen(port, () => {
-    console.log(`codex-runner-ts listening on :${port} (${runnerMode()})`);
+    log("info", "listening", { port, mode: runnerMode(), runner_id: runnerId, node_id: nodeId });
     void registerAndHeartbeat();
   });
 }
 
 export async function runTask(request: AgentRunRequest): Promise<AgentRunResult> {
+  const startedAt = Date.now();
   runningTasks += 1;
+  log("info", "task_started", {
+    goal_id: request.goal_id,
+    task_id: request.task.id,
+    role: request.task.role,
+    mode: runnerMode(),
+    running_tasks: runningTasks,
+  });
   try {
     const mode = runnerMode();
     if (mode === "live") return await runLiveAppServerTask(request);
@@ -466,6 +476,11 @@ export async function runTask(request: AgentRunRequest): Promise<AgentRunResult>
     };
   } finally {
     runningTasks -= 1;
+    log("info", "task_finished", {
+      task_id: request.task.id,
+      duration_ms: Date.now() - startedAt,
+      running_tasks: runningTasks,
+    });
   }
 }
 
@@ -2773,14 +2788,14 @@ class AppServerJsonRpcClient {
 
 async function registerAndHeartbeat(): Promise<void> {
   if (!registryUrl) {
-    console.log("RUNNER_REGISTRY_URL is not set; sidecar will not auto-register");
+    log("warn", "runner_registry_unset");
     return;
   }
 
   await registerRunnerWithRetry();
   const timer = setInterval(() => {
     void sendHeartbeat().catch((error) => {
-      console.warn(`runner heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+      log("warn", "runner_heartbeat_failed", { error: errorMessage(error) });
     });
   }, heartbeatIntervalMs);
   timer.unref();
@@ -2792,11 +2807,10 @@ async function registerRunnerWithRetry(): Promise<void> {
     try {
       await registerRunner();
       await sendHeartbeat();
-      console.log(`registered runner ${runnerId} with ${registryUrl}`);
+      log("info", "runner_registered", { registry_url: registryUrl });
       return;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`runner registration attempt ${attempt}/${attempts} failed: ${message}`);
+      log("warn", "runner_registration_failed", { attempt, attempts, error: errorMessage(error) });
       await sleep(Math.min(500 * attempt, 5_000));
     }
   }
@@ -3171,6 +3185,36 @@ async function sleep(ms: number): Promise<void> {
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body, null, 2));
+}
+
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+function log(level: LogLevel, message: string, fields: Record<string, unknown> = {}): void {
+  if (!logEnabled(level)) return;
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    service: "codex-runner-ts",
+    message,
+    runner_id: runnerId,
+    node_id: nodeId,
+    ...fields,
+  };
+  if ((process.env.COAT_LOG_FORMAT ?? "compact").toLowerCase() === "json") {
+    console.error(JSON.stringify(entry));
+    return;
+  }
+  console.error(`${entry.ts} ${level.toUpperCase()} ${entry.service} ${message} ${JSON.stringify(fields)}`);
+}
+
+function logEnabled(level: LogLevel): boolean {
+  const order: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+  const configured = (process.env.COAT_NODE_LOG_LEVEL ?? process.env.COAT_LOG_LEVEL ?? "info").toLowerCase() as LogLevel;
+  return order[level] >= (order[configured] ?? order.info);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function readJson(req: http.IncomingMessage): Promise<unknown> {

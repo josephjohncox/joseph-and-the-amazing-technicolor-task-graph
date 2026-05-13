@@ -22,8 +22,6 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: short
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   build:
@@ -49,6 +47,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Enable Rust compiler cache
+        run: |
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -103,10 +108,12 @@ jobs:
           if [ "$base_version" != "$version" ]; then
             tag_suffix="${version#*-}"
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "base_version=${base_version}" >> "$GITHUB_OUTPUT"
-          echo "tag_suffix=${tag_suffix}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${version}"
+            echo "base_version=${base_version}"
+            echo "tag_suffix=${tag_suffix}"
+            echo "tag=v${version}"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -134,9 +141,11 @@ jobs:
           if [ "$base_version" != "$version" ]; then
             tag_suffix="${version#*-}"
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "base_version=${base_version}" >> "$GITHUB_OUTPUT"
-          echo "tag_suffix=${tag_suffix}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${version}"
+            echo "base_version=${base_version}"
+            echo "tag_suffix=${tag_suffix}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download and smoke x86_64 Linux binary asset
         shell: bash

@@ -46,7 +46,7 @@ choices current without compiling provider model IDs into `coat`.
 
 Model routing is config-adjacent too. Use `config.model_routing` for non-secret
 defaults such as `direct_providers`, `shared_gateway`, or `hybrid`, gateway base
-URLs, lane model names, and secret reference names. For local Compose,
+URLs, model route names, and secret reference names. For local Compose,
 `coat setup local-auth` writes the equivalent runtime env keys:
 `COAT_LLM_GATEWAY_URL`, `COAT_LLM_GATEWAY_API_KEY`,
 `COAT_LLM_GATEWAY_{WORK,RESEARCH,CHAT,DEFAULT}_MODEL`, and direct provider
@@ -175,7 +175,7 @@ outside a project checkout.
 
 ## Local Deploy Defaults
 
-`coat deploy local preflight`, `config`, `up`, and `down` read the standard
+`coat deploy local preflight`, `config`, `up`, `logs`, and `down` read the standard
 config. If no `--env-file` is provided, the CLI looks for configured env files
 that exist, then falls back to `infra/compose/local-providers.env` when present.
 
@@ -197,6 +197,19 @@ Useful fields:
 
 Keep `allow_stub_runners=false` in committed project config unless the repo is
 only meant for stub smoke tests. A user config can opt into stubs locally.
+
+Local Compose logging is also config-adjacent but should stay lightweight.
+Prefer env-file overrides for machine-local verbosity:
+
+```dotenv
+COAT_LOG_LEVEL=debug
+COAT_NODE_LOG_LEVEL=debug
+COAT_LOG_FORMAT=compact
+COAT_RUST_LOG=info,tower_http=debug,coat_coordinator=debug,coat_runner_registry=debug
+```
+
+Use `coat deploy local logs --follow ...` to read logs through the same local
+deploy profile resolution. See `docs/operations/local-observability.md`.
 
 ## Runner Capacity Defaults
 
@@ -234,9 +247,10 @@ Example user override:
 
 Fields omitted from a `CapacityScalingPolicy` inherit safe defaults. Use
 `mode=recommend_only` for local and development profiles. Use
-`mode=provision_ephemeral` only for sandboxed lanes with template refs, approval
-policy, cooldowns, and finite `max_runners`. Per-lane policies override the
-default by runner pool key; otherwise the default policy applies.
+`mode=provision_ephemeral` only for sandboxed runner pools with template refs,
+approval policy, cooldowns, and finite `max_runners`. Entries in
+`lane_policies` override the default by runner pool key; otherwise the default
+policy applies.
 
 ## Restate Cloud Defaults
 

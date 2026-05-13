@@ -403,7 +403,7 @@ impl CoatServiceEndpoints {
 ///
 /// Store raw provider tokens in env vars, Kubernetes Secrets, external secret
 /// stores, or brokered leases. This config only records which env/secret refs
-/// should be resolved at runtime and which model lanes should prefer a shared
+/// should be resolved at runtime and which model routes should prefer a shared
 /// gateway versus direct provider credentials.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -17245,10 +17245,10 @@ mod tests {
         let round = state
             .start_mechanism_round(MechanismRoundRequest {
                 goal_id: state.goal.id,
-                title: "Choose implementation lane".to_string(),
+                title: "Choose implementation path".to_string(),
                 mechanism: Some(MechanismKind::ApprovalVote),
                 target: MechanismTarget::SubgoalSelection,
-                reason: "two candidate lanes need a coordinator-owned vote".to_string(),
+                reason: "two candidate paths need a coordinator-owned vote".to_string(),
                 proposals: vec![
                     MechanismProposalRequest {
                         label: "codex-fast".to_string(),

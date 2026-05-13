@@ -1,0 +1,346 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "fork_join_review",
+  "title": "Fork join review",
+  "description": "Complete actor work, fork deterministic reviewer tasks, join their evidence through a patch-merger task, and satisfy the goal only after review unification passes.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "clock_start": "2026-05-12T16:40:00Z",
+    "seed": 1501,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner",
+    "projection_mode": "fixture_replay"
+  },
+  "services": [
+    {
+      "name": "coordinator",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["fork_join_review.review_round"]
+    },
+    {
+      "name": "runner_registry",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["runner.scenario-stub-runner"]
+    },
+    {
+      "name": "goal_store",
+      "mode": "jsonl_projection",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["fork_join_review.projection"]
+    }
+  ],
+  "setup": {
+    "workspace": {
+      "mode": "ephemeral",
+      "requires_live_repo": false,
+      "write_policy": "scenario_tempdir_only"
+    },
+    "env": {
+      "COAT_ALLOW_LOCAL_STUB_FALLBACK": "true",
+      "COAT_SCENARIO_STUB_PROJECTIONS": "true",
+      "COAT_SCENARIO_ID": "fork_join_review"
+    },
+    "fixtures": [
+      {
+        "id": "runner.scenario-stub-runner",
+        "kind": "runner_registration",
+        "description": "Stub runner returns actor, reviewer, and unifier fixtures.",
+        "value": {
+          "runner_id": "scenario-stub-runner",
+          "capabilities": ["stub_results", "review", "unification"],
+          "labels": {
+            "stub": "true",
+            "network.egress": "disabled"
+          }
+        }
+      }
+    ],
+    "stub_projections": [
+      {
+        "id": "fork_join_review.review_round",
+        "kind": "review_round",
+        "description": "Deterministic review round with two accepted reviews and one unification task.",
+        "value": {
+          "round": 1,
+          "review_tasks": 2,
+          "join_strategy": "all_required",
+          "unifier_role": "patch_merger",
+          "accepted": true
+        }
+      },
+      {
+        "id": "fork_join_review.projection",
+        "kind": "goal_store_snapshot",
+        "description": "Terminal projection after reviewer evidence is joined.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000501",
+          "status": "done",
+          "review_rounds": 1,
+          "task_counts": {
+            "done": 4,
+            "failed": 0
+          }
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000000501",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000000501",
+        "title": "Review and join deterministic actor work",
+        "objective": "Require actor output, two reviewer checks, and one unifier decision before the coordinator marks the goal done.",
+        "repo": null,
+        "root_budget": {
+          "max_tokens": 500000,
+          "remaining_tokens": 500000,
+          "max_runtime_seconds": 1800,
+          "remaining_runtime_seconds": 1800,
+          "max_tool_calls": 160,
+          "remaining_tool_calls": 160,
+          "max_child_tasks": 12,
+          "remaining_child_tasks": 12,
+          "max_patch_size": 100000
+        },
+        "done_criteria": {
+          "tests_pass": true,
+          "artifact_exists": true,
+          "validator_score_min": 0.9
+        },
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Produce reviewed actor output",
+            "prompt": "Return deterministic actor evidence that must be reviewed before satisfaction.",
+            "reason": "The fork/join scenario starts from one actor task.",
+            "tags": ["scenario", "review", "stub"]
+          }
+        ]
+      },
+      "projection_fixture": {
+        "initial_status": "running",
+        "terminal_status": "done",
+        "task_counts": {
+          "pending": 0,
+          "runnable": 1,
+          "running": 0,
+          "needs_validation": 0,
+          "waiting_approval": 0,
+          "waiting_input": 0,
+          "done": 0,
+          "blocked": 0,
+          "failed": 0,
+          "cancelled": 0
+        },
+        "notes": ["Review and unification are explicit durable tasks, not hidden validator side effects."]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "description": "Submit the actor work goal.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000501",
+      "expect": {
+        "runnable_tasks": 1
+      }
+    },
+    {
+      "id": "complete_actor",
+      "type": "inject_worker_result",
+      "description": "Replay actor output that triggers review tasks.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000501",
+      "task_id": "00000000-0000-4000-8000-000000001501",
+      "after": ["submit_goal"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001501",
+        "status": "done",
+        "summary": "Actor fixture ready for review.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "patch",
+            "uri": "artifact://scenarios/fork_join_review/actor.patch",
+            "description": "Actor patch fixture"
+          }
+        ]
+      },
+      "expect": {
+        "created_review_tasks": 2,
+        "created_unifier_tasks": 0
+      }
+    },
+    {
+      "id": "complete_reviews",
+      "type": "inject_worker_results",
+      "description": "Replay two accepted reviewer outputs.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000501",
+      "after": ["complete_actor"],
+      "worker_results": [
+        {
+          "task_id": "00000000-0000-4000-8000-000000001502",
+          "status": "done",
+          "summary": "Correctness reviewer accepted actor output.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner",
+          "review": {
+            "status": "accepted",
+            "summary": "No correctness regressions in fixture."
+          }
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000001503",
+          "status": "done",
+          "summary": "Safety reviewer accepted actor output.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner",
+          "review": {
+            "status": "accepted",
+            "summary": "No sandbox or secret issues in fixture."
+          }
+        }
+      ],
+      "expect": {
+        "created_unifier_tasks": 1,
+        "review_rounds": 1
+      }
+    },
+    {
+      "id": "join_reviews",
+      "type": "inject_worker_result",
+      "description": "Replay patch-merger unification after all reviewer tasks pass.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000501",
+      "task_id": "00000000-0000-4000-8000-000000001504",
+      "after": ["complete_reviews"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001504",
+        "status": "done",
+        "summary": "Joined reviewer evidence and accepted actor output.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/fork_join_review/review-join.json",
+            "description": "Review unification report"
+          }
+        ]
+      },
+      "expect": {
+        "unification_done": true
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "description": "Validate the joined review round and project terminal done state.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000501",
+      "after": ["join_reviews"],
+      "expect": {
+        "goal_status": "done"
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "pending": 0,
+      "runnable": 0,
+      "running": 0,
+      "needs_validation": 0,
+      "waiting_approval": 0,
+      "waiting_input": 0,
+      "done": 4,
+      "blocked": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "satisfaction": {
+      "min_score": 0.95,
+      "required": true,
+      "rationale": "The actor artifact was reviewed, both reviewer results were joined, and the review unification evidence artifact is present."
+    },
+    "required_events": ["review_round_started", "review_tasks_completed", "review_unification_completed", "goal_satisfied"],
+    "forbidden_events": ["goal_satisfied_before_review_join", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/fork_join_review/actor.patch", "artifact://scenarios/fork_join_review/review-join.json"],
+    "review_rounds": 1,
+    "review_tasks": 2,
+    "unifier_tasks": 1
+  },
+  "evaluator_checks": [
+    {
+      "id": "review_before_done",
+      "kind": "review_gate",
+      "description": "The goal cannot be marked done before reviewer evidence is joined.",
+      "assertion": "goal_satisfied_index > review_unification_completed_index",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "all_reviewers_required",
+      "kind": "review_round",
+      "description": "Both reviewer tasks must finish before unification runs.",
+      "assertion": "created_unifier_tasks == 1 && completed_review_tasks == 2",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "join_artifact_present",
+      "kind": "artifact_policy",
+      "description": "The joined review report is present in terminal artifacts.",
+      "assertion": "required_artifacts contains review-join.json",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "timeout": {
+    "scenario_timeout_seconds": 240,
+    "action_timeout_seconds": 30,
+    "idle_timeout_seconds": 15,
+    "on_timeout": "fail_scenario"
+  },
+  "artifact_policy": {
+    "mode": "inline_manifest",
+    "retention": "keep_on_failure",
+    "allow_object_storage": false,
+    "require_manifest": true,
+    "max_inline_bytes": 65536,
+    "required_artifacts": [
+      {
+        "kind": "patch",
+        "uri": "artifact://scenarios/fork_join_review/actor.patch",
+        "description": "Actor patch fixture",
+        "sha256": null
+      },
+      {
+        "kind": "report",
+        "uri": "artifact://scenarios/fork_join_review/review-join.json",
+        "description": "Review unification report",
+        "sha256": null
+      }
+    ],
+    "forbidden_artifacts": ["raw_provider_credentials", "ambient_home_tokens"]
+  }
+}

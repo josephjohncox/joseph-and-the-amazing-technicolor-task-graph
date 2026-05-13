@@ -1,0 +1,345 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "long_iterative_loop",
+  "title": "Long iterative loop",
+  "description": "Run a bounded actor-review retry loop through deterministic fixtures until the satisfaction threshold is met, proving the coordinator stops without an infinite agent loop.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "clock_start": "2026-05-12T16:50:00Z",
+    "seed": 1601,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner",
+    "projection_mode": "fixture_replay"
+  },
+  "services": [
+    {
+      "name": "coordinator",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["long_iterative_loop.iterations"]
+    },
+    {
+      "name": "runner_registry",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["runner.scenario-stub-runner"]
+    },
+    {
+      "name": "goal_store",
+      "mode": "jsonl_projection",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["long_iterative_loop.projection"]
+    }
+  ],
+  "setup": {
+    "workspace": {
+      "mode": "ephemeral",
+      "requires_live_repo": false,
+      "write_policy": "scenario_tempdir_only"
+    },
+    "env": {
+      "COAT_ALLOW_LOCAL_STUB_FALLBACK": "true",
+      "COAT_SCENARIO_STUB_PROJECTIONS": "true",
+      "COAT_SCENARIO_ID": "long_iterative_loop"
+    },
+    "fixtures": [
+      {
+        "id": "runner.scenario-stub-runner",
+        "kind": "runner_registration",
+        "description": "Stub runner returns a fixed sequence of actor and reviewer results.",
+        "value": {
+          "runner_id": "scenario-stub-runner",
+          "capabilities": ["stub_results", "review", "actor_retry"],
+          "labels": {
+            "stub": "true",
+            "network.egress": "disabled"
+          }
+        }
+      }
+    ],
+    "stub_projections": [
+      {
+        "id": "long_iterative_loop.iterations",
+        "kind": "iteration_plan",
+        "description": "Fixed four-attempt loop with three review rejections and one accepted terminal attempt.",
+        "value": {
+          "max_attempts": 5,
+          "attempts_used": 4,
+          "scores": [0.42, 0.63, 0.78, 0.94],
+          "terminal_reason": "satisfaction_threshold_met"
+        }
+      },
+      {
+        "id": "long_iterative_loop.projection",
+        "kind": "goal_store_snapshot",
+        "description": "Terminal projection after bounded iteration reaches satisfaction.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000601",
+          "status": "done",
+          "attempts_used": 4,
+          "review_rounds": 4,
+          "satisfaction_score": 0.94
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000000601",
+        "title": "Bounded iterative actor-review loop",
+        "objective": "Improve deterministic actor output through bounded review retries until the validation score clears the threshold.",
+        "repo": null,
+        "root_budget": {
+          "max_tokens": 800000,
+          "remaining_tokens": 800000,
+          "max_runtime_seconds": 3600,
+          "remaining_runtime_seconds": 3600,
+          "max_tool_calls": 240,
+          "remaining_tool_calls": 240,
+          "max_child_tasks": 20,
+          "remaining_child_tasks": 20,
+          "max_patch_size": 150000
+        },
+        "done_criteria": {
+          "tests_pass": true,
+          "artifact_exists": true,
+          "validator_score_min": 0.9
+        },
+        "control_policy": {
+          "mode": "bounded_until_satisfied",
+          "max_frontier_rounds": 8,
+          "max_idle_rounds": 2,
+          "stop_conditions": ["goal_satisfied", "blocked", "budget_exhausted", "cancelled"],
+          "human_steering_enabled": true,
+          "allow_goal_updates": true,
+          "allow_task_injection": true,
+          "max_steering_events": 16
+        },
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Attempt iterative solution",
+            "prompt": "Return the next deterministic actor attempt for the bounded loop.",
+            "reason": "The scenario verifies bounded actor retry instead of one unbounded worker loop.",
+            "tags": ["scenario", "iteration", "stub"]
+          }
+        ]
+      },
+      "projection_fixture": {
+        "initial_status": "running",
+        "terminal_status": "done",
+        "task_counts": {
+          "pending": 0,
+          "runnable": 1,
+          "running": 0,
+          "needs_validation": 0,
+          "waiting_approval": 0,
+          "waiting_input": 0,
+          "done": 0,
+          "blocked": 0,
+          "failed": 0,
+          "cancelled": 0
+        },
+        "notes": ["The loop is represented by separate durable attempts and review rounds."]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "description": "Submit the bounded iterative goal.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "expect": {
+        "runnable_tasks": 1
+      }
+    },
+    {
+      "id": "attempt_1_rejected",
+      "type": "iteration_fixture",
+      "description": "Replay first actor attempt and reviewer rejection.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "after": ["submit_goal"],
+      "attempt": {
+        "index": 1,
+        "actor_task_id": "00000000-0000-4000-8000-000000001601",
+        "review_task_id": "00000000-0000-4000-8000-000000001602",
+        "review_status": "changes_requested",
+        "score": 0.42,
+        "retry_created": true
+      },
+      "expect": {
+        "goal_status": "running"
+      }
+    },
+    {
+      "id": "attempt_2_rejected",
+      "type": "iteration_fixture",
+      "description": "Replay second actor attempt and reviewer rejection.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "after": ["attempt_1_rejected"],
+      "attempt": {
+        "index": 2,
+        "actor_task_id": "00000000-0000-4000-8000-000000001603",
+        "review_task_id": "00000000-0000-4000-8000-000000001604",
+        "review_status": "changes_requested",
+        "score": 0.63,
+        "retry_created": true
+      },
+      "expect": {
+        "goal_status": "running"
+      }
+    },
+    {
+      "id": "attempt_3_rejected",
+      "type": "iteration_fixture",
+      "description": "Replay third actor attempt and reviewer rejection.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "after": ["attempt_2_rejected"],
+      "attempt": {
+        "index": 3,
+        "actor_task_id": "00000000-0000-4000-8000-000000001605",
+        "review_task_id": "00000000-0000-4000-8000-000000001606",
+        "review_status": "changes_requested",
+        "score": 0.78,
+        "retry_created": true
+      },
+      "expect": {
+        "goal_status": "running"
+      }
+    },
+    {
+      "id": "attempt_4_accepted",
+      "type": "iteration_fixture",
+      "description": "Replay fourth actor attempt and accepted reviewer output.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "after": ["attempt_3_rejected"],
+      "attempt": {
+        "index": 4,
+        "actor_task_id": "00000000-0000-4000-8000-000000001607",
+        "review_task_id": "00000000-0000-4000-8000-000000001608",
+        "review_status": "accepted",
+        "score": 0.94,
+        "retry_created": false
+      },
+      "artifacts": [
+        {
+          "kind": "report",
+          "uri": "artifact://scenarios/long_iterative_loop/final-iteration.json",
+          "description": "Final accepted iteration report"
+        }
+      ],
+      "expect": {
+        "satisfaction_score": 0.94,
+        "retry_created": false
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "description": "Validate the accepted fourth iteration and stop the loop.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000601",
+      "after": ["attempt_4_accepted"],
+      "expect": {
+        "goal_status": "done",
+        "attempts_used": 4
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "pending": 0,
+      "runnable": 0,
+      "running": 0,
+      "needs_validation": 0,
+      "waiting_approval": 0,
+      "waiting_input": 0,
+      "done": 8,
+      "blocked": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "satisfaction": {
+      "min_score": 0.9,
+      "actual_score": 0.94,
+      "required": true,
+      "rationale": "The bounded actor-review loop stopped on the satisfaction threshold with the final iteration evidence artifact present."
+    },
+    "required_events": ["actor_retry_requested", "review_changes_requested", "review_accepted", "goal_satisfied"],
+    "forbidden_events": ["max_frontier_rounds_exceeded", "budget_exhausted", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/long_iterative_loop/final-iteration.json"],
+    "attempts_used": 4,
+    "max_attempts": 5,
+    "review_rounds": 4,
+    "terminal_reason": "satisfaction_threshold_met"
+  },
+  "evaluator_checks": [
+    {
+      "id": "bounded_attempts",
+      "kind": "control_loop",
+      "description": "The loop uses four attempts and remains below the maximum.",
+      "assertion": "attempts_used == 4 && attempts_used < max_attempts",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "stops_on_satisfaction",
+      "kind": "satisfaction",
+      "description": "No fifth retry is created once the score clears the threshold.",
+      "assertion": "actual_score >= validator_score_min && retry_created_after_terminal == false",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "separate_durable_attempts",
+      "kind": "task_graph",
+      "description": "Each actor and review attempt is represented as durable task state.",
+      "assertion": "task_counts.done == 8 && review_rounds == 4",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "timeout": {
+    "scenario_timeout_seconds": 300,
+    "action_timeout_seconds": 30,
+    "idle_timeout_seconds": 15,
+    "on_timeout": "fail_scenario"
+  },
+  "artifact_policy": {
+    "mode": "inline_manifest",
+    "retention": "keep_on_failure",
+    "allow_object_storage": false,
+    "require_manifest": true,
+    "max_inline_bytes": 65536,
+    "required_artifacts": [
+      {
+        "kind": "report",
+        "uri": "artifact://scenarios/long_iterative_loop/final-iteration.json",
+        "description": "Final accepted iteration report",
+        "sha256": null
+      }
+    ],
+    "forbidden_artifacts": ["raw_provider_credentials", "ambient_home_tokens"]
+  }
+}

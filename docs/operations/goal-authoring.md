@@ -428,7 +428,7 @@ Resume a delayed compute thunk after human input or an external answer arrives:
 ```sh
 coat human resume-thunk \
   --thunk-id <thunk-id> \
-  --response-summary "Use the local smoke lane before live worker execution."
+  --response-summary "Use the local smoke runner before live worker execution."
 ```
 
 Follow-up commands resolve the goal from `--goal-id`, `COAT_GOAL_ID`, or

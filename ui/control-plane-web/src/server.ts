@@ -217,6 +217,34 @@ function sendJson(res: any, status: number, body: unknown): void {
   res.end(JSON.stringify(body, null, 2));
 }
 
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+function log(level: LogLevel, message: string, fields: Record<string, unknown> = {}): void {
+  if (!logEnabled(level)) return;
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    service: "coat-control-plane-web",
+    message,
+    ...fields,
+  };
+  if ((process.env.COAT_LOG_FORMAT ?? "compact").toLowerCase() === "json") {
+    console.error(JSON.stringify(entry));
+    return;
+  }
+  console.error(`${entry.ts} ${level.toUpperCase()} ${entry.service} ${message} ${JSON.stringify(fields)}`);
+}
+
+function logEnabled(level: LogLevel): boolean {
+  const order: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+  const configured = (process.env.COAT_NODE_LOG_LEVEL ?? process.env.COAT_LOG_LEVEL ?? "info").toLowerCase() as LogLevel;
+  return order[level] >= (order[configured] ?? order.info);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function sendBytes(res: any, status: number, body: Uint8Array, contentType: string, immutable = false): void {
   res.writeHead(status, {
     "content-type": contentType,
@@ -863,7 +891,21 @@ async function workflowPost(goalId: string, handler: string, body: unknown): Pro
 }
 
 async function workflowReadPost(goalId: string, handler: string, body: unknown): Promise<ProxyResult> {
-  return normalizeWorkflowReadResult(await workflowPost(goalId, handler, body), handler);
+  if (handler === "tasks") {
+    return normalizeWorkflowReadResult(await workflowPost(goalId, handler, body), handler);
+  }
+  const path = `/GoalWorkflow/${encodeURIComponent(goalId)}/${handler}`;
+  return normalizeWorkflowReadResult(await proxyJson(restateIngress, path, { method: "POST" }), handler);
+}
+
+function workflowMutationHttpStatus(result: ProxyResult): number {
+  if (result.status === 0) {
+    return 503;
+  }
+  if (result.status >= 400 && result.status <= 599) {
+    return result.status;
+  }
+  return 200;
 }
 
 async function applyResearchOutput(goalId: string, payload: unknown): Promise<JsonMap> {
@@ -1801,7 +1843,7 @@ function stubChatReason(): string {
 
 function stubAssistantText(mode: string): string {
   if (mode === "draft_goal") {
-    return "Drafted a goal payload with coordinator-owned initial work, evidence requirements, and validation gates.";
+    return "Goal draft ready. Review the fields, then submit or discard it.";
   }
   if (mode === "draft_steering") {
     return "Drafted a steering directive that can be reviewed before it changes durable workflow state.";
@@ -1856,7 +1898,21 @@ function goalSpecDraft(prompt: string): JsonMap {
     },
     plan: {
       summary: "Chat-authored goal draft; revise before submission.",
-      subgoals: [],
+      subgoals: [
+        {
+          id: "plan-next-frontier",
+          title: "Plan next frontier",
+          objective: "Turn the operator objective into coordinator-owned durable task slices.",
+          owner_role: "planner",
+          color: {
+            key: "planning",
+            label: "Planning",
+            hex: "#7c3aed",
+            meaning: "goal decomposition and durable task planning",
+          },
+          acceptance_evidence: ["first durable task frontier is visible to the coordinator"],
+        },
+      ],
       distribution_notes: ["Coordinator owns task creation; workers may only request child tasks."],
     },
     root_budget: defaultBudget(),
@@ -1864,6 +1920,8 @@ function goalSpecDraft(prompt: string): JsonMap {
     initial_tasks: [
       {
         role: "planner",
+        title: "Plan next frontier",
+        subgoal_id: "plan-next-frontier",
         prompt: `Turn this objective into the next durable task frontier: ${objective}`,
         reason: "Seed coordinator-owned decomposition from the chat-authored goal.",
       },
@@ -2168,7 +2226,8 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (req.method === "POST" && url.pathname === "/api/goals/submit") {
     const { goalId, spec } = goalSpecWithId(await readJson(req));
-    sendJson(res, 200, await workflowPost(goalId, "run", spec));
+    const result = await workflowPost(goalId, "run", spec);
+    sendJson(res, workflowMutationHttpStatus(result), result);
     return;
   }
 
@@ -2188,7 +2247,7 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
       const result = workflowReadHandlers.has(handler)
         ? await workflowReadPost(goalId, handler, body)
         : await workflowPost(goalId, handler, body);
-      sendJson(res, 200, result);
+      sendJson(res, workflowReadHandlers.has(handler) ? 200 : workflowMutationHttpStatus(result), result);
       return;
     }
   }
@@ -2330,7 +2389,175 @@ function goalSpecWithId(body: unknown): { goalId: string; spec: unknown } {
   }
   const record = body as Record<string, unknown>;
   const goalId = goalIdFromSpec(record) ?? crypto.randomUUID();
-  return { goalId, spec: { ...record, id: goalId } };
+  return { goalId, spec: normalizeGoalSpecForSubmit(record, goalId) };
+}
+
+function normalizeGoalSpecForSubmit(record: Record<string, unknown>, goalId: string): JsonMap {
+  let initialTasks = normalizeInitialTaskRequests(arrayField(record as JsonMap, "initial_tasks"), record);
+  const plan = asRecord(record.plan);
+  let subgoals = normalizeSubgoalSpecs(rowsFromData(plan.subgoals), initialTasks);
+  if (initialTasks.length === 0) {
+    initialTasks = [synthesizeInitialTaskRequest(record, subgoals)];
+    subgoals = normalizeSubgoalSpecs(subgoals, initialTasks);
+  }
+  return {
+    ...record,
+    id: goalId,
+    plan: {
+      ...plan,
+      subgoals,
+    },
+    initial_tasks: initialTasks,
+  };
+}
+
+function synthesizeInitialTaskRequest(source: Record<string, unknown>, subgoals: JsonMap[]): JsonMap {
+  const firstSubgoal = subgoals[0];
+  const objective = String(source.objective ?? source.title ?? firstSubgoal?.objective ?? firstSubgoal?.title ?? "the submitted goal");
+  return {
+    role: "planner",
+    title: "Plan next frontier",
+    subgoal_id: firstSubgoal?.id,
+    prompt: `Plan the next durable task frontier for: ${objective}`,
+    reason: "Seed coordinator-owned work because the submitted goal draft did not include an initial task frontier.",
+    color: normalizeGraphColor(firstSubgoal?.color),
+  };
+}
+
+function normalizeSubgoalSpecs(subgoals: JsonMap[], initialTasks: JsonMap[]): JsonMap[] {
+  const roleBySubgoal = new Map<string, string>();
+  for (const task of initialTasks) {
+    const subgoalId = String(task.subgoal_id ?? "").trim();
+    const role = normalizeWorkerKind(task.role);
+    if (subgoalId && role) {
+      roleBySubgoal.set(subgoalId, role);
+    }
+  }
+  return subgoals.map((subgoal, index) => {
+    const id = String(subgoal.id ?? subgoal.subgoal_id ?? slugFromText(String(subgoal.title ?? subgoal.objective ?? `subgoal-${index + 1}`))).trim();
+    const ownerRole = normalizeWorkerKind(subgoal.owner_role ?? subgoal.owner ?? subgoal.role)
+      ?? roleBySubgoal.get(id)
+      ?? "planner";
+    return {
+      ...subgoal,
+      id,
+      title: String(subgoal.title ?? humanTitleFromSlug(id) ?? `Subgoal ${index + 1}`),
+      objective: String(subgoal.objective ?? subgoal.summary ?? subgoal.title ?? `Complete ${humanTitleFromSlug(id)}`),
+      owner_role: ownerRole,
+      color: normalizeGraphColor(subgoal.color),
+    };
+  });
+}
+
+function normalizeInitialTaskRequests(tasks: unknown[], source: Record<string, unknown>): JsonMap[] {
+  const subgoals = rowsFromData(asRecord(source.plan).subgoals);
+  const onlySubgoalId = subgoals.length === 1 ? String(subgoals[0].id ?? subgoals[0].subgoal_id ?? "").trim() : "";
+  return tasks.map((task, index) => {
+    const record = asRecord(task);
+    const role = normalizeWorkerKind(record.role ?? record.owner_role) ?? "planner";
+    return {
+      ...record,
+      role,
+      title: record.title ?? (index === 0 ? "Plan next frontier" : `Initial task ${index + 1}`),
+      subgoal_id: record.subgoal_id ?? (onlySubgoalId || undefined),
+      prompt: String(record.prompt ?? `Plan the next durable task frontier for: ${source.objective ?? source.title ?? "this goal"}`),
+      reason: String(record.reason ?? "Seed coordinator-owned work from the submitted goal draft."),
+      color: normalizeGraphColor(record.color),
+    };
+  });
+}
+
+function normalizeWorkerKind(value: unknown): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .toLowerCase();
+  const aliases: Record<string, string> = {
+    claude: "claude_code",
+    claude_code_runner: "claude_code",
+    staff_engineer: "staff_engineer_claude",
+    formal: "formal_methods",
+    model: "model_provider",
+  };
+  const canonical = aliases[normalized] ?? normalized;
+  const allowed = new Set([
+    "planner",
+    "codex",
+    "claude_code",
+    "staff_engineer_claude",
+    "model_provider",
+    "research",
+    "reviewer",
+    "tester",
+    "formal_methods",
+    "validator",
+    "patch_merger",
+    "rust_tool",
+  ]);
+  return allowed.has(canonical) ? canonical : "planner";
+}
+
+function normalizeGraphColor(value: unknown): unknown {
+  if (value == null) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (Object.keys(record).length > 0) {
+    const key = String(record.key ?? "").trim();
+    if (!key) {
+      return undefined;
+    }
+    const label = String(record.label ?? humanTitleFromSlug(key) ?? key).trim();
+    const hex = /^#[0-9a-fA-F]{6}$/.test(String(record.hex ?? "")) ? String(record.hex) : colorHexForKey(key);
+    const meaning = String(record.meaning ?? `semantic graph color ${key}`).trim();
+    return { ...record, key, label, hex, meaning };
+  }
+  const key = slugFromText(String(value));
+  return key ? {
+    key,
+    label: humanTitleFromSlug(key),
+    hex: colorHexForKey(key),
+    meaning: `semantic graph color ${key}`,
+  } : undefined;
+}
+
+function slugFromText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function humanTitleFromSlug(value: string): string {
+  return value
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function colorHexForKey(key: string): string {
+  const palette: Record<string, string> = {
+    red: "#c2410c",
+    orange: "#d97706",
+    yellow: "#ca8a04",
+    green: "#16a34a",
+    cyan: "#0891b2",
+    blue: "#2563eb",
+    purple: "#7c3aed",
+    pink: "#db2777",
+    work: "#2563eb",
+    review: "#d97706",
+    research: "#0891b2",
+    validation: "#16a34a",
+  };
+  return palette[key] ?? "#7d8b94";
 }
 
 async function routeMcp(req: any, res: any): Promise<void> {
@@ -2854,6 +3081,16 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
 const server = http.createServer((req, res) => {
   void (async () => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const startedAt = Date.now();
+    log("debug", "http_request", { method: req.method, path: url.pathname });
+    res.once("finish", () => {
+      log("debug", "http_response", {
+        method: req.method,
+        path: url.pathname,
+        status_code: res.statusCode,
+        duration_ms: Date.now() - startedAt,
+      });
+    });
     if (req.method === "GET" && url.pathname === "/healthz") {
       sendJson(res, 200, { ok: true, service: "coat-control-plane-web" });
       return;
@@ -2872,10 +3109,11 @@ const server = http.createServer((req, res) => {
     }
     sendJson(res, 404, { error: "not found" });
   })().catch((error) => {
+    log("error", "http_request_failed", { method: req.method, url: req.url, error: errorMessage(error) });
     sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
   });
 });
 
 server.listen(port, host, () => {
-  console.log(`coat-control-plane-web listening on http://${host}:${port}`);
+  log("info", "listening", { host, port });
 });

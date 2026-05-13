@@ -79,6 +79,21 @@ The required evidence includes `evidence.behavioral_scenarios`, and strict doctr
 
 Instead, tests should be falsifiable against the objective: they should fail when the key workflow is broken, when the state transition is wrong, when persistence/dedupe/routing is incorrect, when edge cases regress, or when the operator would receive misleading evidence.
 
+For operator UI and workflow changes, the deterministic scenario gate is the
+preferred behavioral evidence. PR CI runs every spec under `scenarios/e2e` with
+`coat scenario run --file <scenario> --output-dir target/coat-scenarios`.
+Those specs use stubbed workers, fixed seeds, bounded clocks, and local
+fixtures so the result is reproducible. Each
+`target/coat-scenarios/<scenario-id>` directory is the review artifact for
+`evidence.behavioral_scenarios`; Playwright traces and screenshots are attached
+on failure when the scenario drives the SPA.
+
+Scenario tests should assert workflow semantics rather than static surface
+presence. For the control gateway, that means proving the current-goal selector
+or TUI selection flows into chat sessions, graph reads, control actions, memory
+views, and human-queue state through backend APIs. A scenario that only proves a
+page rendered or a button existed does not satisfy `gate.behavioral_coverage`.
+
 ## Standard Steering Checks
 
 Operators can inject doctrine-backed checks into active goals through `SteeringDirectiveKind::RequestStandardReview`:

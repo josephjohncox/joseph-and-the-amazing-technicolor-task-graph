@@ -13,6 +13,11 @@
 /**/node_modules/
 /dist/
 /**/dist/
+/ui/control-plane-web/test-results/
+/ui/control-plane-web/playwright-report/
+/ui/control-plane-web/blob-report/
+/ui/control-plane-web/screenshots/
+/ui/control-plane-web/traces/
 /.DS_Store
 /tmp/
 /infra/k8s/rendered.yaml

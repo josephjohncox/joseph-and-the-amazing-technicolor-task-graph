@@ -1,0 +1,325 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "fanout_until_done",
+  "title": "Fanout until done",
+  "description": "Fan out from one planner task into bounded child work, complete every child through stub fixtures, and stop once the coordinator satisfies the goal.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "clock_start": "2026-05-12T16:30:00Z",
+    "seed": 1401,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner",
+    "projection_mode": "fixture_replay"
+  },
+  "services": [
+    {
+      "name": "coordinator",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["fanout_until_done.child_requests"]
+    },
+    {
+      "name": "runner_registry",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["runner.scenario-stub-runner"]
+    },
+    {
+      "name": "goal_store",
+      "mode": "jsonl_projection",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["fanout_until_done.projection"]
+    }
+  ],
+  "setup": {
+    "workspace": {
+      "mode": "ephemeral",
+      "requires_live_repo": false,
+      "write_policy": "scenario_tempdir_only"
+    },
+    "env": {
+      "COAT_ALLOW_LOCAL_STUB_FALLBACK": "true",
+      "COAT_SCENARIO_STUB_PROJECTIONS": "true",
+      "COAT_SCENARIO_ID": "fanout_until_done"
+    },
+    "fixtures": [
+      {
+        "id": "runner.scenario-stub-runner",
+        "kind": "runner_registration",
+        "description": "Stub runner returns one planner fanout and three child completions.",
+        "value": {
+          "runner_id": "scenario-stub-runner",
+          "capabilities": ["stub_results", "child_task_requests"],
+          "labels": {
+            "stub": "true",
+            "network.egress": "disabled"
+          }
+        }
+      }
+    ],
+    "stub_projections": [
+      {
+        "id": "fanout_until_done.projection",
+        "kind": "goal_store_snapshot",
+        "description": "Projection after bounded child fanout reaches done.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000401",
+          "status": "done",
+          "task_counts": {
+            "done": 4,
+            "blocked": 0,
+            "failed": 0
+          },
+          "max_frontier_width": 3
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000000401",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000000401",
+        "title": "Bounded fanout scenario",
+        "objective": "Prove workers can request child tasks while the coordinator owns materialization, routing, and stop conditions.",
+        "repo": null,
+        "root_budget": {
+          "max_tokens": 400000,
+          "remaining_tokens": 400000,
+          "max_runtime_seconds": 1200,
+          "remaining_runtime_seconds": 1200,
+          "max_tool_calls": 120,
+          "remaining_tool_calls": 120,
+          "max_child_tasks": 8,
+          "remaining_child_tasks": 8,
+          "max_patch_size": 100000
+        },
+        "done_criteria": {
+          "tests_pass": false,
+          "artifact_exists": true,
+          "validator_score_min": 0.85
+        },
+        "initial_tasks": [
+          {
+            "role": "planner",
+            "title": "Plan bounded fanout",
+            "prompt": "Return three child task requests and no native subagent work.",
+            "reason": "The scenario needs coordinator-owned child task fanout.",
+            "tags": ["scenario", "fanout", "stub"]
+          }
+        ]
+      },
+      "projection_fixture": {
+        "initial_status": "running",
+        "terminal_status": "done",
+        "task_counts": {
+          "pending": 0,
+          "runnable": 1,
+          "running": 0,
+          "needs_validation": 0,
+          "waiting_approval": 0,
+          "waiting_input": 0,
+          "done": 0,
+          "blocked": 0,
+          "failed": 0,
+          "cancelled": 0
+        },
+        "notes": ["Child requests are materialized by the coordinator only."]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "description": "Submit the fanout goal.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000401",
+      "expect": {
+        "runnable_tasks": 1
+      }
+    },
+    {
+      "id": "planner_fanout",
+      "type": "inject_worker_result",
+      "description": "Replay planner output with three ChildTaskRequest values.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000401",
+      "task_id": "00000000-0000-4000-8000-000000001401",
+      "after": ["submit_goal"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001401",
+        "status": "done",
+        "summary": "Planner requested three bounded child tasks.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "child_requests": [
+          {
+            "role": "codex",
+            "title": "Complete fanout shard A",
+            "prompt": "Return deterministic shard A evidence.",
+            "reason": "Shard A covers one independent branch of the fixture.",
+            "tags": ["scenario", "fanout", "shard-a"]
+          },
+          {
+            "role": "codex",
+            "title": "Complete fanout shard B",
+            "prompt": "Return deterministic shard B evidence.",
+            "reason": "Shard B covers one independent branch of the fixture.",
+            "tags": ["scenario", "fanout", "shard-b"]
+          },
+          {
+            "role": "tester",
+            "title": "Complete fanout verification shard",
+            "prompt": "Return deterministic verification evidence.",
+            "reason": "The fanout must include one tester-owned verification shard.",
+            "tags": ["scenario", "fanout", "verification"]
+          }
+        ]
+      },
+      "expect": {
+        "created_child_tasks": 3,
+        "native_subagents_spawned": 0
+      }
+    },
+    {
+      "id": "complete_children",
+      "type": "inject_worker_results",
+      "description": "Replay done results for each child task.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000401",
+      "after": ["planner_fanout"],
+      "worker_results": [
+        {
+          "task_id": "00000000-0000-4000-8000-000000001402",
+          "status": "done",
+          "summary": "Shard A complete.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner"
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000001403",
+          "status": "done",
+          "summary": "Shard B complete.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner"
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000001404",
+          "status": "done",
+          "summary": "Verification shard complete.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner",
+          "artifacts": [
+            {
+              "kind": "test_result",
+              "uri": "artifact://scenarios/fanout_until_done/fanout-verification.json",
+              "description": "Fanout verification result"
+            }
+          ]
+        }
+      ],
+      "expect": {
+        "done_tasks": 4,
+        "blocked_tasks": 0
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "description": "Validate all fanout children and stop when done criteria are satisfied.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000401",
+      "after": ["complete_children"],
+      "expect": {
+        "goal_status": "done",
+        "frontier_empty": true
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "pending": 0,
+      "runnable": 0,
+      "running": 0,
+      "needs_validation": 0,
+      "waiting_approval": 0,
+      "waiting_input": 0,
+      "done": 4,
+      "blocked": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "All bounded child tasks completed under coordinator materialization and the verification evidence artifact is present."
+    },
+    "required_events": ["child_tasks_requested", "child_tasks_materialized", "goal_satisfied"],
+    "forbidden_events": ["native_subagent_spawned", "budget_exhausted", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/fanout_until_done/fanout-verification.json"],
+    "max_frontier_width": 3,
+    "created_child_tasks": 3
+  },
+  "evaluator_checks": [
+    {
+      "id": "bounded_child_materialization",
+      "kind": "child_tasks",
+      "description": "The coordinator creates exactly three child tasks from structured requests.",
+      "assertion": "created_child_tasks == 3 && native_subagents_spawned == 0",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "frontier_empty_on_done",
+      "kind": "terminal_frontier",
+      "description": "The goal is done only after all fanout tasks complete.",
+      "assertion": "frontier_empty == true && task_counts.done == 4",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "no_unbounded_loop",
+      "kind": "budget",
+      "description": "Fanout remains under max_child_tasks and stops at satisfaction.",
+      "assertion": "created_child_tasks <= goal.root_budget.max_child_tasks",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "timeout": {
+    "scenario_timeout_seconds": 180,
+    "action_timeout_seconds": 30,
+    "idle_timeout_seconds": 15,
+    "on_timeout": "fail_scenario"
+  },
+  "artifact_policy": {
+    "mode": "inline_manifest",
+    "retention": "keep_on_failure",
+    "allow_object_storage": false,
+    "require_manifest": true,
+    "max_inline_bytes": 65536,
+    "required_artifacts": [
+      {
+        "kind": "test_result",
+        "uri": "artifact://scenarios/fanout_until_done/fanout-verification.json",
+        "description": "Fanout verification result",
+        "sha256": null
+      }
+    ],
+    "forbidden_artifacts": ["raw_provider_credentials", "ambient_home_tokens"]
+  }
+}

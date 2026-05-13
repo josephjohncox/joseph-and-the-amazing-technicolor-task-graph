@@ -45,7 +45,7 @@ it uses:
   utilization target, headroom, cooldowns, max scale-up/down steps, and whether
   events can contribute to scaling.
 
-The calculation answers "how many execution slots are needed for this lane?"
+The calculation answers "how many execution slots are needed for this pool?"
 rather than "how many agents should an LLM spawn?" The coordinator groups demand
 by role, pool, capability, labels, sandbox, model route, and locality. The
 runner registry can produce a stateless recommendation through
@@ -111,8 +111,8 @@ gateway such as Bifrost, LiteLLM, OpenRouter, or Docker Model Gateway, runners
 can instead inherit `COAT_LLM_GATEWAY_URL`,
 `COAT_LLM_GATEWAY_{WORK,RESEARCH,DEFAULT}_MODEL`, and
 `COAT_LLM_GATEWAY_API_KEY`. That keeps provider keys centralized while still
-letting the coordinator route durable work, research, review, and chat lanes
-independently. `RUNNER_MODELS_JSON` can still override the whole candidate list
+letting the coordinator route durable work, research, review, and operator chat
+model routes independently. `RUNNER_MODELS_JSON` can still override the whole candidate list
 when a node serves multiple models. Labels remain for measured or operator
 metadata such as `quality_tier`, `latency_ms`, GPU type, price, or pool. The
 lowest-latency route uses measured latency labels first and falls back to typed
@@ -166,7 +166,7 @@ The coordinator's Restate `AgentRunner` calls `/dispatch` as a journaled side ef
 `POST /capacity/plan` accepts `RunnerScalingRequest`. If the request omits
 current supply, the registry derives pool supply from registered runner
 heartbeats. Operator-facing CLI calls should fill an omitted/default policy from
-`config.runner_capacity`, with per-lane policy selected by pool key and the
+`config.runner_capacity`, with pool-specific policy selected by pool key and the
 default policy as fallback. The response is a `RunnerScalingDecision` with
 per-pool desired runners, current runners, desired slots, provision count,
 retirement suggestion, and reasons. This endpoint is advisory; the coordinator

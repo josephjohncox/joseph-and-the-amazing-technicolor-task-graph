@@ -37,11 +37,13 @@ npm run --prefix sidecars/codex-runner-ts build
 npm run --prefix sidecars/staff-engineer-runner-ts build
 npm run --prefix ui/control-plane-web build
 npm run --prefix ui/control-plane-web smoke
+target/debug/coat scenario list
+target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --output-dir target/coat-scenarios
 ```
 
 ## Protocol SDK Generation
 
-`buf.gen.yaml` is the local generation scaffold for the future ProtocolSDK lane.
+`buf.gen.yaml` is the local generation scaffold for the future ProtocolSDK workstream.
 It keeps protobuf packages under `coat.v1`, writes generated Rust output to
 `target/generated-sdks/rust`, and writes generated TypeScript output to
 `target/generated-sdks/typescript`. Those paths are build artifacts, not
@@ -83,6 +85,8 @@ compatibility rules, package metadata, and publish targets are selected.
 coat deploy local config
 coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
+coat deploy local logs --follow coordinator runner-registry control-web
+coat tui
 coat deploy local config --profile db
 coat deploy local up --allow-stub-runners --profile db
 coat --config-profile restate-cloud deploy local up --restate-cloud --init-env
@@ -106,7 +110,7 @@ coat setup sso --profile my-aws-sso-profile --write-env --bedrock-live --preflig
 coat deploy local up --env-file infra/compose/local-providers.env
 ```
 
-The setup wizard checks provider CLIs and environment variables without printing secret values, starts from the existing output env file when it exists, refreshes the models.dev catalog before rendering hosted model choices unless a cache is newer than 60 minutes, asks which provider surfaces to prepare, flips selected runner lanes from `stub` to `live`, and can write `infra/compose/local-providers.env` back with only the interactive changes applied. Existing auth modes, endpoints, model IDs, model params, memory-store URLs, and chat settings are used as prompt defaults instead of forcing operators to retype them. Codex runner setup is separate from OpenAI hosted model-provider setup. For Codex and Claude Code lanes it asks whether auth comes from env API keys, runner-local device/browser login, Codex App Server, or a brokered lease, so local smoke work is not blocked just because a static token is unavailable. For hosted model lanes it reads the external models.dev catalog from `COAT_MODEL_INDEX`, `.coat/model-index.json`, or `~/.coat/cache/models.dev.api.json`; `COAT_MODEL_INDEX` is treated as an explicit operator-managed catalog and `coat setup model-index refresh` remains available for manual cache warm-up. Selecting the OpenAI hosted surface writes `MODEL_PROVIDER_RUNNER_MODE=live` and can also write `MODEL_PROVIDER_RESEARCH_RUNNER_MODE=live`; if `OPENAI_API_KEY` is not set and no brokered auth mode is selected, preflight fails instead of silently leaving those lanes stubbed. Memory stores and embeddings stay disabled by default unless the wizard explicitly writes Qdrant, Graphiti/Zep MCP, embedding endpoint, and embedding model settings. For local model lanes and local embeddings it queries the configured OpenAI-compatible/Ollama endpoint for currently served models instead of using compiled-in defaults, then asks whether that same local model should also back the primary and research model-provider lanes. Runtime parameter choices remain indexed, including fast, speed-tier, fast-completions, balanced, deep-review, xhigh reasoning, deterministic JSON/tool-output, hosted chat, and custom escape hatches. Endpoint URLs remain editable text because they are deployment-specific. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. When it writes the env file, it can immediately run selected `coat setup login` or `coat setup sso` actions and then run Compose preflight with that file. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
+The setup wizard checks provider CLIs and environment variables without printing secret values, starts from the existing output env file when it exists, refreshes the models.dev catalog before rendering hosted model choices unless a cache is newer than 60 minutes, asks which provider surfaces to prepare, flips selected runners from `stub` to `live`, and can write `infra/compose/local-providers.env` back with only the interactive changes applied. Existing auth modes, endpoints, model IDs, model params, memory-store URLs, and chat settings are used as prompt defaults instead of forcing operators to retype them. Codex runner setup is separate from OpenAI hosted model-provider setup. For Codex and Claude Code runners it asks whether auth comes from env API keys, runner-local device/browser login, Codex App Server, or a brokered lease, so local smoke work is not blocked just because a static token is unavailable. For hosted model routes it reads the external models.dev catalog from `COAT_MODEL_INDEX`, `.coat/model-index.json`, or `~/.coat/cache/models.dev.api.json`; `COAT_MODEL_INDEX` is treated as an explicit operator-managed catalog and `coat setup model-index refresh` remains available for manual cache warm-up. Selecting the OpenAI hosted surface writes `MODEL_PROVIDER_RUNNER_MODE=live` and can also write `MODEL_PROVIDER_RESEARCH_RUNNER_MODE=live`; if `OPENAI_API_KEY` is not set and no brokered auth mode is selected, preflight fails instead of silently leaving those runners stubbed. Memory stores and embeddings stay disabled by default unless the wizard explicitly writes Qdrant, Graphiti/Zep MCP, embedding endpoint, and embedding model settings. For local model routes and local embeddings it queries the configured OpenAI-compatible/Ollama endpoint for currently served models instead of using compiled-in defaults, then asks whether that same local model should also back the primary and research model-provider runners. Runtime parameter choices remain indexed, including fast, speed-tier, fast-completions, balanced, deep-review, xhigh reasoning, deterministic JSON/tool-output, hosted chat, and custom escape hatches. Endpoint URLs remain editable text because they are deployment-specific. It can optionally copy already-exported secret values into that env file, but it never prompts for or prints secret values. When it writes the env file, it can immediately run selected `coat setup login` or `coat setup sso` actions and then run Compose preflight with that file. `scripts/coat-local-provider-setup.sh` is available as a checkout-local wrapper for machines that have not put `coat` on `PATH` yet.
 
 `coat init` writes `.coat/project.json`, a non-secret project config with
 standard `cli`, `local`, `restate-cloud`, and `eks` profiles. Most project
@@ -126,19 +130,64 @@ The Rust service image builds all `coat` Rust binaries once in a shared builder 
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
-The control gateway and SPA listen on `http://localhost:9090`. Use the Chat tab to draft goals, plans, steering directives, and state explanations from plain language. Use the Memory tab to search context, write reviewed facts, join forked branch memories, retract or replace stale facts, dry-run adapter repair, inspect memory events, and apply sourced research output back into the goal as steering directives.
+The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Submitting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up.
+
+For a browser proof against real local services, run:
+
+```sh
+make scenario-e2e-ui-live
+```
+
+This starts or reuses the deterministic Compose stack with stub runners, opens
+Playwright against the Compose-hosted gateway on `http://127.0.0.1:9090`, submits
+a chat-authored goal, and verifies the goal-store projection updates the goal
+list and selected-goal work graph. It also exercises backend-routed memory
+write, memory preview/apply, human queue visibility, registered runner status,
+and event-source registration through the same gateway used by the SPA.
 The default Compose stack starts a small multi-agent pool and auto-registers every runner with `runner-registry`:
 
-- `codex-runner`: externally exposed coding lane on `localhost:9091`;
-- `codex-reviewer-runner`: internal review/test/formal-methods lane;
-- `claude-code-runner`: externally exposed Claude Code lane on `localhost:9094`;
-- `model-provider-runner`: externally exposed generic hosted/local model lane on `localhost:9093`;
-- `model-provider-research-runner`: internal research/review lane;
-- `model-provider-local-runner`: internal host-local Ollama/vLLM-style lane;
-- `staff-engineer-runner`: externally exposed issue-to-PR lifecycle lane on `localhost:9092`.
+- `codex-runner`: externally exposed coding runner on `localhost:9091`;
+- `codex-reviewer-runner`: internal review/test/formal-methods runner;
+- `claude-code-runner`: externally exposed Claude Code runner on `localhost:9094`;
+- `model-provider-runner`: externally exposed generic hosted/local model-provider runner on `localhost:9093`;
+- `model-provider-research-runner`: internal research/review model-provider runner;
+- `model-provider-local-runner`: internal host-local Ollama/vLLM-style model runner;
+- `staff-engineer-runner`: externally exposed issue-to-PR lifecycle runner on `localhost:9092`.
 
 Use the internal-only runners through the registry and control gateway rather than direct host ports.
 The sandbox runner uses `SANDBOX_WORKSPACE_ROOT=/workspaces` in Compose and writes per-task manifests under the `sandbox-workspaces` volume.
+
+## Scenario Evidence
+
+Use `coat scenario` when a local or CI run needs reviewable evidence for an
+operator workflow:
+
+```sh
+make build
+target/debug/coat scenario list
+target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --output-dir target/coat-scenarios
+target/debug/coat scenario report --run-dir target/coat-scenarios/goal_lifecycle_basic
+```
+
+The PR gate runs every checked-in spec under `scenarios/e2e` with
+`coat scenario run --output-dir target/coat-scenarios`. The deterministic E2E
+scenario uses local services, stub runner behavior, fixed seeds, bounded timeouts,
+and explicit fixtures. It should not require live model credentials, provider
+auth, real web search, or external SaaS. When the run drives the browser, it
+must assert the same goal-selection model operators use: the SPA top-bar
+current goal is the source for Chat, Task Graph, Flow Control, Memory, and
+Human Queue, and the TUI sends the selected goal through control-gateway
+chat/session APIs instead of asking the operator to retype raw UUIDs.
+
+Scenario output belongs under `target/coat-scenarios`. Keep enough files there
+for a reviewer to reconstruct the run: `spec.json`, `evidence.json`,
+`report.json`, started/finished timestamps, deterministic seed and clock
+settings, service endpoints, command stdout/stderr summaries, created goal IDs,
+selected-goal transitions, API snapshots, Compose logs, and browser artifacts.
+Playwright traces, screenshots, `test-results`, and `playwright-report` may
+either live under `target/coat-scenarios` or under the standard
+`ui/control-plane-web` Playwright paths; CI uploads both locations on failure.
+
 Live git worktree creation is disabled by default. For an explicitly approved local development run, start the sandbox runner with:
 
 ```sh
@@ -336,7 +385,7 @@ Use `docs/operations/goal-authoring.md` before submitting non-trivial goals. It 
   OpenAI-compatible gateway such as Bifrost, LiteLLM, OpenRouter, Docker Model
   Gateway, or a private proxy
 - `MODEL_PROVIDER_KIND`, `MODEL_PROVIDER_MODEL`, `MODEL_PROVIDER_ENDPOINT`, and `MODEL_PROVIDER_{LATENCY_CLASS,SPEED_TIER,TEMPERATURE,TOP_P,MAX_OUTPUT_TOKENS,REASONING_EFFORT,TIMEOUT_SECONDS}` for the generic provider runner
-- `MODEL_PROVIDER_RESEARCH_KIND`, `MODEL_PROVIDER_RESEARCH_MODEL`, `MODEL_PROVIDER_RESEARCH_ENDPOINT`, and matching `MODEL_PROVIDER_RESEARCH_*` runtime params for the research-lane provider runner
+- `MODEL_PROVIDER_RESEARCH_KIND`, `MODEL_PROVIDER_RESEARCH_MODEL`, `MODEL_PROVIDER_RESEARCH_ENDPOINT`, and matching `MODEL_PROVIDER_RESEARCH_*` runtime params for the research provider runner
 - `LOCAL_MODEL_PROVIDER_KIND`, `LOCAL_MODEL_PROVIDER_MODEL`, `LOCAL_MODEL_PROVIDER_ENDPOINT`, and matching `LOCAL_MODEL_PROVIDER_*` runtime params for the host-local model runner
 - `AWS_PROFILE`, `AWS_REGION`/`AWS_DEFAULT_REGION`, workload identity, or AWS credentials for Bedrock provider smoke tests
 
@@ -371,12 +420,14 @@ This uses `infra/compose/docker-compose.yml` with the existing
 `runner-registry`, `codex-runner`, `codex-reviewer-runner`,
 `claude-code-runner`, `model-provider-runner`,
 `model-provider-research-runner`, `model-provider-local-runner`, and
-`staff-engineer-runner` service names. The script forces those runner lanes to
+`staff-engineer-runner` service names. The script forces those runners to
 stub mode for the smoke, starts an isolated Compose project, waits for sidecar
 `/capabilities` responses, waits for all seven runner IDs to appear as
 dispatchable in `/runners/status`, verifies `/dispatch` selects
 `codex-runner-ts` for an explicit task contract, and verifies `/capacity/plan`
 uses the heartbeat-derived pool supply.
+CI runs this smoke on pull requests through the `compose-topology-smokes` job;
+operators can also trigger it manually from workflow dispatch.
 
 If Docker, the daemon, or the Compose plugin is unavailable, the script prints a
 clear `SKIP` line and exits successfully. CI jobs that require Docker coverage
@@ -460,6 +511,19 @@ successfully.
 
 The event API contract lives at `docs/api/event-gateway.asyncapi.yaml`. The cluster CronJob pattern lives at `infra/k8s/examples/calendar-trigger-cronjob.yaml`.
 
+Run the Compose-backed topology proof when you need to verify the event gateway,
+Restate, and goal-store wiring exactly as the local operator stack runs it:
+
+```sh
+make event-gateway-compose-smoke
+```
+
+This starts the deterministic Compose stack, registers an approved create-goal
+CI event source, emits and dedupes a synthetic CI failure, verifies the event
+gateway submitted the generated goal through Restate, checks the projected
+goal-store event, writes evidence under
+`target/coat-event-gateway-compose-smoke/latest`, and tears the stack down.
+
 Run the optional LocalStack SQS EventOps proof when Docker is available:
 
 ```sh
@@ -542,6 +606,8 @@ Set `COAT_CONTROL_GATEWAY_TOKEN` and `COAT_CONTROL_MCP_TOKEN` when exposing the 
 
 The Chat tab is always routed through the control gateway backend. The browser calls `/api/chat`; it does not call Ollama, vLLM, OpenAI, or other model providers directly.
 
+Chat inherits the top-bar current goal. With a goal selected, chat history and requests use the `goal:<goal_id>` session and send that goal id as context; without one, chat uses the operator workspace session.
+
 Use the chat mode switcher for the three standard authoring paths: Plan, Goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
 
 While a chat request is running, open **Chat activity** in the SPA to inspect the operational trace: request mode, session, selected goal, backend resolution, model/stub stage, journaling status, and errors. This is an execution trace, not hidden model reasoning.
@@ -554,7 +620,7 @@ gateway-local fallback for smoke tests or a temporarily unavailable goal-store.
 The browser reads chat history through `/api/chat/session`; it does not own the
 conversation log.
 
-The gateway defaults to configured chat or the local stub so smoke tests do not need model credentials. It does not borrow arbitrary local Ollama/vLLM runners just because they are registered. Runner lanes are selected by the coordinator from `MODEL_PROVIDER_*` and `LOCAL_MODEL_PROVIDER_*` based on task role, persona, labels, sandbox, and model route; the gateway Chat tab is selected separately from `COAT_CONTROL_CHAT_*`, `COAT_LLM_GATEWAY_*`, or direct OpenAI settings. When `coat setup local-auth` configures a host-local model and the Control Chat surface is selected, it writes `COAT_CONTROL_CHAT_BACKEND=runner_registry` so chat can use only runners that advertise operator-chat labels.
+The gateway defaults to configured chat or the local stub so smoke tests do not need model credentials. It does not borrow arbitrary local Ollama/vLLM runners just because they are registered. Runners and model routes are selected by the coordinator from `MODEL_PROVIDER_*` and `LOCAL_MODEL_PROVIDER_*` based on task role, persona, labels, sandbox, and model route; the gateway Chat tab is selected separately from `COAT_CONTROL_CHAT_*`, `COAT_LLM_GATEWAY_*`, or direct OpenAI settings. When `coat setup local-auth` configures a host-local model and the Control Chat surface is selected, it writes `COAT_CONTROL_CHAT_BACKEND=runner_registry` so chat can use only runners that advertise operator-chat labels.
 
 To force a specific live OpenAI-compatible chat backend, set:
 

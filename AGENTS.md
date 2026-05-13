@@ -38,6 +38,7 @@ The system should keep working until a goal is complete, blocked, cancelled, or 
 - Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
 - Chat client MCP/skill integration: `docs/operations/chat-client-integration.md`
+- Local observability guide: `docs/operations/local-observability.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
 - Restate Cloud runbook: `docs/operations/restate-cloud.md`
 - Ephemeral Kubernetes runners: `docs/operations/ephemeral-kubernetes-runners.md`
@@ -152,8 +153,9 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Standard runner scaling defaults live in `config.runner_capacity` inside `.coat/project.json`, `~/.coat/config.json`, or the active profile. Task JSON and prompt text should not become the hidden source of runner capacity policy.
 - `POST /capacity/plan` on the runner registry is advisory. Only the coordinator or approved provisioner may turn a scaling recommendation into ephemeral Jobs or executor capacity, and scale-down should drain or TTL runners rather than kill active work.
 - Model routing can target Codex, OpenAI, OpenAI-compatible endpoints, vLLM, Ollama, llama.cpp, Hugging Face, or local processes.
-- Shared LLM gateways such as Bifrost, LiteLLM, OpenRouter, Docker Model Gateway, or private OpenAI-compatible proxies should use `COAT_LLM_GATEWAY_*` config/env refs so work, research, chat, and embedding lanes do not duplicate raw provider tokens.
+- Shared LLM gateways such as Bifrost, LiteLLM, OpenRouter, Docker Model Gateway, or private OpenAI-compatible proxies should use `COAT_LLM_GATEWAY_*` config/env refs so work, research, chat, and embedding model routes do not duplicate raw provider tokens.
 - Model routes and runner registrations can carry typed runtime params: latency class, temperature, top-p, max output tokens, reasoning effort, timeout, and provider-specific extras. Prefer these typed params over prompt-only hints when choosing fast, balanced, deep-review, deterministic, or custom model behavior.
+- Use `runner` for actual registered runners, `model route` for provider/model selection, `task` for a unit of work, and `workstream` for a visible graph or planning thread. Avoid `lane` wording in user-facing UI, docs, prompts, and tests unless naming an internal config field or runner label such as `lane_policies` or `labels.lane`.
 - Provider runners are wrappers, not coordinators. Codex, Claude Code, Bedrock, vLLM, Ollama, llama.cpp, Hugging Face, and local-process runners must register capabilities and return structured `AgentRunResult` values through the durable runner queue.
 - Dispatch decisions should preserve ranked candidates and rejected-runner reasons for operator debugging.
 - Local binary execution must be declared in `ExecutionProfile.local_tools`; prompts do not grant shell access.
@@ -219,6 +221,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run `cargo check --workspace` before handing off.
 - Prefer behavioral tests that would fail for incorrect goal, workflow, routing, validation, persistence, or operator-feedback behavior.
 - Validate Compose with `coat deploy local preflight --allow-stub-runners` and `coat deploy local config`.
+- Inspect local Compose logs with `coat deploy local logs --follow coordinator runner-registry control-web`.
 - Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 
 ## Deployment
@@ -226,7 +229,9 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - CLI hierarchy: `coat --help` and `coat guide --print`
 - Config profiles: `coat setup config --list-profiles`
 - Config inspection: `coat setup config --show`
+- Terminal dashboard and chat: `coat tui`
 - Local stub smoke stack: `coat deploy local up --allow-stub-runners`
+- Local debug logs: `coat deploy local logs --follow coordinator runner-registry control-web`
 - Personal Restate Cloud env bootstrap: `coat deploy local up --restate-cloud --init-env`
 - Personal Restate Cloud stack and registration: `coat deploy local up --restate-cloud --register-cloud --allow-stub-runners`
 - Model index refresh: `coat setup model-index refresh`

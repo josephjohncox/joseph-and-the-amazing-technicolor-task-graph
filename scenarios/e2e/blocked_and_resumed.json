@@ -1,0 +1,342 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "blocked_and_resumed",
+  "title": "Blocked and resumed",
+  "description": "Drive a task into a blocked human-input state, resume it through a coordinator-owned continuation, and verify the same goal completes with preserved artifacts.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "clock_start": "2026-05-12T16:10:00Z",
+    "seed": 1201,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner",
+    "projection_mode": "fixture_replay"
+  },
+  "services": [
+    {
+      "name": "coordinator",
+      "mode": "in_process",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["blocked_and_resumed.blocked", "blocked_and_resumed.resumed"]
+    },
+    {
+      "name": "runner_registry",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["runner.scenario-stub-runner"]
+    },
+    {
+      "name": "notifier",
+      "mode": "stub",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["blocked_and_resumed.notification"]
+    },
+    {
+      "name": "goal_store",
+      "mode": "jsonl_projection",
+      "required": true,
+      "endpoint": null,
+      "fixtures": ["blocked_and_resumed.projection"]
+    }
+  ],
+  "setup": {
+    "workspace": {
+      "mode": "ephemeral",
+      "requires_live_repo": false,
+      "write_policy": "scenario_tempdir_only"
+    },
+    "env": {
+      "COAT_ALLOW_LOCAL_STUB_FALLBACK": "true",
+      "COAT_SCENARIO_STUB_PROJECTIONS": "true",
+      "COAT_SCENARIO_ID": "blocked_and_resumed"
+    },
+    "fixtures": [
+      {
+        "id": "runner.scenario-stub-runner",
+        "kind": "runner_registration",
+        "description": "Stub runner capable of returning waiting and done worker results.",
+        "value": {
+          "runner_id": "scenario-stub-runner",
+          "capabilities": ["stub_results", "delayed_compute"],
+          "labels": {
+            "stub": "true",
+            "network.egress": "disabled"
+          }
+        }
+      },
+      {
+        "id": "blocked_and_resumed.notification",
+        "kind": "notification_delivery",
+        "description": "Offline notification record for the blocked task.",
+        "value": {
+          "event": "task_blocked",
+          "target": "scenario://notification-thread/blocked_and_resumed",
+          "delivered": true
+        }
+      }
+    ],
+    "stub_projections": [
+      {
+        "id": "blocked_and_resumed.blocked",
+        "kind": "goal_store_snapshot",
+        "description": "Intermediate blocked projection after the first worker result.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000201",
+          "status": "blocked",
+          "task_counts": {
+            "blocked": 1,
+            "done": 0
+          },
+          "wait_refs": ["wait://blocked_and_resumed/operator-answer"]
+        }
+      },
+      {
+        "id": "blocked_and_resumed.resumed",
+        "kind": "goal_store_snapshot",
+        "description": "Final projection after the continuation resumes and validation passes.",
+        "value": {
+          "goal_id": "00000000-0000-4000-8000-000000000201",
+          "status": "done",
+          "task_counts": {
+            "done": 1,
+            "blocked": 0
+          },
+          "restart_history": 1
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000000201",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000000201",
+        "title": "Resume a blocked task",
+        "objective": "Demonstrate that blocked work resumes through coordinator state instead of a sleeping worker loop.",
+        "repo": null,
+        "root_budget": {
+          "max_tokens": 250000,
+          "remaining_tokens": 250000,
+          "max_runtime_seconds": 900,
+          "remaining_runtime_seconds": 900,
+          "max_tool_calls": 80,
+          "remaining_tool_calls": 80,
+          "max_child_tasks": 6,
+          "remaining_child_tasks": 6,
+          "max_patch_size": 50000
+        },
+        "done_criteria": {
+          "tests_pass": false,
+          "artifact_exists": true,
+          "validator_score_min": 0.85
+        },
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Ask for required human input",
+            "prompt": "Return waiting evidence until the operator supplies the missing decision.",
+            "reason": "The scenario needs an explicit blocked state and later continuation resume.",
+            "tags": ["scenario", "blocked", "stub"]
+          }
+        ]
+      },
+      "projection_fixture": {
+        "initial_status": "running",
+        "terminal_status": "done",
+        "task_counts": {
+          "pending": 0,
+          "runnable": 1,
+          "running": 0,
+          "needs_validation": 0,
+          "waiting_approval": 0,
+          "waiting_input": 0,
+          "done": 0,
+          "blocked": 0,
+          "failed": 0,
+          "cancelled": 0
+        },
+        "notes": ["The blocked state must be durable and resumed by the coordinator."]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "description": "Submit the goal with one runnable task.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000201",
+      "expect": {
+        "goal_status": "running"
+      }
+    },
+    {
+      "id": "block_task",
+      "type": "inject_worker_result",
+      "description": "Replay a worker result that returns waiting plus a delayed compute thunk.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000201",
+      "task_id": "00000000-0000-4000-8000-000000001201",
+      "after": ["submit_goal"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001201",
+        "status": "waiting",
+        "summary": "Missing operator decision for fixture branch.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000002201",
+            "kind": "human_input",
+            "summary": "Choose the deterministic resume path.",
+            "wait_ref": "wait://blocked_and_resumed/operator-answer"
+          }
+        ],
+        "next_actions": ["Resume with response_summary=approved deterministic path"]
+      },
+      "expect": {
+        "goal_status": "blocked",
+        "blocked_tasks": 1,
+        "wait_refs": 1
+      }
+    },
+    {
+      "id": "resume_thunk",
+      "type": "resume_delayed_compute",
+      "description": "Resume the coordinator-owned continuation with deterministic human input.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000201",
+      "after": ["block_task"],
+      "resume": {
+        "thunk_id": "00000000-0000-4000-8000-000000002201",
+        "response_summary": "approved deterministic path",
+        "operator": "scenario-harness"
+      },
+      "expect": {
+        "goal_status": "running",
+        "runnable_tasks": 1
+      }
+    },
+    {
+      "id": "complete_resumed_task",
+      "type": "inject_worker_result",
+      "description": "Replay the resumed worker completion and preserve the earlier wait artifact.",
+      "service": "runner_registry",
+      "goal_id": "00000000-0000-4000-8000-000000000201",
+      "task_id": "00000000-0000-4000-8000-000000001201",
+      "after": ["resume_thunk"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000001201",
+        "status": "done",
+        "summary": "Resumed fixture completed after operator input.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/blocked_and_resumed/resume-report.json",
+            "description": "Resume decision and final task evidence"
+          }
+        ]
+      },
+      "expect": {
+        "task_status": "needs_validation"
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "description": "Validate the resumed task and project terminal done state.",
+      "service": "coordinator",
+      "goal_id": "00000000-0000-4000-8000-000000000201",
+      "after": ["complete_resumed_task"],
+      "expect": {
+        "goal_status": "done"
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "pending": 0,
+      "runnable": 0,
+      "running": 0,
+      "needs_validation": 0,
+      "waiting_approval": 0,
+      "waiting_input": 0,
+      "done": 1,
+      "blocked": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The blocked task was resumed by the operator action and completed with the resume report artifact preserved."
+    },
+    "required_events": ["task_blocked", "delayed_compute_thunk_created", "delayed_compute_thunk_resumed", "goal_satisfied"],
+    "forbidden_events": ["sleeping_worker_poll", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/blocked_and_resumed/resume-report.json"],
+    "restart_history_count": 1,
+    "open_wait_refs": 0
+  },
+  "evaluator_checks": [
+    {
+      "id": "blocked_before_resume",
+      "kind": "state_transition",
+      "description": "The goal must expose an intermediate blocked state before resuming.",
+      "assertion": "observed_states contains blocked before done",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "thunk_resumed",
+      "kind": "continuation",
+      "description": "The delayed compute thunk is resumed through coordinator state.",
+      "assertion": "open_wait_refs == 0 && resumed_thunks == 1",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "artifacts_preserved",
+      "kind": "artifact_policy",
+      "description": "The resume report remains available in the terminal projection.",
+      "assertion": "required_artifacts contains resume-report.json",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "timeout": {
+    "scenario_timeout_seconds": 180,
+    "action_timeout_seconds": 30,
+    "idle_timeout_seconds": 15,
+    "on_timeout": "fail_scenario"
+  },
+  "artifact_policy": {
+    "mode": "inline_manifest",
+    "retention": "keep_on_failure",
+    "allow_object_storage": false,
+    "require_manifest": true,
+    "max_inline_bytes": 65536,
+    "required_artifacts": [
+      {
+        "kind": "report",
+        "uri": "artifact://scenarios/blocked_and_resumed/resume-report.json",
+        "description": "Resume decision and final task evidence",
+        "sha256": null
+      }
+    ],
+    "forbidden_artifacts": ["raw_provider_credentials", "ambient_home_tokens"]
+  }
+}

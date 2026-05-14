@@ -9,6 +9,7 @@ ARG CARGO_BUILD_JOBS=8
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
+ARG COAT_SOURCE_FINGERPRINT=local
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
     CARGO_INCREMENTAL=0 \
     RUSTUP_TOOLCHAIN=1.95.0
@@ -18,6 +19,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# This build arg is set by `coat deploy local up` from a source-tree
+# fingerprint. It invalidates local service images when the checkout changes
+# while preserving the cargo registry/git/target cache mounts below.
+RUN printf '%s\n' "$COAT_SOURCE_FINGERPRINT" > /tmp/coat-source-fingerprint
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \

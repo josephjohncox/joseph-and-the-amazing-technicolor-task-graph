@@ -16,23 +16,25 @@ mod tui;
 use std::{
     collections::BTreeMap,
     env, fs,
+    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use coat_domain::{
-    BranchRequest, BranchSelectionRequest, ChildTaskRequest, CoatCliConfig, CoatCloudConfig,
-    CoatConfig, CoatConfigPaths, CoatKubernetesConfig, CoatLlmGatewayConfig, CoatLocalDeployConfig,
-    CoatModelRoutingConfig, CoatOperatorDefaults, CoatProfileConfig, CoatProjectConfig,
-    CoatRestateCloudConfig, CoatServiceEndpoints, CoatUserConfig, ControlLoopMode,
-    DelayedComputeThunkRequest, DelayedComputeThunkResumeRequest, EventSource, ExternalEvent,
-    GoalAuthoringGuidance, GoalHierarchyRole, GoalPlan, GoalPriorityVoteRequest, GoalRecord,
-    GoalSpec, GoalVoteDirection, GoalVoteSource, GraphColorRef, HumanApproval,
-    MechanismBallotRequest, MechanismRoundRequest, MemoryContextRequest, MemoryEditPreviewRequest,
+    BranchRequest, BranchSelectionRequest, BranchSelectionStrategy, ChildTaskRequest,
+    CoatCliConfig, CoatCloudConfig, CoatConfig, CoatConfigPaths, CoatKubernetesConfig,
+    CoatLlmGatewayConfig, CoatLocalDeployConfig, CoatModelRoutingConfig, CoatOperatorDefaults,
+    CoatProfileConfig, CoatProjectConfig, CoatRestateCloudConfig, CoatServiceEndpoints,
+    CoatUserConfig, ControlLoopMode, DelayedComputeThunkRequest, DelayedComputeThunkResumeRequest,
+    EventSource, ExecutionProfile, ExternalEvent, GoalAuthoringGuidance, GoalHierarchyRole,
+    GoalPlan, GoalPriorityVoteRequest, GoalRecord, GoalSpec, GoalVoteDirection, GoalVoteSource,
+    GraphColorRef, HumanApproval, MechanismBallotRequest, MechanismKind, MechanismProposalRequest,
+    MechanismRoundRequest, MechanismTarget, MemoryContextRequest, MemoryEditPreviewRequest,
     MemoryEditRequest, MemoryJoinRequest, MemoryRepairRequest, MemoryRetractRequest,
     MemorySearchRequest, MemoryWriteRequest, NetworkAccess, NotificationRequest,
     PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest, PlanDraftRequest,
@@ -738,6 +740,7 @@ enum GoalSubcommand {
     SteerStandard(SteerStandardGoalArgs),
     ReviewChecks,
     Vote(GoalVoteArgs),
+    Adversarial(GoalAdversarialCommand),
     Mechanism(GoalMechanismCommand),
     Thunk(GoalThunkCommand),
     Restart(RestartGoalArgs),
@@ -869,8 +872,6 @@ struct GoalTasksArgs {
     #[arg(long)]
     purpose: Vec<String>,
     #[arg(long)]
-    color: Vec<String>,
-    #[arg(long)]
     tag: Vec<String>,
     #[arg(long)]
     runnable: bool,
@@ -920,6 +921,56 @@ struct GoalVoteArgs {
 struct GoalMechanismCommand {
     #[command(subcommand)]
     command: GoalMechanismSubcommand,
+}
+
+#[derive(Debug, Args)]
+struct GoalAdversarialCommand {
+    #[command(subcommand)]
+    command: GoalAdversarialSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum GoalAdversarialSubcommand {
+    Plan(GoalAdversarialArgs),
+    Start(GoalAdversarialArgs),
+}
+
+#[derive(Debug, Args)]
+struct GoalAdversarialArgs {
+    #[arg(
+        long,
+        env = "COAT_RESTATE_INGRESS",
+        default_value = "http://localhost:8080"
+    )]
+    restate_ingress: String,
+    #[command(flatten)]
+    selector: GoalSelectorArgs,
+    #[arg(long)]
+    task_id: Option<Uuid>,
+    #[arg(long)]
+    subgoal_id: Option<String>,
+    #[arg(long, default_value_t = 2)]
+    actor_count: u32,
+    #[arg(long, value_name = "CHECK")]
+    critic_check: Vec<String>,
+    #[arg(long)]
+    research_topic: Option<String>,
+    #[arg(long)]
+    unifier: bool,
+    #[arg(long, default_value_t = 2)]
+    max_rounds: u32,
+    #[arg(long, default_value_t = 0.85)]
+    min_satisfaction: f32,
+    #[arg(long, value_name = "NAME")]
+    persona: Vec<String>,
+    #[arg(long, value_name = "KEY=VALUE")]
+    model_label: Vec<String>,
+    #[arg(long)]
+    operator: Option<String>,
+    #[arg(long, default_value = "adversarial-requests")]
+    out_dir: PathBuf,
+    #[arg(long)]
+    emit_only: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1065,7 +1116,7 @@ struct ApproveArgs {
     approval_id: Uuid,
     #[arg(long, default_value_t = true)]
     approved: bool,
-    #[arg(long)]
+    #[arg(long, help = "Optional approval note shown to the coordinator")]
     note: Option<String>,
 }
 
@@ -1551,8 +1602,21 @@ struct ResumeThunkArgs {
     thunk_id: Uuid,
     #[arg(long, default_value = "operator")]
     responder: String,
-    #[arg(long)]
-    response_summary: String,
+    #[arg(
+        long = "add-context",
+        alias = "answer",
+        alias = "response-summary",
+        value_name = "TEXT",
+        conflicts_with = "continue_without_context",
+        help = "Add context or answer the human prompt before continuing"
+    )]
+    response_summary: Option<String>,
+    #[arg(
+        long = "continue",
+        conflicts_with = "response_summary",
+        help = "Continue the delayed computation without extra context"
+    )]
+    continue_without_context: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1660,7 +1724,7 @@ struct ComposeCommand {
 enum ComposeSubcommand {
     #[command(about = "Check initialization, Docker, env files, runner modes, and model setup")]
     Preflight(ComposePreflightArgs),
-    #[command(about = "Run docker compose up after preflight unless --skip-preflight is set")]
+    #[command(about = "Validate config, rebuild images, remove orphans, and run docker compose up")]
     Up(ComposeUpArgs),
     #[command(about = "Print the resolved docker compose config")]
     Config(ComposeConfigArgs),
@@ -1709,6 +1773,10 @@ struct ComposeUpArgs {
     #[arg(long)]
     skip_preflight: bool,
     #[arg(long)]
+    skip_config_check: bool,
+    #[arg(long)]
+    keep_orphans: bool,
+    #[arg(long)]
     allow_uninitialized: bool,
     #[arg(long)]
     allow_stub_runners: bool,
@@ -1731,6 +1799,8 @@ impl Default for ComposeUpArgs {
             register_cloud: false,
             init_env: false,
             skip_preflight: false,
+            skip_config_check: false,
+            keep_orphans: false,
             allow_uninitialized: false,
             allow_stub_runners: false,
             tunnel_name: "jattg-personal".to_string(),
@@ -2447,7 +2517,7 @@ fn print_command_map() {
     println!("  coat tui                           terminal dashboard and gateway chat");
     println!("  coat plan <draft|list|show|revise|compile|follow-ups>");
     println!(
-        "  coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>"
+        "  coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|adversarial|mechanism|thunk|branch|restart|cancel>"
     );
     println!("  coat human <approve|resume-thunk|notify>");
     println!("  coat deploy local <preflight|up|config|logs|down>");
@@ -2472,7 +2542,7 @@ async fn guided_approval(theme: &ColorfulTheme) -> anyhow::Result<()> {
         .with_prompt("Approval ID")
         .interact_text()?;
     let approved = Confirm::with_theme(theme)
-        .with_prompt("Approve this request?")
+        .with_prompt("Approve and continue this request?")
         .default(true)
         .interact()?;
     let note: String = Input::with_theme(theme)
@@ -4161,6 +4231,7 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
             | GoalSubcommand::Steer(_)
             | GoalSubcommand::SteerStandard(_)
             | GoalSubcommand::Vote(_)
+            | GoalSubcommand::Adversarial(_)
             | GoalSubcommand::Mechanism(_)
             | GoalSubcommand::Thunk(_)
             | GoalSubcommand::Restart(_)
@@ -4781,6 +4852,14 @@ fn effective_goal_vote_args(mut args: GoalVoteArgs) -> anyhow::Result<GoalVoteAr
     Ok(args)
 }
 
+fn effective_goal_adversarial_args(
+    mut args: GoalAdversarialArgs,
+) -> anyhow::Result<GoalAdversarialArgs> {
+    args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
+    args.selector = effective_goal_selector_args(args.selector)?;
+    Ok(args)
+}
+
 fn effective_goal_mechanism_args(mut args: GoalMechanismArgs) -> anyhow::Result<GoalMechanismArgs> {
     args.restate_ingress = effective_restate_ingress(&args.restate_ingress)?;
     args.selector = effective_goal_selector_args(args.selector)?;
@@ -4930,6 +5009,14 @@ async fn goal(args: GoalCommand) -> anyhow::Result<()> {
             let request = goal_priority_vote_request(&args, goal_id)?;
             restate_post_json(&args.restate_ingress, goal_id, "vote", &request).await
         }
+        GoalSubcommand::Adversarial(command) => match command.command {
+            GoalAdversarialSubcommand::Plan(args) => {
+                adversarial_goal(effective_goal_adversarial_args(args)?, true).await
+            }
+            GoalAdversarialSubcommand::Start(args) => {
+                adversarial_goal(effective_goal_adversarial_args(args)?, false).await
+            }
+        },
         GoalSubcommand::Mechanism(command) => match command.command {
             GoalMechanismSubcommand::Start(args) => {
                 let args = effective_goal_mechanism_args(args)?;
@@ -5122,6 +5209,259 @@ fn plan_draft_request_from_args(args: &PlanDraftArgs) -> anyhow::Result<PlanDraf
     })
 }
 
+struct AdversarialRequestBundle {
+    branch: BranchRequest,
+    mechanism: MechanismRoundRequest,
+    steering: Vec<SteeringDirective>,
+}
+
+async fn adversarial_goal(args: GoalAdversarialArgs, plan_only: bool) -> anyhow::Result<()> {
+    let goal_id = resolve_goal_id(&args.selector).await?;
+    let bundle = adversarial_request_bundle(&args, goal_id)?;
+    write_adversarial_request_files(&bundle, &args.out_dir)?;
+    if plan_only || args.emit_only {
+        return Ok(());
+    }
+
+    restate_post_json(&args.restate_ingress, goal_id, "branch", &bundle.branch).await?;
+    restate_post_json(
+        &args.restate_ingress,
+        goal_id,
+        "mechanism_start",
+        &bundle.mechanism,
+    )
+    .await?;
+    for directive in &bundle.steering {
+        restate_post_json(&args.restate_ingress, goal_id, "steer", directive).await?;
+    }
+    Ok(())
+}
+
+fn adversarial_request_bundle(
+    args: &GoalAdversarialArgs,
+    goal_id: Uuid,
+) -> anyhow::Result<AdversarialRequestBundle> {
+    if args.actor_count < 2 {
+        bail!("--actor-count must be at least 2");
+    }
+    if args.max_rounds == 0 {
+        bail!("--max-rounds must be at least 1");
+    }
+    if !(0.0..=1.0).contains(&args.min_satisfaction) {
+        bail!("--min-satisfaction must be between 0.0 and 1.0");
+    }
+    if args.persona.len() > args.actor_count as usize {
+        bail!("--persona may not be provided more times than --actor-count");
+    }
+
+    let model_labels = parse_adversarial_model_labels(&args.model_label)?;
+    let checks = adversarial_critic_checks(&args.critic_check)?;
+    let mut candidate_executions = Vec::new();
+    let mut prompt_overrides = Vec::new();
+    let mut proposals = Vec::new();
+
+    for index in 0..args.actor_count {
+        let number = index + 1;
+        let persona = args
+            .persona
+            .get(index as usize)
+            .cloned()
+            .unwrap_or_else(|| format!("adversarial_actor_{number}"));
+        let mut execution = ExecutionProfile::default().with_role(WorkerKind::Codex);
+        execution.persona.name = persona.clone();
+        if let Some(candidate) = execution.model.candidates.first_mut() {
+            candidate.labels.extend(model_labels.clone());
+            candidate
+                .labels
+                .insert("adversarial_actor".to_string(), number.to_string());
+        }
+        candidate_executions.push(execution);
+
+        let model_label_summary = if model_labels.is_empty() {
+            "default model route".to_string()
+        } else {
+            model_labels
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        prompt_overrides.push(format!(
+            "Adversarial actor {number}: pursue an independent solution path. Persona: {persona}. Model labels: {model_label_summary}. Return structured evidence and child task requests only through the COAT result contract."
+        ));
+
+        let mut metadata = model_labels.clone();
+        metadata.insert("persona".to_string(), persona.clone());
+        metadata.insert("actor_index".to_string(), number.to_string());
+        proposals.push(MechanismProposalRequest {
+            label: format!("actor-{number}"),
+            description: format!(
+                "Evaluate adversarial actor {number} using persona '{persona}' and compare its evidence against competing actors."
+            ),
+            proposer: "coat goal adversarial".to_string(),
+            metadata,
+        });
+    }
+
+    let branch = BranchRequest {
+        goal_id,
+        target_task_id: args.task_id,
+        subgoal_id: args.subgoal_id.clone(),
+        reason: format!(
+            "Start adversarial shortcut with {} actor candidates, {} critic check(s), max {} review round(s), and minimum satisfaction {:.2}.",
+            args.actor_count,
+            checks.len(),
+            args.max_rounds,
+            args.min_satisfaction
+        ),
+        candidate_count: args.actor_count,
+        candidate_roles: vec![WorkerKind::Codex; args.actor_count as usize],
+        candidate_executions,
+        prompt_overrides,
+        selection_strategy: Some(if args.unifier {
+            BranchSelectionStrategy::UnifierDecision
+        } else {
+            BranchSelectionStrategy::HighestScore
+        }),
+        operator: args.operator.clone(),
+    };
+
+    let mechanism = MechanismRoundRequest {
+        goal_id,
+        title: "Adversarial review panel".to_string(),
+        mechanism: Some(MechanismKind::DelphiRound),
+        target: MechanismTarget::ReviewPanel,
+        reason: "Compare independent actor branches, critic evidence, and any research before recommending satisfaction or retry.".to_string(),
+        proposals,
+        quorum: Some(args.actor_count.max(2)),
+        min_participants: Some(args.actor_count.max(2)),
+        require_human_ratification: Some(false),
+    };
+
+    let mut steering = Vec::new();
+    steering.push(SteeringDirective {
+        id: Uuid::new_v4(),
+        goal_id,
+        task_id: args.task_id,
+        operator: args.operator.clone(),
+        message: "Apply adversarial shortcut constraints".to_string(),
+        kind: SteeringDirectiveKind::AddConstraint {
+            constraint: format!(
+                "Adversarial shortcut: run at most {} review round(s), require satisfaction >= {:.2}, and compare independent actor evidence before accepting.",
+                args.max_rounds, args.min_satisfaction
+            ),
+        },
+    });
+    steering.push(SteeringDirective {
+        id: Uuid::new_v4(),
+        goal_id,
+        task_id: args.task_id,
+        operator: args.operator.clone(),
+        message: "Tighten adversarial satisfaction criteria".to_string(),
+        kind: SteeringDirectiveKind::ExpandDoneCriteria {
+            tests_pass: None,
+            artifact_exists: None,
+            validator_score_min: Some(args.min_satisfaction),
+            min_satisfaction_score: Some(args.min_satisfaction),
+            reason: "adversarial shortcut requires explicit satisfaction evidence".to_string(),
+            apply_to_open_tasks: true,
+            reopen_terminal_tasks: false,
+        },
+    });
+
+    if let Some(topic) = args.research_topic.as_ref() {
+        steering.push(SteeringDirective {
+            id: Uuid::new_v4(),
+            goal_id,
+            task_id: args.task_id,
+            operator: args.operator.clone(),
+            message: "Request adversarial research".to_string(),
+            kind: SteeringDirectiveKind::RequestResearch {
+                question: topic.clone(),
+                reason: "adversarial shortcut requested an explicit research topic".to_string(),
+            },
+        });
+    }
+
+    for check in checks {
+        steering.push(SteeringDirective {
+            id: Uuid::new_v4(),
+            goal_id,
+            task_id: args.task_id,
+            operator: args.operator.clone(),
+            message: format!("Request adversarial {}", check.title()),
+            kind: SteeringDirectiveKind::RequestStandardReview {
+                check,
+                topic: args.research_topic.clone(),
+                reason: "adversarial shortcut critic check".to_string(),
+            },
+        });
+    }
+
+    Ok(AdversarialRequestBundle {
+        branch,
+        mechanism,
+        steering,
+    })
+}
+
+fn adversarial_critic_checks(raw: &[String]) -> anyhow::Result<Vec<StandardReviewCheck>> {
+    let values: Vec<String> = if raw.is_empty() {
+        vec![
+            "test_evidence".to_string(),
+            "security".to_string(),
+            "simplicity".to_string(),
+        ]
+    } else {
+        raw.to_vec()
+    };
+    values
+        .iter()
+        .map(|value| parse_json_enum(value, "StandardReviewCheck"))
+        .collect()
+}
+
+fn parse_adversarial_model_labels(raw: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut labels = BTreeMap::new();
+    for item in raw {
+        if let Some((key, value)) = item.split_once('=') {
+            let key = key.trim();
+            if key.is_empty() {
+                bail!("--model-label key must not be empty");
+            }
+            labels.insert(key.to_string(), value.trim().to_string());
+        } else {
+            labels.insert("model_label".to_string(), item.trim().to_string());
+        }
+    }
+    Ok(labels)
+}
+
+fn write_adversarial_request_files(
+    bundle: &AdversarialRequestBundle,
+    out_dir: &Path,
+) -> anyhow::Result<()> {
+    fs::create_dir_all(out_dir).with_context(|| format!("create {}", out_dir.display()))?;
+    write_pretty_json_file(out_dir.join("branch-request.json"), &bundle.branch)?;
+    write_pretty_json_file(
+        out_dir.join("mechanism-round-request.json"),
+        &bundle.mechanism,
+    )?;
+    for (index, directive) in bundle.steering.iter().enumerate() {
+        write_pretty_json_file(
+            out_dir.join(format!("steering-{:02}.json", index + 1)),
+            directive,
+        )?;
+    }
+    println!("wrote adversarial request files to {}", out_dir.display());
+    Ok(())
+}
+
+fn write_pretty_json_file<T: serde::Serialize>(path: PathBuf, value: &T) -> anyhow::Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
+    fs::write(&path, format!("{json}\n")).with_context(|| format!("write {}", path.display()))
+}
+
 async fn steer_standard_goal(args: SteerStandardGoalArgs) -> anyhow::Result<()> {
     let goal_id = resolve_goal_id(&args.selector).await?;
     let check: StandardReviewCheck = parse_json_enum(&args.check, "StandardReviewCheck")?;
@@ -5261,7 +5601,6 @@ fn task_query_from_args(args: &GoalTasksArgs) -> anyhow::Result<TaskQuery> {
             "TaskPurposeKind",
         )?);
     }
-    query.color_keys.extend(args.color.clone());
     query.tags.extend(args.tag.clone());
     if args.runnable {
         query.runnable_only = true;
@@ -5446,13 +5785,23 @@ async fn approve(args: ApproveArgs) -> anyhow::Result<()> {
 async fn resume_thunk(args: ResumeThunkArgs) -> anyhow::Result<()> {
     let args = effective_resume_thunk_args(args)?;
     let goal_id = resolve_goal_id(&args.selector).await?;
+    let response_summary = resume_thunk_response_summary(&args);
     let request = DelayedComputeThunkResumeRequest {
         thunk_id: args.thunk_id,
         responder: args.responder,
-        response_summary: args.response_summary,
+        response_summary,
         artifact_refs: Vec::new(),
     };
     restate_post_json(&args.restate_ingress, goal_id, "resume_thunk", &request).await
+}
+
+fn resume_thunk_response_summary(args: &ResumeThunkArgs) -> String {
+    args.response_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or("Continue")
+        .to_string()
 }
 
 async fn restate_post_without_body(
@@ -8988,6 +9337,17 @@ fn compose(args: ComposeCommand) -> anyhow::Result<()> {
             let service_url = effective_restate_service_url(&args.service_url)?;
             args.tunnel_name = tunnel_name.clone();
             args.service_url = service_url.clone();
+            if !args.skip_config_check {
+                run_docker_compose(
+                    compose_config_quiet_command_args(
+                        args.restate_cloud,
+                        &args.restate_cloud_env_file,
+                        &args.env_file,
+                        &args.profile,
+                    ),
+                    "validate docker compose config",
+                )?;
+            }
             run_docker_compose(compose_up_command_args(&args), "run docker compose up")?;
             if register_cloud {
                 restate_register_cloud(RestateRegisterCloudArgs {
@@ -9785,14 +10145,144 @@ fn env_value(values: &BTreeMap<String, String>, name: &str) -> Option<String> {
 }
 
 fn run_docker_compose(args: Vec<String>, description: &str) -> anyhow::Result<()> {
-    let status = Command::new("docker")
-        .args(&args)
-        .status()
-        .with_context(|| description.to_string())?;
+    let mut command = Command::new("docker");
+    command.args(&args);
+
+    let source_fingerprint = if docker_compose_builds_images(&args)
+        && env::var_os("COAT_SOURCE_FINGERPRINT").is_none()
+    {
+        let fingerprint = compose_source_fingerprint()?;
+        command.env("COAT_SOURCE_FINGERPRINT", &fingerprint);
+        Some(fingerprint)
+    } else {
+        env::var("COAT_SOURCE_FINGERPRINT").ok()
+    };
+
+    if let Some(fingerprint) = source_fingerprint {
+        println!(
+            "COAT_SOURCE_FINGERPRINT={fingerprint} {}",
+            shell_command("docker", &args)
+        );
+    } else {
+        println!("{}", shell_command("docker", &args));
+    }
+
+    let status = command.status().with_context(|| description.to_string())?;
     if !status.success() {
         bail!("docker compose exited with {status}");
     }
     Ok(())
+}
+
+fn docker_compose_builds_images(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "build")
+        || (args.iter().any(|arg| arg == "up") && args.iter().any(|arg| arg == "--build"))
+}
+
+fn compose_source_fingerprint() -> anyhow::Result<String> {
+    source_fingerprint_for_roots(
+        &[
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("AGENTS.md"),
+            PathBuf::from("ARCHITECTURE.md"),
+            PathBuf::from("crates"),
+            PathBuf::from("sidecars"),
+            PathBuf::from("ui"),
+            PathBuf::from("infra/containers"),
+            PathBuf::from("infra/compose"),
+            PathBuf::from("proto"),
+            PathBuf::from("schemas"),
+            PathBuf::from("skills"),
+            PathBuf::from("docs/exec-plans/active"),
+        ],
+        Path::new("."),
+    )
+}
+
+fn source_fingerprint_for_roots(roots: &[PathBuf], base: &Path) -> anyhow::Result<String> {
+    let mut hasher = DefaultHasher::new();
+    for root in roots {
+        let path = base.join(root);
+        if path.exists() {
+            hash_source_path(root, &path, &mut hasher)
+                .with_context(|| format!("hash source fingerprint for {}", path.display()))?;
+        }
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+fn hash_source_path(
+    relative: &Path,
+    path: &Path,
+    hasher: &mut DefaultHasher,
+) -> anyhow::Result<()> {
+    if should_skip_source_fingerprint_path(relative) {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("read metadata for {}", path.display()))?;
+    relative.display().to_string().hash(hasher);
+    metadata.len().hash(hasher);
+    metadata.file_type().is_dir().hash(hasher);
+    metadata.file_type().is_file().hash(hasher);
+    metadata.file_type().is_symlink().hash(hasher);
+    if let Ok(modified) = metadata.modified() {
+        system_time_hash_value(modified).hash(hasher);
+    }
+    if metadata.file_type().is_symlink() {
+        fs::read_link(path)
+            .with_context(|| format!("read symlink {}", path.display()))?
+            .display()
+            .to_string()
+            .hash(hasher);
+        return Ok(());
+    }
+    if metadata.is_file() {
+        fs::read(path)
+            .with_context(|| format!("read source file {}", path.display()))?
+            .hash(hasher);
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("read directory {}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("read entries under {}", path.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let name = entry.file_name();
+        let child_relative = relative.join(name);
+        hash_source_path(&child_relative, &entry.path(), hasher)?;
+    }
+    Ok(())
+}
+
+fn system_time_hash_value(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+fn should_skip_source_fingerprint_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let value = component.as_os_str().to_string_lossy();
+        matches!(
+            value.as_ref(),
+            ".git"
+                | ".direnv"
+                | ".cache"
+                | ".uv-cache"
+                | "target"
+                | "node_modules"
+                | "dist"
+                | "coverage"
+                | "tmp"
+        )
+    })
 }
 
 fn compose_base_args(
@@ -9834,10 +10324,26 @@ fn compose_up_command_args(args: &ComposeUpArgs) -> Vec<String> {
     );
     command_args.push("up".to_string());
     command_args.push("--build".to_string());
+    if !args.keep_orphans {
+        command_args.push("--remove-orphans".to_string());
+    }
     if args.detach || args.register_cloud {
         command_args.push("--detach".to_string());
     }
     command_args.extend(args.services.iter().cloned());
+    command_args
+}
+
+fn compose_config_quiet_command_args(
+    restate_cloud: bool,
+    restate_cloud_env_file: &Path,
+    env_files: &[PathBuf],
+    profiles: &[String],
+) -> Vec<String> {
+    let mut command_args =
+        compose_base_args(restate_cloud, restate_cloud_env_file, env_files, profiles);
+    command_args.push("config".to_string());
+    command_args.push("--quiet".to_string());
     command_args
 }
 
@@ -10857,21 +11363,24 @@ mod tests {
     use super::{
         CUSTOM_MODEL_ID, ChatClientArgs, Cli, Commands, ComposeConfigArgs, ComposeLogsArgs,
         ComposeUpArgs, DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs,
-        ExecutorJobRenderArgs, GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand,
-        HelmTemplateArgs, HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, KubectlApplySpec,
-        LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
-        ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
-        apply_capacity_plan_policy_from_config, apply_config_profile, apply_model_param_values,
-        bump_release_versions, chat_client_default_action, claude_mcp_json, codex_mcp_add_args,
-        compose_config_command_args, compose_logs_command_args, compose_model_preflight_findings,
-        compose_runner_modes, compose_up_command_args, control_chat_default_choice,
-        default_local_chat_completions_url, default_local_model_provider_index,
-        default_model_param_preset_index, default_model_preset_index,
-        endpoint_discovery_candidates, endpoint_from_config, ensure_json_goal_id,
-        executor_job_manifest, extract_follow_ups, helm_template_args, helm_upgrade_args,
-        kubectl_apply_args, kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args,
-        latest_goal_id_from_value, live_model_presets, load_fresh_model_index_from_paths,
-        local_auth_action_command, local_auth_profile_defaults, local_model_provider_preset,
+        ExecutorJobRenderArgs, ExecutorJobSubcommand, GoalAdversarialSubcommand,
+        GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand, HelmTemplateArgs,
+        HelmUpgradeArgs, HumanCommand, HumanSubcommand, K8sStatusArgs, K8sSubcommand,
+        KubectlApplySpec, LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex,
+        PlanSubcommand, ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
+        adversarial_request_bundle, apply_capacity_plan_policy_from_config, apply_config_profile,
+        apply_model_param_values, bump_release_versions, chat_client_default_action,
+        claude_mcp_json, codex_mcp_add_args, compose_config_command_args,
+        compose_config_quiet_command_args, compose_logs_command_args,
+        compose_model_preflight_findings, compose_runner_modes, compose_up_command_args,
+        control_chat_default_choice, default_local_chat_completions_url,
+        default_local_model_provider_index, default_model_param_preset_index,
+        default_model_preset_index, docker_compose_builds_images, endpoint_discovery_candidates,
+        endpoint_from_config, ensure_json_goal_id, executor_job_manifest, extract_follow_ups,
+        helm_template_args, helm_upgrade_args, kubectl_apply_args,
+        kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args, latest_goal_id_from_value,
+        live_model_presets, load_fresh_model_index_from_paths, local_auth_action_command,
+        local_auth_profile_defaults, local_model_provider_preset,
         local_model_provider_preset_labels, login_actions_from_args, merge_coat_config,
         model_index_cache_is_fresh, model_param_preset, model_param_preset_labels,
         model_param_values_from_env, model_param_values_from_preset, model_preset,
@@ -10879,14 +11388,16 @@ mod tests {
         models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
         parse_env_file_content, preferred_operator_chat_model, project_init_action, read_json_file,
         release_plan_json, replace_env_line, replace_toml_section_value, replace_yaml_root_value,
-        restate_cloud_env_placeholders,
+        restate_cloud_env_placeholders, resume_thunk_response_summary,
+        source_fingerprint_for_roots,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
-        CapacityScalingPolicy, CoatCliConfig, CoatConfig, CoatLocalDeployConfig,
-        CoatRunnerCapacityConfig, CoatServiceEndpoints, NetworkAccess, RunnerPoolDemand,
-        RunnerScalingRequest, SandboxBackend, SandboxLaunchPlan, SandboxNetworkPlan,
-        SandboxResourcePlan, SandboxSecurityPlan, WebSearchRequest,
+        BranchSelectionStrategy, CapacityScalingPolicy, CoatCliConfig, CoatConfig,
+        CoatLocalDeployConfig, CoatRunnerCapacityConfig, CoatServiceEndpoints, MechanismTarget,
+        NetworkAccess, RunnerPoolDemand, RunnerScalingRequest, SandboxBackend, SandboxLaunchPlan,
+        SandboxNetworkPlan, SandboxResourcePlan, SandboxSecurityPlan, StandardReviewCheck,
+        SteeringDirectiveKind, WebSearchRequest,
     };
     use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
     use uuid::Uuid;
@@ -11076,7 +11587,7 @@ mod tests {
             .to_string();
         for expected in [
             "Check initialization, Docker, env files, runner modes, and model setup",
-            "Run docker compose up after preflight unless --skip-preflight is set",
+            "Validate config, rebuild images, remove orphans, and run docker compose up",
             "Show local Compose service logs with the resolved COAT config",
             "coat deploy local config --env-file infra/compose/local-providers.env",
         ] {
@@ -11184,7 +11695,7 @@ mod tests {
             "resume-thunk",
             "--thunk-id",
             "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
-            "--response-summary",
+            "--add-context",
             "continue with smoke runner",
         ])
         .expect("parse human resume-thunk");
@@ -11193,6 +11704,27 @@ mod tests {
             Some(Commands::Human(ref human))
                 if matches!(human.command, HumanSubcommand::ResumeThunk(_))
         ));
+
+        let continue_thunk = Cli::try_parse_from([
+            "coat",
+            "human",
+            "resume-thunk",
+            "--thunk-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--continue",
+        ])
+        .expect("parse human resume-thunk continue");
+        assert!(matches!(
+            continue_thunk.command,
+            Some(Commands::Human(ref human))
+                if matches!(human.command, HumanSubcommand::ResumeThunk(_))
+        ));
+        if let Some(Commands::Human(HumanCommand {
+            command: HumanSubcommand::ResumeThunk(args),
+        })) = continue_thunk.command
+        {
+            assert_eq!(resume_thunk_response_summary(&args), "Continue");
+        }
 
         let goal_vote = Cli::try_parse_from([
             "coat",
@@ -11243,6 +11775,65 @@ mod tests {
                     goal.command,
                     GoalSubcommand::Mechanism(ref mechanism)
                         if matches!(mechanism.command, GoalMechanismSubcommand::Start(_))
+                )
+        ));
+
+        let adversarial_plan = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "adversarial",
+            "plan",
+            "--latest",
+            "--actor-count",
+            "3",
+            "--critic-check",
+            "test_evidence",
+            "--critic-check",
+            "security",
+            "--research-topic",
+            "current sandbox escape risks",
+            "--unifier",
+            "--max-rounds",
+            "4",
+            "--min-satisfaction",
+            "0.92",
+            "--persona",
+            "skeptical_builder",
+            "--model-label",
+            "tier=deep-review",
+            "--out-dir",
+            "/tmp/coat-adversarial",
+            "--emit-only",
+        ])
+        .expect("parse goal adversarial plan");
+        assert!(matches!(
+            adversarial_plan.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(
+                    goal.command,
+                    GoalSubcommand::Adversarial(ref adversarial)
+                        if matches!(adversarial.command, GoalAdversarialSubcommand::Plan(_))
+                )
+        ));
+
+        let adversarial_start = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "adversarial",
+            "start",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--actor-count",
+            "2",
+        ])
+        .expect("parse goal adversarial start");
+        assert!(matches!(
+            adversarial_start.command,
+            Some(Commands::Goal(ref goal))
+                if matches!(
+                    goal.command,
+                    GoalSubcommand::Adversarial(ref adversarial)
+                        if matches!(adversarial.command, GoalAdversarialSubcommand::Start(_))
                 )
         ));
 
@@ -11384,6 +11975,108 @@ mod tests {
     }
 
     #[test]
+    fn adversarial_shortcut_builds_branch_mechanism_and_steering_requests() {
+        let goal_id = Uuid::parse_str("018f8f2f-1fd8-7688-bb12-8bfb6b756602").unwrap();
+        let cli = Cli::try_parse_from([
+            "coat",
+            "goal",
+            "adversarial",
+            "plan",
+            "--goal-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--actor-count",
+            "2",
+            "--critic-check",
+            "test_evidence",
+            "--critic-check",
+            "security",
+            "--research-topic",
+            "dependency freshness and sandbox policy",
+            "--unifier",
+            "--max-rounds",
+            "3",
+            "--min-satisfaction",
+            "0.91",
+            "--persona",
+            "skeptical_builder",
+            "--persona",
+            "safety_reviewer",
+            "--model-label",
+            "tier=deep-review",
+            "--operator",
+            "operator",
+        ])
+        .expect("parse adversarial shortcut");
+
+        let args = match cli.command {
+            Some(Commands::Goal(goal)) => match goal.command {
+                GoalSubcommand::Adversarial(adversarial) => match adversarial.command {
+                    GoalAdversarialSubcommand::Plan(args) => args,
+                    _ => panic!("expected adversarial plan"),
+                },
+                _ => panic!("expected adversarial command"),
+            },
+            _ => panic!("expected goal command"),
+        };
+        let bundle = adversarial_request_bundle(&args, goal_id).expect("build adversarial bundle");
+
+        assert_eq!(bundle.branch.goal_id, goal_id);
+        assert_eq!(bundle.branch.candidate_count, 2);
+        assert_eq!(bundle.branch.candidate_roles.len(), 2);
+        assert_eq!(
+            bundle.branch.selection_strategy,
+            Some(BranchSelectionStrategy::UnifierDecision)
+        );
+        assert_eq!(bundle.branch.candidate_executions.len(), 2);
+        assert_eq!(
+            bundle.branch.candidate_executions[0].persona.name,
+            "skeptical_builder"
+        );
+        assert_eq!(
+            bundle.branch.candidate_executions[1].persona.name,
+            "safety_reviewer"
+        );
+        assert_eq!(
+            bundle.branch.candidate_executions[0].model.candidates[0]
+                .labels
+                .get("tier")
+                .map(String::as_str),
+            Some("deep-review")
+        );
+
+        assert_eq!(bundle.mechanism.goal_id, goal_id);
+        assert_eq!(bundle.mechanism.target, MechanismTarget::ReviewPanel);
+        assert_eq!(bundle.mechanism.proposals.len(), 2);
+
+        assert!(bundle.steering.iter().any(|directive| matches!(
+            directive.kind,
+            SteeringDirectiveKind::ExpandDoneCriteria {
+                min_satisfaction_score: Some(score),
+                ..
+            } if (score - 0.91).abs() < f32::EPSILON
+        )));
+        assert!(bundle.steering.iter().any(|directive| matches!(
+            directive.kind,
+            SteeringDirectiveKind::RequestResearch { .. }
+        )));
+        let requested_checks = bundle
+            .steering
+            .iter()
+            .filter_map(|directive| match &directive.kind {
+                SteeringDirectiveKind::RequestStandardReview { check, .. } => Some(check.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requested_checks,
+            vec![
+                StandardReviewCheck::TestEvidence,
+                StandardReviewCheck::Security
+            ]
+        );
+    }
+
+    #[test]
     fn scenario_cli_parses_list_run_and_report() {
         let list = Cli::try_parse_from(["coat", "scenario", "list"]).expect("parse scenario list");
         assert!(matches!(
@@ -11423,6 +12116,95 @@ mod tests {
             Some(Commands::Scenario(ref scenario))
                 if matches!(scenario.command, super::scenario::ScenarioSubcommand::Report(_))
         ));
+    }
+
+    #[test]
+    fn executor_job_cli_parses_dry_run_apply_without_provisioning() {
+        let cli = Cli::try_parse_from([
+            "coat",
+            "deploy",
+            "cluster",
+            "executor-job",
+            "apply",
+            "--launch-plan",
+            "examples/sandbox-launch-plan-kubernetes-job.json",
+            "--output",
+            "/tmp/jattg-executor-job.json",
+            "--namespace",
+            "jattg-sandboxes",
+            "--name",
+            "adversarial-proof",
+            "--service-account",
+            "jattg-sandbox-task",
+            "--runtime-class",
+            "gvisor",
+            "--workspace-pvc",
+            "task-workspaces",
+            "--active-deadline-seconds",
+            "900",
+            "--ttl-seconds-after-finished",
+            "120",
+            "--env",
+            "COAT_PROOF_MODE=server_dry_run",
+            "--label",
+            "jattg.dev/proof=coordinator-approved",
+            "--annotation",
+            "jattg.dev/capacity-decision=capacity-plan-smoke",
+            "--kubectl",
+            "kubectl",
+            "--context",
+            "kind-coat",
+            "--dry-run",
+            "server",
+        ])
+        .expect("parse executor job dry-run apply");
+
+        let Some(Commands::Deploy(deploy)) = cli.command else {
+            panic!("expected deploy command");
+        };
+        let DeploySubcommand::Cluster(cluster) = deploy.command else {
+            panic!("expected cluster command");
+        };
+        let K8sSubcommand::ExecutorJob(executor_job) = cluster.command else {
+            panic!("expected executor-job command");
+        };
+        let ExecutorJobSubcommand::Apply(apply) = executor_job.command else {
+            panic!("expected executor-job apply command");
+        };
+
+        assert_eq!(apply.render.name.as_deref(), Some("adversarial-proof"));
+        assert_eq!(apply.render.runtime_class.as_deref(), Some("gvisor"));
+        assert_eq!(
+            apply.render.env,
+            vec!["COAT_PROOF_MODE=server_dry_run".to_string()]
+        );
+        assert_eq!(
+            apply.render.label,
+            vec!["jattg.dev/proof=coordinator-approved".to_string()]
+        );
+        assert_eq!(apply.context.as_deref(), Some("kind-coat"));
+        assert_eq!(apply.dry_run.as_deref(), Some("server"));
+
+        assert_eq!(
+            kubectl_apply_args(KubectlApplySpec {
+                file: apply.render.output,
+                context: apply.context,
+                kubeconfig: apply.kubeconfig,
+                namespace: Some(apply.render.namespace),
+                dry_run: apply.dry_run,
+            })
+            .expect("kubectl args"),
+            vec![
+                "--context",
+                "kind-coat",
+                "--namespace",
+                "jattg-sandboxes",
+                "apply",
+                "-f",
+                "/tmp/jattg-executor-job.json",
+                "--dry-run=server",
+            ]
+        );
     }
 
     #[test]
@@ -12181,6 +12963,8 @@ mod tests {
             register_cloud: true,
             init_env: false,
             skip_preflight: false,
+            skip_config_check: false,
+            keep_orphans: false,
             allow_uninitialized: false,
             allow_stub_runners: false,
             tunnel_name: "jattg-personal".to_string(),
@@ -12206,9 +12990,87 @@ mod tests {
                 "db",
                 "up",
                 "--build",
+                "--remove-orphans",
                 "--detach",
                 "coordinator",
             ]
+        );
+    }
+
+    #[test]
+    fn compose_up_validates_resolved_config_before_start() {
+        assert_eq!(
+            compose_config_quiet_command_args(
+                true,
+                &PathBuf::from("infra/compose/restate-cloud.env"),
+                &[PathBuf::from("infra/compose/local-providers.env")],
+                &["db".to_string()]
+            ),
+            vec![
+                "compose",
+                "--env-file",
+                "infra/compose/restate-cloud.env",
+                "--env-file",
+                "infra/compose/local-providers.env",
+                "-f",
+                "infra/compose/docker-compose.yml",
+                "-f",
+                "infra/compose/docker-compose.restate-cloud.yml",
+                "--profile",
+                "restate-cloud",
+                "--profile",
+                "db",
+                "config",
+                "--quiet",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_up_builds_images_by_default() {
+        let args = ComposeUpArgs {
+            services: vec!["coordinator".to_string()],
+            ..ComposeUpArgs::default()
+        };
+
+        let command = compose_up_command_args(&args);
+        assert!(
+            docker_compose_builds_images(&command),
+            "local up must rebuild service images by default"
+        );
+        assert!(
+            command.contains(&"--build".to_string()),
+            "local up should pass docker compose up --build"
+        );
+        assert!(
+            command.contains(&"--remove-orphans".to_string()),
+            "local up should remove stale Compose services by default"
+        );
+    }
+
+    #[test]
+    fn compose_source_fingerprint_changes_when_local_sources_change() {
+        let temp = std::env::temp_dir().join(format!(
+            "coat-source-fingerprint-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let crates_dir = temp.join("crates/example/src");
+        fs::create_dir_all(&crates_dir).expect("create temp source tree");
+        fs::write(crates_dir.join("lib.rs"), "pub fn value() -> u8 { 1 }\n").expect("write source");
+
+        let roots = vec![PathBuf::from("crates")];
+        let before = source_fingerprint_for_roots(&roots, &temp).expect("fingerprint before edit");
+        fs::write(crates_dir.join("lib.rs"), "pub fn value() -> u8 { 10 }\n").expect("edit source");
+        let after = source_fingerprint_for_roots(&roots, &temp).expect("fingerprint after edit");
+
+        fs::remove_dir_all(&temp).ok();
+        assert_ne!(
+            before, after,
+            "source fingerprint should change when local source files change"
         );
     }
 

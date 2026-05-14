@@ -492,13 +492,19 @@ spec:
       containers:
         - name: register
           image: curlimages/curl:8.16.0
+          env:
+            - name: COAT_RESTATE_REGISTER_FORCE
+              value: "false"
           command:
             - /bin/sh
             - -lc
             - |
+              set -eu
+              force="${COAT_RESTATE_REGISTER_FORCE:-false}"
+              payload="$(printf '{"uri":"http://ephemeral-coordinator-executor.jattg-ephemeral.svc.cluster.local:9080","force":%s}' "$force")"
               curl -fsS -X POST http://restate.jattg.svc.cluster.local:9070/deployments \
                 -H 'content-type: application/json' \
-                -d '{"uri":"http://ephemeral-coordinator-executor.jattg-ephemeral.svc.cluster.local:9080"}'
+                -d "$payload"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

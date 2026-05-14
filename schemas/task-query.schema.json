@@ -3,13 +3,6 @@
   "title": "TaskQuery",
   "type": "object",
   "properties": {
-    "color_keys": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "type": "string"
-      }
-    },
     "limit": {
       "type": [
         "integer",

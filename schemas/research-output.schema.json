@@ -990,7 +990,7 @@
       ]
     },
     "GraphColorRef": {
-      "description": "Stable visual metadata for the Technicolor Task Graph.\n\nColors are semantic graph state, not dashboard decoration. They let\noperators, reviewers, dashboards, and MCP clients preserve a consistent\nlegend across task projections, branches, reviews, and subgoals.",
+      "description": "Optional visual metadata for the Technicolor Task Graph.\n\nColors are presentation hints for dashboards, screenshots, and operator\nreadability. They must not drive routing, budgets, validation, approvals,\nor any other coordinator policy.",
       "type": "object",
       "properties": {
         "hex": {

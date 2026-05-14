@@ -180,7 +180,7 @@ check_command_line() {
 }
 
 check_command_line 'coat plan <draft|list|show|revise|compile|follow-ups>'
-check_command_line 'coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|mechanism|thunk|branch|restart|cancel>'
+check_command_line 'coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|adversarial|mechanism|thunk|branch|restart|cancel>'
 check_command_line 'coat human <approve|resume-thunk|notify>'
 check_command_line 'coat deploy local <preflight|up|config|logs|down>'
 check_command_line 'coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>'

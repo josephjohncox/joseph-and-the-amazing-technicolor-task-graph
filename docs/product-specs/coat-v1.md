@@ -46,10 +46,11 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - Operators do not need to hand-write `GoalSpec.id` for normal JSON authoring; submit assigns and prints a durable `goal_id`, while follow-up commands can use `--goal-id`, `COAT_GOAL_ID`, or `--latest`.
 - Operators can use durable planning mode to draft, revise, answer questions, record decisions, and compile a plan into `GoalSpec` before execution.
 - `GoalSpec` supports `authoring` guidance, `plan.subgoals`, and routed `initial_tasks` so clean goals become coordinator-visible work instead of prompt-only instructions.
-- `GoalSpec.color_policy`, `SubgoalSpec.color`, `TaskNode.color`, and `TaskQuery.color_keys` make the technicolor task graph concrete: colors are durable semantic labels that dashboards, notifications, and unifiers can use to group research, implementation, review, validation, and custom work streams.
-- Operators can lint goals before submit, inspect `GoalProgress`, and query `TaskList` by subgoal, status, role, purpose, color, tag, or runnable frontier.
+- `SubgoalSpec.color` and `TaskNode.color` make the technicolor task graph visible without turning color into policy: colors are optional display hints for dashboards and operator readability, never routing, budget, validation, approval, or satisfaction inputs.
+- Operators can lint goals before submit, inspect `GoalProgress`, and query `TaskList` by subgoal, status, role, purpose, tag, or runnable frontier.
 - Operators can inspect a goal-store projection of goals, tasks, events, approvals, and artifact refs without treating the projection as coordinator authority.
-- Operators can use an optional web gateway and SPA to inspect goal progress, all projected agent/task state, current task prompts, runner capacity, human queues, events, schedules, and memory while all edits flow through backend APIs.
+- Operators can use an optional web gateway and SPA to manage the task graph directly: inspect goal progress, act on human queues, recover blocked work, review evidence, steer or cancel goals, and manage events or memory while all edits flow through backend APIs.
+- Advanced SPA controls are grouped by operator intent and hidden until relevant; raw prompts, task contracts, debug traces, and exact payload inspection are secondary audit/debug surfaces.
 - Agent and chat clients can use an MCP dashboard surface for overview, goal snapshots, agent activity, steering, human threads, event sources, and memory search.
 - Webhooks, calendars, cron schedules, and event buses can create or steer goals through a gateway, dedupe policy, and optional human review.
 - Webhook auth policies can use shared-secret headers, bearer tokens, or HMAC-SHA256 without putting secret values into event payloads or goal state.

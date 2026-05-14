@@ -1,0 +1,94 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_basic",
+  "title": "Bootstrap basic",
+  "description": "Minimal deterministic task graph: submit one goal, complete one worker task, validate, and satisfy.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:00:00Z",
+    "seed": 3001,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003001",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003001",
+        "title": "Bootstrap one task",
+        "objective": "Produce deterministic evidence from one task.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Produce bootstrap evidence",
+            "prompt": "Return the deterministic bootstrap artifact.",
+            "reason": "Seed the smallest runnable graph.",
+            "tags": ["scenario", "bootstrap", "basic"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003001",
+      "description": "Submit the basic bootstrap goal."
+    },
+    {
+      "id": "complete_root_task",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003001",
+      "description": "Replay one completed worker result.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003101",
+        "status": "done",
+        "summary": "Basic bootstrap task completed.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/bootstrap_basic/root-report.json",
+            "description": "Basic bootstrap evidence"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003001",
+      "description": "Validate the root result."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "task_completed", "validation_passed", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_basic/root-report.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The single bootstrap task completed with deterministic evidence."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "goal_done",
+      "kind": "goal_status",
+      "assertion": "goal.status == done",
+      "expected": "done",
+      "required": true
+    }
+  ]
+}

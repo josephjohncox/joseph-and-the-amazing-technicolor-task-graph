@@ -125,12 +125,21 @@ only when `--allow-stub-runners` is explicit or a user config intentionally opts
 into it.
 See `docs/operations/configuration.md` for config layering and secret handling.
 
+`coat deploy local up` rebuilds by default. It passes `docker compose up
+--build` and injects a `COAT_SOURCE_FINGERPRINT` build arg derived from local
+source content, which invalidates service-image layers when the checkout
+changes. Set `COAT_SOURCE_FINGERPRINT` yourself only when you intentionally want
+to pin or force a specific local cache key.
+Before startup, it validates the resolved Compose configuration with
+`docker compose config --quiet`; during startup it removes orphan containers by
+default so stale local services do not survive topology changes.
+
 The Rust service image builds all `coat` Rust binaries once in a shared builder stage and copies the selected binary into each service image. It defaults to `CARGO_BUILD_JOBS=8` so builds still use parallel Rust compilation without multiplying compiler jobs across every Compose service.
 
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
-The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Submitting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up.
+The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Accepting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up. With a goal selected, the SPA opens `/api/goals/<goal_id>/stream` and keeps the visible graph, action queue, and control state updated from backend snapshots. Workflow actions such as approve, resume, restart, steer, vote, branch, and cancel return an action envelope with the upstream Restate result plus the active state read after the mutation.
 
 For a browser proof against real local services, run:
 
@@ -169,6 +178,24 @@ target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --
 target/debug/coat scenario report --run-dir target/coat-scenarios/goal_lifecycle_basic
 ```
 
+Use the bootstrap scenario shell script when reviewers need one command that
+prepares the deterministic local stub stack and runs the checked-in bootstrap
+scenario specs:
+
+```sh
+sh scripts/coat-scenario-e2e.sh
+```
+
+The script writes a stub provider env file under
+`target/coat-scenarios/latest/stack`, runs local preflight and resolved Compose
+config checks, starts or reuses the local stack, waits for health endpoints,
+and runs `scripts/coat-scenarios/*.json` through `coat scenario run`. Evidence
+is written under `target/coat-scenarios/latest` and the scenario-specific
+output directories. Set `COAT_SCENARIO_E2E_STACK_ONLY=1` to bootstrap and
+health-check the stack without running specs, `COAT_SCENARIO_E2E_STACK=preflight`
+to stop after config/preflight validation, or `COAT_SCENARIO_E2E_KEEP_STACK=0`
+to tear the stack down after the run.
+
 The PR gate runs every checked-in spec under `scenarios/e2e` with
 `coat scenario run --output-dir target/coat-scenarios`. The deterministic E2E
 scenario uses local services, stub runner behavior, fixed seeds, bounded timeouts,
@@ -178,6 +205,11 @@ must assert the same goal-selection model operators use: the SPA top-bar
 current goal is the source for Chat, Task Graph, Flow Control, Memory, and
 Human Queue, and the TUI sends the selected goal through control-gateway
 chat/session APIs instead of asking the operator to retype raw UUIDs.
+Scenario checks for blocked, failed, waiting, approval, or budget-exhausted
+states must also assert the progress invariant: human waits have delayed
+compute thunks with typed prompts and continuation refs, and blocked work
+without a thunk still exposes retry/restart, replan or steer, cancel, or
+create-thunk recovery through a coordinator-owned action.
 
 Scenario output belongs under `target/coat-scenarios`. Keep enough files there
 for a reviewer to reconstruct the run: `spec.json`, `evidence.json`,
@@ -187,6 +219,58 @@ selected-goal transitions, API snapshots, Compose logs, and browser artifacts.
 Playwright traces, screenshots, `test-results`, and `playwright-report` may
 either live under `target/coat-scenarios` or under the standard
 `ui/control-plane-web` Playwright paths; CI uploads both locations on failure.
+
+## Local Reset
+
+Use the reset helper for generated evidence and local Compose cleanup. With no
+action flags it prints help and does not mutate the checkout. Prefer a dry run
+first when changing paths or Compose options:
+
+```sh
+make reset-help
+sh scripts/coat-local-reset.sh --help
+```
+
+Clear deterministic scenario evidence under `target/coat-scenarios`. The helper
+removes `latest` plus run directories derived from the checked-in scenario spec
+IDs instead of deleting the evidence root:
+
+```sh
+make scenario-reset-dry-run
+make scenario-reset
+sh scripts/coat-local-reset.sh --mode scenario --dry-run
+```
+
+Add bootstrap evidence cleanup only when those generated bootstrap runs should
+also be removed. This clears known run directories under
+`target/coat-scenarios/bootstrap` and the compatibility output directory
+`target/coat-bootstrap-scenarios` when present:
+
+```sh
+make bootstrap-reset-dry-run
+make bootstrap-reset
+RESET_BOOTSTRAP=1 make scenario-reset
+sh scripts/coat-local-reset.sh --mode evidence --dry-run
+```
+
+Stop and remove the local Compose stack without deleting service data volumes:
+
+```sh
+make compose-reset-dry-run
+sh scripts/coat-local-reset.sh --compose-stack
+sh scripts/coat-local-reset.sh --compose-stack --env-file infra/compose/local-providers.env
+```
+
+Delete COAT local stack volumes only when the operator explicitly opts in with
+`--delete-volumes`; there is no Makefile shortcut for this. The flag removes the
+Compose-named volumes for Restate, sandbox workspaces, goal-store,
+runner-registry, memory-gateway, event-gateway, control-web, Postgres, Qdrant,
+and object-store data for the selected Compose project:
+
+```sh
+sh scripts/coat-local-reset.sh --compose-stack --delete-volumes
+sh scripts/coat-local-reset.sh --compose-stack --delete-volumes --project-name compose
+```
 
 Live git worktree creation is disabled by default. For an explicitly approved local development run, start the sandbox runner with:
 

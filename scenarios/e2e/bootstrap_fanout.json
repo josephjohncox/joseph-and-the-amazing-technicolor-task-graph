@@ -1,0 +1,128 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_fanout",
+  "title": "Bootstrap fanout",
+  "description": "A planner requests three coordinator-owned child tasks and all children complete.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:15:00Z",
+    "seed": 3004,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003004",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003004",
+        "title": "Bootstrap fanout",
+        "objective": "Materialize bounded child tasks from planner output.",
+        "initial_tasks": [
+          {
+            "role": "planner",
+            "title": "Plan child tasks",
+            "prompt": "Return three ChildTaskRequest values.",
+            "reason": "Exercise coordinator-owned fanout.",
+            "tags": ["scenario", "bootstrap", "fanout"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003004",
+      "description": "Submit the fanout bootstrap goal."
+    },
+    {
+      "id": "planner_fanout",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003004",
+      "description": "Replay planner output with child task requests.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003401",
+        "status": "done",
+        "summary": "Planner requested three children.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "child_requests": [
+          {"role": "codex", "title": "Shard A", "prompt": "Return shard A evidence."},
+          {"role": "codex", "title": "Shard B", "prompt": "Return shard B evidence."},
+          {"role": "tester", "title": "Verify shards", "prompt": "Return verification evidence."}
+        ]
+      }
+    },
+    {
+      "id": "complete_children",
+      "type": "inject_worker_results",
+      "goal_id": "00000000-0000-4000-8000-000000003004",
+      "description": "Replay child completions.",
+      "worker_results": [
+        {
+          "task_id": "00000000-0000-4000-8000-000000003402",
+          "status": "done",
+          "summary": "Shard A complete.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner"
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000003403",
+          "status": "done",
+          "summary": "Shard B complete.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner"
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000003404",
+          "status": "done",
+          "summary": "Fanout verification complete.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner",
+          "artifacts": [
+            {
+              "kind": "test_result",
+              "uri": "artifact://scenarios/bootstrap_fanout/verification.json",
+              "description": "Fanout verification evidence"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003004",
+      "description": "Validate fanout children."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 4,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "child_tasks_created", "task_completed", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_fanout/verification.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The planner fanout and all child completions produced bounded evidence."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "children_done",
+      "kind": "task_count",
+      "assertion": "done_tasks == 4",
+      "expected": 4,
+      "required": true
+    }
+  ]
+}

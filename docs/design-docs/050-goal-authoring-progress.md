@@ -12,7 +12,7 @@ Goals should enter the durable system as clean work contracts, not as vague prom
 - `authoring`: operator intent, assumptions, open questions, constraints, acceptance evidence, and out-of-scope work.
 - `plan.subgoals`: stable subgoal records with ID, title, owner, expected artifacts, acceptance evidence, dependencies, and tags.
 - `initial_tasks`: known first-frontier `ChildTaskRequest`s with matching `subgoal_id`, role, budget, sandbox, execution profile, and done criteria.
-- `color_policy`, `SubgoalSpec.color`, and `ChildTaskRequest.color`: durable semantic graph colors for the Technicolor Task Graph. Colors should communicate workstream meaning, such as research, implementation, review, validation, unification, or a custom branch group.
+- `SubgoalSpec.color` and `ChildTaskRequest.color`: optional visual hints for the Technicolor Task Graph. Colors can make workstreams easier to scan, but they are not policy and must not affect routing, validation, budgets, approvals, or satisfaction.
 - `review_policy.doctrine`: optional standard or custom library of typed review objectives, evidence requirements, style doctrines, validation gates, subagent profiles, and overrides.
 - `restart_policy`, `timeout_policy`, and `branching_policy`: operational controls for retrying goals, bounding runner calls, and splitting the same subgoal across multiple candidate implementations.
 
@@ -39,7 +39,6 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 - task status;
 - worker role;
 - task purpose kind;
-- graph color key;
 - tag;
 - runnable-only frontier;
 - limit.
@@ -66,9 +65,18 @@ Subgoal progress is derived from task `subgoal_id` links, not from natural-langu
 - Goal prompts and reviewer doctrines should say "subagent" only when they mean a COAT durable child task. Do not ask a runner to use Codex, Claude Code, SDK, or MCP-native subagents directly.
 - Workers should receive only their task, scoped memory context, MCP references, and relevant subgoal metadata.
 - Subgoal IDs must be stable and human-readable enough for dashboards and notifications.
-- Graph colors must use stable keys. UI hex values are presentation hints; the durable meaning is the color key plus `meaning`.
+- Graph colors are presentation metadata. Use readable keys and labels when provided, but do not encode scheduling, review, or validation behavior in color.
 - A task without a subgoal is allowed only for root planning, global review, unification, or operator-injected emergency work.
 - Progress must be calculated from durable state and validation reports, not sidecar-local thread state.
+- Progress must always preserve a next coordinator action for non-terminal
+  work. Action-needed projections should point to `resume_thunk`, `approve`,
+  `restart`, `steer`, `cancel`, branch selection, mechanism ballot, or another
+  concrete handler instead of leaving the operator with a dead-end status.
+- Human waits must be delayed compute thunks with typed prompts and continuation
+  refs. A blocked task without a thunk is acceptable only when it has
+  coordinator-owned recovery choices: retry/restart, replan or steer, cancel,
+  or create a thunk for the missing human, external, capacity, model, or timer
+  wait.
 - Follow-up commands select workflows with `--goal-id`, `COAT_GOAL_ID`, or `--latest`; goal-scoped command JSON may omit `goal_id` when the CLI already selected the workflow.
 - Branching is a durable task-tree operation: the original target task, candidate tasks, vote tasks, unifier task, and final selection are all queryable state.
 - Timeouts and restarts are policy-controlled. A timed-out runner call may restart a task only if `RestartPolicy` allows the reason and scope.

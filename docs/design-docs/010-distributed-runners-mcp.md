@@ -153,6 +153,42 @@ When candidates validate, the coordinator spawns `branch_vote` tasks using the c
 
 This is how COAT allows multiple subagents or models to solve the same goal without losing control of global state: candidates produce artifacts, voters produce structured `BranchVoteOutput`, and the coordinator records the selected task ID.
 
+## Adversarial And Join Patterns
+
+Adversarial execution is a coordinator pattern, not a runner feature. The
+coordinator creates separate durable tasks for actor work, critic review,
+research, branch voting, and unification. Each task has its own purpose,
+persona, execution profile, budget, memory scope, and result contract.
+
+The standard pattern is actor, critic, optional research, optional branch vote,
+then unifier:
+
+- actors produce candidate artifacts and evidence;
+- critics review those artifacts for correctness, tests, safety, policy, scope,
+  and missing proof;
+- research tasks gather current or external facts and return sourced
+  `ResearchOutput` plus an `InformationUsePlan`;
+- branch voters compare candidates and return structured scores and reasons;
+- unifiers merge or select accepted artifacts, reject losing branches with
+  reasons, and promote only reviewed memory or result refs.
+
+Forks are explicit `candidate_branch` tasks. Joins are explicit
+`branch_unification`, `review_unification`, or validator tasks. A worker may ask
+for a fork, critic, research task, or unifier by returning a
+`ChildTaskRequest`, but it does not create hidden local agents or decide global
+state by itself.
+
+Personas are task-local instructions layered on top of role and model route.
+Use them to create useful disagreement: maintainer, product-risk reviewer,
+security critic, performance critic, testing critic, formal-methods reviewer,
+cost reviewer, research analyst, or operator-experience reviewer. Personas
+must state what evidence they produce and what they are not allowed to mutate.
+
+Voting and mechanism rounds remain durable coordinator state. Use simple branch
+votes for implementation selection. Use `mechanism_policy` only when the
+operator needs structured consensus, ranked-choice selection, budget allocation,
+runner allocation, or auction-like work assignment.
+
 ## Runner Registry
 
 `coat-runner-registry` is the first control-plane service for distributed nodes.

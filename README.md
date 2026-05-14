@@ -108,6 +108,11 @@ Most commands warn or fail, depending on command risk, when the checkout is not
 initialized.
 `coat deploy local up` runs the same preflight as `coat deploy local preflight`
 and refuses to start an all-stub stack unless `--allow-stub-runners` is passed.
+It also invokes Docker Compose with `up --build` and a checkout fingerprint
+that invalidates local service-image cache when source files change, while
+keeping cargo and npm dependency caches warm.
+Before startup it validates the resolved Compose stack and removes orphan
+containers from older local topologies.
 The interactive auth wizard flips selected runner lanes from `stub` to `live`;
 the non-interactive template stays stubbed until you edit it.
 See `docs/operations/configuration.md` for config layering and secret rules.
@@ -328,7 +333,7 @@ coat plan select-candidate --plan-id <source-plan-id> --file examples/plan-candi
 
 Plans are versioned drafts. Compiling returns a `GoalSpec`; it does not submit the goal. Branch votes and selections are stored on the source plan so competing plan candidates can be reviewed before one compiled candidate is promoted.
 
-Task graph colors are durable contract metadata, not just dashboard styling. `GoalSpec.color_policy` supplies a default technicolor palette, subgoals can set stable semantic colors, tasks inherit those colors unless overridden, and `coat goal tasks --color <key>` filters the runnable frontier by workstream. The SPA shows these colors in goal task tables, agent activity, and plan continuity views.
+Task graph colors are optional visual hints. Subgoals and child tasks can carry a `color` so the Technicolor Task Graph is easier to scan, and the SPA shows those colors in goal task tables, agent activity, and plan continuity views. Color must not drive runner routing, budgets, validation, approvals, or coordinator policy.
 
 ## Events And Schedules
 

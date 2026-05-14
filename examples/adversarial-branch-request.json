@@ -1,0 +1,16 @@
+{
+  "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+  "target_task_id": null,
+  "subgoal_id": "adversarial-shortcut",
+  "reason": "Fork the same objective into bounded actor candidates before critic review, branch voting, and unifier selection. This is an adversarial workflow shortcut over the existing task tree, not a separate state machine.",
+  "candidate_count": 3,
+  "candidate_roles": ["codex", "codex", "staff_engineer_claude"],
+  "candidate_executions": [],
+  "prompt_overrides": [
+    "Actor candidate A: implement the smallest correct change. Return structured evidence, git refs, and any ChildTaskRequest values instead of spawning native subagents.",
+    "Actor candidate B: implement a more explicit design that favors traceability and validator evidence. Return structured evidence, git refs, and any ChildTaskRequest values instead of spawning native subagents.",
+    "Actor candidate C: challenge both likely implementations, propose a competing patch path, and document tradeoffs for reviewer and unifier tasks."
+  ],
+  "selection_strategy": "voter_quorum",
+  "operator": "joseph"
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_terminal_state_misuse",
+  "title": "Bootstrap terminal state misuse",
+  "description": "Negative fixture: failed work is incorrectly modeled as a terminal workflow state instead of a recoverable action-needed state.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T10:10:00Z",
+    "seed": 3101,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003101",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003101",
+        "title": "Invalid terminal state bootstrap",
+        "objective": "Demonstrate rejection when failed is treated as terminal.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Fail with recovery",
+            "prompt": "This fixture is intentionally invalid.",
+            "reason": "Negative scenario validation fixture.",
+            "tags": ["scenario", "bootstrap", "negative", "terminal-state"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003101",
+      "description": "Submit the invalid terminal-state bootstrap goal."
+    },
+    {
+      "id": "fail_task_as_terminal",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003101",
+      "description": "Replay a failed result with recovery controls, then incorrectly mark it terminal.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003111",
+        "status": "failed",
+        "summary": "The worker failed but the coordinator can still retry, replan, or cancel.",
+        "confidence": 0.4,
+        "runner_id": "scenario-stub-runner",
+        "operator_action": "Retry the task or replan from coordinator state.",
+        "recovery_actions": ["retry", "replan", "cancel"]
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "failed",
+    "terminal_state": "failed",
+    "task_counts": {
+      "failed": 1
+    },
+    "required_events": ["task_failed"],
+    "required_artifacts": []
+  },
+  "evaluator_checks": [
+    {
+      "id": "failed_not_terminal",
+      "kind": "state_machine",
+      "assertion": "failed is recoverable and cannot be a terminal workflow state",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

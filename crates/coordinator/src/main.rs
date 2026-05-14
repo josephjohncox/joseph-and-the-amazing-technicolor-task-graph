@@ -16,23 +16,22 @@ use coat_domain::{
     GoalState, GoalStoreSnapshotUpsertRequest, HumanApproval, HumanFeedback,
     MechanismBallotRequest, MechanismRoundRequest, NotificationDeliveryReport, NotificationEvent,
     NotificationRequest, RestartRequest, RunnerDispatchDecision, RunnerDispatchRequest,
-    RunnerDispatchStatus, SpawnPolicy, SteeringDirective, TaskList, TaskQuery, TaskStatus,
-    ValidationReport, ValidationRequest, WorkerRunStatus,
+    RunnerDispatchStatus, SpawnPolicy, StateEvent, SteeringDirective, SteeringDirectiveKind,
+    TaskList, TaskQuery, TaskStatus, ValidationReport, ValidationRequest, WorkerRunStatus,
 };
 use restate_sdk::{prelude::*, serde::Json};
 
 const STATE_KEY: &str = "state";
 const MAX_FRONTIER_ROUNDS: usize = 32;
 const DEFAULT_GOAL_STORE_URL: &str = "http://localhost:9088";
+const MISSING_GOAL_STATE_STATUS: u16 = 404;
 
-#[restate_sdk::workflow]
+#[restate_sdk::object]
 pub trait GoalWorkflow {
     async fn run(goal: Json<GoalSpec>) -> HandlerResult<Json<GoalState>>;
 
-    #[shared]
     async fn cancel(reason: String) -> HandlerResult<String>;
 
-    #[shared]
     async fn inject_feedback(feedback: Json<HumanFeedback>) -> HandlerResult<String>;
 
     async fn steer(directive: Json<SteeringDirective>) -> HandlerResult<Json<Option<GoalState>>>;
@@ -103,7 +102,7 @@ impl Default for GoalWorkflowImpl {
 impl GoalWorkflowImpl {
     async fn drive_state(
         &self,
-        ctx: &WorkflowContext<'_>,
+        ctx: &ObjectContext<'_>,
         mut state: GoalState,
     ) -> HandlerResult<GoalState> {
         ctx.set(STATE_KEY, Json(state.clone()));
@@ -111,6 +110,11 @@ impl GoalWorkflowImpl {
         let max_frontier_rounds = state.goal.control_policy.max_frontier_rounds as usize;
 
         for _round in 0..max_frontier_rounds.min(MAX_FRONTIER_ROUNDS) {
+            if state.status == coat_domain::GoalStatus::Cancelled {
+                ctx.set(STATE_KEY, Json(state.clone()));
+                self.project_state(ctx, &state, "cancelled").await?;
+                return Ok(state);
+            }
             if state.is_done() {
                 ctx.set(STATE_KEY, Json(state.clone()));
                 self.project_state(ctx, &state, "done").await?;
@@ -122,10 +126,18 @@ impl GoalWorkflowImpl {
                 return Ok(state);
             }
             if state.budget_exhausted() {
-                state.status = coat_domain::GoalStatus::Failed;
+                state.status = coat_domain::GoalStatus::Blocked;
+                for task in state.tasks.values_mut() {
+                    if !task.status.is_terminal() && task.budget.is_exhausted() {
+                        task.status = TaskStatus::Blocked;
+                    }
+                }
+                state
+                    .events
+                    .push(coat_domain::StateEvent::new("budget_exhausted"));
                 ctx.set(STATE_KEY, Json(state.clone()));
                 self.project_state(ctx, &state, "budget_exhausted").await?;
-                return Err(TerminalError::new("budget exhausted").into());
+                return Ok(state);
             }
 
             let runnable = state.runnable_tasks();
@@ -144,24 +156,19 @@ impl GoalWorkflowImpl {
                     ctx.set(STATE_KEY, Json(state.clone()));
                     continue;
                 }
-                if state
-                    .tasks
-                    .values()
-                    .any(|task| task.status == TaskStatus::WaitingApproval)
+                let idle_status = frontier_idle_status(&state);
+                if idle_status == coat_domain::GoalStatus::Running
+                    && matches!(
+                        state.goal.control_policy.mode,
+                        ControlLoopMode::MonitorUntilCancelled
+                            | ControlLoopMode::HumanSteeredContinuous
+                    )
                 {
-                    state.status = coat_domain::GoalStatus::WaitingApproval;
-                } else if matches!(
-                    state.goal.control_policy.mode,
-                    ControlLoopMode::MonitorUntilCancelled
-                        | ControlLoopMode::HumanSteeredContinuous
-                ) {
                     state
                         .events
                         .push(coat_domain::StateEvent::new("control_loop_idle"));
-                    state.status = coat_domain::GoalStatus::Running;
-                } else if !state.is_done() {
-                    state.status = coat_domain::GoalStatus::Blocked;
                 }
+                state.status = idle_status;
                 ctx.set(STATE_KEY, Json(state.clone()));
                 self.project_state(ctx, &state, "frontier_idle").await?;
                 return Ok(state);
@@ -263,7 +270,7 @@ impl GoalWorkflowImpl {
 
     async fn project_state(
         &self,
-        ctx: &WorkflowContext<'_>,
+        ctx: &ObjectContext<'_>,
         state: &GoalState,
         reason: &'static str,
     ) -> HandlerResult<()> {
@@ -293,6 +300,31 @@ impl GoalWorkflowImpl {
         .name(step_name)
         .await?;
         Ok(())
+    }
+
+    async fn skip_cancelled_mutation(
+        &self,
+        ctx: &ObjectContext<'_>,
+        state: &mut GoalState,
+        event: &'static str,
+        transition: &'static str,
+    ) -> HandlerResult<bool> {
+        let Some(skip) = cancelled_mutation_skip(&state.status, event, transition) else {
+            return Ok(false);
+        };
+        self.record_skipped_mutation(ctx, state, skip).await?;
+        Ok(true)
+    }
+
+    async fn record_skipped_mutation(
+        &self,
+        ctx: &ObjectContext<'_>,
+        state: &mut GoalState,
+        skip: SkippedMutation,
+    ) -> HandlerResult<()> {
+        state.events.push(StateEvent::new(skip.event));
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(ctx, state, skip.transition).await
     }
 }
 
@@ -400,63 +432,260 @@ fn emit_transition_observation(observation: &CoordinatorTransitionObservation) {
     );
 }
 
+fn steering_should_drive(kind: &SteeringDirectiveKind) -> bool {
+    matches!(
+        kind,
+        SteeringDirectiveKind::InjectTask { .. }
+            | SteeringDirectiveKind::RequestResearch { .. }
+            | SteeringDirectiveKind::RequestStandardReview { .. }
+            | SteeringDirectiveKind::Resume { .. }
+            | SteeringDirectiveKind::UpdateDoneCriteria { .. }
+            | SteeringDirectiveKind::ExpandDoneCriteria { .. }
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SkippedMutation {
+    event: &'static str,
+    transition: &'static str,
+}
+
+fn missing_goal_state_message(handler: &'static str) -> String {
+    format!(
+        "GoalWorkflow.{handler} has no initialized goal state; submit or run the goal before using this workflow object"
+    )
+}
+
+fn missing_goal_state_error(handler: &'static str) -> HandlerError {
+    TerminalError::new_with_code(
+        MISSING_GOAL_STATE_STATUS,
+        missing_goal_state_message(handler),
+    )
+    .into()
+}
+
+fn require_goal_state(state: Option<GoalState>, handler: &'static str) -> HandlerResult<GoalState> {
+    state.ok_or_else(|| missing_goal_state_error(handler))
+}
+
+fn frontier_idle_status(state: &GoalState) -> coat_domain::GoalStatus {
+    if state
+        .tasks
+        .values()
+        .any(|task| task.status == TaskStatus::Failed)
+    {
+        coat_domain::GoalStatus::Failed
+    } else if state
+        .tasks
+        .values()
+        .any(|task| task.status == TaskStatus::Blocked)
+    {
+        coat_domain::GoalStatus::Blocked
+    } else if state
+        .tasks
+        .values()
+        .any(|task| task.status == TaskStatus::WaitingApproval)
+    {
+        coat_domain::GoalStatus::WaitingApproval
+    } else if state
+        .tasks
+        .values()
+        .any(|task| task.status == TaskStatus::WaitingInput)
+        || state
+            .delayed_compute_thunks
+            .iter()
+            .any(|thunk| thunk.status == coat_domain::DelayedComputeThunkStatus::Pending)
+    {
+        coat_domain::GoalStatus::Paused
+    } else if matches!(
+        state.goal.control_policy.mode,
+        ControlLoopMode::MonitorUntilCancelled | ControlLoopMode::HumanSteeredContinuous
+    ) {
+        coat_domain::GoalStatus::Running
+    } else if state.is_done() {
+        coat_domain::GoalStatus::Done
+    } else {
+        coat_domain::GoalStatus::Blocked
+    }
+}
+
+fn cancelled_mutation_skip(
+    status: &coat_domain::GoalStatus,
+    event: &'static str,
+    transition: &'static str,
+) -> Option<SkippedMutation> {
+    (*status == coat_domain::GoalStatus::Cancelled).then_some(SkippedMutation { event, transition })
+}
+
+fn restart_stale_skip(error: &DomainError) -> Option<SkippedMutation> {
+    match error {
+        DomainError::RestartDenied(message)
+            if message == "no restartable tasks matched the request" =>
+        {
+            Some(SkippedMutation {
+                event: "restart_skipped:no_restartable_tasks",
+                transition: "restart_skipped_no_restartable_tasks",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn resume_thunk_stale_skip(error: &DomainError) -> Option<SkippedMutation> {
+    match error {
+        DomainError::SteeringDenied(message)
+            if message.contains("delayed compute thunk") && message.contains("is not pending") =>
+        {
+            Some(SkippedMutation {
+                event: "resume_thunk_skipped:not_pending",
+                transition: "resume_thunk_skipped_not_pending",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn create_thunk_duplicate_skip(
+    state: &GoalState,
+    continuation_id: &str,
+) -> Option<SkippedMutation> {
+    state
+        .delayed_compute_thunks
+        .iter()
+        .any(|thunk| {
+            thunk.status == coat_domain::DelayedComputeThunkStatus::Pending
+                && thunk.continuation.continuation_id == continuation_id
+        })
+        .then_some(SkippedMutation {
+            event: "create_thunk_skipped:continuation_exists",
+            transition: "create_thunk_skipped_continuation_exists",
+        })
+}
+
 impl GoalWorkflow for GoalWorkflowImpl {
     async fn run(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         goal: Json<GoalSpec>,
     ) -> HandlerResult<Json<GoalState>> {
         let incoming_goal = goal.into_inner();
         let state = match ctx.get::<Json<GoalState>>(STATE_KEY).await? {
-            Some(Json(existing)) if existing.goal.id == incoming_goal.id => existing,
+            Some(Json(existing)) => existing,
             _ => GoalState::new(incoming_goal),
         };
         Ok(Json(self.drive_state(&ctx, state).await?))
     }
 
-    async fn cancel(
-        &self,
-        ctx: SharedWorkflowContext<'_>,
-        reason: String,
-    ) -> HandlerResult<String> {
-        ctx.resolve_promise("cancel", reason.clone());
+    async fn cancel(&self, ctx: ObjectContext<'_>, reason: String) -> HandlerResult<String> {
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "cancel",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "cancel_skipped:goal_cancelled",
+                "cancel_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(format!("cancel skipped; goal already cancelled: {reason}"));
+        }
+        state.cancel(reason.clone());
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "cancelled").await?;
         Ok(format!("cancel requested: {reason}"))
     }
 
     async fn inject_feedback(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         feedback: Json<HumanFeedback>,
     ) -> HandlerResult<String> {
-        ctx.resolve_promise("feedback", feedback.into_inner().message);
-        Ok("feedback accepted".to_string())
+        let feedback = feedback.into_inner();
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "inject_feedback",
+        )?;
+        let task_suffix = feedback
+            .task_id
+            .map(|task_id| format!(":{task_id}"))
+            .unwrap_or_default();
+        state
+            .events
+            .push(StateEvent::new(format!("human_feedback{task_suffix}")));
+        ctx.set(STATE_KEY, Json(state.clone()));
+        self.project_state(&ctx, &state, "human_feedback").await?;
+        Ok(format!("feedback accepted: {}", feedback.message))
     }
 
     async fn steer(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         directive: Json<SteeringDirective>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "steer",
+        )?;
+        let directive = directive.into_inner();
+        if state.status == coat_domain::GoalStatus::Cancelled
+            && !matches!(directive.kind, SteeringDirectiveKind::Cancel { .. })
+        {
+            state
+                .events
+                .push(StateEvent::new("steering_skipped:goal_cancelled"));
+            ctx.set(STATE_KEY, Json(state.clone()));
+            self.project_state(&ctx, &state, "steering_skipped_goal_cancelled")
+                .await?;
+            return Ok(Json(Some(state)));
+        }
+        let should_drive = steering_should_drive(&directive.kind);
         state
-            .apply_steering(directive.into_inner(), &self.spawn_policy)
+            .apply_steering(directive, &self.spawn_policy)
             .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "steering_applied").await?;
+        if should_drive {
+            state = self.drive_state(&ctx, state).await?;
+        } else {
+            ctx.set(STATE_KEY, Json(state.clone()));
+            self.project_state(&ctx, &state, "steering_applied").await?;
+        }
         Ok(Json(Some(state)))
     }
 
     async fn approve(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         approval: Json<HumanApproval>,
     ) -> HandlerResult<String> {
         let approval = approval.into_inner();
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Err(TerminalError::new("goal state is not initialized").into());
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "approve",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "approval_skipped:goal_cancelled",
+                "approval_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(format!(
+                "approval {} skipped; goal cancelled",
+                approval.approval_id
+            ));
+        }
         let updated = state
             .apply_human_approval(approval.clone())
             .map_err(domain_error)?;
@@ -480,27 +709,62 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn restart(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<RestartRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
-        state
-            .apply_restart_request(request.into_inner())
-            .map_err(domain_error)?;
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "restart",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "restart_skipped:goal_cancelled",
+                "restart_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
+        match state.apply_restart_request(request.into_inner()) {
+            Ok(_) => {}
+            Err(error) => {
+                if let Some(skip) = restart_stale_skip(&error) {
+                    self.record_skipped_mutation(&ctx, &mut state, skip).await?;
+                    return Ok(Json(Some(state)));
+                }
+                return Err(domain_error(error));
+            }
+        }
         let state = self.drive_state(&ctx, state).await?;
         Ok(Json(Some(state)))
     }
 
     async fn branch(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<BranchRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "branch",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "branch_skipped:goal_cancelled",
+                "branch_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
         state
             .branch_task(request.into_inner(), &self.spawn_policy)
             .map_err(domain_error)?;
@@ -511,12 +775,26 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn select_branch(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<BranchSelectionRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "select_branch",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "select_branch_skipped:goal_cancelled",
+                "select_branch_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
         state
             .apply_branch_selection(request.into_inner())
             .map_err(domain_error)?;
@@ -526,12 +804,26 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn vote(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<GoalPriorityVoteRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "vote",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "goal_priority_vote_skipped:goal_cancelled",
+                "goal_priority_vote_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
         state
             .record_goal_priority_vote(request.into_inner())
             .map_err(domain_error)?;
@@ -543,29 +835,71 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn resume_thunk(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<DelayedComputeThunkResumeRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
-        state
-            .resume_delayed_compute_thunk(request.into_inner())
-            .map_err(domain_error)?;
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "resume_thunk",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "resume_thunk_skipped:goal_cancelled",
+                "resume_thunk_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
+        match state.resume_delayed_compute_thunk(request.into_inner()) {
+            Ok(_) => {}
+            Err(error) => {
+                if let Some(skip) = resume_thunk_stale_skip(&error) {
+                    self.record_skipped_mutation(&ctx, &mut state, skip).await?;
+                    return Ok(Json(Some(state)));
+                }
+                return Err(domain_error(error));
+            }
+        }
         let state = self.drive_state(&ctx, state).await?;
         Ok(Json(Some(state)))
     }
 
     async fn create_thunk(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<DelayedComputeThunkRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "create_thunk",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "create_thunk_skipped:goal_cancelled",
+                "create_thunk_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
+        let request = request.into_inner();
+        if let Some(skip) =
+            create_thunk_duplicate_skip(&state, &request.continuation.continuation_id)
+        {
+            self.record_skipped_mutation(&ctx, &mut state, skip).await?;
+            return Ok(Json(Some(state)));
+        }
         state
-            .create_delayed_compute_thunk(request.into_inner())
+            .create_delayed_compute_thunk(request)
             .map_err(domain_error)?;
         ctx.set(STATE_KEY, Json(state.clone()));
         self.project_state(&ctx, &state, "delayed_compute_thunk_created")
@@ -575,12 +909,26 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn mechanism_start(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<MechanismRoundRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "mechanism_start",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "mechanism_start_skipped:goal_cancelled",
+                "mechanism_start_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
         state
             .start_mechanism_round(request.into_inner())
             .map_err(domain_error)?;
@@ -592,12 +940,26 @@ impl GoalWorkflow for GoalWorkflowImpl {
 
     async fn mechanism_ballot(
         &self,
-        ctx: WorkflowContext<'_>,
+        ctx: ObjectContext<'_>,
         request: Json<MechanismBallotRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let Some(Json(mut state)) = ctx.get::<Json<GoalState>>(STATE_KEY).await? else {
-            return Ok(Json(None));
-        };
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            "mechanism_ballot",
+        )?;
+        if self
+            .skip_cancelled_mutation(
+                &ctx,
+                &mut state,
+                "mechanism_ballot_skipped:goal_cancelled",
+                "mechanism_ballot_skipped_goal_cancelled",
+            )
+            .await?
+        {
+            return Ok(Json(Some(state)));
+        }
         state
             .record_mechanism_ballot(request.into_inner())
             .map_err(domain_error)?;
@@ -607,52 +969,53 @@ impl GoalWorkflow for GoalWorkflowImpl {
         Ok(Json(Some(state)))
     }
 
-    async fn status(
-        &self,
-        ctx: SharedWorkflowContext<'_>,
-    ) -> HandlerResult<Json<Option<GoalState>>> {
-        Ok(Json(
+    async fn status(&self, ctx: SharedObjectContext<'_>) -> HandlerResult<Json<Option<GoalState>>> {
+        Ok(Json(Some(require_goal_state(
             ctx.get::<Json<GoalState>>(STATE_KEY)
                 .await?
                 .map(Json::into_inner),
-        ))
+            "status",
+        )?)))
     }
 
     async fn progress(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: SharedObjectContext<'_>,
     ) -> HandlerResult<Json<Option<GoalProgress>>> {
-        Ok(Json(
+        let state = require_goal_state(
             ctx.get::<Json<GoalState>>(STATE_KEY)
                 .await?
-                .map(Json::into_inner)
-                .map(|state| state.progress()),
-        ))
+                .map(Json::into_inner),
+            "progress",
+        )?;
+        Ok(Json(Some(state.progress())))
     }
 
     async fn compute_graph(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: SharedObjectContext<'_>,
     ) -> HandlerResult<Json<Option<ComputeGraphSnapshot>>> {
-        Ok(Json(
+        let state = require_goal_state(
             ctx.get::<Json<GoalState>>(STATE_KEY)
                 .await?
-                .map(Json::into_inner)
-                .map(|state| state.compute_graph()),
-        ))
+                .map(Json::into_inner),
+            "compute_graph",
+        )?;
+        Ok(Json(Some(state.compute_graph())))
     }
 
     async fn tasks(
         &self,
-        ctx: SharedWorkflowContext<'_>,
+        ctx: SharedObjectContext<'_>,
         query: Json<TaskQuery>,
     ) -> HandlerResult<Json<Option<TaskList>>> {
-        Ok(Json(
+        let state = require_goal_state(
             ctx.get::<Json<GoalState>>(STATE_KEY)
                 .await?
-                .map(Json::into_inner)
-                .map(|state| state.find_tasks(&query.into_inner())),
-        ))
+                .map(Json::into_inner),
+            "tasks",
+        )?;
+        Ok(Json(Some(state.find_tasks(&query.into_inner()))))
     }
 }
 
@@ -1153,9 +1516,38 @@ fn restate_identity_keys() -> Vec<String> {
 mod tests {
     use super::*;
     use coat_domain::{
-        ContinuationBoundary, ContinuationRef, ContinuationResumeAction, DelayedComputeThunkKind,
-        WaitRef, WaitRefKind,
+        ChildTaskRequest, ContinuationBoundary, ContinuationRef, ContinuationResumeAction,
+        DelayedComputeThunkKind, DelayedComputeThunkResumeRequest, RestartReason, RestartScope,
+        TaskPriority, WaitRef, WaitRefKind, WorkerKind,
     };
+
+    fn human_input_thunk_request(
+        state: &GoalState,
+        task_id: coat_domain::TaskId,
+        continuation_id: &str,
+    ) -> DelayedComputeThunkRequest {
+        DelayedComputeThunkRequest {
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            kind: DelayedComputeThunkKind::HumanInput,
+            reason: "need operator input".to_string(),
+            requested_input: Some("choose route".to_string()),
+            wait_ref: Some(WaitRef {
+                kind: WaitRefKind::HumanThread,
+                reference: "thread://operator/runtime-verifier".to_string(),
+            }),
+            continuation: ContinuationRef {
+                continuation_id: continuation_id.to_string(),
+                boundary: ContinuationBoundary::TaskDispatch,
+                state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                resume_actions: vec![
+                    ContinuationResumeAction::ApplyFeedback,
+                    ContinuationResumeAction::MarkRunnable,
+                ],
+            },
+            timeout_seconds: Some(300),
+        }
+    }
 
     #[test]
     fn goal_store_projection_defaults_to_local_read_model() {
@@ -1172,6 +1564,436 @@ mod tests {
             None
         );
         assert_eq!(configured_goal_store_url(Some(String::new())), None);
+    }
+
+    #[test]
+    fn steering_drive_policy_only_runs_progressing_controls() {
+        assert!(steering_should_drive(&SteeringDirectiveKind::InjectTask {
+            role: coat_domain::WorkerKind::Planner,
+            prompt: "recover blocked work".to_string(),
+            reason: "operator requested recovery".to_string(),
+        }));
+        assert!(steering_should_drive(
+            &SteeringDirectiveKind::RequestResearch {
+                question: "what changed?".to_string(),
+                reason: "operator requested current facts".to_string(),
+            }
+        ));
+        assert!(steering_should_drive(&SteeringDirectiveKind::Resume {
+            reason: "continue".to_string(),
+        }));
+        assert!(!steering_should_drive(&SteeringDirectiveKind::Pause {
+            reason: "hold".to_string(),
+        }));
+        assert!(!steering_should_drive(&SteeringDirectiveKind::Cancel {
+            reason: "stop".to_string(),
+        }));
+        assert!(!steering_should_drive(
+            &SteeringDirectiveKind::EvaluateGoalCompletion {
+                reason: "inspect only".to_string(),
+            }
+        ));
+    }
+
+    #[test]
+    fn missing_goal_state_is_explicit_terminal_read_error() {
+        let error = require_goal_state(None, "status")
+            .err()
+            .expect("missing goal state must be explicit");
+        let error_ref: &(dyn std::error::Error + Send + Sync) = error.as_ref();
+        let message = error_ref.to_string();
+
+        assert!(message.contains("Terminal error [404]"));
+        assert!(message.contains("GoalWorkflow.status has no initialized goal state"));
+        assert!(!message.contains("null"));
+    }
+
+    #[test]
+    fn missing_goal_state_error_is_shared_by_mutation_handlers() {
+        for handler in [
+            "cancel",
+            "inject_feedback",
+            "steer",
+            "approve",
+            "branch",
+            "select_branch",
+            "vote",
+            "restart",
+            "resume_thunk",
+            "create_thunk",
+            "mechanism_start",
+            "mechanism_ballot",
+        ] {
+            let error = require_goal_state(None, handler)
+                .err()
+                .expect("missing goal state must be explicit");
+            let error_ref: &(dyn std::error::Error + Send + Sync) = error.as_ref();
+            let message = error_ref.to_string();
+            assert!(
+                message.contains(&format!(
+                    "GoalWorkflow.{handler} has no initialized goal state"
+                )),
+                "{handler} returned unexpected error: {message}"
+            );
+            assert!(message.contains("Terminal error [404]"));
+        }
+    }
+
+    #[test]
+    fn missing_goal_state_error_is_shared_by_read_handlers() {
+        for handler in ["status", "progress", "compute_graph", "tasks"] {
+            let error = require_goal_state(None, handler)
+                .err()
+                .expect("missing goal state must be explicit");
+            let error_ref: &(dyn std::error::Error + Send + Sync) = error.as_ref();
+            let message = error_ref.to_string();
+            assert!(
+                message.contains(&format!(
+                    "GoalWorkflow.{handler} has no initialized goal state"
+                )),
+                "{handler} returned unexpected error: {message}"
+            );
+            assert!(message.contains("Terminal error [404]"));
+        }
+    }
+
+    #[test]
+    fn cancelled_control_skip_is_explicit() {
+        assert_eq!(
+            cancelled_mutation_skip(
+                &coat_domain::GoalStatus::Cancelled,
+                "restart_skipped:goal_cancelled",
+                "restart_skipped_goal_cancelled",
+            ),
+            Some(SkippedMutation {
+                event: "restart_skipped:goal_cancelled",
+                transition: "restart_skipped_goal_cancelled",
+            })
+        );
+        assert_eq!(
+            cancelled_mutation_skip(
+                &coat_domain::GoalStatus::Blocked,
+                "restart_skipped:goal_cancelled",
+                "restart_skipped_goal_cancelled",
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_control_skips_are_explicit_noops() {
+        assert_eq!(
+            restart_stale_skip(&DomainError::RestartDenied(
+                "no restartable tasks matched the request".to_string(),
+            )),
+            Some(SkippedMutation {
+                event: "restart_skipped:no_restartable_tasks",
+                transition: "restart_skipped_no_restartable_tasks",
+            })
+        );
+        assert_eq!(
+            restart_stale_skip(&DomainError::RestartDenied(
+                "restart policy is disabled".to_string(),
+            )),
+            None
+        );
+        assert_eq!(
+            resume_thunk_stale_skip(&DomainError::SteeringDenied(
+                "delayed compute thunk 018f8f2f-1fd8-7688-bb12-8bfb6b756602 is not pending"
+                    .to_string(),
+            )),
+            Some(SkippedMutation {
+                event: "resume_thunk_skipped:not_pending",
+                transition: "resume_thunk_skipped_not_pending",
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_create_thunk_is_explicit_noop() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "duplicate thunk",
+            "prove duplicate delayed compute thunk creation is not repeated",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let request = human_input_thunk_request(&state, task_id, "runtime-verifier/operator-input");
+        state.create_delayed_compute_thunk(request).expect("thunk");
+
+        assert_eq!(
+            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input"),
+            Some(SkippedMutation {
+                event: "create_thunk_skipped:continuation_exists",
+                transition: "create_thunk_skipped_continuation_exists",
+            })
+        );
+        assert_eq!(
+            create_thunk_duplicate_skip(&state, "runtime-verifier/other-input"),
+            None
+        );
+    }
+
+    #[test]
+    fn cancelled_create_thunk_does_not_block_fresh_wait_with_same_continuation() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "recreated thunk",
+            "old cancelled waits should not suppress a new pending wait",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let request = human_input_thunk_request(&state, task_id, "runtime-verifier/operator-input");
+        state.create_delayed_compute_thunk(request).expect("thunk");
+        state.delayed_compute_thunks[0].status = coat_domain::DelayedComputeThunkStatus::Cancelled;
+
+        assert_eq!(
+            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input"),
+            None
+        );
+    }
+
+    #[test]
+    fn frontier_idle_status_keeps_waiting_thunks_paused() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "waiting thunk",
+            "prove waiting delayed compute thunks do not become blocked at idle",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let request = human_input_thunk_request(&state, task_id, "runtime-verifier/operator-input");
+        state.create_delayed_compute_thunk(request).expect("thunk");
+
+        assert_eq!(
+            frontier_idle_status(&state),
+            coat_domain::GoalStatus::Paused
+        );
+    }
+
+    #[test]
+    fn cancelled_goal_stays_terminal_and_mutation_skips_do_not_reopen_it() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "cancelled terminal",
+            "cancelled goals must not be reopened by repeatable controls",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let thunk = state
+            .create_delayed_compute_thunk(human_input_thunk_request(
+                &state,
+                task_id,
+                "runtime-verifier/operator-input",
+            ))
+            .expect("thunk");
+        state.cancel("operator stopped the goal");
+
+        assert_eq!(state.status, coat_domain::GoalStatus::Cancelled);
+        assert_eq!(
+            state.tasks.get(&task_id).expect("task").status,
+            TaskStatus::Cancelled
+        );
+        assert_eq!(
+            state.delayed_compute_thunks[0].status,
+            coat_domain::DelayedComputeThunkStatus::Cancelled
+        );
+        assert_eq!(state.progress().status, coat_domain::GoalStatus::Cancelled);
+        assert_eq!(state.progress().open_tasks, 0);
+
+        assert_eq!(
+            cancelled_mutation_skip(
+                &state.status,
+                "restart_skipped:goal_cancelled",
+                "restart_skipped_goal_cancelled",
+            ),
+            Some(SkippedMutation {
+                event: "restart_skipped:goal_cancelled",
+                transition: "restart_skipped_goal_cancelled",
+            })
+        );
+        let restart_error = state
+            .apply_restart_request(RestartRequest {
+                goal_id: state.goal.id,
+                scope: RestartScope::Task,
+                reason: RestartReason::OperatorRequested,
+                message: "try to reopen cancelled work".to_string(),
+                task_id: Some(task_id),
+                reset_attempts: None,
+                preserve_artifacts: None,
+                operator: Some("tester".to_string()),
+            })
+            .expect_err("cancelled goal restart should be explicit");
+        assert!(
+            matches!(
+                restart_error,
+                DomainError::RestartDenied(ref message)
+                    if message == "goal is terminal: Cancelled"
+            ),
+            "unexpected restart error: {restart_error}"
+        );
+        let resume_error = state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id: thunk.id,
+                responder: "operator".to_string(),
+                response_summary: "stale response after cancellation".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect_err("cancelled thunk resume should be explicit");
+        assert!(
+            matches!(
+                resume_error,
+                DomainError::SteeringDenied(ref message)
+                    if message == &format!("delayed compute thunk {} is not pending", thunk.id)
+            ),
+            "unexpected resume error: {resume_error}"
+        );
+        assert_eq!(state.status, coat_domain::GoalStatus::Cancelled);
+        assert_eq!(
+            state.tasks.get(&task_id).expect("task").status,
+            TaskStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn serialized_restart_steer_resume_and_reads_project_same_state() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "serialized controls",
+            "repeatable controls should mutate coordinator state coherently",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let first_thunk = state
+            .create_delayed_compute_thunk(human_input_thunk_request(
+                &state,
+                task_id,
+                "runtime-verifier/operator-input",
+            ))
+            .expect("thunk");
+        state.status = frontier_idle_status(&state);
+
+        let waiting_projection =
+            GoalStoreSnapshotUpsertRequest::from_state(&state, "delayed_compute_thunk_created");
+        assert_eq!(state.status, coat_domain::GoalStatus::Paused);
+        assert_eq!(state.progress().waiting_input_tasks, 1);
+        assert_eq!(waiting_projection.snapshot.compute_graph.open_thunks, 1);
+
+        let restart_record = state
+            .apply_restart_request(RestartRequest {
+                goal_id: state.goal.id,
+                scope: RestartScope::Task,
+                reason: RestartReason::OperatorRequested,
+                message: "restart waiting task".to_string(),
+                task_id: Some(task_id),
+                reset_attempts: None,
+                preserve_artifacts: Some(true),
+                operator: Some("tester".to_string()),
+            })
+            .expect("restart waiting task");
+        assert_eq!(restart_record.restarted_task_ids, vec![task_id]);
+        assert_eq!(
+            state.delayed_compute_thunks[0].status,
+            coat_domain::DelayedComputeThunkStatus::Cancelled
+        );
+        assert_eq!(
+            state.tasks.get(&task_id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.status, coat_domain::GoalStatus::Running);
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: state.goal.id,
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("tester".to_string()),
+                    message: "pause before resuming".to_string(),
+                    kind: SteeringDirectiveKind::Pause {
+                        reason: "operator hold".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("pause");
+        assert_eq!(state.status, coat_domain::GoalStatus::Paused);
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: state.goal.id,
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("tester".to_string()),
+                    message: "resume after hold".to_string(),
+                    kind: SteeringDirectiveKind::Resume {
+                        reason: "operator continue".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("resume");
+        assert_eq!(state.status, coat_domain::GoalStatus::Running);
+
+        let second_thunk = state
+            .create_delayed_compute_thunk(human_input_thunk_request(
+                &state,
+                task_id,
+                "runtime-verifier/second-input",
+            ))
+            .expect("second thunk");
+        state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id: second_thunk.id,
+                responder: "operator".to_string(),
+                response_summary: "continue".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect("resume pending thunk");
+
+        let progress = state.progress();
+        let graph = state.compute_graph();
+        let task_list = state.find_tasks(&TaskQuery::default());
+        let projection = GoalStoreSnapshotUpsertRequest::from_state(&state, "resume_thunk");
+
+        assert_eq!(progress.status, state.status);
+        assert_eq!(progress.total_tasks, state.tasks.len() as u32);
+        assert_eq!(progress.pending_delayed_compute_thunks, 0);
+        assert_eq!(progress.compute_graph, graph);
+        assert_eq!(task_list.progress, progress);
+        assert_eq!(projection.snapshot.goal.status, state.status);
+        assert_eq!(projection.snapshot.goal.open_tasks, progress.open_tasks);
+        assert_eq!(projection.snapshot.compute_graph.open_thunks, 0);
+
+        let stale_resume = state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id: second_thunk.id,
+                responder: "operator".to_string(),
+                response_summary: "duplicate continue".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect_err("duplicate resume should be explicit");
+        assert_eq!(
+            resume_thunk_stale_skip(&stale_resume),
+            Some(SkippedMutation {
+                event: "resume_thunk_skipped:not_pending",
+                transition: "resume_thunk_skipped_not_pending",
+            })
+        );
+        let stale_restart = state
+            .apply_restart_request(RestartRequest {
+                goal_id: state.goal.id,
+                scope: RestartScope::Blocked,
+                reason: RestartReason::OperatorRequested,
+                message: "stale blocked restart".to_string(),
+                task_id: None,
+                reset_attempts: None,
+                preserve_artifacts: None,
+                operator: Some("tester".to_string()),
+            })
+            .expect_err("stale blocked restart should be explicit");
+        assert!(
+            matches!(
+                stale_restart,
+                DomainError::RestartDenied(ref message)
+                    if message == "no restartable tasks matched the request"
+            ),
+            "unexpected restart error: {stale_restart}"
+        );
+        assert_eq!(
+            first_thunk.status,
+            coat_domain::DelayedComputeThunkStatus::Pending
+        );
     }
 
     #[test]
@@ -1219,29 +2041,8 @@ mod tests {
             "prove suspended continuations are observable",
         ));
         let task_id = *state.tasks.keys().next().expect("root task");
-        state
-            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
-                goal_id: state.goal.id,
-                task_id: Some(task_id),
-                kind: DelayedComputeThunkKind::HumanInput,
-                reason: "need operator input".to_string(),
-                requested_input: Some("choose route".to_string()),
-                wait_ref: Some(WaitRef {
-                    kind: WaitRefKind::HumanThread,
-                    reference: "thread://operator/runtime-verifier".to_string(),
-                }),
-                continuation: ContinuationRef {
-                    continuation_id: "runtime-verifier/operator-input".to_string(),
-                    boundary: ContinuationBoundary::TaskDispatch,
-                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
-                    resume_actions: vec![
-                        ContinuationResumeAction::ApplyFeedback,
-                        ContinuationResumeAction::MarkRunnable,
-                    ],
-                },
-                timeout_seconds: Some(300),
-            })
-            .expect("thunk");
+        let request = human_input_thunk_request(&state, task_id, "runtime-verifier/operator-input");
+        state.create_delayed_compute_thunk(request).expect("thunk");
 
         let observation = observe_transition(&state, "delayed_compute_thunk_created");
 
@@ -1249,6 +2050,69 @@ mod tests {
         assert_eq!(observation.pending_delayed_compute_thunks, 1);
         assert_eq!(observation.compute_graph_nodes, 5);
         assert_eq!(observation.compute_graph_edges, 4);
+    }
+
+    #[test]
+    fn projection_captures_blocked_tasks_waiting_tasks_and_thunks() {
+        let mut goal = GoalSpec::new(
+            "blocked waiting projection",
+            "prove blocked and waiting delayed compute work are visible in projections.",
+        );
+        goal.initial_tasks.push(ChildTaskRequest {
+            role: WorkerKind::Codex,
+            purpose: None,
+            title: Some("operator input child".to_string()),
+            subgoal_id: None,
+            color: None,
+            prompt: "wait for operator input".to_string(),
+            reason: "test projection state".to_string(),
+            dependencies: Vec::new(),
+            budget: None,
+            sandbox: None,
+            done_criteria: None,
+            review_doctrine: None,
+            execution: None,
+            priority: TaskPriority::Normal,
+            tags: Vec::new(),
+        });
+        let mut state = GoalState::new(goal);
+        let root_task_id = state
+            .tasks
+            .values()
+            .find(|task| task.parent_id.is_none())
+            .expect("root task")
+            .id;
+        let waiting_task_id = state
+            .tasks
+            .values()
+            .find(|task| task.parent_id == Some(root_task_id))
+            .expect("child task")
+            .id;
+        state
+            .tasks
+            .get_mut(&root_task_id)
+            .expect("root task")
+            .status = TaskStatus::Blocked;
+        let request =
+            human_input_thunk_request(&state, waiting_task_id, "runtime-verifier/operator-input");
+        state.create_delayed_compute_thunk(request).expect("thunk");
+        state.status = frontier_idle_status(&state);
+
+        let projection =
+            coat_domain::GoalStoreSnapshotUpsertRequest::from_state(&state, "frontier_idle");
+
+        assert_eq!(
+            projection.snapshot.goal.status,
+            coat_domain::GoalStatus::Blocked
+        );
+        assert_eq!(projection.snapshot.goal.blocked_tasks, 1);
+        assert_eq!(projection.snapshot.compute_graph.open_thunks, 1);
+        assert_eq!(
+            projection.snapshot.compute_graph.waiting_tasks,
+            vec![waiting_task_id]
+        );
+        assert_eq!(projection.snapshot.compute_graph.nodes.len(), 6);
+        assert_eq!(projection.snapshot.compute_graph.edges.len(), 5);
     }
 
     #[test]

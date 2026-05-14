@@ -1,0 +1,137 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_human_input_thunk_resume",
+  "title": "Bootstrap human input thunk resume",
+  "description": "A worker suspends on a typed human-input thunk, the operator resumes the continuation, and the same task completes.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:05:00Z",
+    "seed": 3002,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003002",
+        "title": "Bootstrap human input",
+        "objective": "Prove waiting work resumes through a concrete continuation.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Ask for operator input",
+            "prompt": "Suspend with a human input thunk, then complete after resume.",
+            "reason": "Exercise delayed compute thunk resume.",
+            "tags": ["scenario", "bootstrap", "human-input"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Submit the human-input bootstrap goal."
+    },
+    {
+      "id": "wait_for_human_input",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Replay a waiting result with a durable continuation.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003201",
+        "status": "waiting",
+        "summary": "Need the operator to choose the deterministic path.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000003202",
+            "kind": "human_input",
+            "summary": "Choose the deterministic path.",
+            "wait_ref": "wait://bootstrap/human-input",
+            "continuation_ref": "continuation://bootstrap/human-input",
+            "operator_action": "Answer the prompt and resume continuation://bootstrap/human-input",
+            "human_prompt": {
+              "title": "Choose deterministic path",
+              "question": "Should the bootstrap continue with the prepared fixture?",
+              "why_waiting": "The worker is waiting for operator input.",
+              "allowed_actions": ["answer", "continue", "replan"],
+              "required_context": "answer"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "resume_human_input",
+      "type": "resume_delayed_compute",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Resume the delayed compute continuation.",
+      "resume": {
+        "thunk_id": "00000000-0000-4000-8000-000000003202",
+        "continuation_ref": "continuation://bootstrap/human-input",
+        "action": "answer",
+        "answer": "Use the prepared fixture.",
+        "operator_action": "Resume continuation://bootstrap/human-input with the prepared answer"
+      }
+    },
+    {
+      "id": "complete_after_resume",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Replay completion after human input.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003201",
+        "status": "done",
+        "summary": "Human input continuation completed.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/bootstrap_human_input_thunk_resume/resume-report.json",
+            "description": "Human input resume evidence"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Validate resumed work."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["delayed_compute_thunk_created", "human_prompt_answered", "delayed_compute_thunk_resumed", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_human_input_thunk_resume/resume-report.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The human-input thunk was resumed through a continuation and produced evidence."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "thunk_resumed",
+      "kind": "continuation",
+      "assertion": "resumed_thunks == 1",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

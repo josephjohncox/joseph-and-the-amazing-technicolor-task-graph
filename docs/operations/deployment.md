@@ -46,6 +46,19 @@ runners from `stub` to `live`; the non-interactive env template stays
 stubbed until edited. That keeps local smoke tests available without hiding the
 fact that no live model/provider environment is configured.
 
+`coat deploy local up` rebuilds local service images by default. The command
+passes `docker compose up --build` and sets `COAT_SOURCE_FINGERPRINT` from the
+current checkout so Rust and TypeScript service images are refreshed when local
+source files change. Docker still uses cargo, npm, and BuildKit cache mounts for
+dependencies, so this is a source-aware rebuild rather than a full no-cache
+build.
+
+The same command validates the resolved Compose stack with `docker compose
+config --quiet` before starting services and removes orphan containers by
+default. That keeps local deploys aligned with the current topology after
+renames, profile changes, or service removal. Pass `--skip-config-check` or
+`--keep-orphans` only when deliberately debugging Compose behavior.
+
 Compose defaults to single-user mode. Multi-user OIDC MCP delegation is an extension path and requires an external OIDC-aware gateway or broker; do not enable user-delegated MCP auth by sharing local browser or CLI tokens.
 
 Set `COAT_REQUIRE_EVENT_SOURCE_APPROVAL=true` for production-like event-gateway deployments. With that switch enabled, risky enabled sources such as webhooks, calendars, schedules, or goal-creating routes require an approval reference at registration time. Use `coat event register --approval-id ...` or register proposed sources disabled first when the approval has not happened yet.

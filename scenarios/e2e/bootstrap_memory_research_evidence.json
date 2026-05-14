@@ -1,0 +1,202 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_memory_research_evidence",
+  "title": "Bootstrap memory research evidence",
+  "description": "A research task uses deterministic memory context, returns sourced ResearchOutput, proposes a memory write, and satisfies validation without live network access.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:40:00Z",
+    "seed": 3009,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "setup": {
+    "fixtures": [
+      {
+        "id": "bootstrap_memory_research.context",
+        "kind": "memory_context",
+        "value": {
+          "query": "bootstrap structured result contract",
+          "facts": [
+            {
+              "uri": "memory://scenarios/bootstrap_memory_research_evidence/structured-result-contract",
+              "summary": "Worker results must carry structured status, artifacts, and optional research evidence."
+            },
+            {
+              "uri": "memory://scenarios/bootstrap_memory_research_evidence/offline-replay",
+              "summary": "Fixture-mode research validation must use captured sources and not require network access."
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003009",
+        "title": "Bootstrap memory research evidence",
+        "objective": "Validate a research task with source artifacts, an information-use plan, and proposed memory evidence.",
+        "research_policy": {
+          "enabled": true,
+          "require_sources": true,
+          "min_confidence": 0.75
+        },
+        "memory_policy": {
+          "enabled": true,
+          "write_proposals_allowed": true
+        },
+        "initial_tasks": [
+          {
+            "role": "research",
+            "purpose": "research",
+            "title": "Collect memory-backed evidence",
+            "prompt": "Use deterministic memory context and return sourced ResearchOutput plus a memory write proposal.",
+            "reason": "Exercise sourced research and memory evidence in fixture mode.",
+            "tags": ["scenario", "bootstrap", "memory", "research"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "description": "Submit the memory research bootstrap goal."
+    },
+    {
+      "id": "research_sourced_evidence",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "description": "Replay a research result with captured sources and a memory write proposal.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003901",
+        "status": "done",
+        "role": "research",
+        "summary": "Memory context was used to produce sourced fixture-mode research evidence.",
+        "confidence": 0.92,
+        "runner_id": "scenario-stub-runner",
+        "memory_context": {
+          "fixture": "bootstrap_memory_research.context",
+          "used_facts": [
+            "memory://scenarios/bootstrap_memory_research_evidence/structured-result-contract",
+            "memory://scenarios/bootstrap_memory_research_evidence/offline-replay"
+          ]
+        },
+        "research": {
+          "question": "How should a bootstrap fixture prove memory-backed research evidence without live network access?",
+          "answer": "Use captured memory facts and source artifacts in the structured ResearchOutput, then validate the information-use plan and proposed memory write as offline evidence.",
+          "sources": [
+            {
+              "title": "Bootstrap structured result contract memory",
+              "uri": "memory://scenarios/bootstrap_memory_research_evidence/structured-result-contract",
+              "quality": "primary",
+              "captured_at": "2026-05-14",
+              "quote": "Worker results must carry structured status, artifacts, and optional research evidence.",
+              "summary": "The memory fact records the result-shape requirement that the fixture is proving.",
+              "confidence": 1.0
+            },
+            {
+              "title": "Bootstrap offline replay memory",
+              "uri": "memory://scenarios/bootstrap_memory_research_evidence/offline-replay",
+              "quality": "primary",
+              "captured_at": "2026-05-14",
+              "quote": "Fixture-mode research validation must use captured sources and not require network access.",
+              "summary": "The memory fact records that this scenario is deterministic and network-free.",
+              "confidence": 1.0
+            }
+          ],
+          "confidence": 0.92,
+          "use_plan": {
+            "facts_to_use": [
+              "Require ResearchOutput.sources to contain replayable SourceArtifact entries.",
+              "Treat proposed memory writes as reviewable evidence, not direct state mutation.",
+              "Keep fixture-mode research validation offline and deterministic."
+            ],
+            "facts_to_avoid": [
+              "Do not refresh web sources during fixture replay.",
+              "Do not let a worker directly mutate durable memory."
+            ],
+            "proposed_task_updates": [],
+            "validation_checks": [
+              "Research evidence includes at least one source artifact.",
+              "InformationUsePlan includes facts to use and facts to avoid.",
+              "The memory write proposal cites the research artifact."
+            ]
+          },
+          "open_questions": []
+        },
+        "proposed_memory_writes": [
+          {
+            "goal_id": "00000000-0000-4000-8000-000000003009",
+            "task_id": "00000000-0000-4000-8000-000000003901",
+            "scope": "goal",
+            "key": "bootstrap-memory-research-evidence",
+            "episode": {
+              "title": "Bootstrap memory research evidence",
+              "content": "The fixture proves sourced ResearchOutput and a reviewable memory write proposal can be replayed without live network access.",
+              "source": {
+                "source_type": "research",
+                "uri": "artifact://scenarios/bootstrap_memory_research_evidence/research-output.json",
+                "actor": "research_worker"
+              },
+              "tags": ["scenario", "bootstrap", "memory", "research"]
+            }
+          }
+        ],
+        "artifacts": [
+          {
+            "kind": "research_report",
+            "uri": "artifact://scenarios/bootstrap_memory_research_evidence/research-output.json",
+            "description": "Structured ResearchOutput with replayable source artifacts"
+          },
+          {
+            "kind": "memory_write_preview",
+            "uri": "artifact://scenarios/bootstrap_memory_research_evidence/memory-write-preview.json",
+            "description": "Reviewable proposed memory write derived from research evidence"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "description": "Validate sourced research and memory evidence."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "memory_context_used", "research_sources_captured", "memory_write_proposed", "task_completed", "validation_passed", "goal_satisfied"],
+    "required_artifacts": [
+      "artifact://scenarios/bootstrap_memory_research_evidence/research-output.json",
+      "artifact://scenarios/bootstrap_memory_research_evidence/memory-write-preview.json"
+    ],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The research task used deterministic memory context, returned sourced ResearchOutput, and proposed a reviewable memory write."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "sourced_research_memory",
+      "kind": "research",
+      "assertion": "research.sources are non-empty and proposed_memory_writes reference the research artifact",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

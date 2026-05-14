@@ -25,46 +25,47 @@ test.describe("COAT control-plane browser flows", () => {
     }, [selectedGoalStorageKey, themeStorageKey]);
   });
 
-  test("shows chat scope, reviews or discards goal drafts, submits, and refreshes the selected goal", async ({ page }) => {
+  test("shows chat scope, edits or discards goal drafts, submits, and refreshes the selected goal", async ({ page }) => {
     const state = await installGatewayFixtures(page);
 
     await page.goto("/");
     await expectNoAmbiguousLaneCopy(page);
-    await expect(page.locator(".outcome-meta")).toContainText("Operator workspace");
-    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: none");
-    await expect(page.locator(".outcome-meta")).toContainText("Active draft: none");
-    await expect(page.locator(".outcome-meta")).toContainText("Session: draft_plan · operator:default");
+    await expect(page.locator(".outcome-meta")).toContainText("Assistant");
+    await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
+    await expect(page.locator(".outcome-meta")).toContainText("Draft: none");
+    await expect(page.locator(".outcome-meta")).toContainText("History: operator:default");
     await expectNoCriticalOrSeriousAxeViolations(page, "initial operator console");
 
-    await page.getByRole("group", { name: "Draft target" }).getByRole("button", { name: "Goal" }).click();
-    await expect(page.locator(".outcome-meta")).toContainText("Session: draft_goal · operator:default");
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" })).toHaveClass(/active/);
 
     await sendComposerMessage(page, "Discard this browser E2E goal draft after review.");
 
-    await expect(page.locator(".outcome-meta")).toContainText("Active draft: Goal draft · operator:default");
-    await expect(page.getByText("Saved Goal draft")).toBeVisible();
+    await expect(page.locator(".outcome-meta")).toContainText("Draft: Goal draft");
+    await expect(page.locator(".draft-review-dock")).toContainText("Active draft");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Review draft" }).click();
-    const reviewDialog = page.getByRole("dialog", { name: "GoalSpec draft" });
-    await expect(reviewDialog).toContainText("Submitted browser E2E task");
-    await expect(reviewDialog).toContainText("acceptance_evidence");
-    await reviewDialog.getByRole("button", { name: "Close" }).click();
-    await page.getByRole("button", { name: "Discard draft" }).click();
-    await expect(page.locator(".draft-action-bar")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Review draft" })).toHaveCount(0);
+    await expect(page.locator(".draft-summary-card")).toContainText("Submitted browser E2E task");
+    await expect(page.locator(".draft-summary-card")).toContainText("fixture://drafts/browser-e2e");
+    await expect(page.locator(".draft-summary-card")).toContainText("2 evidence items");
+    await expect(page.locator(".draft-summary-card")).toContainText("1 constraint");
+    await expectNoCliCoverageOrDebugInventory(page);
+    await expect(page.getByText("acceptance_evidence")).toHaveCount(0);
+    await page.getByRole("button", { name: "Discard" }).click();
+    await expect(page.locator(".draft-review-dock")).toBeHidden();
 
     await sendComposerMessage(page, "Submit browser E2E task with deterministic mocked gateway evidence.");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     const draftEditor = page.locator(".goal-draft-editor");
-    await expect(draftEditor).toContainText("Edit draft");
+    await expect(draftEditor).toContainText("Draft review");
     await draftEditor.getByLabel("Objective").fill("Edited browser E2E task with deterministic mocked gateway evidence.");
-    await page.getByRole("button", { name: "Submit goal" }).click();
+    await page.getByRole("button", { name: "Accept draft" }).click();
 
     await expect(page).toHaveURL(new RegExp(`goal=${submittedGoal}`));
     await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(1);
-    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Submitted browser E2E task");
-    await expect(page.locator(".outcome-meta")).toContainText("Active draft: none");
-    await expect(page.getByText("Saved Goal draft")).toBeHidden();
+    await expect(page.locator(".outcome-meta")).toContainText("Context: Submitted browser E2E task");
+    await expect(page.locator(".outcome-meta")).toContainText("Draft: none");
+    await expect(page.locator(".draft-review-dock")).toBeHidden();
     await expect(page.getByText("Submitted goal is syncing")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Work graph", exact: true })).toBeVisible();
     await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E task");
@@ -76,11 +77,9 @@ test.describe("COAT control-plane browser flows", () => {
       window.history.pushState({}, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, selectedGoalStorageKey);
-    await expect(page.locator(".outcome-meta")).toContainText("Session: draft_goal · operator:default");
-    await expect(page.locator(".outcome-meta")).toContainText("Active draft: Goal draft · operator:default");
-    await expect(page.getByText("Saved Goal draft")).toBeVisible();
-    await expect(page.getByText("Edited browser E2E task with deterministic mocked gateway evidence.")).toBeVisible();
-    await expect(page.getByText("Goal draft ready. Review the fields, then submit or discard it.").first()).toBeVisible();
+    await expect(page.locator(".outcome-meta")).toContainText("History: operator:default");
+    await expect(page.locator(".outcome-meta")).toContainText("Draft: none");
+    await expect(page.locator(".draft-review-dock")).toBeHidden();
     expect(state.submittedGoalSpec?.objective).toContain("Edited browser E2E task");
   });
 
@@ -88,8 +87,8 @@ test.describe("COAT control-plane browser flows", () => {
     await installGatewayFixtures(page);
 
     await page.goto(`/?goal=${goalA}`);
-    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Baseline durable goal");
-    await expect(page.locator(".outcome-meta")).toContainText(`Session: draft_plan · goal:${goalA}`);
+    await expect(page.locator(".outcome-meta")).toContainText("Context: Baseline durable goal");
+    await expect(page.locator(".outcome-meta")).toContainText(`History: goal:${goalA}`);
     await openPrimaryNav(page, "Work Graph");
     await expect(subgoalCard(page, "Coordinator truth boundary")).toBeVisible();
 
@@ -120,9 +119,9 @@ test.describe("COAT control-plane browser flows", () => {
 
     await expect(page).toHaveURL(new RegExp(`goal=${goalB}`));
     await expect(goalPickerTrigger).toContainText("Branch visibility goal");
-    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: Branch visibility goal");
+    await expect(page.locator(".outcome-meta")).toContainText("Context: Branch visibility goal");
 
-    const goalDraftButton = page.getByRole("group", { name: "Draft target" }).getByRole("button", { name: "Goal" });
+    const goalDraftButton = page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" });
     await goalDraftButton.focus();
     await expect(goalDraftButton).toBeFocused();
     await page.keyboard.press("Enter");
@@ -139,23 +138,17 @@ test.describe("COAT control-plane browser flows", () => {
     await page.keyboard.press("Enter");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
-    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Goal Controls", exact: true }).focus();
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Operator Actions", exact: true }).focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("heading", { level: 1, name: "Goal Controls" })).toBeVisible();
-    await page.getByText("Advanced controls", { exact: true }).click();
-
-    const flowCard = page.locator(".control-card").filter({ has: page.getByRole("heading", { name: "Restart or branch" }) });
-    const flowAction = flowCard.locator("select").first();
-    await flowAction.focus();
-    await expect(flowAction).toBeFocused();
-    await flowAction.selectOption("branch");
-    await expect(flowCard.locator('label:has-text("Candidates") input')).toBeEnabled();
-
-    const runFlowAction = flowCard.getByRole("button", { name: "Create branch candidates" });
-    await runFlowAction.focus();
-    await expect(runFlowAction).toBeFocused();
+    await expect(page.getByRole("heading", { level: 1, name: "Operator Actions" })).toBeVisible();
+    await expectNoAdvancedControlInventory(page);
+    const reviewEvidence = page.getByTestId("primary-review-evidence");
+    await reviewEvidence.focus();
+    await expect(reviewEvidence).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("branch");
+    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("steer");
+    const reviewAction = state.actions.find((action) => action.handler === "steer");
+    expect(steeringKind(reviewAction?.body)).toBe("evaluate_goal_completion");
   });
 
   test("shows action-needed thunks, branch/fork nodes, and flow-control actions", async ({ page }) => {
@@ -171,7 +164,11 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.locator(".evidence-next-panel")).toContainText("Evidence");
     await expect(page.locator(".evidence-next-panel")).toContainText("Next action");
     await expect(page.locator(".evidence-next-panel")).toContainText("Review action-needed work");
+    await expect(page.getByLabel("Why blocked")).toContainText("Review action-needed thunk");
+    await expect(page.getByLabel("Why blocked")).toContainText("Provide the missing input and resume the continuation.");
     await expect(page.getByLabel("Action needed")).toContainText("Review action-needed thunk");
+    await expect(page.getByText("Waiting continuations")).toBeVisible();
+    await page.getByText("Waiting continuations").click();
     await expect(page.getByLabel("Continuations")).toContainText("1 waiting");
     await expect(page.getByLabel("Continuations")).toContainText("wait Ref thunk-approval-1");
 
@@ -179,63 +176,59 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.getByRole("heading", { name: "Action queue" })).toBeVisible();
     await expect(page.locator(".approval-list")).toContainText("Review action-needed thunk");
     await expect(page.locator(".approval-list")).toContainText("Action needed: approve sandbox profile");
+    const approvalCard = page.locator(".approval-card").filter({ hasText: "sandbox profile approval" }).first();
+    await expect(approvalCard).toContainText("Approval prompt");
+    await expect(approvalCard).toContainText("Approve this gate and continue?");
+    await approvalCard.getByRole("button", { name: "Approve and continue" }).click();
+    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("approve");
+    expect(state.actions.find((action) => action.handler === "approve")?.body.approval_id).toBe("approval-sandbox-1");
 
-    await openPrimaryNav(page, "Goal Controls");
-    await expect(page.getByRole("heading", { level: 1, name: "Goal Controls" })).toBeVisible();
-    await expect(page.getByText("Advanced controls", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Decision round" })).toBeHidden();
-    await page.getByText("Advanced controls", { exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Goal priority" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Steering directive" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Restart or branch" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Wait state" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Decision round" })).toBeVisible();
+    const continuationCard = page.locator(".approval-card").filter({ hasText: "Action needed: approve sandbox profile" }).first();
+    await expect(continuationCard).toContainText("Human prompt");
+    await expect(continuationCard.getByPlaceholder("Add context for the agent, or leave blank and press Continue.")).toBeVisible();
+    await continuationCard.getByLabel("Context").fill("Approved sandbox profile for the fixture continuation.");
+    await continuationCard.getByRole("button", { name: "Add context" }).click();
+    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("resume_thunk");
+    const contextAction = state.actions.find((action) => action.handler === "resume_thunk");
+    expect(contextAction?.body.thunk_id).toBe("thunk-approval-1");
+    expect(contextAction?.body.response_summary).toBe("Approved sandbox profile for the fixture continuation.");
 
-    const flowCard = page.locator(".control-card").filter({ has: page.getByRole("heading", { name: "Restart or branch" }) });
-    await flowCard.locator("select").first().selectOption("branch");
-    await expect(flowCard.locator('label:has-text("Candidates") input')).toBeEnabled();
-    await expect(flowCard.locator('label:has-text("Candidate roles") input')).toHaveValue("codex,reviewer");
-    await flowCard.getByRole("button", { name: "Create branch candidates" }).focus();
-    await page.keyboard.press("Enter");
-    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("branch");
-    expect(state.actions.find((action) => action.handler === "branch")?.body.candidate_roles).toEqual([
-      "codex",
-      "reviewer",
-    ]);
+    await continuationCard.getByRole("button", { name: "Continue" }).click();
+    await expect.poll(() => state.actions.filter((action) => action.handler === "resume_thunk").length).toBeGreaterThanOrEqual(2);
+    const continueAction = state.actions.filter((action) => action.handler === "resume_thunk").at(-1);
+    expect(continueAction?.body.thunk_id).toBe("thunk-approval-1");
+    expect(continueAction?.body.response_summary).toBe("Operator chose Continue.");
+
+    await openPrimaryNav(page, "Operator Actions");
+    await expect(page.getByRole("heading", { level: 1, name: "Operator Actions" })).toBeVisible();
+    await expectNoAdvancedControlInventory(page);
+    await expect(page.getByRole("button", { name: "Review evidence" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Research gap" })).toBeVisible();
+    await revealRequestReviewAction(page);
+    await page.getByRole("button", { name: "Request review" }).click();
+    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("steer");
+    expect(steeringKind(state.actions.filter((action) => action.handler === "steer").at(-1)?.body)).toBe("request_standard_review");
     await expectNoCriticalOrSeriousAxeViolations(page, "flow control view");
   });
 
-  test("keeps advanced controls collapsed so core operator controls stay scannable", async ({ page }) => {
+  test("keeps normal operator UI direct and hides CLI coverage inventory", async ({ page }) => {
     await installGatewayFixtures(page);
 
     await page.goto(`/?goal=${goalA}`);
     await openPrimaryNav(page, "Work Graph");
 
-    const graphControls = page.locator(".graph-panel .compiler-control-panel.compact");
-    await expect(graphControls).toBeVisible();
-    await expect(graphControls.getByText("Advanced controls", { exact: true })).toBeVisible();
-    await expect(graphControls.getByRole("heading", { name: "Restart or branch" })).toBeHidden();
-    await expect(graphControls.getByRole("heading", { name: "Wait state" })).toBeHidden();
-    await expect(graphControls.getByRole("heading", { name: "Decision round" })).toBeHidden();
-    await expect(graphControls.getByRole("heading", { name: "Decision ballot" })).toBeHidden();
-    await graphControls.getByText("Advanced controls", { exact: true }).click();
-    await expect(graphControls.getByRole("heading", { name: "Restart or branch" })).toBeVisible();
-    await expect(graphControls.getByRole("heading", { name: "Wait state" })).toBeVisible();
-    await expect(graphControls.getByRole("heading", { name: "Decision round" })).toBeVisible();
+    await expect(page.locator(".graph-panel .compiler-control-panel.compact")).toHaveCount(0);
+    await expect(page.locator(".evidence-next-panel")).toContainText("Next action");
+    await expectNoAdvancedControlInventory(page);
+    await expectNoCliCoverageOrDebugInventory(page);
 
-    await openPrimaryNav(page, "Goal Controls");
-    const flowControls = page.locator(".compiler-control-panel").first();
-    await expect(flowControls.getByText("Advanced controls", { exact: true })).toBeVisible();
-    await expect(flowControls.getByRole("heading", { name: "Restart or branch" })).toBeHidden();
-    await expect(flowControls.getByRole("heading", { name: "Wait state" })).toBeHidden();
-    await expect(flowControls.getByRole("heading", { name: "Decision round" })).toBeHidden();
-    await expect(flowControls.getByRole("heading", { name: "Decision ballot" })).toBeHidden();
-
-    await flowControls.getByText("Advanced controls", { exact: true }).click();
-    await expect(flowControls.getByRole("heading", { name: "Restart or branch" })).toBeVisible();
-    await expect(flowControls.getByRole("heading", { name: "Wait state" })).toBeVisible();
-    await expect(flowControls.getByRole("heading", { name: "Decision round" })).toBeVisible();
-    await expect(flowControls.getByRole("heading", { name: "Decision ballot" })).toBeVisible();
+    await openPrimaryNav(page, "Operator Actions");
+    await expect(page.getByRole("heading", { level: 1, name: "Operator Actions" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Review evidence" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Research gap" })).toBeVisible();
+    await revealRequestReviewAction(page);
+    await expectNoAdvancedControlInventory(page);
+    await expectNoCliCoverageOrDebugInventory(page);
   });
 });
 
@@ -267,6 +260,35 @@ async function installGatewayFixtures(page: Page): Promise<FixtureState> {
 
 async function expectNoAmbiguousLaneCopy(page: Page): Promise<void> {
   await expect(page.getByText(/\b(?:runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?\b/i)).toHaveCount(0);
+}
+
+async function expectNoAdvancedControlInventory(page: Page): Promise<void> {
+  for (const label of ["Advanced controls", "Restart or branch", "Wait state", "Decision round", "Decision ballot", "Create wait state"]) {
+    await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+  }
+}
+
+async function expectNoCliCoverageOrDebugInventory(page: Page): Promise<void> {
+  await expect(page.getByText("Every canonical CLI group")).toHaveCount(0);
+  await expect(page.getByText("CLI coverage", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect coverage" })).toHaveCount(0);
+  await expect(page.getByText("Inspect compact JSON", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect JSON" })).toHaveCount(0);
+  await expect(page.getByText("Use CLI", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/\bcoat (?:plan|goal|deploy|runner|tool|memory|event|store|scenario|setup|tui)\b/)).toHaveCount(0);
+}
+
+async function revealRequestReviewAction(page: Page): Promise<void> {
+  const requestReview = page.getByRole("button", { name: "Request review" });
+  if (!(await requestReview.isVisible().catch(() => false))) {
+    await page.getByText("More operator actions", { exact: true }).click();
+  }
+  await expect(requestReview).toBeVisible();
+}
+
+function steeringKind(body: JsonRecord | undefined): unknown {
+  const kind = body?.kind;
+  return isRecord(kind) ? kind.kind : kind;
 }
 
 async function sendComposerMessage(page: Page, text: string): Promise<void> {
@@ -332,6 +354,16 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
     const goalId = decodeURIComponent(goalMatch[1]);
     countRequest(state, `goal:${goalId}`);
     await json(route, goalSnapshotFixture(goalId, state));
+    return;
+  }
+
+  if (goalMatch && method === "GET" && goalMatch[2] === "stream") {
+    const goalId = decodeURIComponent(goalMatch[1]);
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `event: snapshot\ndata: ${JSON.stringify(goalSnapshotFixture(goalId, state))}\n\n`,
+    });
     return;
   }
 
@@ -704,7 +736,15 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
     provider: "fixture",
     model: null,
     mode: "draft_goal",
-    assistant: "Goal draft ready. Review the fields, then submit or discard it.",
+    assistant: "Goal draft ready. Review the fields, then accept or discard it.",
+    draft_ref: "fixture://drafts/browser-e2e",
+    draft_summary: {
+      title: "Submitted browser E2E task",
+      objective,
+      summary: "Compact fixture draft summary.",
+      evidence_count: 2,
+      constraint_count: 1,
+    },
     drafts: {
       goal_spec: {
         title: "Submitted browser E2E task",

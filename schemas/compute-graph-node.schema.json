@@ -18,6 +18,12 @@
     "label": {
       "type": "string"
     },
+    "requested_input": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "$ref": "#/$defs/ComputeGraphNodeStatus"
     },

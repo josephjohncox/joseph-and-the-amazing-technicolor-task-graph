@@ -1,0 +1,72 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_action_required_missing_recovery",
+  "title": "Bootstrap action-required missing recovery",
+  "description": "Negative fixture: an action-required bootstrap wait without a concrete recovery action or continuation must be rejected by scenario validation.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T10:00:00Z",
+    "seed": 3099,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003099",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003099",
+        "title": "Invalid action-required bootstrap",
+        "objective": "Demonstrate rejection when an action-required wait lacks recovery controls.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Wait without a valid continuation",
+            "prompt": "This fixture is intentionally invalid.",
+            "reason": "Negative scenario validation fixture.",
+            "tags": ["scenario", "bootstrap", "negative"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003099",
+      "description": "Submit the invalid bootstrap goal."
+    },
+    {
+      "id": "wait_without_recovery",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003099",
+      "description": "Replay a waiting result that omits operator recovery and continuation data.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003991",
+        "status": "waiting",
+        "summary": "This wait has no concrete recovery action and no continuation ref.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000003992",
+            "kind": "human_input",
+            "summary": "Invalid wait with no resumable continuation."
+          }
+        ]
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "blocked",
+    "task_counts": {
+      "blocked": 1
+    },
+    "required_events": ["delayed_compute_thunk_created"],
+    "required_artifacts": []
+  }
+}

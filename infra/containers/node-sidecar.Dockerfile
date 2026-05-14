@@ -3,7 +3,11 @@
 FROM node:24-slim AS builder
 
 ARG SIDECAR_DIR
+ARG COAT_SOURCE_FINGERPRINT=local
 WORKDIR /app
+# Keep sidecar images aligned with the local checkout when `coat deploy local
+# up` is run, without disabling npm cache mounts.
+RUN printf '%s\n' "$COAT_SOURCE_FINGERPRINT" > /tmp/coat-source-fingerprint
 COPY ${SIDECAR_DIR}/ ./
 COPY docs/exec-plans/active ./docs/exec-plans/active
 RUN --mount=type=cache,id=coat-node-sidecar-npm,target=/root/.npm,sharing=locked \

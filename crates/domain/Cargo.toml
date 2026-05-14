@@ -18,4 +18,5 @@ name = "generate-schemas"
 path = "src/bin/generate_schemas.rs"
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true

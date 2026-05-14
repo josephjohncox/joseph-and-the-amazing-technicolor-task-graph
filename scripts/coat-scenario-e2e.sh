@@ -333,9 +333,15 @@ if [ "$stack_only" = "1" ]; then
   exit 0
 fi
 
-spec_patterns=${COAT_SCENARIO_E2E_SPECS:-"scripts/coat-scenarios/*.json"}
+spec_patterns=${COAT_SCENARIO_E2E_SPECS:-"scenarios/e2e/*.json"}
 specs=
 for spec in $spec_patterns; do
+  case "$(basename "$spec")" in
+    *.invalid.json)
+      log "skipping invalid negative fixture $spec"
+      continue
+      ;;
+  esac
   if [ -f "$spec" ]; then
     specs="${specs}${specs:+ }$spec"
   fi

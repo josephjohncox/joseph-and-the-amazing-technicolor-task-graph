@@ -10,7 +10,7 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 - Define worker and validator I/O contracts.
 - Implement frontier selection, budget exhaustion checks, spawn policy, cancellation, and validation state transitions.
 - Add `RestartPolicy`, `TimeoutPolicy`, `BranchingPolicy`, `BranchGroup`, `BranchVoteOutput`, and branch selection contracts.
-- Add `GraphColorPolicy`, `GraphColorRef`, subgoal/task color inheritance, color-aware progress projection, and `TaskQuery.color_keys`.
+- Add `GraphColorRef` and optional subgoal/task color hints for the Technicolor Task Graph. Color is presentation metadata, not coordinator policy.
 - Generate JSON schemas into `schemas/`.
 
 ## Tests
@@ -21,7 +21,7 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 - Restart requests requeue blocked tasks under policy.
 - Timeout policy can restart a task after a timed-out runner result.
 - Branch groups spawn candidate tasks, vote tasks, and durable selections.
-- Technicolor graph colors are assigned to root, subgoal, and child tasks and can be queried by color key.
+- Technicolor graph colors are assigned as optional visual hints for root, subgoal, and child tasks.
 - Schema generation round-trips all public contracts.
 
 ## Follow-Ups

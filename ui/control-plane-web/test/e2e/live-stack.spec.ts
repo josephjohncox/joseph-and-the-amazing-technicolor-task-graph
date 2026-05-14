@@ -10,15 +10,15 @@ test.describe("COAT live deterministic stack", () => {
 
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
-    await expect(page.locator(".outcome-meta")).toContainText("Selected goal: none");
+    await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
 
-    await page.getByRole("group", { name: "Draft target" }).getByRole("button", { name: "Goal" }).click();
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" })).toHaveClass(/active/);
     await sendComposerMessage(page, objective);
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
     await page.locator(".goal-draft-editor").getByLabel("Title").fill(title);
     await page.locator(".goal-draft-editor").getByLabel("Objective").fill(objective);
-    await page.getByRole("button", { name: "Submit goal" }).click();
+    await page.getByRole("button", { name: "Accept draft" }).click();
 
     const goalId = await selectedGoalIdFromUrl(page);
     expect(goalId).toMatch(/^[0-9a-f-]{36}$/);

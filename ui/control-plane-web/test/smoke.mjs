@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -51,6 +52,7 @@ try {
   await assertBrandAssets();
   await assertStylesheet();
   await assertClientScript();
+  await assertArchitectureGuardrails();
   await assertMemoryReplacementDiffRender();
   await assertOperatorWorkflowRender();
   await assertOverviewApi();
@@ -148,9 +150,14 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Current goal", "Clear goal", "Open graph", "Start work", "Plan first", "Goal draft", "Goal draft ready", "Saved", "Review draft", "Discard draft", "Submit goal", "Search request", "Chat activity", "Operator workspace", "Selected goal:", "Active draft:", "Session:", "Goal Controls", "Goal controls", "Advanced controls", "Create wait state", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Inspect evidence", "Next action", "Action needed", "Reviewing", "Satisfied", "Continuations", "Response summary", "Resume", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Open graph", "Ask or draft", "New durable goal", "Planning draft", "Active draft", "Live state", "Streaming", "Goal draft", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "History:", "Operator Actions", "Operator actions", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Continuations", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
+  assert(script.includes("Clear the local goal selection. This does not cancel the goal."), "client script explains clear selection is local-only");
+  assert(script.includes("Stop this durable goal through the coordinator."), "client script explains cancel stops a durable goal");
+  assert(!script.includes("Clear local history"), "client script distinguishes local clear from goal cancellation");
+  assert(!script.includes(">Thunks<"), "client script does not expose thunk wording in queue filters");
+  assert(!script.includes("Response summary"), "client script does not expose generic response-summary continuation copy");
   assertNoAmbiguousLaneCopy(script, "client script");
   assert(!script.includes("Goal UUID"), "graph/control views no longer render editable raw UUID inputs");
 }
@@ -162,9 +169,37 @@ async function assertStylesheet() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "stylesheet returns ok");
   const css = await response.text();
-  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".draft-action-bar", ".goal-draft-editor", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".react-flow__node.task-node"]) {
+  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".draft-review-dock", ".goal-draft-editor", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".queue-filter", ".queue-group", ".action-result-controls", ".queue-history-card", ".danger-note", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".human-prompt-card", ".human-prompt-actions", ".react-flow__node.task-node"]) {
     assert(css.includes(expected), `stylesheet includes ${expected}`);
   }
+}
+
+async function assertArchitectureGuardrails() {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const deps = { ...(packageJson.dependencies ?? {}), ...(packageJson.devDependencies ?? {}) };
+  assert(deps.react, "control-plane web keeps React as the SPA framework");
+  assert(deps.vite, "control-plane web keeps Vite as the SPA bundler");
+  assert(deps["@chatscope/chat-ui-kit-react"], "control-plane web keeps a lightweight React chat UI component library");
+  for (const deferredDependency of ["assistant-ui", "@assistant-ui/react", "@ai-sdk/react", "ai"]) {
+    assert(
+      !(deferredDependency in deps),
+      `${deferredDependency} remains deferred until it is evaluated as a /api/chat adapter`,
+    );
+  }
+
+  const appSource = await readFile(new URL("../src/spa/App.tsx", import.meta.url), "utf8");
+  const apiSource = await readFile(new URL("../src/spa/api.ts", import.meta.url), "utf8");
+  const serverSource = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
+  const designDoc = await readFile(new URL("../../../docs/design-docs/110-control-gateway-spa.md", import.meta.url), "utf8");
+
+  assert(apiSource.includes('"/api/chat"'), "SPA chat API remains gateway-owned");
+  assert(appSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
+  assert(!appSource.includes("@ai-sdk/react"), "SPA does not call AI SDK useChat directly");
+  assert(!appSource.includes("assistant-ui"), "SPA does not replace chat with assistant-ui directly");
+  assert(serverSource.includes('url.pathname === "/api/chat"'), "gateway owns /api/chat handling");
+  assert(serverSource.includes("appendChatTurn"), "gateway journals chat turns server-side");
+  assert(designDoc.includes("AG-UI-style run events are the right shape for a future projection protocol"), "design doc records AG-UI as future projection protocol");
+  assert(designDoc.includes("must not own durable chat history"), "design doc keeps third-party chat libraries out of persistence ownership");
 }
 
 async function assertMemoryReplacementDiffRender() {
@@ -255,10 +290,10 @@ async function assertMemoryReplacementDiffRender() {
       "mem-runner-policy",
       "Runner policy: Workers may spawn local subagents from prompt text.",
       "Reviewed control boundary: Workers request durable child tasks; the coordinator queues and routes them.",
-      "Inspect preview",
     ]) {
       assert(readyDiffMarkup.includes(expected), `ready memory diff markup includes ${expected}`);
     }
+    assert(!readyDiffMarkup.includes("Inspect preview"), "memory diff does not expose preview debug inventory inline");
     assert(!readyDiffMarkup.includes("Missing"), "ready memory diff does not render missing-key warning");
 
     const blockedPreview = {
@@ -297,7 +332,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ApprovalList, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, RunnersView, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSnapshotHasProjectedTasks, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
+            return `${code}\nexport { ActionResultCard, BlockerInsightPanel, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, DraftReviewDock, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, OperatorActionList, QueueFilterBar, RunnersView, SubgoalPlanPanel, TaskSummary, actionNeededItemsFromApprovals, actionNeededItemsFromSnapshot, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSnapshotHasProjectedTasks, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, queueGroupForItem, queueGroupsForItems, queueItemsFromSnapshot, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -310,21 +345,27 @@ async function assertOperatorWorkflowRender() {
 
   try {
     const {
-      ApprovalList,
       CommandPanel,
+      BlockerInsightPanel,
       CompilerControlPanel,
       ComputeGraphDetails,
       ContinuationQueue,
       Dashboard,
+      DraftReviewDock,
       EventSourcesPanel,
       EvidenceNextActionPanel,
       GoalContextBar,
       GoalList,
       GraphStatusPanel,
       MemoryEventsTable,
+      OperatorActionList,
+      ActionResultCard,
+      QueueFilterBar,
       RunnersView,
       SubgoalPlanPanel,
       TaskSummary,
+      actionNeededItemsFromApprovals,
+      actionNeededItemsFromSnapshot,
       computeGraphNodes,
       computeNodeMatchesGraphFilter,
       continuationRowsFromSnapshot,
@@ -335,6 +376,9 @@ async function assertOperatorWorkflowRender() {
       goalSnapshotHasProjectedTasks,
       goalSubgoalsFromSnapshotOrDraft,
       mergeSubmittedGoalRows,
+      queueGroupForItem,
+      queueGroupsForItems,
+      queueItemsFromSnapshot,
       runnerTableRow,
       selectedGoalIdFromLocation,
       selectedGoalSummary,
@@ -348,7 +392,7 @@ async function assertOperatorWorkflowRender() {
     const goals = [
       {
         goal_id: goalId,
-        title: "Operator workflow coverage",
+        title: "Operator workflow smoke",
         objective: "Exercise goal selection, task progress, and human gates.",
         status: "running",
         percent_done: 0.42,
@@ -411,7 +455,7 @@ async function assertOperatorWorkflowRender() {
     };
 
     const chatGoalDraftResponse = {
-      assistant: "Goal draft ready. Review the fields, then submit or discard it.",
+      assistant: "Goal draft ready. Review the fields, then accept or discard it.",
       drafts: {
         goal_spec: {
           title: "Ship chat goal submit",
@@ -499,8 +543,27 @@ async function assertOperatorWorkflowRender() {
         onClear: () => {},
       }),
     );
-    for (const expected of ["Goal draft", "Operator workspace", "Selected goal: none", "Active draft: Goal draft · operator:default", "Session: draft_goal · operator:default", "Saved Goal draft", "Goal draft ready", "Review draft", "Discard draft", "Submit goal", "Edit draft", "Evidence requirements"]) {
+    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: operator:default", "Draft review", "Evidence requirements"]) {
       assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
+    }
+    assert(!commandMarkup.includes("Accept draft"), "command panel leaves submit controls to the active draft dock");
+    assertNoCliCoverageOrDebugInventory(commandMarkup, "command panel goal-submit markup");
+    assert(!commandMarkup.includes("<pre>"), "command panel does not render raw draft JSON inline");
+    assert(!commandMarkup.includes("&quot;initial_tasks&quot;"), "command panel does not render raw GoalSpec JSON inline");
+
+    const dockMarkup = renderToStaticMarkup(
+      React.createElement(DraftReviewDock, {
+        activeDraft,
+        goalDraft,
+        goalSubmitBusy: false,
+        goalSubmitError: null,
+        goalSubmitResult: undefined,
+        onSubmitGoalDraft: () => {},
+        onDiscardGoalDraft: () => {},
+      }),
+    );
+    for (const expected of ["Active draft", "Goal draft", "Goal draft ready", "operator:default", "Discard", "Accept draft"]) {
+      assert(dockMarkup.includes(expected), `draft review dock markup includes ${expected}`);
     }
 
     const pendingGoalRows = mergeSubmittedGoalRows([], {
@@ -549,15 +612,19 @@ async function assertOperatorWorkflowRender() {
         selectedGoalId: selectedGoal.id,
         open: true,
         loading: false,
+        cancelBusy: false,
+        cancelError: null,
         onOpenChange: () => {},
         onSelectGoal: () => {},
+        onCancelGoal: () => {},
         onRefreshGoals: () => {},
         onOpenGraph: () => {},
       }),
     );
-    for (const expected of ["Current goal", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting"]) {
+    for (const expected of ["Current goal", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Cancel goal"]) {
       assert(goalContextMarkup.includes(expected), `goal context picker includes ${expected}`);
     }
+    assert(goalContextMarkup.includes("Stop this durable goal through the coordinator."), "goal picker labels cancellation as a durable stop");
     const subgoalMarkup = renderToStaticMarkup(React.createElement(SubgoalPlanPanel, { subgoals: draftSubgoals, source: "submitted draft" }));
     for (const expected of ["Subgoals", "submitted draft", "Submit drafted GoalSpec", "Project graph state"]) {
       assert(subgoalMarkup.includes(expected), `subgoal panel markup includes ${expected}`);
@@ -574,7 +641,7 @@ async function assertOperatorWorkflowRender() {
     for (const expected of [
       "Active goals",
       ">2<",
-      "Human queue",
+      "Action queue",
       "Event sources",
       "github-pr-webhook · webhook",
       "pending · approval-source-github",
@@ -588,7 +655,7 @@ async function assertOperatorWorkflowRender() {
     const goalListMarkup = renderToStaticMarkup(React.createElement(GoalList, { goals, selectedGoalId: goalId, onSelect: () => {} }));
     for (const expected of [
       "goal-card active",
-      "Operator workflow coverage",
+      "Operator workflow smoke",
       "Exercise goal selection, task progress, and human gates.",
       "42%",
       "open",
@@ -696,7 +763,6 @@ async function assertOperatorWorkflowRender() {
     const evidenceMarkup = renderToStaticMarkup(React.createElement(EvidenceNextActionPanel, { snapshot: computeGraphSnapshot, counts, taskCount: taskRows.length }));
     for (const expected of [
       "Evidence",
-      "Inspect evidence",
       "Task states",
       "6 visible",
       "Satisfied evidence",
@@ -708,6 +774,127 @@ async function assertOperatorWorkflowRender() {
       assert(evidenceMarkup.includes(expected), `evidence and next-action markup includes ${expected}`);
     }
     assertNoAmbiguousLaneCopy(evidenceMarkup, "action-needed evidence panel");
+    const blockerItems = [
+      {
+        key: "thunk:operator-answer",
+        kind: "thunk",
+        label: "Need operator answer",
+        status: "waiting_input",
+        detail: "Operator must choose the next validation path.",
+        goalId,
+        taskId: "task-review",
+        thunkId: "018f8f2f-1fd8-7688-bb12-8bfb6b756777",
+        continuationId: "continue-task-review",
+        approvalId: "",
+        risk: "",
+        actionLabel: "Continue",
+      },
+    ];
+    const blockerMarkup = renderToStaticMarkup(React.createElement(BlockerInsightPanel, { items: blockerItems, onOpenControls: () => {} }));
+    for (const expected of [
+      "Why blocked",
+      "1 item need attention",
+      "Need operator answer",
+      "Operator must choose the next validation path.",
+      "Provide the missing input and resume the continuation.",
+      "Controls",
+    ]) {
+      assert(blockerMarkup.includes(expected), `blocker insight markup includes ${expected}`);
+    }
+    const emptyBlockerMarkup = renderToStaticMarkup(React.createElement(BlockerInsightPanel, { items: [], onOpenControls: () => {} }));
+    assert(emptyBlockerMarkup.includes("No blockers projected"), "empty blocker panel explains stable state");
+    const actionItems = actionNeededItemsFromSnapshot({
+      goal_id: goalId,
+      agent_activity: [
+        {
+          goal_id: goalId,
+          task_id: "task-blocked",
+          title: "Blocked task with stale thunk field",
+          status: "blocked",
+          thunk_id: "stale-task-thunk",
+        },
+        {
+          goal_id: goalId,
+          task_id: "task-waiting-without-thunk",
+          title: "Waiting task without projected continuation",
+          status: "waiting_input",
+          payload_json: { thunk_id: "payload-only-thunk" },
+        },
+        {
+          goal_id: goalId,
+          task_id: "task-with-real-thunk",
+          title: "Task suspended into a real thunk",
+          status: "waiting_input",
+        },
+        {
+          goal_id: goalId,
+          task_id: "task-cancelled",
+          title: "Cancelled task",
+          status: "cancelled",
+        },
+      ],
+      workflow_compute_graph: {
+        data: {
+          nodes: [
+            {
+              id: "thunk:real",
+              kind: "delayed_compute_thunk",
+              label: "Real continuation",
+              status: "waiting_input",
+              task_id: "task-with-real-thunk",
+              thunk_id: "real-thunk-id",
+              continuation_id: "real-continuation",
+            },
+            {
+              id: "thunk:cancelled-real",
+              kind: "delayed_compute_thunk",
+              label: "Cancelled continuation",
+              status: "cancelled",
+              task_id: "task-cancelled",
+              thunk_id: "cancelled-thunk-id",
+              continuation_id: "cancelled-continuation",
+            },
+          ],
+          edges: [],
+          open_thunks: 1,
+        },
+      },
+    }, goalId);
+    const blockedActionItem = actionItems.find((item) => item.taskId === "task-blocked");
+    const waitingTaskItem = actionItems.find((item) => item.taskId === "task-waiting-without-thunk");
+    const thunkActionItem = actionItems.find((item) => item.thunkId === "real-thunk-id");
+    assertEqual(blockedActionItem?.kind, "blocked-task", "blocked task remains a task action item");
+    assertEqual(blockedActionItem?.thunkId, "", "blocked task ignores stale task-level thunk id");
+    assertEqual(waitingTaskItem?.kind, "waiting-task", "waiting task without projected continuation remains a task action item");
+    assertEqual(waitingTaskItem?.thunkId, "", "waiting task without projected continuation cannot resume");
+    assertEqual(thunkActionItem?.kind, "thunk", "projected continuation becomes a thunk action item");
+    assertEqual(thunkActionItem?.continuationId, "real-continuation", "thunk action preserves continuation id");
+    const queueItems = queueItemsFromSnapshot({
+      goal_id: goalId,
+      agent_activity: [
+        { goal_id: goalId, task_id: "task-blocked", title: "Blocked task", status: "blocked" },
+        { goal_id: goalId, task_id: "task-cancelled", title: "Cancelled task", status: "cancelled" },
+      ],
+      workflow_compute_graph: {
+        data: {
+          nodes: [
+            {
+              id: "thunk:cancelled",
+              kind: "delayed_compute_thunk",
+              label: "Cancelled input",
+              status: "cancelled",
+              task_id: "task-cancelled",
+              thunk_id: "cancelled-thunk-id",
+              continuation_id: "cancelled-continuation",
+            },
+          ],
+          edges: [],
+          open_thunks: 0,
+        },
+      },
+    }, goalId);
+    assertEqual(queueItems.filter((item) => queueGroupForItem(item) === "cancelled").length, 2, "queue snapshot includes cancelled task and thunk history");
+
     const runnableEvidenceMarkup = renderToStaticMarkup(React.createElement(EvidenceNextActionPanel, {
       snapshot: { workflow_compute_graph: { data: { nodes: [], edges: [], open_thunks: 0 } } },
       counts: taskStatusCounts([{ task_id: "task-runnable", status: "runnable" }]),
@@ -731,15 +918,16 @@ async function assertOperatorWorkflowRender() {
       ),
     );
     for (const expected of [
-      "Goal controls",
-      "Advanced controls",
-      "Restart or branch",
-      "Restart work",
-      "Wait state",
-      "Create wait state",
+      "Operator actions",
+      "Primary actions",
+      "Review evidence",
+      "Request review",
+      "Research gap",
     ]) {
       assert(controlMarkup.includes(expected), `compiler control markup includes ${expected}`);
     }
+    assert(!controlMarkup.includes("Advanced controls"), "compiler control markup does not require old advanced-controls label");
+    assertNoCliCoverageOrDebugInventory(controlMarkup, "compiler control markup");
 
     const continuationSnapshot = {
       workflow_compute_graph: {
@@ -796,8 +984,11 @@ async function assertOperatorWorkflowRender() {
       "task Ref task-plan",
       "continuation Ref operator-answer",
       "webhook_correlation · Ref input",
-      "Response summary",
-      "Resume",
+      "Continuation",
+      "Optional context for the agent before continuing.",
+      "Context for resume",
+      "Continue",
+      "Add context",
     ]) {
       assert(continuationMarkup.includes(expected), `continuation queue markup includes ${expected}`);
     }
@@ -808,55 +999,210 @@ async function assertOperatorWorkflowRender() {
     );
     assert(emptyContinuationMarkup.includes("Continuations clear"), "empty continuation queue renders stable empty state");
 
+    const approvalItems = approvals.map((approval) => ({
+      key: `approval:${approval.approval_id}`,
+      kind: "approval",
+      label: approval.risk,
+      status: approval.status,
+      detail: `Risk: ${approval.risk}`,
+      goalId: approval.goal_id,
+      taskId: "",
+      approvalId: approval.approval_id,
+      thunkId: "",
+      continuationId: "",
+      risk: approval.risk,
+      actionLabel: "Approve and continue",
+    }));
     const approvalMarkup = renderToStaticMarkup(
-      React.createElement(ApprovalList, {
-        items: approvals.map((approval) => ({
-          key: `approval:${approval.approval_id}`,
-          kind: "approval",
-          label: approval.risk,
-          status: approval.status,
-          detail: `Risk: ${approval.risk}`,
-          goalId: approval.goal_id,
-          taskId: "",
-          approvalId: approval.approval_id,
-          thunkId: "",
-          risk: approval.risk,
-          actionLabel: "Approve",
-        })),
-        busy: false,
-        onApprove: () => {},
-      }),
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, { items: approvalItems }),
+      ),
     );
     assert(approvalMarkup.includes("deployment"), "approval list renders risk");
     assert(approvalMarkup.includes("Pending · Ref 018f8f2f"), "approval list renders goal-scoped pending state");
-    assert(approvalMarkup.includes(">Approve<"), "approval list renders approval command");
-    assert(!approvalMarkup.includes("disabled=\"\""), "approval command is enabled when approval and goal ids exist");
+    assert(approvalMarkup.includes("Approval"), "approval list renders a concrete approval prompt");
+    assert(approvalMarkup.includes("Approve this gate and continue?"), "approval list asks a clear approval question");
+    assert(approvalMarkup.includes(">Approve and continue<"), "approval list renders approval command");
+    const projectedApprovals = actionNeededItemsFromApprovals([
+      {
+        approval_id: "approval-live",
+        goal_id: goalId,
+        status: "pending",
+        requested_action: "approve live work",
+      },
+      {
+        approval_id: "approval-old",
+        goal_id: goalId,
+        status: "cancelled",
+        requested_action: "stale approval",
+      },
+    ]);
+    assertEqual(projectedApprovals.length, 1, "cancelled approvals are not live action prompts");
+    assertEqual(projectedApprovals[0].approvalId, "approval-live", "pending approval remains actionable");
+
+    const blockedActionMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, {
+          items: [{
+            key: "task:blocked",
+            kind: "blocked-task",
+            label: "Blocked implementation task",
+            status: "blocked",
+            detail: "Runner capacity is unavailable.",
+            requestedInput: "",
+            goalId,
+            taskId: "task-blocked",
+            approvalId: "",
+            thunkId: "",
+            continuationId: "",
+            risk: "",
+            actionLabel: "Review",
+          }],
+        }),
+      ),
+    );
+    assert(blockedActionMarkup.includes("Recovery"), "blocked task renders recovery prompt");
+    assert(blockedActionMarkup.includes(">Retry work<"), "blocked task renders retry action");
+    assert(blockedActionMarkup.includes(">Replan<"), "blocked task renders replan action");
+    assert(blockedActionMarkup.includes(">Ask for input<"), "blocked task renders input-prompt creation action");
+    assert(blockedActionMarkup.includes(">Cancel goal<"), "blocked task renders goal cancellation action");
+    assert(blockedActionMarkup.includes("Cancel stops the goal. Clear only dismisses local notices or selection."), "blocked task distinguishes cancellation from local clear");
+    assert(!blockedActionMarkup.includes(">Continue<"), "blocked task does not render continue action");
+    assert(!blockedActionMarkup.includes(">Resume<"), "blocked task does not render resume action");
 
     const disabledApprovalMarkup = renderToStaticMarkup(
-      React.createElement(ApprovalList, {
-        items: [{
-          key: "approval:missing",
-          kind: "approval",
-          label: "unknown gate",
-          status: "pending",
-          detail: "Risk: unknown gate",
-          goalId: "",
-          taskId: "",
-          approvalId: "",
-          thunkId: "",
-          risk: "unknown gate",
-          actionLabel: "Approve",
-        }],
-        busy: false,
-        onApprove: () => {},
-      }),
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, {
+          items: [{
+            key: "approval:missing",
+            kind: "approval",
+            label: "unknown gate",
+            status: "pending",
+            detail: "Risk: unknown gate",
+            goalId: "",
+            taskId: "",
+            approvalId: "",
+            thunkId: "",
+            continuationId: "",
+            risk: "unknown gate",
+            actionLabel: "Approve and continue",
+          }],
+        }),
+      ),
     );
     assert(disabledApprovalMarkup.includes("unknown gate"), "action queue still renders incomplete approval rows");
-    assert(!disabledApprovalMarkup.includes("<button"), "approval command is hidden when an approval cannot be acted on");
+    assert(disabledApprovalMarkup.includes("disabled=\"\""), "approval command is disabled when an approval cannot be acted on");
+
+    const thunkMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, {
+          items: [{
+            key: "thunk:wait-on-human",
+            kind: "thunk",
+            label: "Need rollout decision",
+            status: "waiting-input",
+            detail: "Wait: human_thread",
+            goalId,
+            taskId: "task-wait",
+            approvalId: "",
+            thunkId: "wait-on-human",
+            continuationId: "continue-wait-on-human",
+            risk: "",
+            actionLabel: "Continue",
+          }],
+        }),
+      ),
+    );
+    assert(thunkMarkup.includes("Need rollout decision"), "action queue renders waiting continuation text");
+    assert(thunkMarkup.includes("Continuation"), "action queue renders a concrete continuation prompt");
+    assert(thunkMarkup.includes("Optional context for the agent before continuing."), "action queue explains the continuation choices");
+    assert(thunkMarkup.includes("Context for resume"), "action queue labels continuation context clearly");
+    assert(thunkMarkup.includes("Add context"), "action queue renders context input for continuations");
+    assert(thunkMarkup.includes(">Continue<"), "action queue renders one-click continue command");
+    assert(thunkMarkup.includes(">Add context<"), "action queue renders context command");
+    assert(!thunkMarkup.includes(">Retry<"), "continuation cards do not render retry actions");
+    assert(!thunkMarkup.includes(">Ask for input<"), "continuation cards do not create replacement prompts");
+    assert(!thunkMarkup.includes(">Cancel goal<"), "continuation cards do not render cancellation actions");
+
+    const mixedQueueItems = [
+      approvalItems[0],
+      {
+        key: "task:blocked-filter",
+        kind: "blocked-task",
+        label: "Blocked filter task",
+        status: "blocked",
+        detail: "Dependency is unavailable.",
+        requestedInput: "",
+        goalId,
+        taskId: "task-blocked-filter",
+        approvalId: "",
+        thunkId: "",
+        continuationId: "",
+        risk: "",
+        actionLabel: "Review",
+      },
+      {
+        key: "thunk:filter",
+        kind: "thunk",
+        label: "Thunk filter prompt",
+        status: "waiting-input",
+        detail: "Wait: human_thread",
+        requestedInput: "Continue with current evidence.",
+        goalId,
+        taskId: "task-wait-filter",
+        approvalId: "",
+        thunkId: "thunk-filter",
+        continuationId: "continuation-filter",
+        risk: "",
+        actionLabel: "Continue",
+      },
+      {
+        key: "cancelled-task:filter",
+        kind: "cancelled",
+        label: "Cancelled filter task",
+        status: "cancelled",
+        detail: "Cancelled task retained for queue history.",
+        requestedInput: "",
+        goalId,
+        taskId: "task-cancelled-filter",
+        approvalId: "",
+        thunkId: "",
+        continuationId: "",
+        risk: "",
+        actionLabel: "Cancelled",
+      },
+    ];
+    assertEqual(queueGroupForItem(mixedQueueItems[0]), "approvals", "queue grouping identifies approvals");
+    assertEqual(queueGroupForItem(mixedQueueItems[1]), "blocked", "queue grouping identifies blocked work");
+    assertEqual(queueGroupForItem(mixedQueueItems[2]), "thunks", "queue grouping identifies continuations");
+    assertEqual(queueGroupForItem(mixedQueueItems[3]), "cancelled", "queue grouping identifies cancelled history");
+    assertEqual(queueGroupsForItems(mixedQueueItems).length, 4, "queue grouping keeps approvals, recovery work, continuations, and stopped history separate");
+    const queueFilterMarkup = renderToStaticMarkup(React.createElement(QueueFilterBar, { items: mixedQueueItems, active: "all", onChange: () => {} }));
+    for (const expected of [">All<span>4</span>", ">Approvals<span>1</span>", ">Recovery<span>1</span>", ">Continuations<span>1</span>", ">Stopped<span>1</span>"]) {
+      assert(queueFilterMarkup.includes(expected), `queue filter markup includes ${expected}`);
+    }
+    assert(queueFilterMarkup.includes("blocked or failed work that can be retried, replanned, or turned into a prompt"), "queue filter explains recovery actions");
+    assert(queueFilterMarkup.includes("waiting prompts that can be resumed by an operator"), "queue filter explains continuations without thunk wording");
+    const mixedQueueMarkup = renderToStaticMarkup(
+      React.createElement(QueryClientProvider, { client: new QueryClient() },
+        React.createElement(OperatorActionList, { items: mixedQueueItems }),
+      ),
+    );
+    for (const expected of ["Approvals", "Recovery", "Continuations", "Stopped history", "Cancelled filter task", "History rows are read-only; use Cancel goal only on active work."]) {
+      assert(mixedQueueMarkup.includes(expected), `mixed action queue markup includes ${expected}`);
+    }
+    const actionResultMarkup = renderToStaticMarkup(React.createElement(ActionResultCard, {
+      item: mixedQueueItems[1],
+      response: { ok: true, action: { handler: "restart", goal_id: goalId }, observability: { active_state_status: "fresh", active_state_attempts: 1, active_state_after_ms: 12 } },
+      onClear: () => {},
+    }));
+    assert(actionResultMarkup.includes("Restart accepted"), "action result renders accepted action name");
+    assert(actionResultMarkup.includes("Clear notice"), "action result exposes local-only clear control");
+    assert(actionResultMarkup.includes("Clearing this notice only updates this browser view; it does not cancel or change the goal."), "action result explains clear is local-only");
 
     const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { overview }));
     for (const expected of [
-      "model-provider / work (Ref codex-runner-a)",
+      "model-provider (Ref codex-runner-a)",
       "local-dev-a",
       "Active",
       "2/3 free, 1 running",
@@ -865,7 +1211,7 @@ async function assertOperatorWorkflowRender() {
       assert(runnersMarkup.includes(expected), `runner fleet markup includes ${expected}`);
     }
     const runnerRow = runnerTableRow(runnerRows[0]);
-    assertEqual(runnerRow[0], "model-provider / work (Ref codex-runner-a)", "runner row derives display name from labels");
+    assertEqual(runnerRow[0], "model-provider (Ref codex-runner-a)", "runner row derives display name without exposing lane labels");
     assertEqual(runnerRow[3], "2/3 free, 1 running", "runner row derives remaining capacity");
 
     const eventsMarkup = renderToStaticMarkup(
@@ -913,35 +1259,46 @@ async function assertChatApi() {
   assert(response.ok, "chat api returns ok");
   const body = await response.json();
   assertEqual(body.provider, "stub", "chat provider");
+  assert(String(body.assistant).length < 120, "plan chat assistant response is concise");
   const draft = body.drafts.plan_draft;
   assert(draft, "chat returns plan draft");
-  assertEqual(draft.objective, objective, "plan draft objective preserves operator request");
-  assertEqual(draft.authoring.intake_summary, objective, "plan draft intake summary preserves operator request");
-  assert(
-    draft.authoring.acceptance_evidence.includes("plan can compile into a GoalSpec"),
-    "plan draft requires compile-to-goal acceptance evidence",
-  );
-  assert(
-    draft.authoring.acceptance_evidence.includes("initial tasks are coordinator-owned"),
-    "plan draft requires coordinator-owned task acceptance evidence",
-  );
-  assert(
-    draft.plan.distribution_notes.some((note) => note.includes("coordinator task tree")),
-    "plan draft routes subagent work through the coordinator",
-  );
-  assert(
-    Array.isArray(draft.initial_tasks) && draft.initial_tasks.length === 0,
-    "draft plan does not invent executable initial tasks before planning review",
-  );
+  assertCompactDraftPayload(draft, "plan draft");
+  assertEqual(draft.kind, "plan_draft", "plan draft compact payload records draft kind");
+  assertEqual(draft.summary, objective, "plan draft summary preserves operator request");
+  assert(!("authoring" in draft), "plan draft compact payload omits full authoring details");
+  assert(!("initial_tasks" in draft), "plan draft compact payload omits executable task details");
+  assertEqual(body.draft_summary.plan_draft.preview, objective, "plan draft summary exposes concise preview");
   assertEqual(body.session_id, "operator:default", "chat response returns durable session id");
   assert(body.run_id, "chat response returns a run id");
   assertEqual(body.chat_run.status, "done", "chat response includes completed operational trace");
-  assert(
-    body.chat_run.steps.some((step) => step.stage === "journaling_turns"),
-    "chat operational trace records journaling stage",
-  );
+  assertEqual(body.chat_run.stage, "done", "chat response includes compact completed run status");
   assertEqual(body.chat_log.backend, "jsonl", "chat falls back to local JSONL when goal-store is unavailable");
   assertEqual(body.chat_log.durable, true, "chat JSONL fallback is durable for the local server");
+
+  const goalObjective = "Ship concise GoalSpec drafts through the control gateway.";
+  const goalResponse = await fetch(`${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      mode: "draft_goal",
+      messages: [{ role: "user", content: goalObjective }],
+    }),
+  });
+  assert(goalResponse.ok, "goal chat api returns ok");
+  const goalBody = await goalResponse.json();
+  assert(String(goalBody.assistant).length < 100, "goal chat assistant response is concise");
+  const goalDraft = goalBody.drafts.goal_spec;
+  assert(goalDraft, "goal chat returns GoalSpec draft");
+  assertCompactDraftPayload(goalDraft, "goal draft");
+  assertEqual(goalDraft.compact, true, "goal draft marks compact payload");
+  assert(goalDraft.draft_id, "goal draft includes a server-side draft id");
+  assertEqual(goalBody.draft_refs.goal_spec.draft_id, goalDraft.draft_id, "goal draft reference points to server-side stored draft");
+  assertEqual(goalBody.draft_summary.goal_spec.initial_task_count, 1, "goal draft summary reports initial task count");
+  assertEqual(goalDraft.objective, goalObjective, "goal draft objective preserves operator request");
+  assert(
+    Array.isArray(goalDraft.initial_tasks) && goalDraft.initial_tasks.length === 1,
+    "goal draft seeds exactly one coordinator-owned planning task",
+  );
 
   const traceResponse = await fetch(`${baseUrl}/api/chat/runs/${encodeURIComponent(body.run_id)}`);
   assert(traceResponse.ok, "chat run trace api returns ok");
@@ -960,9 +1317,13 @@ async function assertChatApi() {
   });
   assert(searchResponse.ok, "search chat api returns ok");
   const searchBody = await searchResponse.json();
-  assert(searchBody.drafts.search_request, "search chat returns a structured search request");
-  assertEqual(searchBody.drafts.search_request.intent, "operator_search", "search request is marked for operator search");
-  assert(searchBody.drafts.steering_directive.kind.prompt.includes("<role>research</role>"), "search chat returns a coordinator-owned research task proposal");
+  assert(searchBody.drafts.search_request, "search chat returns a compact search request draft");
+  assertCompactDraftPayload(searchBody.drafts.search_request, "search draft");
+  assertEqual(searchBody.drafts.search_request.kind, "search_request", "search request compact payload records draft kind");
+  assertEqual(searchBody.draft_summary.search_request.kind, "search_request", "search request summary preserves draft kind");
+  assert(searchBody.drafts.steering_directive, "search chat returns a compact research steering draft");
+  assertCompactDraftPayload(searchBody.drafts.steering_directive, "research steering draft");
+  assertEqual(searchBody.drafts.steering_directive.kind, "steering_directive", "research steering compact payload records draft kind");
 }
 
 async function assertDurableChatSessionApi() {
@@ -1170,7 +1531,7 @@ async function assertChatApiDiscoversRegisteredModel() {
     assertEqual(runnerRows[0].runner_id, "unlabeled-work-runner", "runners api flattens nested runner id");
     assertEqual(runnerRows[0].node_id, "worker-node-a", "runners api flattens nested node id");
     assertEqual(runnerRows[0].endpoint, "http://work-runner.example:9093", "runners api flattens nested endpoint");
-    assertEqual(runnerRows[0].display_name, "model-provider / work", "runners api derives readable runner display name");
+    assertEqual(runnerRows[0].display_name, "model-provider", "runners api derives readable runner display name without exposing lane labels");
     assertEqual(runnerRows[0].status, "active", "runners api derives active status");
     assertEqual(runnerRows[0].capacity_remaining, 3, "runners api preserves remaining capacity");
     assertEqual(runnerRows[0].max_concurrency, 4, "runners api exposes registration max concurrency");
@@ -1194,7 +1555,8 @@ async function assertChatApiDiscoversRegisteredModel() {
     assertEqual(body.chat_backend.runner_id, "local-model-runner", "registry-discovered backend runner");
     assertEqual(body.chat_backend.runner_labels.control_chat, "true", "registry chat discovery requires chat labels");
     assertEqual(body.assistant, "live registry model handled the chat request", "registry model assistant response");
-    assertEqual(body.drafts.plan_draft.objective, "registry-backed chat", "registry model tagged drafts are parsed");
+    assertCompactDraftPayload(body.drafts.plan_draft, "registry plan draft");
+    assertEqual(body.drafts.plan_draft.summary, "registry-backed chat", "registry model tagged drafts are parsed compactly");
     assertEqual(chatRequests.length, 1, "registry-discovered chat makes one model request");
     assertEqual(chatRequests[0].model, "llama3.2:latest", "registry-discovered chat request uses registered model");
   } finally {
@@ -1262,6 +1624,7 @@ async function assertUnsupportedWorkflowHandlerGuard() {
 async function assertBackendBackedControlSurfaces() {
   const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
   const compiledGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756603";
+  const staleGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756604";
   const thunkId = "018f8f2f-1fd8-7688-bb12-8bfb6b756777";
   const planId = "plan-smoke-compile";
   const approvalId = "approval-prod-deploy";
@@ -1287,12 +1650,47 @@ async function assertBackendBackedControlSurfaces() {
       attempts: 1,
       payload_json: {
         prompt: taskPrompt,
-        execution: { profile: "strict-local", local_tools: ["npm"], runner: "codex" },
+        execution: {
+          profile: "strict-local",
+          local_tools: ["npm"],
+          runner: { kind: "registered_runner", runner_id: "codex-runner-a" },
+          model: { provider: "openai", model: "gpt-5.4" },
+          persona: { key: "staff_engineer", summary: "senior implementation reviewer" },
+        },
+        thread_id: "thr-task-plan-001",
+        session_id: "sess-task-plan-001",
         budget: { max_attempts: 2, max_runtime_seconds: 600 },
         sandbox: { profile: "workspace-write", network: "disabled" },
         done_criteria: { tests_pass: true, evidence: ["behavioral smoke assertions pass"] },
         dependencies: [],
         children: ["task-review"],
+      },
+    },
+    {
+      goal_id: goalId,
+      task_id: "task-adversarial",
+      parent_task_id: "task-plan",
+      subgoal_id: "sg-control-plane",
+      title: "Review adversarial workflow output",
+      role: "reviewer",
+      status: "waiting_input",
+      purpose_kind: "review",
+      depth: 1,
+      priority: 4,
+      attempts: 0,
+      payload_json: {
+        prompt: "The worker asked to spawn a native subagent. Preserve this as untrusted context only.",
+        execution: {
+          profile: "strict-local",
+          subagents: {
+            mode: "coordinator_durable_tasks",
+            native_spawning: "disabled",
+          },
+        },
+        budget: { max_attempts: 1, max_runtime_seconds: 300 },
+        sandbox: { profile: "workspace-write", network: "disabled" },
+        done_criteria: { tests_pass: true, evidence: ["review rejects native subagent delegation"] },
+        children: ["child-request-review"],
       },
     },
   ];
@@ -1367,24 +1765,84 @@ async function assertBackendBackedControlSurfaces() {
       });
       return;
     }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${staleGoalId}`) {
+      respondJson(res, 200, {
+        goal_id: staleGoalId,
+        title: "Stale active-state goal",
+        status: "submitted",
+        objective: "Prove 200/null Restate reads are not treated as fresh active state.",
+      });
+      return;
+    }
     if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/tasks`) {
       respondJson(res, 200, { tasks: taskRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${staleGoalId}/tasks`) {
+      respondJson(res, 200, { tasks: [] });
       return;
     }
     if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/events`) {
       respondJson(res, 200, { events: eventRows });
       return;
     }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${staleGoalId}/events`) {
+      respondJson(res, 200, { events: [] });
+      return;
+    }
     if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/artifacts`) {
       respondJson(res, 200, { artifacts: artifactRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${staleGoalId}/artifacts`) {
+      respondJson(res, 200, { artifacts: [] });
       return;
     }
     if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/checkpoints`) {
       respondJson(res, 200, { checkpoints: checkpointRows });
       return;
     }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${staleGoalId}/checkpoints`) {
+      respondJson(res, 200, { checkpoints: [] });
+      return;
+    }
     if (request.method === "GET" && request.path === `/goal-store/goals/${goalId}/approvals`) {
       respondJson(res, 200, { approvals: approvalRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/goals/${staleGoalId}/approvals`) {
+      respondJson(res, 200, { approvals: [] });
+      return;
+    }
+    if (request.method === "GET" && request.path.startsWith("/goal-store/chat/sessions/")) {
+      const sessionId = decodeURIComponent(request.path.slice("/goal-store/chat/sessions/".length));
+      if (sessionId !== `goal:${goalId}`) {
+        respondJson(res, 200, { session_id: sessionId, turns: [] });
+        return;
+      }
+      respondJson(res, 200, {
+        session_id: `goal:${goalId}`,
+        turns: [
+          {
+            session_id: `goal:${goalId}`,
+            goal_id: goalId,
+            mode: "explain_goal_state",
+            role: "user",
+            content: "What is the planner waiting on?",
+            created_at: "2026-05-09T12:03:00Z",
+          },
+          {
+            session_id: `goal:${goalId}`,
+            goal_id: goalId,
+            mode: "explain_goal_state",
+            role: "assistant",
+            content: "The planner is waiting for checkpoint evidence and operator approval.",
+            provider: "stub",
+            model: "stub-control-chat",
+            created_at: "2026-05-09T12:03:02Z",
+          },
+        ],
+      });
       return;
     }
     if (request.method === "GET" && request.path === "/goal-store/approvals") {
@@ -1483,11 +1941,26 @@ async function assertBackendBackedControlSurfaces() {
       });
       return;
     }
+    if (
+      request.method === "POST"
+      && [
+        `/GoalWorkflow/${staleGoalId}/status`,
+        `/GoalWorkflow/${staleGoalId}/progress`,
+        `/GoalWorkflow/${staleGoalId}/compute_graph`,
+      ].includes(request.path)
+    ) {
+      respondJson(res, 200, null);
+      return;
+    }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/resume_thunk`) {
       respondJson(res, 200, { accepted: true, handler: "resume_thunk", resume: request.body });
       return;
     }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/steer`) {
+      respondJson(res, 200, { accepted: true, handler: "steer", directive: request.body });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/GoalWorkflow/${staleGoalId}/steer`) {
       respondJson(res, 200, { accepted: true, handler: "steer", directive: request.body });
       return;
     }
@@ -1642,7 +2115,7 @@ async function assertBackendBackedControlSurfaces() {
       PORT: String(backendPort),
       COAT_CONTROL_GATEWAY_TOKEN: "",
       COAT_CONTROL_MCP_TOKEN: "",
-      COAT_CONTROL_CHAT_STORE_BACKEND: "disabled",
+      COAT_CONTROL_CHAT_STORE_BACKEND: "goal_store",
       COAT_GOAL_STORE_URL: `http://127.0.0.1:${goalStorePort}`,
       COAT_RESTATE_INGRESS: `http://127.0.0.1:${restatePort}`,
       COAT_RESTATE_ADMIN_URL: `http://127.0.0.1:${restatePort}`,
@@ -1700,6 +2173,45 @@ async function assertBackendBackedControlSurfaces() {
     const submitRunCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${submitBody.data.goal_id}/run`);
     assertEqual(submitRunCall?.body?.plan?.subgoals?.[0]?.owner_role, "planner", "normalized submit payload reaches Restate");
 
+    const draftObjective = "Submit a compact chat draft through the server-side draft store.";
+    const chatDraftResponse = await fetch(`${backendBaseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: "draft_goal",
+        messages: [{ role: "user", content: draftObjective }],
+      }),
+    });
+    assert(chatDraftResponse.ok, "backend-backed chat draft returns ok");
+    const chatDraftBody = await chatDraftResponse.json();
+    const compactDraft = chatDraftBody.drafts.goal_spec;
+    assertCompactDraftPayload(compactDraft, "backend-backed goal draft");
+    assert(compactDraft.draft_id, "backend-backed goal draft includes server-side draft id");
+    assert(!("root_budget" in compactDraft), "compact goal draft omits default budget payload");
+
+    const compactSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...compactDraft,
+        title: "Edited compact draft submit",
+        objective: "Submit the reviewed compact GoalSpec draft with operator edits.",
+        authoring: {
+          ...compactDraft.authoring,
+          constraints: ["Preserve the stored full draft when submitting compact review edits."],
+        },
+      }),
+    });
+    assert(compactSubmitResponse.ok, "compact chat draft submit resolves through the draft store");
+    const compactSubmitBody = await compactSubmitResponse.json();
+    const compactReceived = compactSubmitBody.data.received;
+    assertEqual(compactReceived.title, "Edited compact draft submit", "compact submit applies edited title");
+    assertEqual(compactReceived.objective, "Submit the reviewed compact GoalSpec draft with operator edits.", "compact submit applies edited objective");
+    assertEqual(compactReceived.root_budget.max_tokens, 2_000_000, "compact submit restores stored full GoalSpec defaults");
+    assertEqual(compactReceived.initial_tasks[0].role, "planner", "compact submit preserves stored initial task frontier");
+    assertEqual(compactReceived.plan.subgoals[0].id, "plan-next-frontier", "compact submit preserves stored subgoal payload");
+    assertEqual(compactReceived.authoring.constraints[0], "Preserve the stored full draft when submitting compact review edits.", "compact submit applies edited authoring fields");
+
     const badSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1725,10 +2237,13 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "goal snapshot includes actionable continuation thunk id");
     assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "goal snapshot includes checkpoint refs");
     assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "goal snapshot includes human approval gates");
-    assertEqual(snapshot.agent_activity.length, 1, "goal snapshot derives one agent activity row from projected tasks");
+    assertEqual(snapshot.agent_activity.length, 2, "goal snapshot derives agent activity rows from projected tasks");
     const activity = snapshot.agent_activity[0];
     assertEqual(activity.task_id, "task-plan", "agent activity preserves task id");
     assertEqual(activity.current_prompt, taskPrompt, "agent activity exposes current prompt payload");
+    assertEqual(activity.persona.key, "staff_engineer", "agent activity exposes task persona");
+    assertEqual(activity.model.model, "gpt-5.4", "agent activity exposes task model route");
+    assertEqual(activity.runner.runner_id, "codex-runner-a", "agent activity exposes task runner route");
     assertEqual(activity.runnable, true, "agent activity merges Restate progress runnable state");
     assertEqual(activity.progress.reason, "checkpoint evidence pending", "agent activity preserves progress reason");
     assertEqual(activity.recent_events[0].event_type, "TaskStarted", "agent activity attaches task-local events");
@@ -1737,10 +2252,52 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(activity.budget.max_attempts, 2, "agent activity exposes task budget");
     assertEqual(activity.sandbox.network, "disabled", "agent activity exposes sandbox policy");
     assertEqual(activity.done_criteria.tests_pass, true, "agent activity exposes done criteria");
+    assertEqual(snapshot.chat_session.messages[0].content, "What is the planner waiting on?", "goal snapshot includes compact goal chat messages");
+    assertEqual(snapshot.agent_context.chat_session.session_id, `goal:${goalId}`, "agent context advertises goal chat session ref");
+    assertEqual(snapshot.agent_context.chat_session.latest_turns[0].content, "What is the planner waiting on?", "agent context includes latest compact chat turns");
+    assertEqual(snapshot.agent_context.tasks[0].current_prompt, taskPrompt, "agent context exposes drill-down current prompt");
+    assertEqual(snapshot.agent_context.tasks[0].persona.key, "staff_engineer", "agent context exposes drill-down persona");
+    assertEqual(snapshot.agent_context.tasks[0].model.model, "gpt-5.4", "agent context exposes drill-down model");
+    assertEqual(snapshot.agent_context.tasks[0].runner.runner_id, "codex-runner-a", "agent context exposes drill-down runner");
+    assertEqual(snapshot.agent_context.tasks[0].purpose, "work", "agent context exposes task purpose");
+    assertEqual(snapshot.agent_context.tasks[0].session_refs.task_session_id, "sess-task-plan-001", "agent context exposes task session ref");
+    assertEqual(snapshot.agent_context.tasks[0].thread_refs.payload_thread_id, "thr-task-plan-001", "agent context exposes payload thread ref");
+    assertEqual(snapshot.agent_context.notification_threads[0].thread_key, `approval:${approvalId}`, "agent context includes relevant notifier thread summary");
+
+    const agentContextResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/agent-context?task_id=task-plan`);
+    assert(agentContextResponse.ok, "agent context api returns ok");
+    const agentContext = await agentContextResponse.json();
+    assertEqual(agentContext.found, true, "agent context task filter finds projected task");
+    assertEqual(agentContext.tasks.length, 1, "agent context task filter narrows to one task");
+    assertEqual(agentContext.tasks[0].chat_session_ref, `goal:${goalId}`, "agent context endpoint returns chat session ref");
+    assertEqual(agentContext.tasks[0].notification_threads[0].latest_status, "waiting_operator", "agent context endpoint returns relevant notification thread");
+    const adversarialActivity = snapshot.agent_activity.find((row) => row.task_id === "task-adversarial");
+    assert(adversarialActivity, "goal snapshot keeps adversarial review task visible");
+    assert(
+      adversarialActivity.current_prompt.includes("native subagent"),
+      "agent activity preserves adversarial prompt text as inspectable context",
+    );
+    assertEqual(
+      adversarialActivity.execution.subagents.mode,
+      "coordinator_durable_tasks",
+      "agent activity projects durable subagent mode from task execution context",
+    );
+    assertEqual(
+      adversarialActivity.execution.subagents.native_spawning,
+      "disabled",
+      "agent activity projects native subagent spawning as disabled",
+    );
+    assertEqual(adversarialActivity.children[0], "child-request-review", "agent activity preserves child request refs as data");
+    assertEqual(adversarialActivity.sandbox.network, "disabled", "adversarial task preserves sandbox network policy");
+    assertEqual(adversarialActivity.done_criteria.evidence[0], "review rejects native subagent delegation", "adversarial task preserves review evidence criteria");
 
     const mcpSnapshot = await callMcpAt(backendBaseUrl, "coat_goal_snapshot", { goal_id: goalId });
     assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp goal snapshot uses the same backend aggregation path");
+    assertEqual(mcpSnapshot.agent_activity[1].execution.subagents.native_spawning, "disabled", "mcp goal snapshot projects disabled native spawning");
     assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp goal snapshot includes compute graph continuation edge");
+    const mcpAgentContext = await callMcpAt(backendBaseUrl, "coat_agent_context", { goal_id: goalId, task_id: "task-plan" });
+    assertEqual(mcpAgentContext.tasks[0].current_prompt, taskPrompt, "mcp agent context uses the same drill-down aggregation path");
+    assertEqual(mcpAgentContext.tasks[0].runner.runner_id, "codex-runner-a", "mcp agent context exposes runner routing");
 
     const checkpointHistory = await callMcpAt(backendBaseUrl, "coat_checkpoint_history", { goal_id: goalId });
     assertEqual(checkpointHistory.data.checkpoints[0].git.commit, "abc1234", "checkpoint history returns git checkpoint commit");
@@ -1799,6 +2356,31 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(steerBody.data.directive.kind.kind, "add_constraint", "goal steering forwards directive kind");
     const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer`);
     assertEqual(steerCall?.body?.message, "Pin behavioral smoke coverage.", "goal steering forwards operator message");
+
+    const staleSteerResponse = await fetch(`${backendBaseUrl}/api/goals/${staleGoalId}/steer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "directive-stale-active-state",
+        goal_id: staleGoalId,
+        kind: { kind: "add_constraint", constraint: "Exercise stale active-state envelope." },
+        message: "Trigger active-state read after a 200/null Restate response.",
+      }),
+    });
+    assert(staleSteerResponse.ok, "stale active-state steering still reports accepted mutation");
+    const staleSteerBody = await staleSteerResponse.json();
+    assertEqual(staleSteerBody.active_state_status, "stale", "200/null Restate reads mark active-state envelope stale");
+    assertEqual(staleSteerBody.active_state_available, false, "200/null Restate reads are not reported as available active state");
+    assertEqual(staleSteerBody.observability.active_state_status, "stale", "observability repeats stale active-state status");
+    assert(
+      staleSteerBody.active_state_unavailable_reads.includes("status")
+        && staleSteerBody.active_state_unavailable_reads.includes("progress")
+        && staleSteerBody.active_state_unavailable_reads.includes("compute_graph"),
+      "stale active-state envelope identifies all null Restate reads",
+    );
+    assertEqual(staleSteerBody.active_state.workflow_status.ok, false, "null workflow status read is normalized as unavailable");
+    assertEqual(staleSteerBody.active_state.workflow_status.data.unavailable, true, "null workflow status read carries unavailable label");
+    assertEqual(staleSteerBody.active_state.workflow_status.data.stale, true, "null workflow status read carries stale label");
 
     const voteResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/vote`, {
       method: "POST",
@@ -2311,6 +2893,50 @@ function assert(value, message) {
 function assertNoAmbiguousLaneCopy(markup, label) {
   const ambiguousLaneCopy = /\b(?:runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?\b/i;
   assert(!ambiguousLaneCopy.test(markup), `${label} does not expose ambiguous lane copy`);
+}
+
+function assertNoCliCoverageOrDebugInventory(markup, label) {
+  for (const forbidden of [
+    "Every canonical CLI group",
+    "CLI coverage",
+    "Inspect coverage",
+    "Inspect compact JSON",
+    "Use CLI",
+    "coat plan",
+    "coat goal",
+    "coat deploy",
+    "coat runner",
+    "coat tool",
+    "coat memory",
+    "coat event",
+    "coat store",
+    "coat scenario",
+    "coat setup",
+    "coat tui",
+  ]) {
+    assert(!markup.includes(forbidden), `${label} does not expose CLI coverage or debug inventory ${forbidden}`);
+  }
+}
+
+function assertCompactDraftPayload(draft, label) {
+  const serialized = JSON.stringify(draft);
+  assert(serialized.length < 3000, `${label} stays compact`);
+  for (const key of ["chat_log", "chat_run", "messages", "raw_model_response", "run_id", "session_id", "transcript"]) {
+    assert(!hasNestedKey(draft, key), `${label} does not duplicate ${key}`);
+  }
+}
+
+function hasNestedKey(value, key) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => hasNestedKey(item, key));
+  }
+  if (Object.prototype.hasOwnProperty.call(value, key)) {
+    return true;
+  }
+  return Object.values(value).some((item) => hasNestedKey(item, key));
 }
 
 function assertEqual(actual, expected, label) {

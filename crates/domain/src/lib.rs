@@ -845,8 +845,6 @@ pub struct GoalSpec {
     #[serde(default)]
     pub branching_policy: BranchingPolicy,
     #[serde(default)]
-    pub color_policy: GraphColorPolicy,
-    #[serde(default)]
     pub ranking_policy: GoalRankingPolicy,
     #[serde(default)]
     pub mechanism_policy: MechanismPolicy,
@@ -883,7 +881,6 @@ impl GoalSpec {
             restart_policy: RestartPolicy::default(),
             timeout_policy: TimeoutPolicy::default(),
             branching_policy: BranchingPolicy::default(),
-            color_policy: GraphColorPolicy::default(),
             ranking_policy: GoalRankingPolicy::default(),
             mechanism_policy: MechanismPolicy::default(),
             default_execution: ExecutionProfile::default(),
@@ -1445,11 +1442,11 @@ pub struct SubgoalSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-/// Stable visual metadata for the Technicolor Task Graph.
+/// Optional visual metadata for the Technicolor Task Graph.
 ///
-/// Colors are semantic graph state, not dashboard decoration. They let
-/// operators, reviewers, dashboards, and MCP clients preserve a consistent
-/// legend across task projections, branches, reviews, and subgoals.
+/// Colors are presentation hints for dashboards, screenshots, and operator
+/// readability. They must not drive routing, budgets, validation, approvals,
+/// or any other coordinator policy.
 pub struct GraphColorRef {
     pub key: String,
     pub label: String,
@@ -1573,92 +1570,6 @@ impl GraphColorRef {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GraphColorAssignmentMode {
-    Purpose,
-    Status,
-    Custom,
-}
-
-impl Default for GraphColorAssignmentMode {
-    fn default() -> Self {
-        Self::Purpose
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-/// Goal-level color policy and legend for the task graph.
-pub struct GraphColorPolicy {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub assignment_mode: GraphColorAssignmentMode,
-    #[serde(default)]
-    pub palette: Vec<GraphColorRef>,
-}
-
-impl Default for GraphColorPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            assignment_mode: GraphColorAssignmentMode::Purpose,
-            palette: technicolor_palette(),
-        }
-    }
-}
-
-impl GraphColorPolicy {
-    pub fn color_for_root(&self) -> Option<GraphColorRef> {
-        if !self.enabled {
-            return None;
-        }
-        Some(self.palette_color_or(GraphColorRef::root()))
-    }
-
-    pub fn color_for_task(
-        &self,
-        purpose: &TaskPurpose,
-        status: &TaskStatus,
-    ) -> Option<GraphColorRef> {
-        if !self.enabled {
-            return None;
-        }
-        let fallback = match self.assignment_mode {
-            GraphColorAssignmentMode::Purpose | GraphColorAssignmentMode::Custom => {
-                GraphColorRef::for_purpose_kind(&TaskPurposeKind::from(purpose))
-            }
-            GraphColorAssignmentMode::Status => GraphColorRef::for_status(status),
-        };
-        Some(self.palette_color_or(fallback))
-    }
-
-    fn palette_color_or(&self, fallback: GraphColorRef) -> GraphColorRef {
-        self.palette
-            .iter()
-            .rfind(|color| color.key == fallback.key)
-            .cloned()
-            .unwrap_or(fallback)
-    }
-}
-
-fn technicolor_palette() -> Vec<GraphColorRef> {
-    let kinds = [
-        TaskPurposeKind::Work,
-        TaskPurposeKind::Research,
-        TaskPurposeKind::Review,
-        TaskPurposeKind::Unification,
-        TaskPurposeKind::ActorRetry,
-        TaskPurposeKind::CandidateBranch,
-        TaskPurposeKind::BranchVote,
-        TaskPurposeKind::BranchUnification,
-    ];
-    let mut palette = vec![GraphColorRef::root()];
-    palette.extend(kinds.iter().map(GraphColorRef::for_purpose_kind));
-    palette
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -2207,7 +2118,6 @@ pub struct GoalState {
 impl GoalState {
     pub fn new(goal: GoalSpec) -> Self {
         let root_id = Uuid::new_v4();
-        let root_color = goal.color_policy.color_for_root();
         let root = TaskNode {
             id: root_id,
             parent_id: None,
@@ -2231,7 +2141,7 @@ impl GoalState {
             review_doctrine: goal.review_policy.doctrine.clone(),
             priority: TaskPriority::High,
             tags: vec!["root".to_string()],
-            color: root_color,
+            color: Some(GraphColorRef::root()),
             result: None,
             attempts: 0,
         };
@@ -2313,10 +2223,11 @@ impl GoalState {
 
     pub fn is_done(&self) -> bool {
         self.status == GoalStatus::Done
-            || self
-                .satisfaction
-                .as_ref()
-                .is_some_and(|report| report.satisfied)
+            || (self.status != GoalStatus::Cancelled
+                && self
+                    .satisfaction
+                    .as_ref()
+                    .is_some_and(|report| report.satisfied))
     }
 
     pub fn budget_exhausted(&self) -> bool {
@@ -2324,6 +2235,7 @@ impl GoalState {
     }
 
     pub fn progress(&self) -> GoalProgress {
+        let _actionability_checked = self.task_graph_actionability_report().is_actionable();
         let mut by_status = BTreeMap::new();
         let mut task_progress = Vec::with_capacity(self.tasks.len());
         for task in self.tasks.values() {
@@ -2423,6 +2335,7 @@ impl GoalState {
                 task_id: None,
                 thunk_id: None,
                 continuation_id: None,
+                requested_input: None,
                 wait_ref: None,
             },
         );
@@ -2440,6 +2353,7 @@ impl GoalState {
                     task_id: Some(task.id),
                     thunk_id: None,
                     continuation_id: None,
+                    requested_input: None,
                     wait_ref: None,
                 },
             );
@@ -2479,6 +2393,7 @@ impl GoalState {
                     task_id: thunk.task_id,
                     thunk_id: Some(thunk.id),
                     continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                    requested_input: thunk.requested_input.clone(),
                     wait_ref: thunk.wait_ref.clone(),
                 },
             );
@@ -2504,6 +2419,7 @@ impl GoalState {
                     task_id: thunk.task_id,
                     thunk_id: Some(thunk.id),
                     continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                    requested_input: thunk.requested_input.clone(),
                     wait_ref: None,
                 },
             );
@@ -2526,6 +2442,7 @@ impl GoalState {
                         task_id: thunk.task_id,
                         thunk_id: Some(thunk.id),
                         continuation_id: Some(thunk.continuation.continuation_id.clone()),
+                        requested_input: thunk.requested_input.clone(),
                         wait_ref: Some(wait_ref.clone()),
                     },
                 );
@@ -2550,6 +2467,7 @@ impl GoalState {
                     task_id: None,
                     thunk_id: None,
                     continuation_id: None,
+                    requested_input: None,
                     wait_ref: None,
                 },
             );
@@ -2985,6 +2903,12 @@ impl GoalState {
             .iter()
             .position(|request| request.id == approval.approval_id)
             .ok_or(DomainError::ApprovalNotFound(approval.approval_id))?;
+        if self.approvals[index].status != ApprovalStatus::Pending {
+            return Err(DomainError::ApprovalDenied(format!(
+                "approval {} is not pending",
+                approval.approval_id
+            )));
+        }
         let task_id = self.approvals[index].task_id;
         self.approvals[index].status = if approval.approved {
             ApprovalStatus::Approved
@@ -2995,7 +2919,12 @@ impl GoalState {
         if let Some(task_id) = task_id {
             let task = self.task_mut(task_id)?;
             match updated.status {
-                ApprovalStatus::Approved if task.status == TaskStatus::WaitingApproval => {
+                ApprovalStatus::Approved
+                    if matches!(
+                        task.status,
+                        TaskStatus::WaitingApproval | TaskStatus::Blocked
+                    ) =>
+                {
                     task.status = TaskStatus::Runnable;
                 }
                 ApprovalStatus::Rejected => {
@@ -3195,6 +3124,24 @@ impl GoalState {
             return Err(DomainError::SteeringDenied(
                 "delayed compute thunk goal_id does not match workflow goal".to_string(),
             ));
+        }
+        Self::validate_delayed_compute_thunk_shape(&request)?;
+        if let Some(existing) = self.delayed_compute_thunks.iter().find(|thunk| {
+            thunk.status == DelayedComputeThunkStatus::Pending
+                && thunk.continuation.continuation_id == request.continuation.continuation_id
+        }) {
+            if existing.task_id != request.task_id {
+                return Err(DomainError::InvariantViolation(format!(
+                    "pending delayed compute thunk continuation {} already exists for a different task",
+                    request.continuation.continuation_id
+                )));
+            }
+            let existing = existing.clone();
+            self.events.push(StateEvent::new(format!(
+                "delayed_compute_thunk_duplicate_skipped:{}",
+                existing.id
+            )));
+            return Ok(existing);
         }
         if let Some(task_id) = request.task_id {
             let task = self.task_mut(task_id)?;
@@ -3538,24 +3485,44 @@ impl GoalState {
 
     pub fn apply_agent_result(
         &mut self,
-        result: AgentRunResult,
+        mut result: AgentRunResult,
         policy: &SpawnPolicy,
     ) -> Result<(), DomainError> {
+        let task_snapshot = self.task(result.task_id)?.clone();
+        let effective_status =
+            self.normalize_action_needed_agent_result(&mut result, &task_snapshot)?;
+        let mut child_requests = result.child_requests.clone();
+        if effective_status == WorkerRunStatus::Done {
+            child_requests.extend(self.executor_guardrail_child_requests(&task_snapshot));
+        }
+        if !child_requests.is_empty() {
+            policy.ensure_spawn_allowed(&task_snapshot, &child_requests)?;
+        }
+
         let primary_artifacts = result_artifacts(&result);
+        let has_pending_approval = self.has_pending_approval_for_task(result.task_id);
         {
             let task = self.task_mut(result.task_id)?;
             task.result = primary_artifacts.first().cloned();
-            task.status = match result.status {
-                WorkerRunStatus::Done => TaskStatus::NeedsValidation,
-                WorkerRunStatus::Partial => TaskStatus::Runnable,
-                WorkerRunStatus::Waiting => TaskStatus::WaitingInput,
-                WorkerRunStatus::Blocked => TaskStatus::Blocked,
-                WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => TaskStatus::Failed,
+            task.status = if has_pending_approval
+                && matches!(
+                    effective_status,
+                    WorkerRunStatus::Waiting | WorkerRunStatus::Blocked
+                ) {
+                TaskStatus::WaitingApproval
+            } else {
+                match effective_status {
+                    WorkerRunStatus::Done => TaskStatus::NeedsValidation,
+                    WorkerRunStatus::Partial => TaskStatus::Runnable,
+                    WorkerRunStatus::Waiting => TaskStatus::WaitingInput,
+                    WorkerRunStatus::Blocked => TaskStatus::Blocked,
+                    WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => TaskStatus::Failed,
+                }
             };
         }
 
         let parent_snapshot = self.task(result.task_id)?.clone();
-        for mut thunk_request in result.delayed_compute_thunks.clone() {
+        for mut thunk_request in result.delayed_compute_thunks {
             if thunk_request.goal_id != self.goal.id {
                 return Err(DomainError::SteeringDenied(
                     "worker delayed compute thunk goal_id does not match workflow goal".to_string(),
@@ -3566,12 +3533,7 @@ impl GoalState {
             }
             self.create_delayed_compute_thunk(thunk_request)?;
         }
-        let mut child_requests = result.child_requests.clone();
-        if result.status == WorkerRunStatus::Done {
-            child_requests.extend(self.executor_guardrail_child_requests(&parent_snapshot));
-        }
         if !child_requests.is_empty() {
-            policy.ensure_spawn_allowed(&parent_snapshot, &child_requests)?;
             for child in child_requests {
                 let child_id = Uuid::new_v4();
                 self.tasks
@@ -3588,7 +3550,161 @@ impl GoalState {
 
         self.events
             .push(StateEvent::new(format!("agent_result:{}", result.task_id)));
+        self.refresh_goal_status();
         Ok(())
+    }
+
+    // Action-needed worker output must already name a durable way forward.
+    // Restart policy, pending approvals, child/replan requests, or delayed
+    // compute thunks are concrete recovery paths; otherwise the coordinator
+    // synthesizes a human-input thunk instead of exposing inert blocked state.
+    fn normalize_action_needed_agent_result(
+        &self,
+        result: &mut AgentRunResult,
+        task: &TaskNode,
+    ) -> Result<WorkerRunStatus, DomainError> {
+        self.validate_worker_thunk_requests(result, task.id)?;
+        if !matches!(
+            result.status,
+            WorkerRunStatus::Waiting | WorkerRunStatus::Blocked
+        ) {
+            return Ok(result.status.clone());
+        }
+
+        if !self.worker_result_recovery_actions(task, result).is_empty() {
+            return Ok(result.status.clone());
+        }
+
+        result
+            .delayed_compute_thunks
+            .push(self.synthetic_recovery_thunk_request(task, result));
+        result.diagnostics.push(
+            "coordinator synthesized delayed compute thunk because worker result had no typed recovery path"
+                .to_string(),
+        );
+        Ok(WorkerRunStatus::Waiting)
+    }
+
+    fn validate_worker_thunk_requests(
+        &self,
+        result: &AgentRunResult,
+        task_id: TaskId,
+    ) -> Result<(), DomainError> {
+        for request in &result.delayed_compute_thunks {
+            if request.goal_id != self.goal.id {
+                return Err(DomainError::SteeringDenied(
+                    "worker delayed compute thunk goal_id does not match workflow goal".to_string(),
+                ));
+            }
+            if request
+                .task_id
+                .is_some_and(|request_task_id| request_task_id != task_id)
+            {
+                return Err(DomainError::SteeringDenied(
+                    "worker delayed compute thunk task_id does not match worker task".to_string(),
+                ));
+            }
+            Self::validate_delayed_compute_thunk_shape(request)?;
+        }
+        Ok(())
+    }
+
+    fn validate_delayed_compute_thunk_shape(
+        request: &DelayedComputeThunkRequest,
+    ) -> Result<(), DomainError> {
+        if request.reason.trim().is_empty()
+            || request.continuation.continuation_id.trim().is_empty()
+            || request.continuation.state_ref.trim().is_empty()
+            || request.continuation.resume_actions.is_empty()
+        {
+            return Err(DomainError::InvariantViolation(
+                "delayed compute thunk must include reason, continuation, and resume action"
+                    .to_string(),
+            ));
+        }
+        if matches!(request.kind, DelayedComputeThunkKind::HumanInput)
+            && request
+                .requested_input
+                .as_ref()
+                .is_none_or(|input| input.trim().is_empty())
+        {
+            return Err(DomainError::InvariantViolation(
+                "human-input delayed compute thunk must request concrete input".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn worker_result_recovery_actions(
+        &self,
+        task: &TaskNode,
+        result: &AgentRunResult,
+    ) -> Vec<TaskRecoveryAction> {
+        let mut actions = Vec::new();
+        actions.extend(
+            result
+                .delayed_compute_thunks
+                .iter()
+                .map(|_| TaskRecoveryAction::DelayedComputeThunkRequest),
+        );
+        actions.extend(
+            self.pending_approvals_for_task(task.id)
+                .map(|_| TaskRecoveryAction::PendingApproval),
+        );
+        if result.status == WorkerRunStatus::Blocked && self.task_restart_is_available(task) {
+            actions.push(TaskRecoveryAction::RestartableTask);
+        }
+        actions.extend(result.child_requests.iter().map(|request| {
+            if child_request_is_replan(request) {
+                TaskRecoveryAction::ReplanRequest
+            } else {
+                TaskRecoveryAction::ChildTaskRequest
+            }
+        }));
+        actions
+    }
+
+    fn synthetic_recovery_thunk_request(
+        &self,
+        task: &TaskNode,
+        result: &AgentRunResult,
+    ) -> DelayedComputeThunkRequest {
+        let requested_input = if result.next_actions.is_empty() {
+            format!(
+                "Decide how to recover task {} after worker status {:?}: {}",
+                task.id, result.status, result.summary
+            )
+        } else {
+            format!(
+                "Choose the recovery path for task {}: {}",
+                task.id,
+                result.next_actions.join("; ")
+            )
+        };
+        DelayedComputeThunkRequest {
+            goal_id: self.goal.id,
+            task_id: Some(task.id),
+            kind: DelayedComputeThunkKind::HumanInput,
+            reason: format!(
+                "worker returned {:?} without a typed recovery path",
+                result.status
+            ),
+            requested_input: Some(requested_input),
+            wait_ref: Some(WaitRef {
+                kind: WaitRefKind::HumanThread,
+                reference: format!("goal://{}/task/{}/recovery", self.goal.id, task.id),
+            }),
+            continuation: ContinuationRef {
+                continuation_id: format!("goal/{}/task/{}/recovery", self.goal.id, task.id),
+                boundary: ContinuationBoundary::TaskDispatch,
+                state_ref: format!("goal/{}/task/{}", self.goal.id, task.id),
+                resume_actions: vec![
+                    ContinuationResumeAction::ApplyFeedback,
+                    ContinuationResumeAction::MarkRunnable,
+                ],
+            },
+            timeout_seconds: self.goal.timeout_policy.approval_timeout_seconds,
+        }
     }
 
     fn executor_guardrail_child_requests(&self, task: &TaskNode) -> Vec<ChildTaskRequest> {
@@ -3865,6 +3981,13 @@ impl GoalState {
                 "steering directive goal_id does not match workflow goal".to_string(),
             ));
         }
+        if let SteeringDirectiveKind::Cancel { reason } = &directive.kind {
+            let event_message = format!("steering_cancelled:{reason}");
+            self.cancel(reason.clone());
+            self.steering_directives.push(directive);
+            self.events.push(StateEvent::new(event_message));
+            return Ok(());
+        }
         if !self.goal.control_policy.human_steering_enabled {
             return Err(DomainError::SteeringDenied(
                 "human steering is disabled for this goal".to_string(),
@@ -4087,10 +4210,7 @@ impl GoalState {
                 }
                 format!("steering_resumed:{reason}")
             }
-            SteeringDirectiveKind::Cancel { reason } => {
-                self.cancel(reason.clone());
-                format!("steering_cancelled:{reason}")
-            }
+            SteeringDirectiveKind::Cancel { reason } => format!("steering_cancelled:{reason}"),
         };
 
         self.steering_directives.push(directive);
@@ -4203,6 +4323,12 @@ impl GoalState {
         &mut self,
         request: RestartRequest,
     ) -> Result<RestartRecord, DomainError> {
+        if matches!(self.status, GoalStatus::Done | GoalStatus::Cancelled) {
+            return Err(DomainError::RestartDenied(format!(
+                "goal is terminal: {:?}",
+                self.status
+            )));
+        }
         if request.goal_id != self.goal.id {
             return Err(DomainError::RestartDenied(
                 "restart request goal_id does not match workflow goal".to_string(),
@@ -4273,6 +4399,29 @@ impl GoalState {
         let preserve_artifacts = request
             .preserve_artifacts
             .unwrap_or(self.goal.restart_policy.preserve_artifacts);
+        let restarted_task_id_set = restarted_task_ids.iter().copied().collect::<BTreeSet<_>>();
+        let mut retired_thunks = 0_u32;
+        let mut retired_approvals = 0_u32;
+        for thunk in &mut self.delayed_compute_thunks {
+            if thunk
+                .task_id
+                .is_some_and(|task_id| restarted_task_id_set.contains(&task_id))
+                && thunk.status == DelayedComputeThunkStatus::Pending
+            {
+                thunk.status = DelayedComputeThunkStatus::Cancelled;
+                retired_thunks += 1;
+            }
+        }
+        for approval in &mut self.approvals {
+            if approval
+                .task_id
+                .is_some_and(|task_id| restarted_task_id_set.contains(&task_id))
+                && approval.status == ApprovalStatus::Pending
+            {
+                approval.status = ApprovalStatus::Cancelled;
+                retired_approvals += 1;
+            }
+        }
         for task_id in &restarted_task_ids {
             let task = self.task_mut(*task_id)?;
             task.status = TaskStatus::Runnable;
@@ -4287,7 +4436,7 @@ impl GoalState {
         }
         if matches!(
             self.status,
-            GoalStatus::Blocked | GoalStatus::Failed | GoalStatus::Cancelled | GoalStatus::Paused
+            GoalStatus::Blocked | GoalStatus::Failed | GoalStatus::Paused
         ) {
             self.status = GoalStatus::Running;
         }
@@ -4306,6 +4455,12 @@ impl GoalState {
             record.id,
             record.restarted_task_ids.len()
         )));
+        if retired_thunks > 0 || retired_approvals > 0 {
+            self.events.push(StateEvent::new(format!(
+                "restart_retired_waits:{}:{}:{}",
+                record.id, retired_thunks, retired_approvals
+            )));
+        }
         self.restart_history.push(record.clone());
         self.refresh_goal_status();
         Ok(record)
@@ -4754,14 +4909,7 @@ impl GoalState {
             .subgoal_id
             .as_ref()
             .and_then(|subgoal_id| self.subgoal_color(subgoal_id));
-        TaskNode::from_child_request(
-            child_id,
-            parent_id,
-            parent_snapshot,
-            request,
-            subgoal_color,
-            &self.goal.color_policy,
-        )
+        TaskNode::from_child_request(child_id, parent_id, parent_snapshot, request, subgoal_color)
     }
 
     fn subgoal_color(&self, subgoal_id: &str) -> Option<GraphColorRef> {
@@ -4789,7 +4937,6 @@ impl GoalState {
                         task.status,
                         TaskStatus::Blocked
                             | TaskStatus::Failed
-                            | TaskStatus::Cancelled
                             | TaskStatus::WaitingApproval
                             | TaskStatus::WaitingInput
                             | TaskStatus::Running
@@ -4822,7 +4969,10 @@ impl GoalState {
                     .collect()
             }
         };
-        if request.scope == RestartScope::Goal && task_ids.is_empty() {
+        if request.scope == RestartScope::Goal
+            && task_ids.is_empty()
+            && !matches!(self.status, GoalStatus::Done | GoalStatus::Cancelled)
+        {
             if let Some(root) = self.tasks.values().find(|task| task.parent_id.is_none()) {
                 task_ids.push(root.id);
             }
@@ -5143,6 +5293,9 @@ impl GoalState {
     }
 
     fn refresh_goal_status(&mut self) {
+        if self.status == GoalStatus::Cancelled {
+            return;
+        }
         let report = self.satisfaction_report();
         self.satisfaction = Some(report.clone());
         self.status = if self
@@ -5183,6 +5336,16 @@ impl GoalState {
                 task.status = TaskStatus::Cancelled;
             }
         }
+        for thunk in &mut self.delayed_compute_thunks {
+            if thunk.status == DelayedComputeThunkStatus::Pending {
+                thunk.status = DelayedComputeThunkStatus::Cancelled;
+            }
+        }
+        for approval in &mut self.approvals {
+            if approval.status == ApprovalStatus::Pending {
+                approval.status = ApprovalStatus::Cancelled;
+            }
+        }
         self.events
             .push(StateEvent::new(format!("cancelled:{}", reason.into())));
     }
@@ -5207,6 +5370,132 @@ impl GoalState {
             .get_mut(&task_id)
             .ok_or(DomainError::TaskNotFound(task_id))
     }
+
+    fn task_graph_actionability_report(&self) -> TaskGraphActionabilityReport {
+        let mut violations = Vec::new();
+        for task in self.tasks.values() {
+            if matches!(
+                task.status,
+                TaskStatus::Blocked | TaskStatus::WaitingApproval | TaskStatus::WaitingInput
+            ) && self.task_recovery_actions(task).is_empty()
+            {
+                violations.push(TaskRecoveryViolation {
+                    task_id: task.id,
+                    status: task.status.clone(),
+                    reason: "task has no pending thunk, approval, restart, child, or replan action"
+                        .to_string(),
+                });
+            }
+        }
+        TaskGraphActionabilityReport { violations }
+    }
+
+    fn task_recovery_actions(&self, task: &TaskNode) -> Vec<TaskRecoveryAction> {
+        let mut actions = Vec::new();
+        actions.extend(
+            self.delayed_compute_thunks
+                .iter()
+                .filter(|thunk| {
+                    thunk.task_id == Some(task.id)
+                        && thunk.status == DelayedComputeThunkStatus::Pending
+                })
+                .map(|_| TaskRecoveryAction::PendingDelayedComputeThunk),
+        );
+        actions.extend(
+            self.pending_approvals_for_task(task.id)
+                .map(|_| TaskRecoveryAction::PendingApproval),
+        );
+        if task.status == TaskStatus::Blocked && self.task_restart_is_available(task) {
+            actions.push(TaskRecoveryAction::RestartableTask);
+        }
+        actions.extend(task.children.iter().filter_map(|child_id| {
+            let child = self.tasks.get(child_id)?;
+            if child.status.is_terminal() {
+                return None;
+            }
+            Some(if child_task_is_replan(child) {
+                TaskRecoveryAction::Replan
+            } else {
+                TaskRecoveryAction::ChildTask
+            })
+        }));
+        actions
+    }
+
+    fn has_pending_approval_for_task(&self, task_id: TaskId) -> bool {
+        self.pending_approvals_for_task(task_id).next().is_some()
+    }
+
+    fn pending_approvals_for_task(&self, task_id: TaskId) -> impl Iterator<Item = Uuid> + '_ {
+        self.approvals
+            .iter()
+            .filter(move |approval| {
+                approval.task_id == Some(task_id) && approval.status == ApprovalStatus::Pending
+            })
+            .map(|approval| approval.id)
+    }
+
+    fn task_restart_is_available(&self, task: &TaskNode) -> bool {
+        if matches!(self.status, GoalStatus::Done | GoalStatus::Cancelled)
+            || task.status.is_terminal()
+            || !self.goal.restart_policy.enabled
+        {
+            return false;
+        }
+        let policy = &self.goal.restart_policy;
+        if !policy.allowed_scopes.iter().any(|scope| {
+            matches!(
+                scope,
+                RestartScope::Task | RestartScope::Blocked | RestartScope::Goal
+            )
+        }) {
+            return false;
+        }
+        let task_restart_count = self
+            .restart_history
+            .iter()
+            .filter(|record| record.restarted_task_ids.contains(&task.id))
+            .count() as u32;
+        task_restart_count < policy.max_task_restarts
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskGraphActionabilityReport {
+    violations: Vec<TaskRecoveryViolation>,
+}
+
+impl TaskGraphActionabilityReport {
+    fn is_actionable(&self) -> bool {
+        self.violations.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskRecoveryViolation {
+    task_id: TaskId,
+    status: TaskStatus,
+    reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TaskRecoveryAction {
+    PendingDelayedComputeThunk,
+    DelayedComputeThunkRequest,
+    PendingApproval,
+    RestartableTask,
+    ChildTask,
+    ChildTaskRequest,
+    Replan,
+    ReplanRequest,
+}
+
+fn child_request_is_replan(request: &ChildTaskRequest) -> bool {
+    request.role == WorkerKind::Planner || request.tags.iter().any(|tag| tag == "replan")
+}
+
+fn child_task_is_replan(task: &TaskNode) -> bool {
+    task.role == WorkerKind::Planner || task.tags.iter().any(|tag| tag == "replan")
 }
 
 fn guardrail_child_request(
@@ -5306,23 +5595,17 @@ impl TaskNode {
         parent: &TaskNode,
         req: ChildTaskRequest,
         subgoal_color: Option<GraphColorRef>,
-        color_policy: &GraphColorPolicy,
     ) -> Self {
         let role = req.role;
         let purpose = req.purpose.unwrap_or(TaskPurpose::Work);
         let execution = req
             .execution
             .unwrap_or_else(|| parent.execution.clone().with_role(role.clone()));
-        let color = req
-            .color
-            .or(subgoal_color)
-            .or_else(|| color_policy.color_for_task(&purpose, &TaskStatus::Runnable))
-            .or_else(|| {
-                parent
-                    .color
-                    .as_ref()
-                    .map(|_| GraphColorRef::for_purpose_kind(&TaskPurposeKind::from(&purpose)))
-            });
+        let color = req.color.or(subgoal_color).or_else(|| {
+            Some(GraphColorRef::for_purpose_kind(&TaskPurposeKind::from(
+                &purpose,
+            )))
+        });
 
         Self {
             id,
@@ -5372,10 +5655,7 @@ pub enum TaskStatus {
 
 impl TaskStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Done | Self::Blocked | Self::Failed | Self::Cancelled
-        )
+        matches!(self, Self::Done | Self::Cancelled)
     }
 
     pub fn is_terminal_ok(&self) -> bool {
@@ -5607,6 +5887,8 @@ pub struct ComputeGraphNode {
     pub task_id: Option<TaskId>,
     pub thunk_id: Option<Uuid>,
     pub continuation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_input: Option<String>,
     pub wait_ref: Option<WaitRef>,
 }
 
@@ -5805,8 +6087,6 @@ pub struct TaskQuery {
     #[serde(default)]
     pub purpose_kinds: Vec<TaskPurposeKind>,
     #[serde(default)]
-    pub color_keys: Vec<String>,
-    #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub runnable_only: bool,
@@ -5828,14 +6108,6 @@ impl TaskQuery {
         }
         let purpose_kind = TaskPurposeKind::from(&task.purpose);
         if !self.purpose_kinds.is_empty() && !self.purpose_kinds.contains(&purpose_kind) {
-            return false;
-        }
-        if !self.color_keys.is_empty()
-            && !task
-                .color
-                .as_ref()
-                .is_some_and(|color| self.color_keys.iter().any(|key| key == &color.key))
-        {
             return false;
         }
         if !self.tags.is_empty()
@@ -7754,6 +8026,8 @@ impl Default for RestartPolicy {
                 RestartScope::Goal,
                 RestartScope::Task,
                 RestartScope::Blocked,
+                RestartScope::Failed,
+                RestartScope::TimedOut,
             ],
             allowed_reasons: vec![
                 RestartReason::OperatorRequested,
@@ -12386,6 +12660,8 @@ impl ValidationReport {
             WorkerRunStatus::Done => TaskStatus::Done,
         };
 
+        collect_worker_result_contract_missing(&req.task, &req.result, &mut missing_criteria);
+
         if matches!(
             req.result.status,
             WorkerRunStatus::Waiting
@@ -12585,6 +12861,99 @@ impl ValidationReport {
             test_evidence: req.result.test_evidence,
         }
     }
+}
+
+fn collect_worker_result_contract_missing(
+    task: &TaskNode,
+    result: &AgentRunResult,
+    missing_criteria: &mut Vec<String>,
+) {
+    let valid_child_request_count =
+        collect_child_request_contract_missing(&result.child_requests, missing_criteria);
+    let valid_thunk_count = collect_delayed_compute_contract_missing(
+        task,
+        &result.delayed_compute_thunks,
+        missing_criteria,
+    );
+
+    if matches!(
+        result.status,
+        WorkerRunStatus::Waiting | WorkerRunStatus::Blocked
+    ) && valid_child_request_count == 0
+        && valid_thunk_count == 0
+    {
+        push_unique(missing_criteria, "recovery_path".to_string());
+    }
+}
+
+fn collect_child_request_contract_missing(
+    child_requests: &[ChildTaskRequest],
+    missing_criteria: &mut Vec<String>,
+) -> usize {
+    let mut valid_count = 0;
+    for request in child_requests {
+        let mut valid = true;
+        if request.prompt.trim().is_empty() {
+            push_unique(missing_criteria, "child_request_prompt".to_string());
+            valid = false;
+        }
+        if request.reason.trim().is_empty() {
+            push_unique(missing_criteria, "child_request_reason".to_string());
+            valid = false;
+        }
+        if let Some(done_criteria) = &request.done_criteria {
+            if done_criteria
+                .validator_score_min
+                .is_some_and(|score| !(0.0..=1.0).contains(&score))
+            {
+                push_unique(
+                    missing_criteria,
+                    "child_request_validator_score_min".to_string(),
+                );
+                valid = false;
+            }
+        }
+        if valid {
+            valid_count += 1;
+        }
+    }
+    valid_count
+}
+
+fn collect_delayed_compute_contract_missing(
+    task: &TaskNode,
+    thunk_requests: &[DelayedComputeThunkRequest],
+    missing_criteria: &mut Vec<String>,
+) -> usize {
+    let mut valid_count = 0;
+    for request in thunk_requests {
+        let mut valid = true;
+        if request.goal_id != task.goal_id {
+            push_unique(
+                missing_criteria,
+                "delayed_compute_thunk_goal_id".to_string(),
+            );
+            valid = false;
+        }
+        if request
+            .task_id
+            .is_some_and(|request_task_id| request_task_id != task.id)
+        {
+            push_unique(
+                missing_criteria,
+                "delayed_compute_thunk_task_id".to_string(),
+            );
+            valid = false;
+        }
+        if GoalState::validate_delayed_compute_thunk_shape(request).is_err() {
+            push_unique(missing_criteria, "delayed_compute_thunk".to_string());
+            valid = false;
+        }
+        if valid {
+            valid_count += 1;
+        }
+    }
+    valid_count
 }
 
 fn collect_stub_truthfulness_missing(
@@ -13003,6 +13372,7 @@ pub enum ApprovalStatus {
     Pending,
     Approved,
     Rejected,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -14174,6 +14544,7 @@ pub enum DomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[derive(Debug, serde::Deserialize)]
     struct ReviewerValidatorFixture {
@@ -14193,6 +14564,493 @@ mod tests {
         review_decision: ReviewDecision,
         min_validator_score: f32,
         required_child_role: WorkerKind,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum StateMachineStep {
+        MarkRunnableRunning,
+        WorkerDone,
+        WorkerPartial,
+        WorkerFailed,
+        WorkerBlocked,
+        WorkerWaiting,
+        CreateHumanThunk,
+        ResumePendingThunk,
+        RequestApproval,
+        ApprovePendingApproval,
+        RejectPendingApproval,
+        RestartRecoverableTask,
+        SteerRequestResearch,
+        SteerPause,
+        SteerResume,
+        CancelGoal,
+    }
+
+    impl StateMachineStep {
+        fn from_index(index: u8) -> Self {
+            match index % 16 {
+                0 => Self::MarkRunnableRunning,
+                1 => Self::WorkerDone,
+                2 => Self::WorkerPartial,
+                3 => Self::WorkerFailed,
+                4 => Self::WorkerBlocked,
+                5 => Self::WorkerWaiting,
+                6 => Self::CreateHumanThunk,
+                7 => Self::ResumePendingThunk,
+                8 => Self::RequestApproval,
+                9 => Self::ApprovePendingApproval,
+                10 => Self::RejectPendingApproval,
+                11 => Self::RestartRecoverableTask,
+                12 => Self::SteerRequestResearch,
+                13 => Self::SteerPause,
+                14 => Self::SteerResume,
+                _ => Self::CancelGoal,
+            }
+        }
+    }
+
+    fn first_task_id_with_status(state: &GoalState, status: TaskStatus) -> Option<TaskId> {
+        state
+            .tasks
+            .values()
+            .find(|task| task.status == status)
+            .map(|task| task.id)
+    }
+
+    fn first_recoverable_task_id(state: &GoalState) -> Option<TaskId> {
+        state
+            .tasks
+            .values()
+            .find(|task| {
+                matches!(
+                    task.status,
+                    TaskStatus::Blocked
+                        | TaskStatus::Failed
+                        | TaskStatus::WaitingInput
+                        | TaskStatus::WaitingApproval
+                )
+            })
+            .map(|task| task.id)
+    }
+
+    fn first_pending_thunk_id(state: &GoalState) -> Option<Uuid> {
+        state
+            .delayed_compute_thunks
+            .iter()
+            .find(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+            .map(|thunk| thunk.id)
+    }
+
+    fn first_pending_approval_id(state: &GoalState) -> Option<Uuid> {
+        state
+            .approvals
+            .iter()
+            .find(|approval| approval.status == ApprovalStatus::Pending)
+            .map(|approval| approval.id)
+    }
+
+    fn runnable_or_recoverable_task_id(state: &GoalState) -> Option<TaskId> {
+        state
+            .runnable_tasks()
+            .first()
+            .map(|task| task.id)
+            .or_else(|| first_recoverable_task_id(state))
+            .or_else(|| first_task_id_with_status(state, TaskStatus::Running))
+    }
+
+    fn state_machine_goal() -> GoalSpec {
+        let mut goal = GoalSpec::new(
+            "state machine generated validation",
+            "prove generated transition sequences keep the durable task graph actionable",
+        );
+        goal.done_criteria.tests_pass = false;
+        goal.done_criteria.validator_score_min = None;
+        goal.review_policy.enabled = false;
+        goal.restart_policy.max_goal_restarts = 64;
+        goal.restart_policy.max_task_restarts = 64;
+        goal
+    }
+
+    fn state_machine_human_thunk(state: &GoalState, task_id: TaskId) -> DelayedComputeThunkRequest {
+        DelayedComputeThunkRequest {
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            kind: DelayedComputeThunkKind::HumanInput,
+            reason: "generated state-machine wait needs operator input".to_string(),
+            requested_input: Some(
+                "choose whether to continue the generated transition".to_string(),
+            ),
+            wait_ref: Some(WaitRef {
+                kind: WaitRefKind::HumanThread,
+                reference: format!("thread://state-machine/{task_id}"),
+            }),
+            continuation: ContinuationRef {
+                continuation_id: format!("generated/{task_id}/human-input"),
+                boundary: ContinuationBoundary::TaskDispatch,
+                state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                resume_actions: vec![
+                    ContinuationResumeAction::ApplyFeedback,
+                    ContinuationResumeAction::MarkRunnable,
+                ],
+            },
+            timeout_seconds: Some(300),
+        }
+    }
+
+    fn state_machine_worker_result(
+        state: &GoalState,
+        task_id: TaskId,
+        status: WorkerRunStatus,
+    ) -> AgentRunResult {
+        let task = state.task(task_id).expect("task exists");
+        let mut result = AgentRunResult {
+            status: status.clone(),
+            confidence: match status {
+                WorkerRunStatus::Done => 0.91,
+                WorkerRunStatus::Partial => 0.5,
+                WorkerRunStatus::Waiting | WorkerRunStatus::Blocked => 0.2,
+                WorkerRunStatus::Failed | WorkerRunStatus::TimedOut => 0.0,
+            },
+            ..AgentRunResult::stub_done(task)
+        };
+        result.summary = format!("generated state-machine result {:?}", status);
+        if status == WorkerRunStatus::Waiting {
+            result.delayed_compute_thunks = vec![state_machine_human_thunk(state, task_id)];
+        }
+        result.status = status;
+        result
+    }
+
+    fn apply_generated_step(state: &mut GoalState, step: StateMachineStep) {
+        if matches!(state.status, GoalStatus::Done | GoalStatus::Cancelled) {
+            return;
+        }
+
+        match step {
+            StateMachineStep::MarkRunnableRunning => {
+                if let Some(task_id) = state.runnable_tasks().first().map(|task| task.id) {
+                    let _ = state.mark_running(task_id);
+                }
+            }
+            StateMachineStep::WorkerDone => {
+                if let Some(task_id) = runnable_or_recoverable_task_id(state) {
+                    let result = state_machine_worker_result(state, task_id, WorkerRunStatus::Done);
+                    if state
+                        .apply_agent_result(result.clone(), &SpawnPolicy::default())
+                        .is_ok()
+                    {
+                        let task = state.task(task_id).expect("task exists").clone();
+                        let report = ValidationReport::from_result(ValidationRequest {
+                            goal_id: state.goal.id,
+                            task,
+                            result,
+                        });
+                        let _ = state.apply_validation(report);
+                    }
+                }
+            }
+            StateMachineStep::WorkerPartial => {
+                if let Some(task_id) = runnable_or_recoverable_task_id(state) {
+                    let _ = state.apply_agent_result(
+                        state_machine_worker_result(state, task_id, WorkerRunStatus::Partial),
+                        &SpawnPolicy::default(),
+                    );
+                }
+            }
+            StateMachineStep::WorkerFailed => {
+                if let Some(task_id) = runnable_or_recoverable_task_id(state) {
+                    let _ = state.apply_agent_result(
+                        state_machine_worker_result(state, task_id, WorkerRunStatus::Failed),
+                        &SpawnPolicy::default(),
+                    );
+                }
+            }
+            StateMachineStep::WorkerBlocked => {
+                if let Some(task_id) = runnable_or_recoverable_task_id(state) {
+                    let _ = state.apply_agent_result(
+                        state_machine_worker_result(state, task_id, WorkerRunStatus::Blocked),
+                        &SpawnPolicy::default(),
+                    );
+                }
+            }
+            StateMachineStep::WorkerWaiting => {
+                if let Some(task_id) = runnable_or_recoverable_task_id(state) {
+                    let _ = state.apply_agent_result(
+                        state_machine_worker_result(state, task_id, WorkerRunStatus::Waiting),
+                        &SpawnPolicy::default(),
+                    );
+                }
+            }
+            StateMachineStep::CreateHumanThunk => {
+                if let Some(task_id) = runnable_or_recoverable_task_id(state) {
+                    let _ = state
+                        .create_delayed_compute_thunk(state_machine_human_thunk(state, task_id));
+                }
+            }
+            StateMachineStep::ResumePendingThunk => {
+                if let Some(thunk_id) = first_pending_thunk_id(state) {
+                    let _ = state.resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                        thunk_id,
+                        responder: "generated-test".to_string(),
+                        response_summary: "continue from generated state-machine test".to_string(),
+                        artifact_refs: Vec::new(),
+                    });
+                }
+            }
+            StateMachineStep::RequestApproval => {
+                if let Some(task_id) = state.runnable_tasks().first().map(|task| task.id) {
+                    let _ = state.ensure_task_approval_or_request(task_id);
+                }
+            }
+            StateMachineStep::ApprovePendingApproval => {
+                if let Some(approval_id) = first_pending_approval_id(state) {
+                    let _ = state.apply_human_approval(HumanApproval {
+                        approval_id,
+                        approved: true,
+                        note: Some("generated approval".to_string()),
+                    });
+                }
+            }
+            StateMachineStep::RejectPendingApproval => {
+                if let Some(approval_id) = first_pending_approval_id(state) {
+                    let _ = state.apply_human_approval(HumanApproval {
+                        approval_id,
+                        approved: false,
+                        note: Some("generated rejection".to_string()),
+                    });
+                }
+            }
+            StateMachineStep::RestartRecoverableTask => {
+                if let Some(task_id) = first_recoverable_task_id(state) {
+                    let _ = state.apply_restart_request(RestartRequest {
+                        goal_id: state.goal.id,
+                        scope: RestartScope::Task,
+                        reason: RestartReason::OperatorRequested,
+                        message: "generated state-machine restart".to_string(),
+                        task_id: Some(task_id),
+                        reset_attempts: Some(true),
+                        preserve_artifacts: Some(true),
+                        operator: Some("generated-test".to_string()),
+                    });
+                }
+            }
+            StateMachineStep::SteerRequestResearch => {
+                let _ = state.apply_steering(
+                    SteeringDirective {
+                        id: Uuid::new_v4(),
+                        goal_id: state.goal.id,
+                        task_id: None,
+                        operator: Some("generated-test".to_string()),
+                        message: "generated state-machine research request".to_string(),
+                        kind: SteeringDirectiveKind::RequestResearch {
+                            question: "what evidence is still needed?".to_string(),
+                            reason: "generated test needs a child research task".to_string(),
+                        },
+                    },
+                    &SpawnPolicy::default(),
+                );
+            }
+            StateMachineStep::SteerPause => {
+                let _ = state.apply_steering(
+                    SteeringDirective {
+                        id: Uuid::new_v4(),
+                        goal_id: state.goal.id,
+                        task_id: None,
+                        operator: Some("generated-test".to_string()),
+                        message: "generated pause".to_string(),
+                        kind: SteeringDirectiveKind::Pause {
+                            reason: "generated test pause".to_string(),
+                        },
+                    },
+                    &SpawnPolicy::default(),
+                );
+            }
+            StateMachineStep::SteerResume => {
+                let _ = state.apply_steering(
+                    SteeringDirective {
+                        id: Uuid::new_v4(),
+                        goal_id: state.goal.id,
+                        task_id: None,
+                        operator: Some("generated-test".to_string()),
+                        message: "generated resume".to_string(),
+                        kind: SteeringDirectiveKind::Resume {
+                            reason: "generated test resume".to_string(),
+                        },
+                    },
+                    &SpawnPolicy::default(),
+                );
+            }
+            StateMachineStep::CancelGoal => {
+                state.cancel("generated state-machine cancellation");
+            }
+        }
+    }
+
+    fn assert_state_machine_invariants(state: &GoalState) {
+        let progress = state.progress();
+        assert_eq!(progress.goal_id, state.goal.id);
+        assert_eq!(progress.total_tasks as usize, state.tasks.len());
+        assert_eq!(
+            progress.open_tasks as usize,
+            state
+                .tasks
+                .values()
+                .filter(|task| !task.status.is_terminal())
+                .count()
+        );
+        assert_eq!(
+            progress.terminal_ok_tasks as usize,
+            state
+                .tasks
+                .values()
+                .filter(|task| task.status.is_terminal_ok())
+                .count()
+        );
+        assert_eq!(
+            progress.pending_delayed_compute_thunks as usize,
+            state
+                .delayed_compute_thunks
+                .iter()
+                .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+                .count()
+        );
+        assert_eq!(
+            progress.compute_graph.open_thunks,
+            progress.pending_delayed_compute_thunks
+        );
+        assert_eq!(
+            progress.waiting_input_tasks,
+            *progress
+                .by_status
+                .get(&TaskStatus::WaitingInput)
+                .unwrap_or(&0)
+        );
+        assert_eq!(
+            progress.waiting_approval_tasks,
+            *progress
+                .by_status
+                .get(&TaskStatus::WaitingApproval)
+                .unwrap_or(&0)
+        );
+        assert_eq!(
+            progress.blocked_tasks,
+            *progress.by_status.get(&TaskStatus::Blocked).unwrap_or(&0)
+        );
+        assert_eq!(
+            progress.failed_tasks,
+            *progress.by_status.get(&TaskStatus::Failed).unwrap_or(&0)
+        );
+        assert!(
+            (0.0..=1.0).contains(&progress.percent_done),
+            "invalid percent_done {}",
+            progress.percent_done
+        );
+
+        for (task_id, task) in &state.tasks {
+            assert_eq!(*task_id, task.id);
+            assert_eq!(task.goal_id, state.goal.id);
+            if let Some(parent_id) = task.parent_id {
+                let parent = state.task(parent_id).expect("parent task exists");
+                assert!(
+                    parent.children.contains(task_id),
+                    "parent {parent_id} does not reference child {task_id}"
+                );
+                assert!(task.depth > parent.depth);
+            }
+            for child_id in &task.children {
+                let child = state.task(*child_id).expect("child task exists");
+                assert_eq!(child.parent_id, Some(task.id));
+            }
+            for dependency_id in &task.dependencies {
+                assert!(
+                    state.tasks.contains_key(dependency_id),
+                    "dependency {dependency_id} missing for task {task_id}"
+                );
+            }
+        }
+        detect_cycles(&state.tasks).expect("task dependency graph remains acyclic");
+
+        for approval in &state.approvals {
+            assert_eq!(approval.goal_id, state.goal.id);
+            if let Some(task_id) = approval.task_id {
+                state.task(task_id).expect("approval task exists");
+            }
+        }
+        for thunk in &state.delayed_compute_thunks {
+            assert_eq!(thunk.goal_id, state.goal.id);
+            assert!(!thunk.reason.trim().is_empty());
+            assert!(!thunk.continuation.continuation_id.trim().is_empty());
+            assert!(!thunk.continuation.state_ref.trim().is_empty());
+            assert!(!thunk.continuation.resume_actions.is_empty());
+            if thunk.kind == DelayedComputeThunkKind::HumanInput {
+                assert!(
+                    thunk
+                        .requested_input
+                        .as_ref()
+                        .is_some_and(|input| !input.trim().is_empty()),
+                    "human-input thunk must include a concrete prompt"
+                );
+            }
+            if let Some(task_id) = thunk.task_id {
+                state.task(task_id).expect("thunk task exists");
+            }
+        }
+
+        if state.status == GoalStatus::Cancelled {
+            assert!(
+                state.tasks.values().all(|task| task.status.is_terminal()),
+                "cancelled goal left non-terminal tasks"
+            );
+            assert!(
+                state
+                    .delayed_compute_thunks
+                    .iter()
+                    .all(|thunk| thunk.status != DelayedComputeThunkStatus::Pending),
+                "cancelled goal left pending thunks"
+            );
+            assert!(
+                state
+                    .approvals
+                    .iter()
+                    .all(|approval| approval.status != ApprovalStatus::Pending),
+                "cancelled goal left pending approvals"
+            );
+        } else {
+            assert!(
+                state.task_graph_actionability_report().is_actionable(),
+                "recoverable task graph became inert: {:?}",
+                state.task_graph_actionability_report().violations
+            );
+        }
+
+        if state.status == GoalStatus::Done {
+            assert_eq!(progress.open_tasks, 0);
+            assert!(
+                state.satisfaction_report().satisfied,
+                "done goal must have a satisfied report"
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 96,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn generated_state_machine_sequences_preserve_recoverability(
+            steps in prop::collection::vec(0_u8..16, 1..48)
+        ) {
+            let mut state = GoalState::new(state_machine_goal());
+            assert_state_machine_invariants(&state);
+
+            for step_index in steps {
+                apply_generated_step(&mut state, StateMachineStep::from_index(step_index));
+                assert_state_machine_invariants(&state);
+            }
+        }
     }
 
     fn git_branch_checkpoint(task: &TaskNode, suffix: &str, label: &str) -> CheckpointRef {
@@ -14240,6 +15098,34 @@ mod tests {
             .filter_map(|checkpoint| checkpoint.git_result.as_ref())
             .map(|git| git.branch.as_str())
             .collect()
+    }
+
+    fn test_human_input_thunk_request(
+        goal_id: GoalId,
+        task_id: TaskId,
+        suffix: &str,
+    ) -> DelayedComputeThunkRequest {
+        DelayedComputeThunkRequest {
+            goal_id,
+            task_id: Some(task_id),
+            kind: DelayedComputeThunkKind::HumanInput,
+            reason: format!("need operator decision for {suffix}"),
+            requested_input: Some(format!("Choose the next action for {suffix}.")),
+            wait_ref: Some(WaitRef {
+                kind: WaitRefKind::HumanThread,
+                reference: format!("thread://operator/{suffix}"),
+            }),
+            continuation: ContinuationRef {
+                continuation_id: format!("goal/root/{suffix}"),
+                boundary: ContinuationBoundary::TaskDispatch,
+                state_ref: format!("goal/{goal_id}/task/{task_id}"),
+                resume_actions: vec![
+                    ContinuationResumeAction::ApplyFeedback,
+                    ContinuationResumeAction::MarkRunnable,
+                ],
+            },
+            timeout_seconds: Some(300),
+        }
     }
 
     #[test]
@@ -14322,10 +15208,10 @@ mod tests {
     }
 
     #[test]
-    fn technicolor_graph_assigns_and_queries_task_colors() {
+    fn technicolor_graph_keeps_colors_as_visual_hints() {
         let mut goal = GoalSpec::new(
             "technicolor",
-            "represent semantic graph colors for planning, research, review, and work tasks",
+            "represent lightweight visual colors for planning, research, review, and work tasks",
         );
         let implementation_color = GraphColorRef::new(
             "implementation_gold",
@@ -14333,13 +15219,6 @@ mod tests {
             "#f59e0b",
             "implementation subgoal owned by Codex",
         );
-        let palette_work_color = GraphColorRef::new(
-            "work",
-            "Palette Work",
-            "#0ea5e9",
-            "operator-overridden work color",
-        );
-        goal.color_policy.palette.push(palette_work_color.clone());
         goal.plan.subgoals.push(SubgoalSpec {
             id: "implementation".to_string(),
             title: "Implementation".to_string(),
@@ -14371,11 +15250,11 @@ mod tests {
         goal.initial_tasks.push(ChildTaskRequest {
             role: WorkerKind::Codex,
             purpose: Some(TaskPurpose::Work),
-            title: Some("Use palette work color".to_string()),
+            title: Some("Use default work color".to_string()),
             subgoal_id: None,
             color: None,
             prompt: "use palette color metadata".to_string(),
-            reason: "palette overrides should be observable in task state".to_string(),
+            reason: "default visual hints should be observable in task state".to_string(),
             dependencies: Vec::new(),
             budget: None,
             sandbox: None,
@@ -14405,9 +15284,12 @@ mod tests {
         let palette_child = state
             .tasks
             .values()
-            .find(|task| task.title == "Use palette work color")
-            .expect("palette-colored task");
-        assert_eq!(palette_child.color, Some(palette_work_color));
+            .find(|task| task.title == "Use default work color")
+            .expect("default-colored task");
+        assert_eq!(
+            palette_child.color.as_ref().map(|color| color.key.as_str()),
+            Some("work")
+        );
 
         let progress = state.progress();
         assert_eq!(
@@ -14427,12 +15309,17 @@ mod tests {
             Some("implementation_gold")
         );
 
-        let color_query = state.find_tasks(&TaskQuery {
-            color_keys: vec!["implementation_gold".to_string()],
+        let tag_query = state.find_tasks(&TaskQuery {
+            tags: vec!["graph".to_string()],
             ..TaskQuery::default()
         });
-        assert_eq!(color_query.tasks.len(), 1);
-        assert_eq!(color_query.tasks[0].title, "Implement colored task graph");
+        assert_eq!(tag_query.tasks.len(), 2);
+        assert!(
+            tag_query
+                .tasks
+                .iter()
+                .any(|task| task.title == "Implement colored task graph")
+        );
     }
 
     #[test]
@@ -14665,6 +15552,11 @@ mod tests {
         });
         assert!(!report.passed);
         assert_eq!(report.status_after_validation, TaskStatus::Runnable);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"artifact_exists".to_string())
+        );
     }
 
     #[test]
@@ -14756,6 +15648,107 @@ mod tests {
             report
                 .missing_criteria
                 .contains(&"stub_review_output".to_string())
+        );
+    }
+
+    #[test]
+    fn research_validation_requires_sources_and_information_use_plan() {
+        let state = GoalState::new(GoalSpec::new(
+            "research evidence",
+            "research output must cite sources and explain how to use them",
+        ));
+        let mut task = state.runnable_tasks().remove(0);
+        task.role = WorkerKind::Research;
+        task.purpose = TaskPurpose::Research {
+            question: "which current integration should be used?".to_string(),
+        };
+        let result = AgentRunResult {
+            summary: "research completed without enough evidence".to_string(),
+            runner_id: Some("research-runner".to_string()),
+            research: Some(ResearchOutput {
+                question: "which current integration should be used?".to_string(),
+                answer: "Use the current integration.".to_string(),
+                sources: Vec::new(),
+                confidence: 0.95,
+                use_plan: InformationUsePlan::default(),
+                open_questions: Vec::new(),
+            }),
+            confidence: 0.95,
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"research_sources".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"information_use_plan".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_child_request_blocks_otherwise_complete_worker_result() {
+        let state = GoalState::new(GoalSpec::new(
+            "child request shape",
+            "child task requests must be concrete enough for the coordinator",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            child_requests: vec![ChildTaskRequest {
+                role: WorkerKind::Tester,
+                purpose: None,
+                title: Some("Malformed child".to_string()),
+                subgoal_id: None,
+                color: None,
+                prompt: "  ".to_string(),
+                reason: "".to_string(),
+                dependencies: Vec::new(),
+                budget: None,
+                sandbox: None,
+                done_criteria: Some(DoneCriteria {
+                    tests_pass: true,
+                    artifact_exists: true,
+                    validator_score_min: Some(1.5),
+                }),
+                review_doctrine: None,
+                execution: None,
+                priority: TaskPriority::Normal,
+                tags: Vec::new(),
+            }],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+
+        assert!(!report.passed);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"child_request_prompt".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"child_request_reason".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"child_request_validator_score_min".to_string())
         );
     }
 
@@ -14954,6 +15947,137 @@ mod tests {
         });
         assert!(!report.passed);
         assert_eq!(report.status_after_validation, TaskStatus::Blocked);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"recovery_path".to_string())
+        );
+    }
+
+    #[test]
+    fn waiting_result_without_valid_recovery_cannot_validate_successfully() {
+        let state = GoalState::new(GoalSpec::new(
+            "waiting result",
+            "waiting worker output must carry a typed continuation",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Waiting,
+            delayed_compute_thunks: vec![DelayedComputeThunkRequest {
+                goal_id: Uuid::new_v4(),
+                task_id: Some(Uuid::new_v4()),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: " ".to_string(),
+                requested_input: Some(" ".to_string()),
+                wait_ref: None,
+                continuation: ContinuationRef {
+                    continuation_id: "".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: "".to_string(),
+                    resume_actions: Vec::new(),
+                },
+                timeout_seconds: None,
+            }],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let report = ValidationReport::from_result(ValidationRequest {
+            goal_id: task.goal_id,
+            task,
+            result,
+        });
+
+        assert!(!report.passed);
+        assert_eq!(report.status_after_validation, TaskStatus::WaitingInput);
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"delayed_compute_thunk_goal_id".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"delayed_compute_thunk_task_id".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"delayed_compute_thunk".to_string())
+        );
+        assert!(
+            report
+                .missing_criteria
+                .contains(&"recovery_path".to_string())
+        );
+    }
+
+    #[test]
+    fn action_needed_worker_result_without_recovery_gets_coordinator_thunk() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "blocked recovery",
+            "blocked output without a typed path should not satisfy the goal",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Waiting,
+            delayed_compute_thunks: Vec::new(),
+            child_requests: Vec::new(),
+            next_actions: Vec::new(),
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("coordinator synthesizes a recovery thunk");
+
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 1);
+        assert!(!state.satisfaction_report().satisfied);
+    }
+
+    #[test]
+    fn malformed_worker_delayed_compute_thunk_is_rejected_before_state_changes() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "bad thunk",
+            "worker thunks must include a concrete continuation",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Waiting,
+            delayed_compute_thunks: vec![DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task.id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need operator input".to_string(),
+                requested_input: Some(" ".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/bad-thunk".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{}", state.goal.id, task.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(300),
+            }],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        let error = state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect_err("malformed thunk should be rejected");
+
+        assert!(matches!(error, DomainError::InvariantViolation(_)));
+        assert_eq!(state.delayed_compute_thunks.len(), 0);
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::Runnable
+        );
     }
 
     #[test]
@@ -15576,6 +16700,201 @@ mod tests {
     }
 
     #[test]
+    fn restart_request_retires_stale_wait_objects_for_requeued_task() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "restart waiting",
+            "restart should not leave old waits actionable after a task is requeued",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+        state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need operator choice".to_string(),
+                requested_input: Some("Which recovery path should this task use?".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/restart-wait".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/restart-wait".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(300),
+            })
+            .expect("thunk created");
+        state.approvals.push(ApprovalRequest {
+            id: Uuid::new_v4(),
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            attempt: 1,
+            reason: "old sandbox approval".to_string(),
+            status: ApprovalStatus::Pending,
+            risk: ApprovalRisk::Medium,
+            reason_codes: Vec::new(),
+            sandbox: SandboxProfile::default(),
+            requested_action: "run old attempt".to_string(),
+            notification_reports: Vec::new(),
+        });
+
+        let record = state
+            .apply_restart_request(RestartRequest {
+                goal_id: state.goal.id,
+                scope: RestartScope::Task,
+                reason: RestartReason::OperatorRequested,
+                message: "retry with a valid launch plan".to_string(),
+                task_id: Some(task_id),
+                reset_attempts: Some(false),
+                preserve_artifacts: Some(true),
+                operator: Some("test".to_string()),
+            })
+            .expect("restart applied");
+
+        assert_eq!(record.restarted_task_ids, vec![task_id]);
+        assert_eq!(state.tasks[&task_id].status, TaskStatus::Runnable);
+        assert_eq!(
+            state.delayed_compute_thunks[0].status,
+            DelayedComputeThunkStatus::Cancelled
+        );
+        assert_eq!(state.approvals[0].status, ApprovalStatus::Cancelled);
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+        assert!(state.task_graph_actionability_report().is_actionable());
+    }
+
+    #[test]
+    fn task_terminal_semantics_keep_blocked_and_failed_recoverable() {
+        assert!(TaskStatus::Done.is_terminal());
+        assert!(TaskStatus::Cancelled.is_terminal());
+        assert!(!TaskStatus::Blocked.is_terminal());
+        assert!(!TaskStatus::Failed.is_terminal());
+        assert!(!TaskStatus::WaitingInput.is_terminal());
+        assert!(TaskStatus::Done.is_terminal_ok());
+        assert!(!TaskStatus::Cancelled.is_terminal_ok());
+    }
+
+    #[test]
+    fn cancel_marks_recoverable_tasks_cancelled() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "cancel",
+            "cancel should be the explicit terminal stop path",
+        ));
+        let root_id = state.runnable_tasks().remove(0).id;
+        state.tasks.get_mut(&root_id).unwrap().status = TaskStatus::Blocked;
+        state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(root_id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need operator choice".to_string(),
+                requested_input: Some("Cancel should close this wait.".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/cancel-wait".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/cancel-wait".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{root_id}", state.goal.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(300),
+            })
+            .expect("thunk created");
+        state.approvals.push(ApprovalRequest {
+            id: Uuid::new_v4(),
+            goal_id: state.goal.id,
+            task_id: Some(root_id),
+            attempt: 1,
+            reason: "pending approval".to_string(),
+            status: ApprovalStatus::Pending,
+            risk: ApprovalRisk::Medium,
+            reason_codes: Vec::new(),
+            sandbox: SandboxProfile::default(),
+            requested_action: "run task".to_string(),
+            notification_reports: Vec::new(),
+        });
+        state.status = GoalStatus::Blocked;
+
+        state.cancel("operator stop");
+
+        assert_eq!(state.status, GoalStatus::Cancelled);
+        assert_eq!(state.tasks[&root_id].status, TaskStatus::Cancelled);
+        assert_eq!(
+            state.delayed_compute_thunks[0].status,
+            DelayedComputeThunkStatus::Cancelled
+        );
+        assert_eq!(state.approvals[0].status, ApprovalStatus::Cancelled);
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+    }
+
+    #[test]
+    fn cancelled_goal_is_not_restartable() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "cancel restart",
+            "cancelled goals should stay terminal",
+        ));
+        let root_id = state.runnable_tasks().remove(0).id;
+        state.cancel("operator stop");
+
+        let error = state
+            .apply_restart_request(RestartRequest {
+                goal_id: state.goal.id,
+                scope: RestartScope::Goal,
+                reason: RestartReason::OperatorRequested,
+                message: "stale restart action".to_string(),
+                task_id: None,
+                reset_attempts: Some(true),
+                preserve_artifacts: Some(true),
+                operator: Some("test".to_string()),
+            })
+            .expect_err("cancelled goal should not restart");
+
+        assert!(error.to_string().contains("goal is terminal"));
+        assert_eq!(state.status, GoalStatus::Cancelled);
+        assert_eq!(state.tasks[&root_id].status, TaskStatus::Cancelled);
+    }
+
+    #[test]
+    fn stale_approval_cannot_reopen_a_rejected_blocked_task() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "approval reopen",
+            "replayed approval decisions must not recover blocked work",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+        let approval_id = Uuid::new_v4();
+        state.approvals.push(ApprovalRequest {
+            id: approval_id,
+            goal_id: state.goal.id,
+            task_id: Some(task_id),
+            attempt: 1,
+            reason: "dangerous action".to_string(),
+            status: ApprovalStatus::Rejected,
+            risk: ApprovalRisk::High,
+            reason_codes: vec![ApprovalReasonCode::SandboxPolicyAlways],
+            sandbox: state.tasks[&task_id].sandbox.clone(),
+            requested_action: "run task".to_string(),
+            notification_reports: Vec::new(),
+        });
+        state.tasks.get_mut(&task_id).unwrap().status = TaskStatus::Blocked;
+        state.status = GoalStatus::Blocked;
+
+        let error = state
+            .apply_human_approval(HumanApproval {
+                approval_id,
+                approved: true,
+                note: Some("operator changed decision".to_string()),
+            })
+            .expect_err("stale approval must not reopen a task");
+
+        assert!(error.to_string().contains("is not pending"));
+        assert_eq!(state.tasks[&task_id].status, TaskStatus::Blocked);
+        assert_eq!(state.status, GoalStatus::Blocked);
+    }
+
+    #[test]
     fn task_timeout_can_restart_under_policy() {
         let mut state = GoalState::new(GoalSpec::new(
             "timeout",
@@ -15592,6 +16911,168 @@ mod tests {
         assert_eq!(state.tasks[&root_id].status, TaskStatus::Runnable);
         assert_eq!(state.timeout_events.len(), 1);
         assert_eq!(state.restart_history.len(), 1);
+    }
+
+    #[test]
+    fn task_lifecycle_invariants_cover_recovery_restart_completion_and_cancel() {
+        let mut goal = GoalSpec::new(
+            "lifecycle",
+            "task state transitions should keep projections and recovery actions coherent",
+        );
+        goal.review_policy.enabled = false;
+        let mut state = GoalState::new(goal);
+        let task_id = state.runnable_tasks().remove(0).id;
+
+        let initial_progress = state.progress();
+        assert_eq!(initial_progress.status, GoalStatus::Running);
+        assert_eq!(initial_progress.total_tasks, 1);
+        assert_eq!(initial_progress.open_tasks, 1);
+        assert_eq!(initial_progress.runnable_tasks, vec![task_id]);
+        assert!(state.task_graph_actionability_report().is_actionable());
+
+        state.task_mut(task_id).expect("task").sandbox.network = NetworkAccess::Open;
+        let approval = state
+            .ensure_task_approval_or_request(task_id)
+            .expect("approval evaluation succeeds")
+            .expect("approval requested");
+        let waiting_approval = state.progress();
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::WaitingApproval
+        );
+        assert_eq!(waiting_approval.status, GoalStatus::WaitingApproval);
+        assert_eq!(waiting_approval.waiting_approval_tasks, 1);
+        assert!(waiting_approval.runnable_tasks.is_empty());
+        assert!(state.task_graph_actionability_report().is_actionable());
+
+        state
+            .apply_human_approval(HumanApproval {
+                approval_id: approval.id,
+                approved: false,
+                note: Some("network access needs a narrower route first".to_string()),
+            })
+            .expect("rejection applies");
+        let blocked = state.progress();
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Blocked
+        );
+        assert_eq!(blocked.status, GoalStatus::Blocked);
+        assert_eq!(blocked.blocked_tasks, 1);
+        assert!(state.task_graph_actionability_report().is_actionable());
+
+        let restart = state
+            .apply_restart_request(RestartRequest {
+                goal_id: state.goal.id,
+                scope: RestartScope::Task,
+                reason: RestartReason::OperatorRequested,
+                message: "retry after narrowing the network route".to_string(),
+                task_id: Some(task_id),
+                reset_attempts: Some(true),
+                preserve_artifacts: Some(true),
+                operator: Some("test".to_string()),
+            })
+            .expect("restart applies");
+        assert_eq!(restart.restarted_task_ids, vec![task_id]);
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.task(task_id).expect("task").attempts, 0);
+        assert_eq!(state.progress().status, GoalStatus::Running);
+
+        state
+            .create_delayed_compute_thunk(test_human_input_thunk_request(
+                state.goal.id,
+                task_id,
+                "lifecycle-human-input",
+            ))
+            .expect("thunk created");
+        let waiting_input = state.progress();
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(waiting_input.status, GoalStatus::Paused);
+        assert_eq!(waiting_input.waiting_input_tasks, 1);
+        assert_eq!(waiting_input.pending_delayed_compute_thunks, 1);
+        assert_eq!(waiting_input.compute_graph.open_thunks, 1);
+        assert!(waiting_input.compute_graph.waiting_tasks.contains(&task_id));
+        assert!(state.task_graph_actionability_report().is_actionable());
+
+        let thunk_id = state.delayed_compute_thunks[0].id;
+        state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id,
+                responder: "operator".to_string(),
+                response_summary: "continue with the narrowed route".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect("thunk resumes");
+        assert_eq!(
+            state.delayed_compute_thunks[0].status,
+            DelayedComputeThunkStatus::Resumed
+        );
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+
+        state.mark_running(task_id).expect("task can run");
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Running
+        );
+        assert_eq!(state.task(task_id).expect("task").attempts, 1);
+        let task = state.task(task_id).expect("task").clone();
+        let result = AgentRunResult::stub_done(&task);
+        state
+            .apply_agent_result(result.clone(), &SpawnPolicy::default())
+            .expect("worker result applies");
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::NeedsValidation
+        );
+
+        state
+            .apply_validation(ValidationReport::from_result(ValidationRequest {
+                goal_id: state.goal.id,
+                task,
+                result,
+            }))
+            .expect("validation applies");
+        let complete = state.progress();
+        assert_eq!(state.task(task_id).expect("task").status, TaskStatus::Done);
+        assert_eq!(complete.status, GoalStatus::Done);
+        assert_eq!(complete.terminal_ok_tasks, 1);
+        assert_eq!(complete.open_tasks, 0);
+        assert_eq!(complete.percent_done, 1.0);
+
+        let mut cancel_state = GoalState::new(GoalSpec::new(
+            "cancel lifecycle",
+            "cancel should close non-terminal work and pending waits",
+        ));
+        let cancel_task_id = cancel_state.runnable_tasks().remove(0).id;
+        cancel_state
+            .create_delayed_compute_thunk(test_human_input_thunk_request(
+                cancel_state.goal.id,
+                cancel_task_id,
+                "lifecycle-cancel",
+            ))
+            .expect("cancel thunk created");
+        cancel_state.cancel("operator stop");
+        let cancelled = cancel_state.progress();
+        assert_eq!(cancelled.status, GoalStatus::Cancelled);
+        assert_eq!(
+            cancel_state.task(cancel_task_id).expect("task").status,
+            TaskStatus::Cancelled
+        );
+        assert_eq!(
+            cancel_state.delayed_compute_thunks[0].status,
+            DelayedComputeThunkStatus::Cancelled
+        );
+        assert_eq!(cancelled.pending_delayed_compute_thunks, 0);
     }
 
     #[test]
@@ -16489,6 +17970,95 @@ mod tests {
     }
 
     #[test]
+    fn steering_pause_resume_inject_and_cancel_are_state_transitions() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "steering lifecycle",
+            "operator steering should pause, resume, inject, and cancel durable work",
+        ));
+        let root_id = state.root_task().expect("root task").id;
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "pause while reviewing evidence".to_string(),
+                    kind: SteeringDirectiveKind::Pause {
+                        reason: "operator inspection".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("pause steering applies");
+        assert_eq!(state.status, GoalStatus::Paused);
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "resume after review".to_string(),
+                    kind: SteeringDirectiveKind::Resume {
+                        reason: "operator wants progress".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("resume steering applies");
+        assert_eq!(state.status, GoalStatus::Running);
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: Some(root_id),
+                    operator: Some("operator".to_string()),
+                    message: "inject a regression tester".to_string(),
+                    kind: SteeringDirectiveKind::InjectTask {
+                        role: WorkerKind::Tester,
+                        prompt: "Run the state-machine regression test suite.".to_string(),
+                        reason: "operator wants behavioral validation".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("task injection steering applies");
+        assert!(
+            state.tasks.values().any(|task| {
+                task.parent_id == Some(root_id)
+                    && task.role == WorkerKind::Tester
+                    && task.status == TaskStatus::Runnable
+                    && task.tags.iter().any(|tag| tag == "steering")
+            }),
+            "steering should materialize a durable child task"
+        );
+
+        state
+            .apply_steering(
+                SteeringDirective {
+                    id: Uuid::new_v4(),
+                    goal_id: state.goal.id,
+                    task_id: None,
+                    operator: Some("operator".to_string()),
+                    message: "cancel the goal".to_string(),
+                    kind: SteeringDirectiveKind::Cancel {
+                        reason: "operator cancelled lifecycle test".to_string(),
+                    },
+                },
+                &SpawnPolicy::default(),
+            )
+            .expect("cancel steering applies");
+        assert_eq!(state.status, GoalStatus::Cancelled);
+        assert!(state.tasks.values().all(|task| task.status.is_terminal()));
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+    }
+
+    #[test]
     fn web_search_request_compiles_to_routed_research_child_task() {
         let request = WebSearchRequest {
             query: "Which current SDK should route agent web research?".to_string(),
@@ -17127,6 +18697,44 @@ mod tests {
     }
 
     #[test]
+    fn human_input_thunk_requires_concrete_prompt() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "input needed",
+            "human input thunks should expose a concrete operator question",
+        ));
+        let task_id = state.runnable_tasks().remove(0).id;
+
+        let error = state
+            .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+                goal_id: state.goal.id,
+                task_id: Some(task_id),
+                kind: DelayedComputeThunkKind::HumanInput,
+                reason: "need operator input".to_string(),
+                requested_input: Some("  ".to_string()),
+                wait_ref: Some(WaitRef {
+                    kind: WaitRefKind::HumanThread,
+                    reference: "thread://operator/recovery".to_string(),
+                }),
+                continuation: ContinuationRef {
+                    continuation_id: "goal/root/bad-input".to_string(),
+                    boundary: ContinuationBoundary::TaskDispatch,
+                    state_ref: format!("goal/{}/task/{task_id}", state.goal.id),
+                    resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+                },
+                timeout_seconds: Some(300),
+            })
+            .expect_err("empty human prompt should be rejected");
+
+        assert!(matches!(error, DomainError::InvariantViolation(_)));
+        assert_eq!(state.delayed_compute_thunks.len(), 0);
+        assert_eq!(
+            state.task(task_id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+    }
+
+    #[test]
     fn compute_graph_projects_tasks_thunks_continuations_and_wait_refs() {
         let mut state = GoalState::new(GoalSpec::new(
             "compute graph",
@@ -17158,6 +18766,17 @@ mod tests {
         assert_eq!(graph.goal_id, state.goal.id);
         assert_eq!(graph.open_thunks, 1);
         assert_eq!(graph.waiting_tasks, vec![task_id]);
+        let thunk_node = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == ComputeGraphNodeKind::DelayedComputeThunk)
+            .expect("thunk graph node");
+        assert_eq!(thunk_node.thunk_id, Some(thunk.id));
+        assert_eq!(thunk_node.status, ComputeGraphNodeStatus::Waiting);
+        assert_eq!(
+            thunk_node.requested_input.as_deref(),
+            Some("external service callback")
+        );
         assert!(graph.nodes.iter().any(|node| {
             node.kind == ComputeGraphNodeKind::DelayedComputeThunk
                 && node.thunk_id == Some(thunk.id)
@@ -17230,6 +18849,189 @@ mod tests {
         assert_eq!(state.delayed_compute_thunks.len(), 1);
         assert_eq!(state.delayed_compute_thunks[0].task_id, Some(task.id));
         assert_eq!(state.compute_graph().open_thunks, 1);
+        assert!(state.task_graph_actionability_report().is_actionable());
+
+        let thunk_id = state.delayed_compute_thunks[0].id;
+        state
+            .resume_delayed_compute_thunk(DelayedComputeThunkResumeRequest {
+                thunk_id,
+                responder: "operator".to_string(),
+                response_summary: "use the balanced model route".to_string(),
+                artifact_refs: Vec::new(),
+            })
+            .expect("worker wait resumes");
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 0);
+    }
+
+    #[test]
+    fn duplicate_worker_thunk_continuation_is_idempotent() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "worker wait duplicate",
+            "replayed worker waits should not duplicate the same continuation",
+        ));
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Waiting,
+            summary: "waiting for the same operator continuation".to_string(),
+            delayed_compute_thunks: vec![test_human_input_thunk_request(
+                state.goal.id,
+                task.id,
+                "duplicate-worker-wait",
+            )],
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        state
+            .apply_agent_result(result.clone(), &SpawnPolicy::default())
+            .expect("first waiting result applies");
+        let first_thunk_id = state.delayed_compute_thunks[0].id;
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("replayed waiting result is idempotent");
+
+        let pending_thunks = state
+            .delayed_compute_thunks
+            .iter()
+            .filter(|thunk| thunk.status == DelayedComputeThunkStatus::Pending)
+            .collect::<Vec<_>>();
+        assert_eq!(pending_thunks.len(), 1);
+        assert_eq!(pending_thunks[0].id, first_thunk_id);
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.progress().pending_delayed_compute_thunks, 1);
+        assert_eq!(
+            state
+                .compute_graph()
+                .nodes
+                .iter()
+                .filter(|node| node.kind == ComputeGraphNodeKind::DelayedComputeThunk)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn blocked_result_without_recovery_is_repaired_into_waiting_thunk() {
+        let mut goal = GoalSpec::new(
+            "blocked repair",
+            "blocked worker output should become actionable when restart is disabled",
+        );
+        goal.restart_policy.enabled = false;
+        let mut state = GoalState::new(goal);
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Blocked,
+            summary: "cannot continue without an operator decision".to_string(),
+            confidence: 0.1,
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("blocked result is repaired");
+
+        assert_eq!(
+            state.task(task.id).expect("task").status,
+            TaskStatus::WaitingInput
+        );
+        assert_eq!(state.progress().blocked_tasks, 0);
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        let thunk = &state.delayed_compute_thunks[0];
+        assert_eq!(thunk.task_id, Some(task.id));
+        assert_eq!(thunk.kind, DelayedComputeThunkKind::HumanInput);
+        assert!(
+            thunk
+                .requested_input
+                .as_ref()
+                .is_some_and(|input| { input.contains("Decide how to recover task") })
+        );
+        assert!(state.task_graph_actionability_report().is_actionable());
+    }
+
+    #[test]
+    fn blocked_result_with_replan_child_stays_blocked_and_actionable() {
+        let mut goal = GoalSpec::new(
+            "blocked replan",
+            "blocked worker output can remain blocked when it carries a replan action",
+        );
+        goal.restart_policy.enabled = false;
+        let mut state = GoalState::new(goal);
+        let task = state.runnable_tasks().remove(0);
+        let result = AgentRunResult {
+            status: WorkerRunStatus::Blocked,
+            summary: "implementation path is invalid; planner must revise the task graph"
+                .to_string(),
+            child_requests: vec![ChildTaskRequest {
+                role: WorkerKind::Planner,
+                purpose: Some(TaskPurpose::Work),
+                title: Some("Replan blocked task".to_string()),
+                subgoal_id: None,
+                color: None,
+                prompt: "Revise the task decomposition for the blocked implementation path."
+                    .to_string(),
+                reason: "worker requested durable replanning".to_string(),
+                dependencies: Vec::new(),
+                budget: None,
+                sandbox: None,
+                done_criteria: None,
+                review_doctrine: None,
+                execution: None,
+                priority: TaskPriority::High,
+                tags: vec!["replan".to_string()],
+            }],
+            confidence: 0.2,
+            ..AgentRunResult::stub_done(&task)
+        };
+
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("blocked replan result applies");
+
+        let parent = state.task(task.id).expect("parent task");
+        assert_eq!(parent.status, TaskStatus::Blocked);
+        assert_eq!(parent.children.len(), 1);
+        let replan_child_id = parent.children[0];
+        let replan_child = state.task(replan_child_id).expect("replan child");
+        assert_eq!(replan_child.role, WorkerKind::Planner);
+        assert_eq!(replan_child.status, TaskStatus::Runnable);
+        assert!(replan_child.tags.iter().any(|tag| tag == "replan"));
+        assert_eq!(state.status, GoalStatus::Blocked);
+        assert_eq!(state.delayed_compute_thunks.len(), 0);
+        assert!(state.task_graph_actionability_report().is_actionable());
+        assert!(
+            state
+                .progress()
+                .runnable_tasks
+                .iter()
+                .any(|task_id| *task_id == replan_child_id)
+        );
+    }
+
+    #[test]
+    fn task_graph_actionability_report_flags_blocked_task_without_recovery() {
+        let mut goal = GoalSpec::new(
+            "blocked report",
+            "task graph validation should find unactionable blocked tasks",
+        );
+        goal.restart_policy.enabled = false;
+        let mut state = GoalState::new(goal);
+        let task_id = state.runnable_tasks().remove(0).id;
+        state.task_mut(task_id).expect("task").status = TaskStatus::Blocked;
+        state.status = GoalStatus::Blocked;
+
+        let report = state.task_graph_actionability_report();
+
+        assert!(!report.is_actionable());
+        assert_eq!(report.violations.len(), 1);
+        assert_eq!(report.violations[0].task_id, task_id);
+        assert_eq!(report.violations[0].status, TaskStatus::Blocked);
+        assert!(report.violations[0].reason.contains("no pending thunk"));
     }
 
     #[test]

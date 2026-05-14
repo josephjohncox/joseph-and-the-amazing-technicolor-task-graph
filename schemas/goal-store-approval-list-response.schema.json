@@ -82,7 +82,8 @@
       "enum": [
         "pending",
         "approved",
-        "rejected"
+        "rejected",
+        "cancelled"
       ]
     }
   }

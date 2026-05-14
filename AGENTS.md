@@ -71,6 +71,13 @@ Update docs when behavior or public contracts change.
   waiting-input, waiting-approval, and budget-exhausted work must remain
   steerable, restartable, resumable, or cancellable through coordinator-owned
   state transitions.
+- Progress must always be possible through a concrete coordinator action. Any
+  non-terminal blocked, failed, waiting, approval, or budget-exhausted state
+  shown to an operator must name the action that can move it forward.
+- Blocked work without a delayed compute thunk or continuation is allowed only
+  when it carries coordinator-owned recovery actions such as retry/restart,
+  replan or steer, cancel, or create a delayed compute thunk for the missing
+  wait.
 - Workers may request child tasks, but only the coordinator may create them.
 - Any prompt, skill, MCP tool, runner context, or worker output that says
   "subagent" means a COAT durable child task unless explicitly stated otherwise.
@@ -143,7 +150,7 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 
 - Every `TaskNode` has an `execution` profile.
 - Every `TaskNode` also has a `purpose`: work, review, unification, or actor retry.
-- Every `TaskNode` may carry a `color` from `GoalSpec.color_policy`, subgoal metadata, or explicit child-task metadata; use stable color keys as semantic graph labels, not one-off UI decoration.
+- Every `TaskNode` may carry an optional `color` from subgoal metadata, child-task metadata, or default display hints; color is for readability and fun, not routing, validation, approval, budget, or satisfaction policy.
 - Goals have `control_policy`, `research_policy`, `memory_policy`, `approval_policy`, and optional `ranking_policy`; preserve them when editing contracts.
 - Goal ranking votes are extension state. Humans and the coordinator may upvote/downvote goals for priority, promotion into overarching initiatives, or demotion into subgoals only when `ranking_policy.enabled` allows it.
 - Ranking votes must be durable coordinator state, not hidden worker preferences; workers may propose ranking changes only as structured requests that the coordinator or human can accept.
@@ -188,12 +195,33 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Delayed compute thunks are first-class durable nodes for human input, approvals, external callbacks, timers, resource waits, model availability, and any other suspended continuation.
 - A delayed compute thunk pauses task dispatch through coordinator state and resumes through an explicit delimited `ContinuationRef`; do not model waits as sleeping agents or free-running polling loops.
 - Worker status `waiting` means the worker produced a suspended computation, not a failed run. Workers MUST return `AgentRunResult.delayed_compute_thunks` for every required wait; the coordinator materializes those thunks and owns resume.
+- User-facing thunks MUST surface as typed human prompts, not amorphous feedback requests. Each prompt should include a concise title, the concrete question or decision, why the system is waiting, allowed actions such as continue, answer, add context, approve, retry, or replan, optional free-text/context capture, and the durable continuation or approval ref that will be resumed.
+- Human prompt responses are structured operator decisions. Capture the selected action key, optional answer/context, relevant artifact refs, and actor metadata; do not bury the decision in chat prose or require operators to guess which workflow command is needed.
 - `GoalProgress.compute_graph` and `coat goal compute-graph` are the operator projection for tasks, thunks, wait refs, continuation boundaries, dependency edges, and mechanism rounds.
 - Durable notification fanout and event fan-in should use stable infrastructure targets such as SQS when operators need replay, dead-letter queues, external automations, or bounded queue polling.
 - Local notification threads are for operator visibility; Restate workflow state remains the source of truth.
 - Web UI edits are steering, approval, goal, event, or memory commands against backend APIs; never mutate projections as if they were source-of-truth state.
-- Agent progress views should read projected `TaskRecord` rows and `payload_json.prompt` so operators can inspect current prompts, task contracts, state, and evidence.
-- If a workflow exists in the canonical `coat` CLI hierarchy, the SPA and TUI must expose a visible panel, direct action, or intentionally CLI-only command path for it. Keep the SPA Actions panel and TUI Commands tab aligned with `coat guide --print`.
+- Keep the current React/Vite SPA architecture. Do not replace the operator UI
+  wholesale with a chat framework or generated HTML surface; integrate UI
+  libraries only when they call COAT backend APIs and preserve server-owned
+  chat/draft persistence.
+- AG-UI-style event streams are a future projection protocol for observable
+  runs, interrupts, state snapshots, and messages. They are not the source of
+  truth; Restate/coordinator state and goal-store projections remain
+  authoritative.
+- Chat libraries such as assistant-ui or AI SDK UI `useChat` may be evaluated
+  later for better composer/message ergonomics, but only as adapters over
+  `/api/chat`. They must not become the durable conversation store, model
+  routing authority, or workflow-resume path.
+- Keep `coat tui` on the Rust/Ratatui/Crossterm path while it is the packaged
+  native operator dashboard. A richer terminal-chat frontend, such as an
+  assistant-ui Ink adapter, may be added later only as a companion over
+  `/api/chat` and the same goal/action APIs, not as a replacement coordinator
+  or second chat persistence model.
+- Agent progress views should lead with current state, next action, blockers, and evidence. Prompt text, task contracts, raw payloads, and debug traces belong behind drill-down inspection.
+- The SPA and TUI are direct task-graph management surfaces, not CLI coverage matrices. Expose approvals, continuation resumes, restarts, steering, branch choices, cancellation, memory actions, events, and recovery controls through backend APIs where the operator is already looking at the goal or task graph.
+- SPA, TUI, MCP, and notification adapters should render human prompts with explicit controls first: a continue button for safe continuation, answer/context fields when more information is required, approve/reject controls where both are supported, and recovery/replan actions for blocked work. Raw JSON and command names belong behind inspect/debug affordances.
+- Group rare or administrative actions by operator intent, such as recover blocked work, review evidence, route research, manage capacity or events, tune memory, run mechanism rounds, or inspect/debug. Keep rare or dangerous actions hidden until the selected goal state, task state, or explicit operator mode makes them relevant.
 - Goal satisfaction is gated by actor output, critic reviews, optional review unification, and a satisfaction score.
 - Learning signals are reward-like validation/review scores for future actor/critic tuning; they are not permission to run unbounded retries.
 - Research tasks must return sourced `ResearchOutput` plus an `InformationUsePlan`.
@@ -231,7 +259,15 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run `buf lint` after proto edits.
 - Run `cargo check --workspace` before handing off.
 - Prefer behavioral tests that would fail for incorrect goal, workflow, routing, validation, persistence, or operator-feedback behavior.
+- Human-prompt tests should prove that blocked or waiting work exposes an understandable question, at least one concrete action, the required context field when needed, and a visible result after resume. Do not accept tests that only prove a generic feedback form exists.
+- Progress-invariant tests should fail when an action-needed item has no
+  coordinator action, when a human wait is represented without a delayed compute
+  thunk and continuation ref, or when blocked work lacks retry/replan/cancel or
+  create-thunk recovery.
 - Validate Compose with `coat deploy local preflight --allow-stub-runners` and `coat deploy local config`.
+- Run the bootstrap scenario shell script with `sh scripts/coat-scenario-e2e.sh`
+  when you need deterministic stub-stack scenario evidence under
+  `target/coat-scenarios`.
 - Inspect local Compose logs with `coat deploy local logs --follow coordinator runner-registry control-web`.
 - Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 
@@ -259,7 +295,8 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Mechanism ballot: `coat goal mechanism ballot --goal-id <goal-id> --file examples/mechanism-ballot-consensus.json`
 - Create delayed compute thunk: `coat goal thunk create --goal-id <goal-id> --file examples/delayed-compute-thunk-human-input.json`
 - Inspect compute graph: `coat goal compute-graph --goal-id <goal-id>`
-- Resume delayed compute thunk: `coat human resume-thunk --goal-id <goal-id> --thunk-id <thunk-id> --response-summary "approved path"`
+- Continue delayed compute thunk: `coat human resume-thunk --goal-id <goal-id> --thunk-id <thunk-id> --continue`
+- Resume delayed compute thunk with context: `coat human resume-thunk --goal-id <goal-id> --thunk-id <thunk-id> --add-context "Use the validated path"`
 - Kubernetes render: `coat deploy cluster render --output infra/k8s/rendered.yaml`
 - Kubernetes apply or dry-run: `coat deploy cluster apply --file infra/k8s/rendered.yaml --dry-run=client`
 - Kubernetes rollout status: `coat deploy cluster status --timeout 120s`

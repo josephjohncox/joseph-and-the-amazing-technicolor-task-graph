@@ -1,0 +1,102 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_invalid_approval_ref",
+  "title": "Bootstrap invalid approval ref",
+  "description": "Negative fixture: an approval resume references a different approval_ref than the approval request.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T10:05:00Z",
+    "seed": 3100,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003100",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003100",
+        "title": "Invalid approval ref bootstrap",
+        "objective": "Demonstrate rejection when approval resume refs do not match approval requests.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Request approval with mismatched resume",
+            "prompt": "This fixture is intentionally invalid.",
+            "reason": "Negative scenario validation fixture.",
+            "tags": ["scenario", "bootstrap", "negative", "approval"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003100",
+      "description": "Submit the invalid approval bootstrap goal."
+    },
+    {
+      "id": "request_approval",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003100",
+      "description": "Replay an approval-gated wait.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003101",
+        "status": "waiting_approval",
+        "summary": "Approval required before continuing.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000003102",
+            "kind": "approval",
+            "approval_ref": "approval://bootstrap/approval-requested",
+            "continuation_ref": "continuation://bootstrap/approval-invalid",
+            "operator_action": "Approve the request and resume continuation://bootstrap/approval-invalid",
+            "approval_request": {
+              "title": "Approve invalid fixture",
+              "question": "Approve applying the deterministic fixture result?",
+              "allowed_actions": ["approve", "reject", "replan"],
+              "continuation_ref": "continuation://bootstrap/approval-invalid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "approve_wrong_ref",
+      "type": "resume_delayed_compute",
+      "goal_id": "00000000-0000-4000-8000-000000003100",
+      "description": "Resume with an approval_ref that does not match the request.",
+      "resume": {
+        "thunk_id": "00000000-0000-4000-8000-000000003102",
+        "approval_ref": "approval://bootstrap/approval-wrong",
+        "continuation_ref": "continuation://bootstrap/approval-invalid",
+        "action": "approve",
+        "operator_action": "Approve the request and resume continuation://bootstrap/approval-invalid"
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "blocked",
+    "task_counts": {
+      "blocked": 1
+    },
+    "required_events": ["approval_requested"],
+    "required_artifacts": []
+  },
+  "evaluator_checks": [
+    {
+      "id": "invalid_approval_ref_rejected",
+      "kind": "state_machine",
+      "assertion": "approval resume refs must match approval request refs",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

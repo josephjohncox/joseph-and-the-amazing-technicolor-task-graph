@@ -16,10 +16,11 @@ mod tui;
 use std::{
     collections::BTreeMap,
     env, fs,
+    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, bail};
@@ -871,8 +872,6 @@ struct GoalTasksArgs {
     #[arg(long)]
     purpose: Vec<String>,
     #[arg(long)]
-    color: Vec<String>,
-    #[arg(long)]
     tag: Vec<String>,
     #[arg(long)]
     runnable: bool,
@@ -1117,7 +1116,7 @@ struct ApproveArgs {
     approval_id: Uuid,
     #[arg(long, default_value_t = true)]
     approved: bool,
-    #[arg(long)]
+    #[arg(long, help = "Optional approval note shown to the coordinator")]
     note: Option<String>,
 }
 
@@ -1603,8 +1602,21 @@ struct ResumeThunkArgs {
     thunk_id: Uuid,
     #[arg(long, default_value = "operator")]
     responder: String,
-    #[arg(long)]
-    response_summary: String,
+    #[arg(
+        long = "add-context",
+        alias = "answer",
+        alias = "response-summary",
+        value_name = "TEXT",
+        conflicts_with = "continue_without_context",
+        help = "Add context or answer the human prompt before continuing"
+    )]
+    response_summary: Option<String>,
+    #[arg(
+        long = "continue",
+        conflicts_with = "response_summary",
+        help = "Continue the delayed computation without extra context"
+    )]
+    continue_without_context: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1712,7 +1724,7 @@ struct ComposeCommand {
 enum ComposeSubcommand {
     #[command(about = "Check initialization, Docker, env files, runner modes, and model setup")]
     Preflight(ComposePreflightArgs),
-    #[command(about = "Run docker compose up after preflight unless --skip-preflight is set")]
+    #[command(about = "Validate config, rebuild images, remove orphans, and run docker compose up")]
     Up(ComposeUpArgs),
     #[command(about = "Print the resolved docker compose config")]
     Config(ComposeConfigArgs),
@@ -1761,6 +1773,10 @@ struct ComposeUpArgs {
     #[arg(long)]
     skip_preflight: bool,
     #[arg(long)]
+    skip_config_check: bool,
+    #[arg(long)]
+    keep_orphans: bool,
+    #[arg(long)]
     allow_uninitialized: bool,
     #[arg(long)]
     allow_stub_runners: bool,
@@ -1783,6 +1799,8 @@ impl Default for ComposeUpArgs {
             register_cloud: false,
             init_env: false,
             skip_preflight: false,
+            skip_config_check: false,
+            keep_orphans: false,
             allow_uninitialized: false,
             allow_stub_runners: false,
             tunnel_name: "jattg-personal".to_string(),
@@ -2524,7 +2542,7 @@ async fn guided_approval(theme: &ColorfulTheme) -> anyhow::Result<()> {
         .with_prompt("Approval ID")
         .interact_text()?;
     let approved = Confirm::with_theme(theme)
-        .with_prompt("Approve this request?")
+        .with_prompt("Approve and continue this request?")
         .default(true)
         .interact()?;
     let note: String = Input::with_theme(theme)
@@ -5583,7 +5601,6 @@ fn task_query_from_args(args: &GoalTasksArgs) -> anyhow::Result<TaskQuery> {
             "TaskPurposeKind",
         )?);
     }
-    query.color_keys.extend(args.color.clone());
     query.tags.extend(args.tag.clone());
     if args.runnable {
         query.runnable_only = true;
@@ -5768,13 +5785,23 @@ async fn approve(args: ApproveArgs) -> anyhow::Result<()> {
 async fn resume_thunk(args: ResumeThunkArgs) -> anyhow::Result<()> {
     let args = effective_resume_thunk_args(args)?;
     let goal_id = resolve_goal_id(&args.selector).await?;
+    let response_summary = resume_thunk_response_summary(&args);
     let request = DelayedComputeThunkResumeRequest {
         thunk_id: args.thunk_id,
         responder: args.responder,
-        response_summary: args.response_summary,
+        response_summary,
         artifact_refs: Vec::new(),
     };
     restate_post_json(&args.restate_ingress, goal_id, "resume_thunk", &request).await
+}
+
+fn resume_thunk_response_summary(args: &ResumeThunkArgs) -> String {
+    args.response_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or("Continue")
+        .to_string()
 }
 
 async fn restate_post_without_body(
@@ -9310,6 +9337,17 @@ fn compose(args: ComposeCommand) -> anyhow::Result<()> {
             let service_url = effective_restate_service_url(&args.service_url)?;
             args.tunnel_name = tunnel_name.clone();
             args.service_url = service_url.clone();
+            if !args.skip_config_check {
+                run_docker_compose(
+                    compose_config_quiet_command_args(
+                        args.restate_cloud,
+                        &args.restate_cloud_env_file,
+                        &args.env_file,
+                        &args.profile,
+                    ),
+                    "validate docker compose config",
+                )?;
+            }
             run_docker_compose(compose_up_command_args(&args), "run docker compose up")?;
             if register_cloud {
                 restate_register_cloud(RestateRegisterCloudArgs {
@@ -10107,14 +10145,144 @@ fn env_value(values: &BTreeMap<String, String>, name: &str) -> Option<String> {
 }
 
 fn run_docker_compose(args: Vec<String>, description: &str) -> anyhow::Result<()> {
-    let status = Command::new("docker")
-        .args(&args)
-        .status()
-        .with_context(|| description.to_string())?;
+    let mut command = Command::new("docker");
+    command.args(&args);
+
+    let source_fingerprint = if docker_compose_builds_images(&args)
+        && env::var_os("COAT_SOURCE_FINGERPRINT").is_none()
+    {
+        let fingerprint = compose_source_fingerprint()?;
+        command.env("COAT_SOURCE_FINGERPRINT", &fingerprint);
+        Some(fingerprint)
+    } else {
+        env::var("COAT_SOURCE_FINGERPRINT").ok()
+    };
+
+    if let Some(fingerprint) = source_fingerprint {
+        println!(
+            "COAT_SOURCE_FINGERPRINT={fingerprint} {}",
+            shell_command("docker", &args)
+        );
+    } else {
+        println!("{}", shell_command("docker", &args));
+    }
+
+    let status = command.status().with_context(|| description.to_string())?;
     if !status.success() {
         bail!("docker compose exited with {status}");
     }
     Ok(())
+}
+
+fn docker_compose_builds_images(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "build")
+        || (args.iter().any(|arg| arg == "up") && args.iter().any(|arg| arg == "--build"))
+}
+
+fn compose_source_fingerprint() -> anyhow::Result<String> {
+    source_fingerprint_for_roots(
+        &[
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("Cargo.lock"),
+            PathBuf::from("AGENTS.md"),
+            PathBuf::from("ARCHITECTURE.md"),
+            PathBuf::from("crates"),
+            PathBuf::from("sidecars"),
+            PathBuf::from("ui"),
+            PathBuf::from("infra/containers"),
+            PathBuf::from("infra/compose"),
+            PathBuf::from("proto"),
+            PathBuf::from("schemas"),
+            PathBuf::from("skills"),
+            PathBuf::from("docs/exec-plans/active"),
+        ],
+        Path::new("."),
+    )
+}
+
+fn source_fingerprint_for_roots(roots: &[PathBuf], base: &Path) -> anyhow::Result<String> {
+    let mut hasher = DefaultHasher::new();
+    for root in roots {
+        let path = base.join(root);
+        if path.exists() {
+            hash_source_path(root, &path, &mut hasher)
+                .with_context(|| format!("hash source fingerprint for {}", path.display()))?;
+        }
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+fn hash_source_path(
+    relative: &Path,
+    path: &Path,
+    hasher: &mut DefaultHasher,
+) -> anyhow::Result<()> {
+    if should_skip_source_fingerprint_path(relative) {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("read metadata for {}", path.display()))?;
+    relative.display().to_string().hash(hasher);
+    metadata.len().hash(hasher);
+    metadata.file_type().is_dir().hash(hasher);
+    metadata.file_type().is_file().hash(hasher);
+    metadata.file_type().is_symlink().hash(hasher);
+    if let Ok(modified) = metadata.modified() {
+        system_time_hash_value(modified).hash(hasher);
+    }
+    if metadata.file_type().is_symlink() {
+        fs::read_link(path)
+            .with_context(|| format!("read symlink {}", path.display()))?
+            .display()
+            .to_string()
+            .hash(hasher);
+        return Ok(());
+    }
+    if metadata.is_file() {
+        fs::read(path)
+            .with_context(|| format!("read source file {}", path.display()))?
+            .hash(hasher);
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("read directory {}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("read entries under {}", path.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let name = entry.file_name();
+        let child_relative = relative.join(name);
+        hash_source_path(&child_relative, &entry.path(), hasher)?;
+    }
+    Ok(())
+}
+
+fn system_time_hash_value(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+fn should_skip_source_fingerprint_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let value = component.as_os_str().to_string_lossy();
+        matches!(
+            value.as_ref(),
+            ".git"
+                | ".direnv"
+                | ".cache"
+                | ".uv-cache"
+                | "target"
+                | "node_modules"
+                | "dist"
+                | "coverage"
+                | "tmp"
+        )
+    })
 }
 
 fn compose_base_args(
@@ -10156,10 +10324,26 @@ fn compose_up_command_args(args: &ComposeUpArgs) -> Vec<String> {
     );
     command_args.push("up".to_string());
     command_args.push("--build".to_string());
+    if !args.keep_orphans {
+        command_args.push("--remove-orphans".to_string());
+    }
     if args.detach || args.register_cloud {
         command_args.push("--detach".to_string());
     }
     command_args.extend(args.services.iter().cloned());
+    command_args
+}
+
+fn compose_config_quiet_command_args(
+    restate_cloud: bool,
+    restate_cloud_env_file: &Path,
+    env_files: &[PathBuf],
+    profiles: &[String],
+) -> Vec<String> {
+    let mut command_args =
+        compose_base_args(restate_cloud, restate_cloud_env_file, env_files, profiles);
+    command_args.push("config".to_string());
+    command_args.push("--quiet".to_string());
     command_args
 }
 
@@ -11181,28 +11365,31 @@ mod tests {
         ComposeUpArgs, DEFAULT_GOAL_STORE_URL, DeploySubcommand, EphemeralJobsApplyArgs,
         ExecutorJobRenderArgs, ExecutorJobSubcommand, GoalAdversarialSubcommand,
         GoalMechanismSubcommand, GoalSubcommand, GoalThunkSubcommand, HelmTemplateArgs,
-        HelmUpgradeArgs, HumanSubcommand, K8sStatusArgs, K8sSubcommand, KubectlApplySpec,
-        LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex, PlanSubcommand,
-        ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
+        HelmUpgradeArgs, HumanCommand, HumanSubcommand, K8sStatusArgs, K8sSubcommand,
+        KubectlApplySpec, LocalAuthAction, LoginArgs, MODEL_PARAM_PRESETS, ModelsDevIndex,
+        PlanSubcommand, ProjectInitAction, ProjectInitCheck, SetupSubcommand, ToolSubcommand,
         adversarial_request_bundle, apply_capacity_plan_policy_from_config, apply_config_profile,
         apply_model_param_values, bump_release_versions, chat_client_default_action,
         claude_mcp_json, codex_mcp_add_args, compose_config_command_args,
-        compose_logs_command_args, compose_model_preflight_findings, compose_runner_modes,
-        compose_up_command_args, control_chat_default_choice, default_local_chat_completions_url,
+        compose_config_quiet_command_args, compose_logs_command_args,
+        compose_model_preflight_findings, compose_runner_modes, compose_up_command_args,
+        control_chat_default_choice, default_local_chat_completions_url,
         default_local_model_provider_index, default_model_param_preset_index,
-        default_model_preset_index, endpoint_discovery_candidates, endpoint_from_config,
-        ensure_json_goal_id, executor_job_manifest, extract_follow_ups, helm_template_args,
-        helm_upgrade_args, kubectl_apply_args, kubectl_ephemeral_jobs_apply_args,
-        kubectl_rollout_status_args, latest_goal_id_from_value, live_model_presets,
-        load_fresh_model_index_from_paths, local_auth_action_command, local_auth_profile_defaults,
-        local_model_provider_preset, local_model_provider_preset_labels, login_actions_from_args,
-        merge_coat_config, model_index_cache_is_fresh, model_param_preset,
-        model_param_preset_labels, model_param_values_from_env, model_param_values_from_preset,
-        model_preset, model_preset_labels, model_presets_with_configured,
-        models_dev_embedding_dimensions, models_dev_embedding_presets, models_dev_provider_presets,
-        openai_embeddings_url, parse_env_file_content, preferred_operator_chat_model,
-        project_init_action, read_json_file, release_plan_json, replace_env_line,
-        replace_toml_section_value, replace_yaml_root_value, restate_cloud_env_placeholders,
+        default_model_preset_index, docker_compose_builds_images, endpoint_discovery_candidates,
+        endpoint_from_config, ensure_json_goal_id, executor_job_manifest, extract_follow_ups,
+        helm_template_args, helm_upgrade_args, kubectl_apply_args,
+        kubectl_ephemeral_jobs_apply_args, kubectl_rollout_status_args, latest_goal_id_from_value,
+        live_model_presets, load_fresh_model_index_from_paths, local_auth_action_command,
+        local_auth_profile_defaults, local_model_provider_preset,
+        local_model_provider_preset_labels, login_actions_from_args, merge_coat_config,
+        model_index_cache_is_fresh, model_param_preset, model_param_preset_labels,
+        model_param_values_from_env, model_param_values_from_preset, model_preset,
+        model_preset_labels, model_presets_with_configured, models_dev_embedding_dimensions,
+        models_dev_embedding_presets, models_dev_provider_presets, openai_embeddings_url,
+        parse_env_file_content, preferred_operator_chat_model, project_init_action, read_json_file,
+        release_plan_json, replace_env_line, replace_toml_section_value, replace_yaml_root_value,
+        restate_cloud_env_placeholders, resume_thunk_response_summary,
+        source_fingerprint_for_roots,
     };
     use clap::{CommandFactory, Parser};
     use coat_domain::{
@@ -11400,7 +11587,7 @@ mod tests {
             .to_string();
         for expected in [
             "Check initialization, Docker, env files, runner modes, and model setup",
-            "Run docker compose up after preflight unless --skip-preflight is set",
+            "Validate config, rebuild images, remove orphans, and run docker compose up",
             "Show local Compose service logs with the resolved COAT config",
             "coat deploy local config --env-file infra/compose/local-providers.env",
         ] {
@@ -11508,7 +11695,7 @@ mod tests {
             "resume-thunk",
             "--thunk-id",
             "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
-            "--response-summary",
+            "--add-context",
             "continue with smoke runner",
         ])
         .expect("parse human resume-thunk");
@@ -11517,6 +11704,27 @@ mod tests {
             Some(Commands::Human(ref human))
                 if matches!(human.command, HumanSubcommand::ResumeThunk(_))
         ));
+
+        let continue_thunk = Cli::try_parse_from([
+            "coat",
+            "human",
+            "resume-thunk",
+            "--thunk-id",
+            "018f8f2f-1fd8-7688-bb12-8bfb6b756602",
+            "--continue",
+        ])
+        .expect("parse human resume-thunk continue");
+        assert!(matches!(
+            continue_thunk.command,
+            Some(Commands::Human(ref human))
+                if matches!(human.command, HumanSubcommand::ResumeThunk(_))
+        ));
+        if let Some(Commands::Human(HumanCommand {
+            command: HumanSubcommand::ResumeThunk(args),
+        })) = continue_thunk.command
+        {
+            assert_eq!(resume_thunk_response_summary(&args), "Continue");
+        }
 
         let goal_vote = Cli::try_parse_from([
             "coat",
@@ -12755,6 +12963,8 @@ mod tests {
             register_cloud: true,
             init_env: false,
             skip_preflight: false,
+            skip_config_check: false,
+            keep_orphans: false,
             allow_uninitialized: false,
             allow_stub_runners: false,
             tunnel_name: "jattg-personal".to_string(),
@@ -12780,9 +12990,87 @@ mod tests {
                 "db",
                 "up",
                 "--build",
+                "--remove-orphans",
                 "--detach",
                 "coordinator",
             ]
+        );
+    }
+
+    #[test]
+    fn compose_up_validates_resolved_config_before_start() {
+        assert_eq!(
+            compose_config_quiet_command_args(
+                true,
+                &PathBuf::from("infra/compose/restate-cloud.env"),
+                &[PathBuf::from("infra/compose/local-providers.env")],
+                &["db".to_string()]
+            ),
+            vec![
+                "compose",
+                "--env-file",
+                "infra/compose/restate-cloud.env",
+                "--env-file",
+                "infra/compose/local-providers.env",
+                "-f",
+                "infra/compose/docker-compose.yml",
+                "-f",
+                "infra/compose/docker-compose.restate-cloud.yml",
+                "--profile",
+                "restate-cloud",
+                "--profile",
+                "db",
+                "config",
+                "--quiet",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_up_builds_images_by_default() {
+        let args = ComposeUpArgs {
+            services: vec!["coordinator".to_string()],
+            ..ComposeUpArgs::default()
+        };
+
+        let command = compose_up_command_args(&args);
+        assert!(
+            docker_compose_builds_images(&command),
+            "local up must rebuild service images by default"
+        );
+        assert!(
+            command.contains(&"--build".to_string()),
+            "local up should pass docker compose up --build"
+        );
+        assert!(
+            command.contains(&"--remove-orphans".to_string()),
+            "local up should remove stale Compose services by default"
+        );
+    }
+
+    #[test]
+    fn compose_source_fingerprint_changes_when_local_sources_change() {
+        let temp = std::env::temp_dir().join(format!(
+            "coat-source-fingerprint-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let crates_dir = temp.join("crates/example/src");
+        fs::create_dir_all(&crates_dir).expect("create temp source tree");
+        fs::write(crates_dir.join("lib.rs"), "pub fn value() -> u8 { 1 }\n").expect("write source");
+
+        let roots = vec![PathBuf::from("crates")];
+        let before = source_fingerprint_for_roots(&roots, &temp).expect("fingerprint before edit");
+        fs::write(crates_dir.join("lib.rs"), "pub fn value() -> u8 { 10 }\n").expect("edit source");
+        let after = source_fingerprint_for_roots(&roots, &temp).expect("fingerprint after edit");
+
+        fs::remove_dir_all(&temp).ok();
+        assert_ne!(
+            before, after,
+            "source fingerprint should change when local source files change"
         );
     }
 

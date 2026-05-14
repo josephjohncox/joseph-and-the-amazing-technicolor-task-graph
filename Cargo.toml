@@ -40,6 +40,7 @@ schemars = { version = "1.1", features = ["uuid1"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+proptest = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json", "uuid"] }
 tempfile = "3.23"
 thiserror = "2.0"

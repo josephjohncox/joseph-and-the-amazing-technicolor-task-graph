@@ -41,8 +41,8 @@ use coat_domain::{
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
     GoalStorePolicy, GoalStoreProjectionMode, GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest,
     GoalStoreSnapshotUpsertResponse, GoalStoreTaskListResponse, GoalTriggerTemplate,
-    GoalVoteDirection, GoalVoteSource, GraphColorAssignmentMode, GraphColorPolicy, GraphColorRef,
-    HumanApproval, HumanFeedback, InformationUsePlan, KubernetesExecutorJobProvisionRequest,
+    GoalVoteDirection, GoalVoteSource, GraphColorRef, HumanApproval, HumanFeedback,
+    InformationUsePlan, KubernetesExecutorJobProvisionRequest,
     KubernetesExecutorJobProvisionResponse, KubernetesObjectRef, KubernetesProvisionMode,
     KubernetesProvisionStatus, LearningSignal, McpAccessMode, McpAuthRef, McpContextRef,
     MechanismAllocation, MechanismBallot, MechanismBallotRequest, MechanismDecision, MechanismKind,
@@ -199,16 +199,6 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "graph-color-ref.schema.json",
         schema_for!(GraphColorRef),
-    )?;
-    write_schema(
-        &out_dir,
-        "graph-color-policy.schema.json",
-        schema_for!(GraphColorPolicy),
-    )?;
-    write_schema(
-        &out_dir,
-        "graph-color-assignment-mode.schema.json",
-        schema_for!(GraphColorAssignmentMode),
     )?;
     write_schema(
         &out_dir,

@@ -10,6 +10,9 @@ x-coat-node-logging: &coat-node-logging
   COAT_NODE_LOG_LEVEL: ${COAT_NODE_LOG_LEVEL:-debug}
   NODE_ENV: ${NODE_ENV:-development}
 
+x-coat-build-args: &coat-build-args
+  COAT_SOURCE_FINGERPRINT: ${COAT_SOURCE_FINGERPRINT:-local}
+
 services:
   restate:
     image: docker.restate.dev/restatedev/restate:latest
@@ -45,6 +48,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-coordinator
     environment:
       <<: *coat-rust-logging
@@ -72,6 +76,8 @@ services:
     depends_on:
       - restate
       - coordinator
+    environment:
+      COAT_RESTATE_REGISTER_FORCE: ${COAT_RESTATE_REGISTER_FORCE:-true}
     command:
       - /bin/sh
       - -lc
@@ -79,14 +85,22 @@ services:
         set -eu
         attempt=1
         response=/tmp/restate-register-response.json
+        force="$${COAT_RESTATE_REGISTER_FORCE:-true}"
+        payload=$$(printf '{"uri":"http://coordinator:9080","force":%s}' "$$force")
         while [ "$$attempt" -le 60 ]; do
           status=$$(curl -sS -o "$$response" -w "%{http_code}" -X POST http://restate:9070/deployments \
             -H 'content-type: application/json' \
-            -d '{"uri":"http://coordinator:9080"}' || true)
+            -d "$$payload" || true)
           case "$$status" in
-            200|201|202|204|409)
+            200|201|202|204)
               cat "$$response"
               exit 0
+              ;;
+            409)
+              echo "Restate registration conflict. The coordinator schema was not registered." >&2
+              echo "Set COAT_RESTATE_REGISTER_FORCE=true for local schema-breaking upgrades, or delete/drain the stale deployment." >&2
+              cat "$$response" || true
+              exit 1
               ;;
           esac
           echo "waiting to register coordinator with Restate (attempt $$attempt, status $$status)"
@@ -104,6 +118,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-validator
     environment:
       <<: *coat-rust-logging
@@ -118,6 +133,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-sandbox-runner
     environment:
       <<: *coat-rust-logging
@@ -141,6 +157,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-tool-registry
     environment:
       <<: *coat-rust-logging
@@ -166,6 +183,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-runner-registry
     environment:
       <<: *coat-rust-logging
@@ -183,6 +201,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-notifier
     environment:
       <<: *coat-rust-logging
@@ -202,6 +221,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-goal-store
     environment:
       <<: *coat-rust-logging
@@ -221,6 +241,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-event-gateway
     environment:
       <<: *coat-rust-logging
@@ -250,6 +271,7 @@ services:
       dockerfile: infra/containers/rust-service.Dockerfile
       target: service
       args:
+        <<: *coat-build-args
         BIN: coat-memory-gateway
     environment:
       <<: *coat-rust-logging
@@ -332,6 +354,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: ui/control-plane-web
     environment:
       <<: *coat-node-logging
@@ -392,6 +415,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/codex-runner-ts
     environment:
       <<: *coat-node-logging
@@ -425,6 +449,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/codex-runner-ts
     environment:
       <<: *coat-node-logging
@@ -458,6 +483,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/claude-code-runner-ts
     environment:
       <<: *coat-node-logging
@@ -491,6 +517,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
       <<: *coat-node-logging
@@ -543,6 +570,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
       <<: *coat-node-logging
@@ -595,6 +623,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/model-provider-runner-ts
     environment:
       <<: *coat-node-logging
@@ -632,6 +661,7 @@ services:
       context: ../..
       dockerfile: infra/containers/node-sidecar.Dockerfile
       args:
+        <<: *coat-build-args
         SIDECAR_DIR: sidecars/staff-engineer-runner-ts
     environment:
       <<: *coat-node-logging

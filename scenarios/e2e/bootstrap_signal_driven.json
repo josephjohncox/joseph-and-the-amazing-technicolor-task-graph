@@ -1,0 +1,130 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_signal_driven",
+  "title": "Bootstrap signal driven",
+  "description": "An external signal creates one deduplicated goal that completes through deterministic stub evidence.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:25:00Z",
+    "seed": 3006,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "setup": {
+    "fixtures": [
+      {
+        "id": "bootstrap_signal.ci_failed",
+        "kind": "external_event",
+        "value": {
+          "id": "bootstrap-signal-001",
+          "source_kind": "ci",
+          "event_type": "check.failed",
+          "dedupe_key": "scenario:bootstrap_signal:ci_failed",
+          "occurred_at": "2026-05-14T09:25:00Z",
+          "payload": {
+            "repository": "example/repo",
+            "branch": "bootstrap-signal"
+          }
+        }
+      }
+    ]
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003006",
+      "creation": "event_route",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003006",
+        "title": "Bootstrap signal goal",
+        "objective": "Handle one deduplicated CI failure signal.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Handle CI signal",
+            "prompt": "Return deterministic signal handling evidence.",
+            "reason": "Exercise event-driven goal creation.",
+            "tags": ["scenario", "bootstrap", "signal"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "emit_signal",
+      "type": "emit_external_event",
+      "description": "Emit the deterministic external signal.",
+      "event": {
+        "fixture": "bootstrap_signal.ci_failed"
+      },
+      "expect": {
+        "created_goals": 1
+      }
+    },
+    {
+      "id": "complete_signal_task",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003006",
+      "description": "Replay completion for the signal-created task.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003601",
+        "status": "done",
+        "summary": "Signal handled with deterministic evidence.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "event_report",
+            "uri": "artifact://scenarios/bootstrap_signal_driven/signal-report.json",
+            "description": "Signal handling evidence"
+          }
+        ]
+      }
+    },
+    {
+      "id": "emit_duplicate_signal",
+      "type": "emit_external_event",
+      "description": "Emit the same signal to prove dedupe.",
+      "event": {
+        "fixture": "bootstrap_signal.ci_failed"
+      },
+      "expect": {
+        "created_goals": 0,
+        "dedupe_hits": 1
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003006",
+      "description": "Validate signal handling evidence."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["external_event_received", "triggered_goal_created", "event_deduped", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_signal_driven/signal-report.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The signal created exactly one goal and the duplicate was deduplicated."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "signal_deduped",
+      "kind": "event_dedupe",
+      "assertion": "created_goals == 1 && dedupe_hits == 1",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

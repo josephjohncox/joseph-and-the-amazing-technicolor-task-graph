@@ -104,7 +104,8 @@
       "enum": [
         "pending",
         "approved",
-        "rejected"
+        "rejected",
+        "cancelled"
       ]
     },
     "FilesystemAccess": {

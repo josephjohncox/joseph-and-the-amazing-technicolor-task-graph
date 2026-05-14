@@ -1431,69 +1431,6 @@
             }
           }
         },
-        "color_policy": {
-          "$ref": "#/$defs/GraphColorPolicy",
-          "default": {
-            "assignment_mode": "purpose",
-            "enabled": true,
-            "palette": [
-              {
-                "hex": "#2f6f73",
-                "key": "root",
-                "label": "Root",
-                "meaning": "goal root, planner context, and global coordination"
-              },
-              {
-                "hex": "#2563eb",
-                "key": "work",
-                "label": "Work",
-                "meaning": "primary actor implementation or operational work"
-              },
-              {
-                "hex": "#16a34a",
-                "key": "research",
-                "label": "Research",
-                "meaning": "sourced research, web search, memory lookup, and information-use planning"
-              },
-              {
-                "hex": "#9333ea",
-                "key": "review",
-                "label": "Review",
-                "meaning": "critic review, code quality, safety, and evidence inspection"
-              },
-              {
-                "hex": "#0f766e",
-                "key": "unification",
-                "label": "Unification",
-                "meaning": "fork/join synthesis and merge decisions"
-              },
-              {
-                "hex": "#ea580c",
-                "key": "actor_retry",
-                "label": "Actor Retry",
-                "meaning": "bounded actor retry after critic feedback"
-              },
-              {
-                "hex": "#db2777",
-                "key": "candidate_branch",
-                "label": "Candidate",
-                "meaning": "competing branch candidate in a forked implementation"
-              },
-              {
-                "hex": "#7c3aed",
-                "key": "branch_vote",
-                "label": "Vote",
-                "meaning": "branch competition review or vote"
-              },
-              {
-                "hex": "#0891b2",
-                "key": "branch_unification",
-                "label": "Branch Unification",
-                "meaning": "branch result selection and promotion"
-              }
-            ]
-          }
-        },
         "control_policy": {
           "$ref": "#/$defs/ControlLoopPolicy",
           "default": {
@@ -1841,7 +1778,9 @@
             "allowed_scopes": [
               "goal",
               "task",
-              "blocked"
+              "blocked",
+              "failed",
+              "timed_out"
             ],
             "enabled": true,
             "max_goal_restarts": 3,
@@ -1919,37 +1858,8 @@
         "done_criteria"
       ]
     },
-    "GraphColorAssignmentMode": {
-      "type": "string",
-      "enum": [
-        "purpose",
-        "status",
-        "custom"
-      ]
-    },
-    "GraphColorPolicy": {
-      "description": "Goal-level color policy and legend for the task graph.",
-      "type": "object",
-      "properties": {
-        "assignment_mode": {
-          "$ref": "#/$defs/GraphColorAssignmentMode",
-          "default": "purpose"
-        },
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "palette": {
-          "type": "array",
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/GraphColorRef"
-          }
-        }
-      }
-    },
     "GraphColorRef": {
-      "description": "Stable visual metadata for the Technicolor Task Graph.\n\nColors are semantic graph state, not dashboard decoration. They let\noperators, reviewers, dashboards, and MCP clients preserve a consistent\nlegend across task projections, branches, reviews, and subgoals.",
+      "description": "Optional visual metadata for the Technicolor Task Graph.\n\nColors are presentation hints for dashboards, screenshots, and operator\nreadability. They must not drive routing, budgets, validation, approvals,\nor any other coordinator policy.",
       "type": "object",
       "properties": {
         "hex": {

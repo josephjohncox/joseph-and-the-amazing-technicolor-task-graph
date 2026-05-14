@@ -6,9 +6,10 @@
 //! Testcontainers-backed process runner for the ordered harness plan below.
 
 use coat_domain::{
-    ContinuationBoundary, ContinuationRef, ContinuationResumeAction, DelayedComputeThunkKind,
-    DelayedComputeThunkRequest, GoalSpec, GoalState, GoalStatus, GoalStoreSnapshotUpsertRequest,
-    StateEvent, TaskStatus, WaitRef, WaitRefKind,
+    ChildTaskRequest, ContinuationBoundary, ContinuationRef, ContinuationResumeAction,
+    DelayedComputeThunkKind, DelayedComputeThunkRequest, GoalSpec, GoalState, GoalStatus,
+    GoalStoreSnapshotUpsertRequest, StateEvent, TaskPriority, TaskStatus, WaitRef, WaitRefKind,
+    WorkerKind,
 };
 use std::{env, path::PathBuf, process::Command};
 
@@ -390,6 +391,88 @@ fn runtime_verifier_projection_counters_include_compute_graph_waits() {
             waiting_tasks: 1,
             event_count: 2,
             last_event_sequence: 2,
+        }
+    );
+}
+
+#[test]
+fn runtime_verifier_projection_counters_include_blocked_waiting_and_thunks() {
+    let mut goal = GoalSpec::new(
+        "runtime verifier blocked waiting",
+        "Prove blocked work and waiting delayed compute thunks project together.",
+    );
+    goal.initial_tasks.push(ChildTaskRequest {
+        role: WorkerKind::Codex,
+        purpose: None,
+        title: Some("operator input child".to_string()),
+        subgoal_id: None,
+        color: None,
+        prompt: "wait for operator input".to_string(),
+        reason: "test projection counters".to_string(),
+        dependencies: Vec::new(),
+        budget: None,
+        sandbox: None,
+        done_criteria: None,
+        review_doctrine: None,
+        execution: None,
+        priority: TaskPriority::Normal,
+        tags: Vec::new(),
+    });
+    let mut state = GoalState::new(goal);
+    let root_task_id = state
+        .tasks
+        .values()
+        .find(|task| task.parent_id.is_none())
+        .expect("root task")
+        .id;
+    let waiting_task_id = state
+        .tasks
+        .values()
+        .find(|task| task.parent_id == Some(root_task_id))
+        .expect("child task")
+        .id;
+    state
+        .tasks
+        .get_mut(&root_task_id)
+        .expect("root task")
+        .status = TaskStatus::Blocked;
+    state
+        .create_delayed_compute_thunk(DelayedComputeThunkRequest {
+            goal_id: state.goal.id,
+            task_id: Some(waiting_task_id),
+            kind: DelayedComputeThunkKind::ExternalEvent,
+            reason: "wait for runtime verifier callback".to_string(),
+            requested_input: Some("callback payload".to_string()),
+            wait_ref: Some(WaitRef {
+                kind: WaitRefKind::WebhookCorrelation,
+                reference: "webhook://runtime-verifier/restart".to_string(),
+            }),
+            continuation: ContinuationRef {
+                continuation_id: "runtime-verifier/restart-callback".to_string(),
+                boundary: ContinuationBoundary::ExternalCallback,
+                state_ref: format!("goal/{}/task/{waiting_task_id}", state.goal.id),
+                resume_actions: vec![ContinuationResumeAction::MarkRunnable],
+            },
+            timeout_seconds: Some(60),
+        })
+        .expect("delayed compute thunk");
+    state.status = GoalStatus::Blocked;
+
+    let projection = projection_request(&state, "frontier_idle");
+
+    assert_eq!(projection.snapshot.goal.blocked_tasks, 1);
+    assert_eq!(
+        RuntimeVerifierProjectionCounters::from_projection(&projection),
+        RuntimeVerifierProjectionCounters {
+            total_tasks: 2,
+            open_tasks: 2,
+            done_tasks: 0,
+            compute_graph_nodes: 6,
+            compute_graph_edges: 5,
+            open_thunks: 1,
+            waiting_tasks: 1,
+            event_count: 3,
+            last_event_sequence: 3,
         }
     );
 }

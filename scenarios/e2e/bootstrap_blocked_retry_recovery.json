@@ -1,0 +1,129 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_blocked_retry_recovery",
+  "title": "Bootstrap blocked retry recovery",
+  "description": "Plain blocked worker output without a thunk exposes coordinator recovery controls, then the operator restarts the same task and it completes.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:30:00Z",
+    "seed": 3007,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003007",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003007",
+        "title": "Bootstrap blocked retry recovery",
+        "objective": "Recover blocked work without creating a delayed compute thunk.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Recover blocked work",
+            "prompt": "Block once without a thunk, expose recovery controls, then complete after retry.",
+            "reason": "Exercise coordinator-owned recovery for plain blocked work.",
+            "tags": ["scenario", "bootstrap", "blocked", "retry"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003007",
+      "description": "Submit the blocked retry bootstrap goal."
+    },
+    {
+      "id": "block_without_thunk",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003007",
+      "description": "Replay a plain blocked result that has no delayed compute thunk but does expose recovery controls.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003701",
+        "status": "blocked",
+        "summary": "The worker cannot continue from the current fixture state.",
+        "confidence": 0.6,
+        "runner_id": "scenario-stub-runner",
+        "operator_action": "Restart or retry task 00000000-0000-4000-8000-000000003701 through coordinator recovery controls.",
+        "recovery_actions": ["restart", "retry", "replan", "cancel", "create-human-prompt"],
+        "diagnostics": [
+          "No suspended continuation objects are present; this is a plain blocked recovery path.",
+          "The coordinator keeps the task recoverable instead of treating it as terminal failure."
+        ]
+      }
+    },
+    {
+      "id": "restart_blocked_task",
+      "type": "iteration_fixture",
+      "goal_id": "00000000-0000-4000-8000-000000003007",
+      "description": "Record the operator restart that requeues the blocked task.",
+      "payload": {
+        "operator_action": "Restart task 00000000-0000-4000-8000-000000003701 from coordinator state.",
+        "recovery_action": "restart",
+        "retry_attempt": 1,
+        "queue_effect": "task_requeued_by_plain_blocked_recovery"
+      },
+      "expect": {
+        "requeued_tasks": 1,
+        "new_thunks": 0
+      }
+    },
+    {
+      "id": "complete_retried_task",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003007",
+      "description": "Replay completion after coordinator restart.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003701",
+        "status": "done",
+        "summary": "Restarted bootstrap task completed with deterministic evidence.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/bootstrap_blocked_retry_recovery/retry-report.json",
+            "description": "Retry completion evidence after plain blocked recovery"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003007",
+      "description": "Validate retried work."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "task_blocked", "task_restart_requested", "task_requeued", "task_completed", "validation_passed", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_blocked_retry_recovery/retry-report.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The blocked task exposed concrete restart and retry controls, was requeued without a thunk, and completed with evidence."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "plain_blocked_recovered",
+      "kind": "recovery",
+      "assertion": "blocked task exposes restart/retry controls and completes without suspended continuation objects",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

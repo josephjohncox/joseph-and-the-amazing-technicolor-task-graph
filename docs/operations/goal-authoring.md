@@ -10,14 +10,17 @@ A submit-ready goal has:
 
 - a concrete objective with a clear artifact or state change;
 - stable subgoal IDs that split the goal into coordinator-visible slices of work;
-- stable graph color keys for major workstreams when the goal needs visible task topology;
+- optional color hints only when they make the graph easier to scan;
 - initial tasks linked to those subgoal IDs when the first frontier is already known;
 - done criteria that can be validated by tests, artifacts, reviewer scores, or explicit evidence;
 - constraints that should not be violated, including repo scope, safety, compliance, latency, budget, and model/provider limits;
 - a research policy when facts may be stale, niche, external, or high-stakes;
 - a memory policy that states what shared context to retrieve and how branch memories are promoted;
 - an execution profile that names runner capability, model route, persona, MCP context, and notification targets;
-- an approval policy for risky operations such as open network, secrets, non-isolated runners, dangerous MCP tools, deploys, merges, or tracker state changes.
+- an approval policy for risky operations such as open network, secrets, non-isolated runners, dangerous MCP tools, deploys, merges, or tracker state changes;
+- a progress path for every action-needed state: resume a thunk, approve,
+  retry/restart, replan or steer, cancel, branch/select, vote, or create a
+  thunk for a missing wait.
 
 Weak goal:
 
@@ -50,6 +53,14 @@ Run goal authoring as a short actor/critic loop before submitting anything durab
 4. GoalSpec draft
 
    Convert the intake into `GoalSpec` JSON. Keep the objective human-readable, but make the policies machine-readable. Add `authoring` notes for the human reasoning trail, `plan.subgoals` for durable work slices, and `initial_tasks` with matching `subgoal_id`s for any work the coordinator can dispatch immediately.
+
+   Chat-assisted goal authoring should return a compact `drafts.goal_spec`
+   payload: the draft contract and only the fields the operator needs to
+   review before acceptance. Do not copy chat transcripts, model traces, raw
+   provider responses, or goal snapshots into the draft. The control gateway
+   stores the chat turn and compact draft server-side; the browser may cache an
+   active draft, but durable history belongs to goal-store or the configured
+   local journal.
 
    If the work needs local binaries such as `git`, `docker`, `helm`, `kubectl`,
    package managers, build tools, or project CLIs, declare them in
@@ -282,6 +293,8 @@ Critic prompt:
     <condition>MCP auth embeds raw credentials.</condition>
     <condition>Device or browser auth is copied between nodes instead of runner-local or brokered.</condition>
     <condition>The goal asks a worker to own the global plan.</condition>
+    <condition>A human or external wait is modeled as prose, feedback, polling, or a sleeping worker instead of a delayed compute thunk with a typed prompt and continuation ref.</condition>
+    <condition>Blocked work has no coordinator-owned recovery action such as retry, replan, cancel, or create-thunk.</condition>
   </must_block_submission_when>
   <must>
     <rule>You MUST return decision: accept, changes_requested, blocked, or inconclusive.</rule>
@@ -300,11 +313,13 @@ field is missing and prints `goal_id`, `workflow_url`, and an
 
 `objective`: Write this as the contract a reviewer will judge. Avoid implementation-only phrasing unless the implementation itself is the artifact.
 
+Chat drafts: The SPA and TUI may produce `drafts.goal_spec`, `drafts.plan_draft`, `drafts.search_request`, or `drafts.steering_directive` from `/api/chat`. Treat those as compact review payloads. Normal operator review should happen through fields such as title, objective, evidence, constraints, subgoals, and initial tasks. Raw JSON exists for inspect-only debugging, audit, and exact handoff, not as the main authoring UI.
+
 `authoring`: Record the operator intent, assumptions, open questions, constraints, acceptance evidence, and out-of-scope work. This is for goal quality and reviewability, not for hidden worker instructions.
 
 `plan`: Define stable `subgoals` with IDs, titles, owners, expected artifacts, acceptance evidence, and dependencies. Coordinators and dashboards should use these IDs to group progress and find work.
 
-`color_policy`: Keep the default technicolor purpose palette for most goals. Use `assignment_mode = purpose` when colors should follow work/research/review/validation/unification semantics, `status` when operators mainly need state-oriented dashboards, or `custom` when subgoals and child tasks carry explicit colors. Color keys are durable semantic labels; `hex` is only a display hint.
+`color`: Optional on subgoals and child tasks when a draft should be easier to scan in the Technicolor Task Graph. Treat color as presentation metadata only. Do not use it to express routing, priority, validation, review doctrine, approvals, or satisfaction.
 
 `ranking_policy`: Leave disabled for ordinary one-off goals. Enable it when operators or the coordinator should upvote/downvote priority, promote a goal into an overarching initiative, or demote it under another goal as a subgoal. Votes are durable state on `GoalState`, and ranking decisions should change scheduling/projection behavior only through the coordinator.
 
@@ -340,6 +355,25 @@ Standard review steering: Use `request_standard_review` to inject bounded checks
 
 Delayed compute: When work needs a human answer, approval, external callback, timer, resource, or model-route availability before it can continue, represent that pause as a `DelayedComputeThunk`. The thunk stores the wait reference and delimited continuation reference. A worker that discovers a wait returns `status = waiting` plus `AgentRunResult.delayed_compute_thunks`; the coordinator materializes the thunk, marks the task waiting, exposes it in `GoalProgress.compute_graph`, and resumes it only through a coordinator operation. Workers should not sleep, spin, or poll inside a task.
 
+Progress invariant: Every non-terminal task or goal state must have a concrete
+coordinator action that can move it forward. Waiting on a human, callback,
+capacity slot, model route, timer, or approval means creating or resuming a
+delayed compute thunk with a typed prompt and continuation ref. Blocked without
+a thunk is reserved for recoverable states where the coordinator can retry or
+restart the work, replan or steer with new context, cancel, or create a thunk
+for the missing wait. Do not author goals that leave an operator with only a
+status label, chat instruction, or free-form feedback request.
+
+Human prompt shape: A human-facing delayed compute thunk should read like a
+small, typed question rather than a generic feedback request. Include a short
+title, the concrete question, why progress is paused, the allowed actions, any
+required context fields, and the durable continuation reference. Use direct
+actions such as `continue`, `answer`, `add_context`, `approve`, `retry`, or
+`replan` so the SPA, TUI, CLI, MCP tools, and notification adapters can render
+buttons or focused inputs. Capture the selected action and any answer/context
+as structured response data; do not depend on a chat transcript or unstructured
+"feedback" prose to resume the task.
+
 `research_policy`: Enable when answers may change or when external claims affect implementation. Require sources and use plans.
 
 `memory_policy`: Use goal, task, repo, and persona scopes by default. Branch workers may write branch-scoped memories; reviewer/unifier tasks decide what becomes shared.
@@ -365,14 +399,14 @@ coat goal draft \
   --out examples/drafts/typed-memory-retrieval.json
 ```
 
-`--subgoal` and `--initial-task` accept comma-separated `key=value` fields. Use `|` inside list fields such as `tags`, `dependencies`, and `acceptance_evidence`. Color fields are `color`, `color_label`, `color_hex`, and `color_meaning`; omit task color when the task should inherit its subgoal color. For anything more complex than a seed frontier, draft JSON and then run the critic pass.
+`--subgoal` and `--initial-task` accept comma-separated `key=value` fields. Use `|` inside list fields such as `tags`, `dependencies`, and `acceptance_evidence`. Optional color fields are `color`, `color_label`, `color_hex`, and `color_meaning`; they are display hints only. For anything more complex than a seed frontier, draft JSON and then run the critic pass.
 
 Example technicolor seed:
 
 ```sh
 coat goal draft \
   --title "Technicolor graph smoke" \
-  --objective "Show semantic graph colors across research, implementation, and review." \
+  --objective "Show optional graph colors across research, implementation, and review." \
   --subgoal "id=implement,title=Implement,objective=Make the contract real,role=codex,color=implementation_blue,color_label=Implementation Blue,color_hex=#2563eb" \
   --initial-task "role=codex,title=Implement,prompt=Add the contract,subgoal_id=implement"
 ```
@@ -422,7 +456,6 @@ coat goal tasks \
   --file examples/task-query-subgoal.json
 coat goal tasks \
   --subgoal-id implement-progress-contract \
-  --color implementation_blue \
   --runnable
 ```
 
@@ -480,7 +513,9 @@ coat goal mechanism ballot \
 ```
 
 Create and inspect a delayed compute thunk when an operator, event gateway, or
-worker result needs to suspend a task at a delimited continuation:
+worker result needs to suspend a task at a delimited continuation. The payload
+should include the human prompt contract: title, question, reason for the wait,
+allowed actions, optional context fields, and continuation ref.
 
 ```sh
 coat goal thunk create \
@@ -496,12 +531,18 @@ coat human approve \
   --approved true
 ```
 
-Resume a delayed compute thunk after human input or an external answer arrives:
+Resume a delayed compute thunk after human input, a button-style action, or an
+external answer arrives. Use `--continue` for a safe one-click continuation, or
+use `--add-context` to send an answer or operator note with the resume action:
 
 ```sh
 coat human resume-thunk \
   --thunk-id <thunk-id> \
-  --response-summary "Use the local smoke runner before live worker execution."
+  --continue
+
+coat human resume-thunk \
+  --thunk-id <thunk-id> \
+  --add-context "Use the local smoke runner before live worker execution."
 ```
 
 Follow-up commands resolve the goal from `--goal-id`, `COAT_GOAL_ID`, or

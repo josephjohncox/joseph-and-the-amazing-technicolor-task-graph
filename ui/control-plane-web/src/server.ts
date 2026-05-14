@@ -29,6 +29,16 @@ type ProxyResult = {
   data: unknown;
 };
 
+type ActiveStateStatus = "fresh" | "stale" | "unavailable";
+
+type ActiveStateRead = {
+  snapshot: JsonMap | null;
+  attempts: number;
+  status: ActiveStateStatus;
+  unavailableReads: string[];
+  error?: string;
+};
+
 type SteeringDirective = {
   id: string;
   goal_id: string;
@@ -87,6 +97,16 @@ type ChatBackend = {
   modelParams?: JsonMap;
   runnerLabels?: JsonMap;
   modelLabels?: JsonMap;
+};
+
+type StoredDraft = {
+  draft_id: string;
+  kind: string;
+  session_id: string;
+  run_id: string;
+  created_at: string;
+  expires_at: string;
+  payload: JsonMap;
 };
 
 type FollowUpItem = {
@@ -165,6 +185,8 @@ const workflowHandlers = new Set([
 const workflowReadHandlers = new Set(["status", "progress", "tasks", "compute_graph"]);
 const chatRuns = new Map<string, ChatRunTrace>();
 const chatRunTtlMs = 30 * 60 * 1000;
+const chatDrafts = new Map<string, StoredDraft>();
+const chatDraftTtlMs = 4 * 60 * 60 * 1000;
 
 const services: ServiceRef[] = [
   { name: "restate", baseUrl: restateAdminUrl, healthPath: "/health" },
@@ -215,6 +237,10 @@ function bearer(token: string): Record<string, string> {
 function sendJson(res: any, status: number, body: unknown): void {
   res.writeHead(status, jsonHeaders({ "cache-control": "no-store" }));
   res.end(JSON.stringify(body, null, 2));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -635,6 +661,41 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
   };
 }
 
+async function streamGoalState(req: any, res: any, goalId: string): Promise<void> {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  let closed = false;
+  req.on("close", () => {
+    closed = true;
+  });
+
+  const started = Date.now();
+  let sequence = 0;
+  while (!closed && Date.now() - started < 5 * 60 * 1000) {
+    try {
+      const snapshot = await goalSnapshot(goalId);
+      res.write(`event: snapshot\n`);
+      res.write(`id: ${sequence}\n`);
+      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+    } catch (error) {
+      res.write(`event: error\n`);
+      res.write(`id: ${sequence}\n`);
+      res.write(`data: ${JSON.stringify({ error: errorMessage(error), goal_id: goalId })}\n\n`);
+    }
+    sequence += 1;
+    await sleep(1_500);
+  }
+  if (!closed) {
+    res.write(`event: done\n`);
+    res.write(`data: ${JSON.stringify({ goal_id: goalId, reason: "stream_ttl_elapsed" })}\n\n`);
+    res.end();
+  }
+}
+
 async function goalAgentContext(goalId: string, taskId: string | null): Promise<JsonMap> {
   const snapshot = await goalSnapshot(goalId);
   const context = asRecord(snapshot.agent_context);
@@ -875,6 +936,7 @@ function buildAgentContext(
 ): JsonMap {
   const notificationThreads = relevantNotificationThreads(goalId, humanThreadsResponse);
   const entries = arrayField(chatSessionResponse, "entries").map(asRecord);
+  const turns = entries.length ? entries : arrayField(chatSessionResponse, "messages").map(asRecord);
   return {
     generated_at: new Date().toISOString(),
     goal_id: goalId,
@@ -889,12 +951,12 @@ function buildAgentContext(
       durable: Boolean(chatSessionResponse.durable),
       chat_log: asRecord(chatSessionResponse.chat_log),
       message_count: arrayField(chatSessionResponse, "messages").length,
-      latest_turns: entries.slice(-8).map((entry) => ({
-        role: entry.role ?? "",
-        content: entry.content ?? "",
-        created_at: entry.created_at ?? null,
-        provider: entry.provider ?? null,
-        model: entry.model ?? null,
+      latest_turns: turns.slice(-8).map((turn) => ({
+        role: turn.role ?? "",
+        content: turn.content ?? "",
+        created_at: turn.created_at ?? null,
+        provider: turn.provider ?? null,
+        model: turn.model ?? null,
       })),
     },
     notification_threads: notificationThreads,
@@ -1063,6 +1125,107 @@ async function workflowPost(goalId: string, handler: string, body: unknown): Pro
   );
 }
 
+async function workflowMutationEnvelope(goalId: string, handler: string, body: unknown): Promise<JsonMap> {
+  const startedAt = Date.now();
+  const result = await workflowPost(goalId, handler, body);
+  const activeState = await readActiveGoalState(goalId, result.ok ? 4 : 1);
+  return {
+    ok: result.ok,
+    status: result.status,
+    url: result.url,
+    data: result.data,
+    action: {
+      goal_id: goalId,
+      handler,
+      accepted: result.ok,
+      submitted_at: new Date(startedAt).toISOString(),
+    },
+    active_state: activeState.snapshot,
+    active_state_status: activeState.status,
+    active_state_available: activeState.status === "fresh",
+    active_state_unavailable_reads: activeState.unavailableReads,
+    observability: {
+      active_state_attempts: activeState.attempts,
+      active_state_after_ms: Date.now() - startedAt,
+      active_state_status: activeState.status,
+      active_state_available: activeState.status === "fresh",
+      active_state_unavailable_reads: activeState.unavailableReads,
+      active_state_error: activeState.error ?? null,
+      stream_url: `/api/goals/${encodeURIComponent(goalId)}/stream`,
+    },
+  };
+}
+
+async function readActiveGoalState(goalId: string, maxAttempts: number): Promise<ActiveStateRead> {
+  let lastError = "";
+  let lastSnapshot: JsonMap | null = null;
+  let lastStatus: ActiveStateStatus = "unavailable";
+  let lastUnavailableReads: string[] = [];
+  const attempts = Math.max(1, maxAttempts);
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      const snapshot = await goalSnapshot(goalId);
+      const activeState = activeStateHealth(snapshot);
+      if (activeState.status === "fresh") {
+        return {
+          snapshot,
+          attempts: index + 1,
+          status: "fresh",
+          unavailableReads: [],
+        };
+      }
+      lastSnapshot = snapshot;
+      lastStatus = activeState.status;
+      lastUnavailableReads = activeState.unavailableReads;
+      lastError = activeState.error ?? "";
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+    if (index < attempts - 1) {
+      await sleep(200);
+    }
+  }
+  return {
+    snapshot: lastSnapshot,
+    attempts,
+    status: lastSnapshot ? lastStatus : "unavailable",
+    unavailableReads: lastUnavailableReads,
+    error: lastError || "active state unavailable",
+  };
+}
+
+function activeStateHealth(snapshot: JsonMap): { status: ActiveStateStatus; unavailableReads: string[]; error?: string } {
+  const unavailableReads: string[] = [];
+  const readFields: Array<[string, string]> = [
+    ["workflow_status", "status"],
+    ["workflow_progress", "progress"],
+    ["workflow_compute_graph", "compute_graph"],
+  ];
+  for (const [field, handler] of readFields) {
+    const read = asRecord(snapshot[field]);
+    const data = read.data;
+    const dataRecord = asRecord(data);
+    if (
+      data === null
+      || data === undefined
+      || dataRecord.unavailable === true
+      || dataRecord.stale === true
+      || (read.ok === false && read.status !== 404)
+      || read.status === 0
+    ) {
+      unavailableReads.push(handler);
+    }
+  }
+  if (!unavailableReads.length) {
+    return { status: "fresh", unavailableReads };
+  }
+  return {
+    status: "stale",
+    unavailableReads,
+    error: `Restate active-state reads are unavailable or stale: ${unavailableReads.join(", ")}`,
+  };
+}
+
 async function workflowReadPost(goalId: string, handler: string, body: unknown): Promise<ProxyResult> {
   if (handler === "tasks") {
     return normalizeWorkflowReadResult(await workflowPost(goalId, handler, body), handler);
@@ -1155,13 +1318,29 @@ function steeringDirective(goalId: string, operator: string, message: string, ki
 }
 
 function normalizeWorkflowReadResult(result: ProxyResult, handler: string): ProxyResult {
+  if (result.status === 200 && (result.data === null || result.data === undefined)) {
+    return {
+      ...result,
+      ok: false,
+      data: {
+        unavailable: true,
+        stale: true,
+        handler,
+        reason:
+          "Restate returned HTTP 200 with a null workflow read body. Treating this active-state read as unavailable/stale until a non-null coordinator projection is available.",
+        restate_response: result.data,
+      },
+    };
+  }
   if (result.status !== 404) {
     return result;
   }
   return {
     ...result,
+    ok: false,
     data: {
       unavailable: true,
+      stale: true,
       handler,
       reason:
         "Restate returned 404 for this workflow read. The workflow may not be started yet, or the coordinator deployment may still be registering.",
@@ -1176,9 +1355,10 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
   const goalId = String(request.goal_id ?? "");
   const sessionId = String(request.session_id ?? (goalId ? `goal:${goalId}` : "operator:default"));
   const runId = String(request.run_id ?? crypto.randomUUID());
-  const messages = chatMessagesFrom(request.messages);
+  const prompt = String(request.prompt ?? "").trim();
+  const messages = await chatMessagesForRequest(sessionId, request, prompt);
   if (!messages.length) {
-    throw new Error("chat request requires at least one message");
+    throw new Error("chat request requires a prompt or at least one message");
   }
   beginChatRun(runId, sessionId, goalId || null, mode);
   try {
@@ -1195,6 +1375,7 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
       updateChatRun(runId, "using_stub", { reason: stubChatReason() });
       response = stubChat(mode, messages, context);
     }
+    response = compactChatDraftResponse(response, sessionId, runId);
     updateChatRun(runId, "journaling_turns", {
       provider: response.provider ?? null,
       model: response.model ?? null,
@@ -1206,14 +1387,27 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
       run_id: runId,
       chat_log: chatLog,
     };
+    const trace = finishChatRun(runId, result, null);
     return {
       ...result,
-      chat_run: finishChatRun(runId, result, null),
+      chat_run: compactChatRunTrace(trace),
     };
   } catch (error) {
     finishChatRun(runId, {}, error);
     throw error;
   }
+}
+
+async function chatMessagesForRequest(sessionId: string, request: JsonMap, prompt: string): Promise<ChatMessage[]> {
+  if (prompt) {
+    const { entries } = await readChatSessionEntries(sessionId);
+    const history = entries
+      .slice(-8)
+      .map((entry) => ({ role: entry.role, content: entry.content }))
+      .filter((entry) => entry.content);
+    return [...history, { role: "user", content: prompt }];
+  }
+  return chatMessagesFrom(request.messages);
 }
 
 function beginChatRun(runId: string, sessionId: string, goalId: string | null, mode: string): ChatRunTrace {
@@ -1291,6 +1485,21 @@ function chatRunSnapshot(runId: string): JsonMap {
   };
 }
 
+function compactChatRunTrace(trace: ChatRunTrace | null): JsonMap | null {
+  if (!trace) {
+    return null;
+  }
+  return {
+    run_id: trace.run_id,
+    status: trace.status,
+    stage: trace.stage,
+    started_at: trace.started_at,
+    updated_at: trace.updated_at,
+    finished_at: trace.finished_at ?? null,
+    elapsed_ms: trace.elapsed_ms ?? null,
+  };
+}
+
 function cleanupChatRuns(): void {
   const now = Date.now();
   for (const [runId, trace] of chatRuns) {
@@ -1298,6 +1507,156 @@ function cleanupChatRuns(): void {
       chatRuns.delete(runId);
     }
   }
+}
+
+function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: string): JsonMap {
+  cleanupChatDrafts();
+  const drafts = asRecord(response.drafts);
+  const compactDrafts: JsonMap = {};
+  const draftRefs: JsonMap = {};
+  const draftSummary: JsonMap = {};
+  for (const [kind, value] of Object.entries(drafts)) {
+    const draft = asRecord(value);
+    if (kind === "goal_spec" && Object.keys(draft).length > 0) {
+      const stored = storeChatDraft(kind, sessionId, runId, draft);
+      const compact = compactGoalSpecDraft(draft, stored.draft_id);
+      compactDrafts[kind] = compact;
+      draftRefs[kind] = {
+        draft_id: stored.draft_id,
+        kind,
+        expires_at: stored.expires_at,
+      };
+      draftSummary[kind] = goalDraftSummary(compact);
+      continue;
+    }
+    compactDrafts[kind] = compactGenericDraft(value, kind);
+    draftSummary[kind] = genericDraftSummary(value, kind);
+  }
+  return compactRecord({
+    provider: response.provider ?? null,
+    model: response.model ?? null,
+    mode: response.mode ?? null,
+    assistant: String(response.assistant ?? ""),
+    drafts: compactDrafts,
+    draft_refs: draftRefs,
+    draft_summary: draftSummary,
+    chat_backend: asRecord(response.chat_backend),
+    model_params: asRecord(response.model_params),
+  });
+}
+
+function storeChatDraft(kind: string, sessionId: string, runId: string, payload: JsonMap): StoredDraft {
+  const now = Date.now();
+  const stored: StoredDraft = {
+    draft_id: crypto.randomUUID(),
+    kind,
+    session_id: sessionId,
+    run_id: runId,
+    created_at: new Date(now).toISOString(),
+    expires_at: new Date(now + chatDraftTtlMs).toISOString(),
+    payload: JSON.parse(JSON.stringify(payload)) as JsonMap,
+  };
+  chatDrafts.set(stored.draft_id, stored);
+  return stored;
+}
+
+function cleanupChatDrafts(): void {
+  const now = Date.now();
+  for (const [draftId, draft] of chatDrafts) {
+    if (Date.parse(draft.expires_at) <= now) {
+      chatDrafts.delete(draftId);
+    }
+  }
+}
+
+function compactGoalSpecDraft(draft: JsonMap, draftId: string): JsonMap {
+  const authoring = asRecord(draft.authoring);
+  const plan = asRecord(draft.plan);
+  const subgoals = rowsFromData(plan.subgoals).map((subgoal, index) => compactRecord({
+    id: String(subgoal.id ?? subgoal.subgoal_id ?? `subgoal-${index + 1}`),
+    title: String(subgoal.title ?? `Subgoal ${index + 1}`),
+    objective: String(subgoal.objective ?? subgoal.summary ?? subgoal.title ?? ""),
+    owner_role: subgoal.owner_role ?? subgoal.owner ?? subgoal.role ?? null,
+    tags: arrayField(subgoal, "tags"),
+    acceptance_evidence: arrayField(subgoal, "acceptance_evidence"),
+    color: subgoal.color ?? null,
+  }));
+  const initialTasks = rowsFromData(draft.initial_tasks).slice(0, 8).map((task, index) => compactRecord({
+    role: task.role ?? "planner",
+    title: String(task.title ?? `Initial task ${index + 1}`),
+    subgoal_id: task.subgoal_id ?? null,
+    reason: task.reason ?? null,
+    prompt: truncateText(String(task.prompt ?? ""), 500),
+    tags: arrayField(task, "tags"),
+    color: task.color ?? null,
+  }));
+  return compactRecord({
+    draft_id: draftId,
+    kind: "goal_spec",
+    compact: true,
+    title: String(draft.title ?? "Untitled goal draft"),
+    objective: String(draft.objective ?? ""),
+    repo: draft.repo ?? null,
+    authoring: compactRecord({
+      intake_summary: authoring.intake_summary ?? draft.objective ?? null,
+      acceptance_evidence: arrayField(authoring, "acceptance_evidence"),
+      constraints: arrayField(authoring, "constraints"),
+      out_of_scope: arrayField(authoring, "out_of_scope"),
+      assumptions: arrayField(authoring, "assumptions"),
+      open_questions: arrayField(authoring, "open_questions"),
+    }),
+    plan: compactRecord({
+      summary: plan.summary ?? null,
+      subgoals,
+      distribution_notes: arrayField(plan, "distribution_notes"),
+    }),
+    initial_tasks: initialTasks,
+    done_criteria: asRecord(draft.done_criteria),
+  });
+}
+
+function compactGenericDraft(value: unknown, kind: string): JsonMap {
+  const record = asRecord(value);
+  if (!Object.keys(record).length) {
+    return compactRecord({
+      kind,
+      summary: truncateText(String(value ?? ""), 220),
+    });
+  }
+  return compactRecord({
+    kind,
+    title: record.title ?? record.name ?? null,
+    summary: truncateText(String(record.summary ?? record.objective ?? record.prompt ?? record.query ?? record.message ?? ""), 300),
+    query: record.query ?? null,
+    goal_id: record.goal_id ?? null,
+    action: record.action ?? null,
+    draft_id: record.draft_id ?? null,
+  });
+}
+
+function goalDraftSummary(draft: JsonMap): JsonMap {
+  const plan = asRecord(draft.plan);
+  return compactRecord({
+    draft_id: draft.draft_id ?? null,
+    title: draft.title ?? null,
+    objective_preview: truncateText(String(draft.objective ?? ""), 220),
+    subgoal_count: rowsFromData(plan.subgoals).length,
+    initial_task_count: rowsFromData(draft.initial_tasks).length,
+  });
+}
+
+function genericDraftSummary(value: unknown, kind: string): JsonMap {
+  const record = asRecord(value);
+  return compactRecord({
+    kind,
+    title: record.title ?? record.name ?? null,
+    preview: truncateText(String(record.summary ?? record.objective ?? record.prompt ?? record.query ?? record.message ?? value ?? ""), 220),
+  });
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function chatMessagesFrom(value: unknown): ChatMessage[] {
@@ -1317,18 +1676,19 @@ function chatRole(value: string): ChatMessage["role"] {
   return value === "assistant" || value === "system" ? value : "user";
 }
 
-async function chatSession(sessionId: string): Promise<JsonMap> {
+async function chatSession(sessionId: string, includeEntries = false): Promise<JsonMap> {
   const { entries, chatLog } = await readChatSessionEntries(sessionId);
-  return {
+  return compactRecord({
     session_id: sessionId,
     durable: Boolean(chatLog.durable),
     chat_log: chatLog,
     messages: entries.map((entry) => ({
       role: entry.role,
       content: entry.content,
+      created_at: entry.created_at,
     })),
-    entries,
-  };
+    entries: includeEntries ? entries : undefined,
+  });
 }
 
 async function appendChatTurn(
@@ -1394,7 +1754,8 @@ async function appendChatTurn(
 function chatAssistantTurnPayload(response: JsonMap): JsonMap {
   return {
     source: "control_gateway",
-    drafts: asRecord(response.drafts),
+    draft_refs: asRecord(response.draft_refs),
+    draft_summary: asRecord(response.draft_summary),
     chat_backend: asRecord(response.chat_backend),
     model_params: asRecord(response.model_params),
     mode: response.mode ?? null,
@@ -1583,11 +1944,39 @@ async function chatContext(goalId: string): Promise<JsonMap> {
     return context;
   }
   try {
-    context.goal_snapshot = await goalSnapshot(goalId);
+    context.goal = compactGoalContext(await goalSnapshot(goalId));
   } catch (error) {
-    context.goal_snapshot_error = error instanceof Error ? error.message : String(error);
+    context.goal_error = error instanceof Error ? error.message : String(error);
   }
   return context;
+}
+
+function compactGoalContext(snapshot: JsonMap): JsonMap {
+  const progress = asRecord(asRecord(snapshot.workflow_progress).data ?? snapshot.workflow_progress);
+  const status = asRecord(asRecord(snapshot.workflow_status).data ?? snapshot.workflow_status);
+  const computeGraph = asRecord(asRecord(snapshot.workflow_compute_graph).data ?? snapshot.workflow_compute_graph);
+  const tasks = rowsFromData(snapshot.agent_activity).slice(0, 12).map((task) => compactRecord({
+    task_id: task.task_id ?? task.id ?? null,
+    title: task.title ?? null,
+    status: task.status ?? null,
+    role: task.role ?? null,
+    purpose: task.purpose ?? task.purpose_kind ?? null,
+    subgoal_id: task.subgoal_id ?? null,
+  }));
+  return compactRecord({
+    goal_id: snapshot.goal_id ?? progress.goal_id ?? status.goal_id ?? null,
+    status: status.status ?? progress.status ?? null,
+    progress: compactRecord({
+      total_tasks: progress.total_tasks ?? null,
+      runnable_tasks: progress.runnable_tasks ?? null,
+      completed_tasks: progress.completed_tasks ?? null,
+      blocked_tasks: progress.blocked_tasks ?? null,
+      failed_tasks: progress.failed_tasks ?? null,
+      waiting_tasks: progress.waiting_tasks ?? null,
+      open_thunks: computeGraph.open_thunks ?? null,
+    }),
+    next_tasks: tasks,
+  });
 }
 
 async function resolveChatBackend(): Promise<ChatBackend | null> {
@@ -2016,7 +2405,7 @@ function stubChatReason(): string {
 
 function stubAssistantText(mode: string): string {
   if (mode === "draft_goal") {
-    return "Goal draft ready. Review the fields, then submit or discard it.";
+    return "Goal draft ready. Review the fields, then accept or discard it.";
   }
   if (mode === "draft_steering") {
     return "Drafted a steering directive that can be reviewed before it changes durable workflow state.";
@@ -2317,7 +2706,7 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
   }
 
   if (req.method === "GET" && url.pathname === "/api/chat/session") {
-    sendJson(res, 200, await chatSession(url.searchParams.get("session_id") || "operator:default"));
+    sendJson(res, 200, await chatSession(url.searchParams.get("session_id") || "operator:default", url.searchParams.get("debug") === "1"));
     return;
   }
 
@@ -2399,13 +2788,17 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (req.method === "POST" && url.pathname === "/api/goals/submit") {
     const { goalId, spec } = goalSpecWithId(await readJson(req));
-    const result = await workflowPost(goalId, "run", spec);
-    sendJson(res, workflowMutationHttpStatus(result), result);
+    const result = await workflowMutationEnvelope(goalId, "run", spec);
+    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
     return;
   }
 
   if (segments[0] === "api" && segments[1] === "goals" && segments[2]) {
     const goalId = decodeURIComponent(segments[2]);
+    if (req.method === "GET" && segments[3] === "stream") {
+      await streamGoalState(req, res, goalId);
+      return;
+    }
     if (req.method === "GET" && segments.length === 3) {
       sendJson(res, 200, await goalSnapshot(goalId));
       return;
@@ -2423,8 +2816,8 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
       const body = await readJson(req);
       const result = workflowReadHandlers.has(handler)
         ? await workflowReadPost(goalId, handler, body)
-        : await workflowPost(goalId, handler, body);
-      sendJson(res, workflowReadHandlers.has(handler) ? 200 : workflowMutationHttpStatus(result), result);
+        : await workflowMutationEnvelope(goalId, handler, body);
+      sendJson(res, workflowReadHandlers.has(handler) ? 200 : workflowMutationHttpStatus(result as ProxyResult), result);
       return;
     }
   }
@@ -2564,9 +2957,75 @@ function goalSpecWithId(body: unknown): { goalId: string; spec: unknown } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("goal spec must be a JSON object");
   }
-  const record = body as Record<string, unknown>;
+  const record = resolveGoalDraftForSubmit(body as JsonMap);
   const goalId = goalIdFromSpec(record) ?? crypto.randomUUID();
   return { goalId, spec: normalizeGoalSpecForSubmit(record, goalId) };
+}
+
+function resolveGoalDraftForSubmit(record: JsonMap): JsonMap {
+  const draftId = String(record.draft_id ?? asRecord(record.draft_ref).draft_id ?? "").trim();
+  const stored = draftId ? chatDrafts.get(draftId) : undefined;
+  if (stored?.kind === "goal_spec") {
+    return mergeGoalDraftEdits(stored.payload, record);
+  }
+  if (record.compact === true || (draftId && !record.root_budget)) {
+    return expandCompactGoalDraft(record);
+  }
+  return record;
+}
+
+function mergeGoalDraftEdits(baseDraft: JsonMap, editedDraft: JsonMap): JsonMap {
+  const base = JSON.parse(JSON.stringify(baseDraft)) as JsonMap;
+  const authoring = {
+    ...asRecord(base.authoring),
+    ...asRecord(editedDraft.authoring),
+  };
+  const editedPlan = asRecord(editedDraft.plan);
+  const plan = editedDraft.compact === true
+    ? asRecord(base.plan)
+    : {
+        ...asRecord(base.plan),
+        ...editedPlan,
+      };
+  return compactRecord({
+    ...base,
+    title: editedDraft.title ?? base.title,
+    objective: editedDraft.objective ?? base.objective,
+    repo: "repo" in editedDraft ? editedDraft.repo : base.repo,
+    authoring,
+    plan,
+    done_criteria: Object.keys(asRecord(editedDraft.done_criteria)).length ? asRecord(editedDraft.done_criteria) : base.done_criteria,
+  });
+}
+
+function expandCompactGoalDraft(draft: JsonMap): JsonMap {
+  const objective = String(draft.objective ?? draft.title ?? "Define the objective in concrete, testable terms.");
+  const authoring = asRecord(draft.authoring);
+  const plan = asRecord(draft.plan);
+  const subgoals = rowsFromData(plan.subgoals);
+  return compactRecord({
+    title: String(draft.title ?? shortTitle(objective)),
+    objective,
+    repo: draft.repo ?? null,
+    authoring: {
+      intake_summary: String(authoring.intake_summary ?? objective),
+      acceptance_evidence: arrayField(authoring, "acceptance_evidence"),
+      constraints: arrayField(authoring, "constraints"),
+      out_of_scope: arrayField(authoring, "out_of_scope"),
+      assumptions: arrayField(authoring, "assumptions"),
+      open_questions: arrayField(authoring, "open_questions"),
+    },
+    plan: {
+      summary: String(plan.summary ?? "Chat-authored compact goal draft."),
+      subgoals,
+      distribution_notes: arrayField(plan, "distribution_notes"),
+    },
+    root_budget: Object.keys(asRecord(draft.root_budget)).length ? asRecord(draft.root_budget) : defaultBudget(),
+    done_criteria: Object.keys(asRecord(draft.done_criteria)).length
+      ? asRecord(draft.done_criteria)
+      : { tests_pass: true, artifact_exists: true, validator_score_min: 0.85 },
+    initial_tasks: rowsFromData(draft.initial_tasks),
+  });
 }
 
 function normalizeGoalSpecForSubmit(record: Record<string, unknown>, goalId: string): JsonMap {
@@ -2690,7 +3149,7 @@ function normalizeGraphColor(value: unknown): unknown {
     }
     const label = String(record.label ?? humanTitleFromSlug(key) ?? key).trim();
     const hex = /^#[0-9a-fA-F]{6}$/.test(String(record.hex ?? "")) ? String(record.hex) : colorHexForKey(key);
-    const meaning = String(record.meaning ?? `semantic graph color ${key}`).trim();
+    const meaning = String(record.meaning ?? `visual graph color ${key}`).trim();
     return { ...record, key, label, hex, meaning };
   }
   const key = slugFromText(String(value));
@@ -2698,7 +3157,7 @@ function normalizeGraphColor(value: unknown): unknown {
     key,
     label: humanTitleFromSlug(key),
     hex: colorHexForKey(key),
-    meaning: `semantic graph color ${key}`,
+    meaning: `visual graph color ${key}`,
   } : undefined;
 }
 

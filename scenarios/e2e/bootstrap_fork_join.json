@@ -1,0 +1,129 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_fork_join",
+  "title": "Bootstrap fork join",
+  "description": "Actor output forks into two review tasks and joins through a unifier before satisfaction.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:20:00Z",
+    "seed": 3005,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003005",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003005",
+        "title": "Bootstrap fork join",
+        "objective": "Join actor and review evidence through an explicit unifier.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Produce actor output",
+            "prompt": "Return actor evidence for review.",
+            "reason": "Exercise fork/join review graph.",
+            "tags": ["scenario", "bootstrap", "fork-join"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003005",
+      "description": "Submit the fork/join bootstrap goal."
+    },
+    {
+      "id": "actor_done",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003005",
+      "description": "Replay actor completion.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003501",
+        "status": "done",
+        "summary": "Actor output ready for review.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner"
+      }
+    },
+    {
+      "id": "review_fork",
+      "type": "inject_worker_results",
+      "goal_id": "00000000-0000-4000-8000-000000003005",
+      "description": "Replay two reviewer completions.",
+      "worker_results": [
+        {
+          "task_id": "00000000-0000-4000-8000-000000003502",
+          "status": "done",
+          "summary": "Correctness review accepted.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner"
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000003503",
+          "status": "done",
+          "summary": "Safety review accepted.",
+          "confidence": 1.0,
+          "runner_id": "scenario-stub-runner"
+        }
+      ]
+    },
+    {
+      "id": "join_unifier",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003005",
+      "description": "Replay unifier decision after both reviewers pass.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003504",
+        "status": "done",
+        "summary": "Review evidence joined and accepted.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "review_summary",
+            "uri": "artifact://scenarios/bootstrap_fork_join/review-join.json",
+            "description": "Joined review evidence"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003005",
+      "description": "Validate joined review evidence."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 4,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["actor_completed", "review_forked", "review_joined", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_fork_join/review-join.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "Actor work, two reviews, and unifier evidence completed before satisfaction."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "join_present",
+      "kind": "graph_shape",
+      "assertion": "compute_graph contains review_unifier",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

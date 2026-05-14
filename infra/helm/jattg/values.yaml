@@ -558,14 +558,19 @@ jobs:
     image:
       repository: curlimages/curl
       tag: 8.16.0
+    env:
+      COAT_RESTATE_REGISTER_FORCE: "false"
     command:
       - /bin/sh
       - -lc
       - |
+        set -eu
         sleep 5
+        force="${COAT_RESTATE_REGISTER_FORCE:-false}"
+        payload="$(printf '{"uri":"http://coordinator:9080","force":%s}' "$force")"
         curl -fsS -X POST http://restate:9070/deployments \
           -H 'content-type: application/json' \
-          -d '{"uri":"http://coordinator:9080"}'
+          -d "$payload"
   object-store-init:
     enabled: true
     image:

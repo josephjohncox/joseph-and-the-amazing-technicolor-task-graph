@@ -1,0 +1,145 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_cancelled_queue_history",
+  "title": "Bootstrap cancelled queue history",
+  "description": "A queued task becomes blocked, the operator cancels the goal, and queue history records the dispatch, cancellation, and drain evidence.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:35:00Z",
+    "seed": 3008,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003008",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003008",
+        "title": "Bootstrap cancelled queue history",
+        "objective": "Record a deterministic cancellation and prove queue history remains inspectable.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Queued cancellable task",
+            "prompt": "Enter the runner queue, block with recovery controls, then be cancelled by the operator.",
+            "reason": "Exercise cancellation and queue history projection.",
+            "tags": ["scenario", "bootstrap", "cancelled", "queue-history"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003008",
+      "description": "Submit the cancellation bootstrap goal."
+    },
+    {
+      "id": "record_queue_dispatch",
+      "type": "iteration_fixture",
+      "goal_id": "00000000-0000-4000-8000-000000003008",
+      "description": "Record deterministic runner queue dispatch evidence.",
+      "payload": {
+        "queue_history": [
+          {
+            "sequence": 1,
+            "event": "queued",
+            "task_id": "00000000-0000-4000-8000-000000003801",
+            "runner_id": "scenario-stub-runner"
+          },
+          {
+            "sequence": 2,
+            "event": "dispatched",
+            "task_id": "00000000-0000-4000-8000-000000003801",
+            "runner_id": "scenario-stub-runner"
+          }
+        ]
+      }
+    },
+    {
+      "id": "block_before_cancel",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003008",
+      "description": "Replay a blocked result whose recovery controls include cancellation.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003801",
+        "status": "blocked",
+        "summary": "The queued task is blocked and awaits operator recovery.",
+        "confidence": 0.5,
+        "runner_id": "scenario-stub-runner",
+        "operator_action": "Cancel the goal or retry task 00000000-0000-4000-8000-000000003801.",
+        "recovery_actions": ["cancel", "retry", "replan"]
+      }
+    },
+    {
+      "id": "cancel_goal",
+      "type": "iteration_fixture",
+      "goal_id": "00000000-0000-4000-8000-000000003008",
+      "description": "Record operator cancellation and queue drain evidence.",
+      "payload": {
+        "operator_action": "Cancel goal 00000000-0000-4000-8000-000000003008 and drain pending dispatches.",
+        "cancellation_reason": "Operator stopped the bootstrap goal before retry.",
+        "queue_history": [
+          {
+            "sequence": 3,
+            "event": "cancel_requested",
+            "task_id": "00000000-0000-4000-8000-000000003801"
+          },
+          {
+            "sequence": 4,
+            "event": "task_cancelled",
+            "task_id": "00000000-0000-4000-8000-000000003801"
+          },
+          {
+            "sequence": 5,
+            "event": "dispatch_drained",
+            "task_id": "00000000-0000-4000-8000-000000003801"
+          }
+        ]
+      },
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003801",
+        "status": "cancelled",
+        "summary": "Cancelled by operator and removed from the runner queue.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "queue_history",
+            "uri": "artifact://scenarios/bootstrap_cancelled_queue_history/queue-history.json",
+            "description": "Queue dispatch, cancellation, and drain history"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "cancelled",
+    "task_counts": {
+      "cancelled": 1,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "runner_dispatch_recorded", "task_blocked", "goal_cancelled", "task_cancelled", "queue_history_recorded"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_cancelled_queue_history/queue-history.json"],
+    "cancellation": {
+      "reason": "Operator stopped the bootstrap goal before retry.",
+      "queue_history_required": true
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "cancelled_queue_history",
+      "kind": "queue_history",
+      "assertion": "goal.status == cancelled && queue history includes dispatch, cancellation, and drain records",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

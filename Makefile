@@ -11,6 +11,37 @@ SCENARIO_E2E_SPECS ?= scenarios/e2e/*.json
 SCENARIO_E2E_STACK ?= auto
 SCENARIO_E2E_SERVICES ?=
 SCENARIO_E2E_KEEP_STACK ?= 1
+BOOTSTRAP_SCENARIO_SPECS ?= \
+	scenarios/e2e/bootstrap_basic.json \
+	scenarios/e2e/bootstrap_human_input_thunk_resume.json \
+	scenarios/e2e/bootstrap_approval.json \
+	scenarios/e2e/bootstrap_fanout.json \
+	scenarios/e2e/bootstrap_fork_join.json \
+	scenarios/e2e/bootstrap_signal_driven.json \
+	scenarios/e2e/bootstrap_blocked_retry_recovery.json \
+	scenarios/e2e/bootstrap_cancelled_queue_history.json \
+	scenarios/e2e/bootstrap_memory_research_evidence.json \
+	scenarios/e2e/blocked_and_resumed.json \
+	scenarios/e2e/goal_lifecycle_basic.json
+BOOTSTRAP_SCENARIO_OUT ?= target/coat-scenarios/bootstrap
+TASK_GRAPH_SCENARIO_SPECS ?= \
+	scenarios/e2e/fanout_until_done.json \
+	scenarios/e2e/fork_join_review.json \
+	scenarios/e2e/long_iterative_loop.json \
+	scenarios/e2e/blocked_and_resumed.json
+TASK_GRAPH_VALIDATION_OUT ?= target/coat-scenarios/task-graph
+TASK_GRAPH_VALIDATION_TESTS ?= \
+	initial_tasks_become_queryable_subgoal_tasks \
+	child_task_inherits_execution_profile_with_new_role \
+	compute_graph_projects_tasks_thunks_continuations_and_wait_refs \
+	worker_waiting_result_materializes_delayed_compute_thunk \
+	branch_group_spawns_candidates_votes_and_auto_selects \
+	coordinator_rejects_branch_vote_for_unvalidated_candidate \
+	patch_merger_selects_validated_checkpoint_branch_candidate
+RESET_DRY_RUN ?= 0
+RESET_BOOTSTRAP ?= 0
+RESET_ARGS ?=
+RESET_COMPOSE_ENV_FILE ?=
 
 COAT_BUILD_PROFILE ?= debug
 ifeq ($(COAT_BUILD_PROFILE),release)
@@ -43,6 +74,8 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 	proto-sdk-generate proto-sdk-check \
 	event-gateway-smoke event-gateway-compose-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
 	scenario-e2e scenario-e2e-stack scenario-e2e-ui scenario-e2e-ui-live \
+	bootstrap-scenarios task-graph-validation validate-task-graph-bootstraps \
+	reset-help scenario-reset scenario-reset-dry-run bootstrap-reset bootstrap-reset-dry-run compose-reset compose-reset-dry-run \
 	release-binary-smoke release-helm-smoke \
 	ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
@@ -101,6 +134,65 @@ scenario-e2e-ui-live: control-web-build
 	$(NPM) run --prefix ui/control-plane-web test:e2e:live || status=$$?; \
 	$(COAT) deploy local down --env-file target/coat-scenarios/latest/stack/stub-local-providers.env || true; \
 	exit $$status
+
+bootstrap-scenarios: coat-cli
+	$(MAKE) scenario-e2e \
+		SCENARIO_E2E_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+		SCENARIO_E2E_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+		SCENARIO_E2E_STACK=never \
+		SCENARIO_E2E_KEEP_STACK=0
+
+task-graph-validation: coat-cli
+	@set -eu; \
+	for test_name in $(TASK_GRAPH_VALIDATION_TESTS); do \
+		echo "running coat-domain $$test_name"; \
+		$(CARGO) test -p coat-domain "$$test_name"; \
+	done
+	$(MAKE) scenario-e2e \
+		SCENARIO_E2E_SPECS="$(TASK_GRAPH_SCENARIO_SPECS)" \
+		SCENARIO_E2E_OUT="$(TASK_GRAPH_VALIDATION_OUT)" \
+		SCENARIO_E2E_STACK=never \
+		SCENARIO_E2E_KEEP_STACK=0
+
+validate-task-graph-bootstraps: bootstrap-scenarios task-graph-validation
+
+reset-help:
+	sh scripts/coat-local-reset.sh --help
+
+scenario-reset:
+	@set -eu; \
+	args="--mode scenario"; \
+	if [ "$(RESET_BOOTSTRAP)" = "1" ]; then args="$$args --mode bootstrap"; fi; \
+	if [ "$(RESET_DRY_RUN)" = "1" ]; then args="$$args --dry-run"; fi; \
+	COAT_RESET_SCENARIO_OUT="$(SCENARIO_E2E_OUT)" \
+	COAT_RESET_BOOTSTRAP_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+	COAT_RESET_SCENARIO_SPECS="$(SCENARIO_E2E_SPECS)" \
+	COAT_RESET_BOOTSTRAP_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
+
+scenario-reset-dry-run:
+	$(MAKE) scenario-reset RESET_DRY_RUN=1
+
+bootstrap-reset:
+	@set -eu; \
+	args="--mode bootstrap"; \
+	if [ "$(RESET_DRY_RUN)" = "1" ]; then args="$$args --dry-run"; fi; \
+	COAT_RESET_BOOTSTRAP_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+	COAT_RESET_BOOTSTRAP_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
+
+bootstrap-reset-dry-run:
+	$(MAKE) bootstrap-reset RESET_DRY_RUN=1
+
+compose-reset:
+	@set -eu; \
+	args="--mode stack"; \
+	if [ "$(RESET_DRY_RUN)" = "1" ]; then args="$$args --dry-run"; fi; \
+	if [ -n "$(RESET_COMPOSE_ENV_FILE)" ]; then args="$$args --env-file $(RESET_COMPOSE_ENV_FILE)"; fi; \
+	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
+
+compose-reset-dry-run:
+	$(MAKE) compose-reset RESET_DRY_RUN=1
 
 coat-cli-release:
 	$(MAKE) coat-cli COAT_BUILD_PROFILE=release

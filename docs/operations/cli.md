@@ -74,6 +74,14 @@ coat tui
   COAT checkout.
 - Use `coat deploy local preflight` before Compose automation. `up` runs the
   same preflight unless `--skip-preflight` is explicit.
+- `coat deploy local up` rebuilds local images by default with
+  `docker compose up --build` and a checkout-derived `COAT_SOURCE_FINGERPRINT`
+  so changed Rust or TypeScript sources invalidate service-image cache without
+  disabling cargo/npm dependency caches.
+- Before starting containers, `up` runs the same resolved stack through
+  `docker compose config --quiet`. It also passes `--remove-orphans` by default
+  so old services from prior local topologies do not keep running invisibly.
+  Use `--skip-config-check` or `--keep-orphans` only for intentional debugging.
 - Use `coat deploy local logs` for Compose logs so env files, profiles, and
   Restate Cloud overlays are resolved the same way as the local stack.
 - Use `coat scenario` for deterministic operator workflow evidence. Scenario
@@ -176,20 +184,20 @@ talks to the same backend routes used by the TypeScript SPA:
 - `GET /api/overview`
 - `GET /api/chat/session`
 - `POST /api/chat`
-- `POST /api/goals/submit` only when the operator explicitly submits a goal draft
+- `POST /api/goals/submit` only when the operator explicitly accepts a goal draft
 
 The TUI never calls model providers directly. Chat requests are operator-chat
 requests routed through the control gateway, which handles backend selection,
 chat-turn journaling, and stub fallback policy. Chat alone is a drafting
-surface; pressing `F5` or `Ctrl-G` submits only the last `drafts.goal_spec`
+surface; pressing `F5` or `Ctrl-G` accepts only the last `drafts.goal_spec`
 payload through the same gateway endpoint used by the SPA and regular CLI.
 When a chat turn returns a goal draft, the TUI shows the exact draft summary in
-two places before submission: the chat log receives a `Goal draft ready for
-submission` preview, and the left dashboard shows an `active goal draft`
+two places before acceptance: the chat log receives a `Goal draft ready`
+preview, and the left dashboard shows an `active goal draft`
 section with title, objective, initial task count, done criteria, and the
-submit binding. The draft stays visible until the operator submits it with
-`F5`/`Ctrl-G` or discards it with `Ctrl-D`. After submission, the chat log
-echoes the submitted goal id and the same draft summary, selects that goal, and
+accept binding. The draft stays visible until the operator accepts it with
+`F5`/`Ctrl-G` or discards it with `Ctrl-D`. After acceptance, the chat log
+echoes the accepted goal id and the same draft summary, selects that goal, and
 reloads the goal-scoped session.
 
 Goal context is selected in the TUI, not retyped into every prompt. `Ctrl-N`
@@ -199,19 +207,29 @@ a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
 same goal id to `/api/chat`; without a selected goal it uses the operator
 workspace session.
 
-The left control panel has six views: Overview, Goals, Approvals, Events,
-Adversarial, and Commands.
+The left control panel is organized around operator intent, not CLI coverage:
+Overview, Goals, Approvals, Events, Adversarial, and secondary command help.
 Overview shows service health, runner count, selected-goal state, blockers,
 next action, evidence, and any active goal draft. Goals is the navigable goal
 list. Approvals is an action queue: approval rows can be approved directly,
-waiting continuations can be resumed using the input line as the response, and
-blocked or failed task rows retry the recoverable work through the coordinator
-restart path. Events shows recent gateway or goal-store events, plus registered event
+waiting continuations render a human prompt with a concrete question, explicit
+actions, and a focused context field, and blocked or failed task rows retry the
+recoverable work through the coordinator restart path. Events shows recent gateway or goal-store events, plus registered event
 sources when the projection includes them. Adversarial shows actor, critic,
-research, vote, and unifier context for actor/critic workflows. Commands maps
-the canonical CLI hierarchy to the SPA/TUI panel or explicit CLI action path
-that covers it. Both the chat panel and the control panel render scroll
-progress and a scrollbar when content exceeds the visible area.
+research, vote, and unifier context for actor/critic workflows. Command help is
+a secondary reference for raw CLI names and contract inspection; normal
+operation should happen through selected-goal navigation, direct human-queue
+actions, and intent-grouped recovery or review controls. Both the chat panel
+and the control panel render scroll progress and a scrollbar when content
+exceeds the visible area.
+
+Human prompts are the terminal form of delayed compute thunks and approval or
+recovery waits. The TUI should show the prompt title, why the coordinator is
+waiting, and the exact action choices before any raw payload. Safe continuations
+should be a direct Continue action. Information waits should label the input
+with the requested answer or context. Recovery waits should offer Retry or
+Replan with context. Operators should not need to know `resume_thunk`, Restate
+handler names, or raw JSON to resolve the queue item.
 
 Cancel is the explicit terminal stop path. Use `coat goal cancel --goal-id
 <goal-id> --reason "..."` when the operator wants the coordinator to stop the
@@ -246,7 +264,7 @@ Key bindings:
   select the action queue row.
 - `PageUp`, `PageDown`, `Home`, `End`: scroll the focused control view or
   chat history.
-- `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.
+- `F5` or `Ctrl-G`: accept the last chat-authored GoalSpec draft and select the returned goal.
 - `Ctrl-D`: discard the active chat-authored GoalSpec draft.
 - `Ctrl-U`: clear the input.
 - `Esc`, `Ctrl-C`, or `q` with an empty input: quit.
@@ -287,6 +305,20 @@ Browser-driven scenarios should place Playwright `test-results`, traces,
 screenshots, and reports under the scenario evidence tree or the standard
 control-web Playwright paths so CI can upload them on failure.
 
+Reset generated scenario evidence with the checkout helper when a local run
+needs a clean evidence tree. Dry-run targets print the exact generated run
+directories first, and reset modes remove known scenario directories instead of
+deleting the whole evidence root:
+
+```sh
+make reset-help
+make scenario-reset-dry-run
+make scenario-reset
+make bootstrap-reset-dry-run
+RESET_BOOTSTRAP=1 make scenario-reset
+sh scripts/coat-local-reset.sh --mode evidence --dry-run
+```
+
 Use `make scenario-e2e-ui-live` when you need the browser to talk to the real
 local Compose control gateway instead of Playwright API fixtures. That target
 starts or reuses the deterministic stub-runner Compose stack, points Playwright
@@ -297,10 +329,11 @@ runner status, and event-source registration through backend APIs.
 
 PR-gated scenarios must prove the operator workflow, not only endpoint
 availability. The baseline browser scenario covers creating or selecting a
-goal, verifying the SPA current-goal selector drives Chat, Task Graph, Flow
-Control, Memory, and Human Queue, verifying `coat tui` uses the same selected
-goal model through gateway APIs, and capturing enough evidence for a reviewer
-to distinguish a real workflow failure from a harness or fixture failure. Use
+goal, verifying the SPA current-goal selector drives Chat, Work Graph, Human
+Queue, Memory, and intent-grouped controls, verifying `coat tui` uses the same
+selected-goal model through gateway APIs, and capturing enough evidence for a
+reviewer to distinguish a real workflow failure from a harness or fixture
+failure. Use
 `docs/exec-plans/completed/170-usability-coherence-evaluation.md` as the
 scenario usability rubric for operator comprehension and SPA/TUI coherence.
 Residual UIE2E runtime proof belongs in
@@ -324,6 +357,17 @@ coat init
 coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
 coat deploy local logs --follow coordinator runner-registry control-web
+```
+
+For a local reset, use the checkout helper rather than deleting Docker state by
+hand. It stops the stack without deleting volumes by default, and deletes COAT
+local stack volumes only when `--delete-volumes` is explicit. Use the dry-run
+target before passing env files or project-name overrides:
+
+```sh
+make compose-reset-dry-run
+sh scripts/coat-local-reset.sh --compose-stack
+sh scripts/coat-local-reset.sh --compose-stack --delete-volumes
 ```
 
 For live model/provider runners:

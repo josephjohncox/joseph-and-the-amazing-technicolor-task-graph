@@ -88,6 +88,7 @@ export type ComputeGraphNode = {
   task_id?: string | null;
   thunk_id?: string | null;
   continuation_id?: string | null;
+  requested_input?: string | null;
   wait_ref?: WaitRef | null;
 };
 
@@ -111,6 +112,8 @@ export type ChatResponse = {
   model?: string | null;
   assistant?: string;
   drafts?: JsonRecord;
+  draft_refs?: JsonRecord;
+  draft_summary?: JsonRecord;
   session_id?: string;
   run_id?: string;
   chat_log?: JsonRecord;

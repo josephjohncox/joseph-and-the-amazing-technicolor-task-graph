@@ -86,31 +86,51 @@ import {
 } from "./api";
 import type { ChatMessage, ChatResponse, ChatRunTrace, ColorRef, ComputeGraphNode, GoalRow, GoalSnapshot, JsonRecord, Overview, TaskRow } from "./types";
 
-type ViewKey = "dashboard" | "goals" | "graph" | "control" | "memory" | "plans" | "human" | "runners" | "actions";
+type ViewKey = "dashboard" | "goals" | "graph" | "control" | "memory" | "plans" | "human" | "runners";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type GraphFilter = "all" | "attention" | "active" | "completed";
+type QueueFilter = "all" | "approvals" | "blocked" | "thunks" | "cancelled";
+type QueueGroup = Exclude<QueueFilter, "all">;
 type DraftKind = "plan" | "goal" | "search";
 type GoalDraftEditField = "title" | "objective" | "acceptance_evidence" | "constraints";
 type OperatorStateKey = "action-needed" | "running" | "waiting" | "reviewing" | "satisfied";
-type ActionNeededKind = "approval" | "blocked-task" | "waiting-task" | "thunk";
+type OtherGoalAction = "review" | "research" | "priority" | "steer" | "restart_branch" | "wait" | "decision_round" | "ballot";
+type ActionNeededKind = "approval" | "blocked-task" | "waiting-task" | "thunk" | "cancelled";
 type ActionNeededItem = {
   key: string;
   kind: ActionNeededKind;
   label: string;
   status: string;
   detail: string;
+  requestedInput: string;
   goalId: string;
   taskId: string;
   approvalId: string;
   thunkId: string;
+  continuationId: string;
   risk: string;
   actionLabel: string;
+};
+type HumanPromptSpec = {
+  title: string;
+  question: string;
+  detail: string;
+  primaryLabel: string;
+  contextLabel: string;
+  inputLabel: string;
+  placeholder: string;
+  showInput: boolean;
+  defaultResponseSummary: string;
+  createPromptLabel?: string;
+  cancelLabel?: string;
 };
 type ActionMutationInput = {
   item: ActionNeededItem;
   responseSummary?: string;
+  intent?: ActionIntent;
 };
+type ActionIntent = "primary" | "context" | "create-human-prompt" | "cancel-goal";
 type ActiveDraftState = {
   kind: DraftKind;
   mode: string;
@@ -120,6 +140,15 @@ type ActiveDraftState = {
   response: ChatResponse;
   goalDraft: JsonRecord | null;
   runId: string | null;
+};
+type DraftReviewSummary = {
+  title: string;
+  objective: string;
+  summary: string;
+  reference: string;
+  source: string;
+  evidenceCount: number;
+  constraintCount: number;
 };
 type SubmittedGoalDraft = {
   draft: JsonRecord;
@@ -149,9 +178,17 @@ type ContinuationRow = {
   continuationId: string;
   taskId: string;
   reason: string;
+  requestedInput: string;
   status: string;
   waitKind: string;
   waitReference: string;
+};
+
+const defaultContinuationSummary = "Operator chose Continue.";
+type GoalStreamState = {
+  status: "idle" | "connecting" | "live" | "error";
+  lastEventAt: string;
+  error: string;
 };
 
 const themeStorageKey = "coat.theme";
@@ -225,138 +262,37 @@ const graphFilterOptions: Array<{ key: GraphFilter; label: string; detail: strin
   { key: "active", label: "Active", detail: "running, runnable, validation" },
   { key: "completed", label: "Completed", detail: "done or cancelled" },
 ];
+const queueFilterOptions: Array<{ key: QueueFilter; label: string; detail: string }> = [
+  { key: "all", label: "All", detail: "all operator actions and stopped history" },
+  { key: "approvals", label: "Approvals", detail: "approval gates that need a human decision" },
+  { key: "blocked", label: "Recovery", detail: "blocked or failed work that can be retried, replanned, or turned into a prompt" },
+  { key: "thunks", label: "Continuations", detail: "waiting prompts that can be resumed by an operator" },
+  { key: "cancelled", label: "Stopped", detail: "stopped work kept as read-only history" },
+];
+const queueGroupLabels: Record<QueueGroup, string> = {
+  approvals: "Approvals",
+  blocked: "Recovery",
+  thunks: "Continuations",
+  cancelled: "Stopped history",
+};
+const queueGroupOrder: QueueGroup[] = ["approvals", "blocked", "thunks", "cancelled"];
 
 const views: Array<{ key: ViewKey; label: string; icon: typeof Route }> = [
   { key: "dashboard", label: "Dashboard", icon: Route },
   { key: "goals", label: "Goals", icon: ListChecks },
   { key: "graph", label: "Work Graph", icon: Network },
-  { key: "control", label: "Goal Controls", icon: ShieldCheck },
+  { key: "control", label: "Operator Actions", icon: ShieldCheck },
   { key: "memory", label: "Memory", icon: Brain },
   { key: "plans", label: "Plans", icon: GitBranch },
-  { key: "human", label: "Human Queue", icon: Bell },
+  { key: "human", label: "Action Queue", icon: Bell },
   { key: "runners", label: "Runners", icon: Server },
-  { key: "actions", label: "Actions", icon: Monitor },
-];
-
-const operatorActionCatalog: Array<{
-  command: string;
-  panel: string;
-  view: ViewKey;
-  summary: string;
-  primary: string;
-}> = [
-  {
-    command: "coat plan <draft|list|show|revise|compile|follow-ups>",
-    panel: "Plans",
-    view: "plans",
-    summary: "Author and inspect durable plans before they become goals.",
-    primary: "Open plans",
-  },
-  {
-    command: "coat goal <draft|lint|submit|list|progress|compute-graph|tasks|steer|vote|adversarial|mechanism|thunk|branch|restart|cancel>",
-    panel: "Goals, Work Graph, Goal Controls",
-    view: "control",
-    summary: "Submit goals, inspect progress, steer, vote, branch, restart, and evaluate completion.",
-    primary: "Open controls",
-  },
-  {
-    command: "coat human <approve|resume-thunk|notify>",
-    panel: "Human Queue",
-    view: "human",
-    summary: "Approve gates, resume delayed continuations, and inspect operator feedback threads.",
-    primary: "Open queue",
-  },
-  {
-    command: "coat deploy local <preflight|up|config|logs|down>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Local stack lifecycle remains a CLI operation; this panel keeps the command visible.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat deploy cluster <render|apply|status|ephemeral-jobs|executor-job>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Cluster rendering, apply, rollout, and executor job operations are tracked as operator commands.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat deploy chart <lint|template|upgrade|rollback|package>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Helm validation and release chart actions stay explicit and auditable.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat deploy restate <cloud-env|tunnel-docker|register-cloud>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Restate Cloud setup and registration remain operator-run deployment actions.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat runner <list|status|register|dispatch|capacity-plan>",
-    panel: "Runners",
-    view: "runners",
-    summary: "Inspect runner registration, endpoint, capacity, and routing state.",
-    primary: "Open runners",
-  },
-  {
-    command: "coat tool <list|call|web-search>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Tool registry and web-search commands are visible here; live calls stay backend mediated.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>",
-    panel: "Memory",
-    view: "memory",
-    summary: "Search, write, preview, edit, repair, and inspect durable memory events.",
-    primary: "Open memory",
-  },
-  {
-    command: "coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>",
-    panel: "Human Queue / Actions",
-    view: "human",
-    summary: "Events become durable sources, triggers, approvals, and action-queue items.",
-    primary: "Open events",
-  },
-  {
-    command: "coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>",
-    panel: "Dashboard, Goals, Plans, Human Queue",
-    view: "dashboard",
-    summary: "Goal-store projections are surfaced through the read-only operator views.",
-    primary: "Open dashboard",
-  },
-  {
-    command: "coat scenario <list|run|report>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Scenario runs are CLI evidence commands; reports should feed back into dashboard artifacts.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat setup <login|sso|model-index|config|local-auth|chat-client>",
-    panel: "Actions",
-    view: "actions",
-    summary: "Setup and auth flows stay explicit, with preflight state reflected in service panels.",
-    primary: "Use CLI",
-  },
-  {
-    command: "coat tui",
-    panel: "Terminal UI",
-    view: "actions",
-    summary: "Terminal dashboard mirrors the same goal, action queue, runner, event, and command coverage model.",
-    primary: "Use TUI",
-  },
 ];
 
 const starterMessages: ChatMessage[] = [
   {
     role: "assistant",
     content:
-      "Tell me the outcome you want. I can draft a plan, a goal, or a search request.",
+      "Tell me the outcome you want. I will draft it first; durable state changes only when you accept a draft or use an action button.",
   },
 ];
 
@@ -370,7 +306,7 @@ export function App() {
   const [sessionMessages, setSessionMessages] = useState<Record<string, ChatMessage[]>>({});
   const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null);
   const [chatInput, setChatInput] = useState("");
-  const [draftKind, setDraftKind] = useState<DraftKind>("plan");
+  const [draftKind, setDraftKind] = useState<DraftKind>("goal");
   const [activeChatRunId, setActiveChatRunId] = useState<string | null>(null);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => initialThemePreference());
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(initialThemePreference()));
@@ -379,6 +315,7 @@ export function App() {
   const goalsQuery = useQuery({ queryKey: ["goals"], queryFn: goals });
   const chatSessionId = selectedGoalId ? `goal:${selectedGoalId}` : "operator:default";
   const activeDraftForSession = activeDraft?.sessionId === chatSessionId ? activeDraft : null;
+  const visibleActiveDraft = activeDraftForSession ?? activeDraft;
   const chatSessionQuery = useQuery({
     queryKey: ["chat-session", chatSessionId],
     queryFn: () => chatSession(chatSessionId),
@@ -402,11 +339,21 @@ export function App() {
       return 1_000;
     },
   });
+  const goalStream = useGoalStateStream(selectedGoalId, token, Boolean(selectedGoalId));
   const selectGoalId = useCallback((goalId: string) => {
     const nextGoalId = goalId.trim();
     setSelectedGoalId(nextGoalId);
     persistSelectedGoalId(nextGoalId);
   }, []);
+  const selectedGoalCancel = useMutation({
+    mutationFn: async (goalId: string) => cancelGoal(goalId, "Operator cancelled the selected goal from the current-goal control."),
+    onSuccess: (response, goalId) => {
+      applyActionEnvelopeToCache(queryClient, response, goalId);
+      void queryClient.refetchQueries({ queryKey: ["goal", goalId] });
+      void queryClient.refetchQueries({ queryKey: ["goals"] });
+      void queryClient.refetchQueries({ queryKey: ["overview"] });
+    },
+  });
 
   const sendChat = useMutation({
     mutationFn: async (overrideContent?: string) => {
@@ -424,7 +371,7 @@ export function App() {
       setChatInput("");
       const runId = createRunId();
       setActiveChatRunId(runId);
-      const response = await chat(requestSessionId, requestMode, requestGoalId, nextMessages, runId);
+      const response = await chat(requestSessionId, requestMode, requestGoalId, content, runId);
       const goalDraft = goalDraftFromChatResponse(response);
       setActiveChatRunId(response.run_id ?? runId);
       setSessionMessages((current) => ({
@@ -451,8 +398,8 @@ export function App() {
     enabled: Boolean(activeChatRunId && sendChat.isPending),
     refetchInterval: sendChat.isPending ? 750 : false,
   });
-  const latestResponse = activeDraftForSession?.response;
-  const latestGoalDraft = activeDraftForSession?.goalDraft ?? null;
+  const latestResponse = visibleActiveDraft?.response;
+  const latestGoalDraft = visibleActiveDraft?.goalDraft ?? null;
   const submitGoalDraft = useMutation({
     mutationFn: async () => {
       const draft = latestGoalDraft;
@@ -466,6 +413,7 @@ export function App() {
     onSuccess: (result) => {
       const goalId = goalIdFromSubmitResponse(result.response);
       if (goalId) {
+        applyActionEnvelopeToCache(queryClient, result.response, goalId);
         setSubmittedGoalDrafts((current) => ({
           ...current,
           [goalId]: {
@@ -476,6 +424,7 @@ export function App() {
         }));
         selectGoalId(goalId);
         setActiveView("graph");
+        setActiveDraft(null);
         void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
         void queryClient.refetchQueries({ queryKey: ["goal", goalId] });
       }
@@ -666,8 +615,11 @@ export function App() {
             selectedGoalId={selectedGoalId}
             open={goalPickerOpen}
             loading={goalsQuery.isFetching || selectedGoalQuery.isFetching}
+            cancelBusy={selectedGoalCancel.isPending}
+            cancelError={selectedGoalCancel.error as Error | null}
             onOpenChange={setGoalPickerOpen}
             onSelectGoal={selectGoalId}
+            onCancelGoal={() => selectedGoalId && selectedGoalCancel.mutate(selectedGoalId)}
             onRefreshGoals={() => {
               void queryClient.invalidateQueries({ queryKey: ["goals"] });
               void queryClient.invalidateQueries({ queryKey: ["overview"] });
@@ -676,47 +628,28 @@ export function App() {
           />
           <ServiceStrip services={serviceRows} />
         </header>
-        <DraftReviewDock
-          activeDraft={activeDraftForSession}
-          goalDraft={latestGoalDraft}
+        <ActiveGoalRuntimeBar
           selectedGoal={selectedGoal}
-          busy={sendChat.isPending || submitGoalDraft.isPending}
-          submitResult={submitGoalDraft.data?.response}
-          onSubmitGoalDraft={() => submitGoalDraft.mutate()}
-          onDiscardGoalDraft={discardActiveGoalDraft}
-          onOpenChat={() => setActiveView("dashboard")}
+          snapshot={currentGoal}
+          stream={goalStream}
+          actionBusy={submitGoalDraft.isPending}
+          onOpenGraph={() => setActiveView("graph")}
+          onOpenQueue={() => setActiveView("human")}
+          onOpenControls={() => setActiveView("control")}
         />
-
-        <section className="content-grid">
-          <CommandPanel
-            messages={messages}
-            input={chatInput}
-            draftKind={draftKind}
-            busy={sendChat.isPending}
-            error={sendChat.error}
-            activeDraft={activeDraftForSession}
-            latestResponse={latestResponse}
-            chatRun={(chatRunQuery.data ?? latestResponse?.chat_run) as ChatRunTrace | undefined}
+        {visibleActiveDraft && (
+          <DraftReviewDock
+            activeDraft={visibleActiveDraft}
             goalDraft={latestGoalDraft}
             goalSubmitBusy={submitGoalDraft.isPending}
             goalSubmitError={submitGoalDraft.error as Error | null}
             goalSubmitResult={submitGoalDraft.data?.response}
-            selectedGoalId={selectedGoalId}
-            selectedGoal={selectedGoal}
-            sessionId={chatSessionId}
-            mode={modeForDraftKind(draftKind)}
-            onDraftKindChange={setDraftKind}
-            onInputChange={setChatInput}
-            onSend={sendChatFromPanel}
             onSubmitGoalDraft={() => submitGoalDraft.mutate()}
             onDiscardGoalDraft={discardActiveGoalDraft}
-            onUpdateGoalDraftField={updateActiveGoalDraftField}
-            onClear={() => {
-              setSessionMessages((current) => ({ ...current, [chatSessionId]: starterMessages }));
-              setChatInput("");
-            }}
           />
+        )}
 
+        <section className="content-grid">
           {activeView === "dashboard" && (
             <Dashboard
               overview={overviewData}
@@ -739,7 +672,14 @@ export function App() {
             />
           )}
           {activeView === "graph" && (
-            <TaskGraphView goalId={selectedGoalId} snapshot={currentGoal} submittedDraft={selectedSubmittedDraft} loading={selectedGoalQuery.isFetching} onOpenGoalPicker={() => setGoalPickerOpen(true)} />
+            <TaskGraphView
+              goalId={selectedGoalId}
+              snapshot={currentGoal}
+              submittedDraft={selectedSubmittedDraft}
+              loading={selectedGoalQuery.isFetching}
+              onOpenGoalPicker={() => setGoalPickerOpen(true)}
+              onOpenControls={() => setActiveView("control")}
+            />
           )}
           {activeView === "control" && (
             <CompilerControlView goalId={selectedGoalId} snapshot={currentGoal} loading={selectedGoalQuery.isFetching} onOpenGoalPicker={() => setGoalPickerOpen(true)} />
@@ -748,7 +688,34 @@ export function App() {
           {activeView === "plans" && <PlansView />}
           {activeView === "human" && <HumanQueueView selectedGoalId={selectedGoalId} />}
           {activeView === "runners" && <RunnersView overview={overviewData} />}
-          {activeView === "actions" && <OperatorActionsView onOpenView={setActiveView} />}
+          <CommandPanel
+            messages={messages}
+            input={chatInput}
+            draftKind={draftKind}
+            busy={sendChat.isPending}
+            error={sendChat.error}
+            activeDraft={visibleActiveDraft}
+            latestResponse={latestResponse}
+            chatRun={(chatRunQuery.data ?? latestResponse?.chat_run) as ChatRunTrace | undefined}
+            goalDraft={latestGoalDraft}
+            goalSubmitBusy={submitGoalDraft.isPending}
+            goalSubmitError={submitGoalDraft.error as Error | null}
+            goalSubmitResult={submitGoalDraft.data?.response}
+            selectedGoalId={selectedGoalId}
+            selectedGoal={selectedGoal}
+            sessionId={chatSessionId}
+            mode={modeForDraftKind(draftKind)}
+            onDraftKindChange={setDraftKind}
+            onInputChange={setChatInput}
+            onSend={sendChatFromPanel}
+            onSubmitGoalDraft={() => submitGoalDraft.mutate()}
+            onDiscardGoalDraft={discardActiveGoalDraft}
+            onUpdateGoalDraftField={updateActiveGoalDraftField}
+            onClear={() => {
+              setSessionMessages((current) => ({ ...current, [chatSessionId]: starterMessages }));
+              setChatInput("");
+            }}
+          />
         </section>
       </main>
     </div>
@@ -761,55 +728,112 @@ function modeForDraftKind(kind: DraftKind): string {
   return "draft_plan";
 }
 
-function DraftReviewDock(props: {
-  activeDraft: ActiveDraftState | null;
-  goalDraft: JsonRecord | null;
+function ActiveGoalRuntimeBar(props: {
   selectedGoal: GoalSummary | null;
-  busy: boolean;
-  submitResult?: unknown;
-  onSubmitGoalDraft: () => void;
-  onDiscardGoalDraft: () => void;
-  onOpenChat: () => void;
+  snapshot?: GoalSnapshot;
+  stream: GoalStreamState;
+  actionBusy: boolean;
+  onOpenGraph: () => void;
+  onOpenQueue: () => void;
+  onOpenControls: () => void;
 }) {
-  if (!props.activeDraft) {
+  if (!props.selectedGoal) {
     return null;
   }
-  const submittedGoalId = goalIdFromSubmitResponse(props.submitResult);
-  const title = props.goalDraft
-    ? stringValue(props.goalDraft.title) || "Untitled goal draft"
-    : `${draftKindLabel(props.activeDraft.kind)} ready`;
-  const context = props.selectedGoal
-    ? `Context: ${props.selectedGoal.title}`
-    : props.activeDraft.selectedGoalId
-      ? `Context: ${friendlyRef(props.activeDraft.selectedGoalId)}`
-      : "Workspace draft";
+  const snapshot = props.snapshot ?? { goal_id: props.selectedGoal.id };
+  const tasks = snapshot.agent_activity ?? [];
+  const counts = taskStatusCounts(tasks);
+  const actions = actionNeededItemsFromSnapshot(props.snapshot, props.selectedGoal.id);
+  const state = nextActionSummary(counts, tasks.length, snapshot);
+  const streamTone = props.stream.status === "live" ? "status-running" : props.stream.status === "error" ? "status-failed" : "status-pending";
+  return (
+    <section className="active-runtime-bar" aria-label="Selected goal active state">
+      <div className="runtime-state">
+        <span className="goal-context-kicker">Live state</span>
+        <strong>{state.stateLabel}</strong>
+        <small>{state.title}</small>
+      </div>
+      <div className="runtime-metrics">
+        <span className={clsx("status-pill", streamTone)}>
+          {props.stream.status === "live" ? "Streaming" : props.stream.status === "connecting" ? "Connecting" : props.stream.status === "error" ? "Stream error" : "Idle"}
+        </span>
+        <span className="status-pill muted">{tasks.length} tasks</span>
+        <span className={clsx("status-pill", actions.length ? "status-waiting-approval" : "status-done")}>{actions.length} actions</span>
+        <span className="status-pill muted">{props.stream.lastEventAt ? `Updated ${timeLabel(props.stream.lastEventAt)}` : "Snapshot pending"}</span>
+        {props.actionBusy && <span className="status-pill status-running">Accepting draft</span>}
+      </div>
+      <div className="button-row">
+        <button type="button" className="secondary-button" onClick={props.onOpenGraph}>
+          <Network size={15} />
+          Graph
+        </button>
+        <button type="button" className={actions.length ? "primary-button" : "secondary-button"} onClick={props.onOpenQueue}>
+          <Bell size={15} />
+          Actions
+        </button>
+        <button type="button" className="secondary-button" onClick={props.onOpenControls}>
+          <ShieldCheck size={15} />
+          Operator actions
+        </button>
+      </div>
+  {props.stream.error && <span className="error-text">{props.stream.error}</span>}
+    </section>
+  );
+}
+
+function DraftReviewDock(props: {
+  activeDraft: ActiveDraftState;
+  goalDraft: JsonRecord | null;
+  goalSubmitBusy: boolean;
+  goalSubmitError: Error | null;
+  goalSubmitResult?: unknown;
+  onSubmitGoalDraft: () => void;
+  onDiscardGoalDraft: () => void;
+}) {
+  const summary = draftReviewSummary(props.activeDraft.response, props.goalDraft);
+  const submittedGoalId = goalIdFromSubmitResponse(props.goalSubmitResult);
   return (
     <section className="draft-review-dock" aria-label="Active draft">
       <div>
         <span className="goal-context-kicker">Active draft</span>
-        <strong>{title}</strong>
-        <small>{context}</small>
+        <strong>{summary.title}</strong>
+        <small>{summary.objective || summary.summary}</small>
+      </div>
+      <div className="draft-summary-meta">
+        <span className="status-pill status-runnable">{draftKindLabel(props.activeDraft.kind)}</span>
+        {props.goalDraft && <span className="status-pill status-runnable">Goal draft ready</span>}
+        {props.activeDraft.sessionId && <span className="status-pill muted">{sessionDisplayLabel(props.activeDraft.sessionId)}</span>}
+        {submittedGoalId && <span className="status-pill status-done">Accepted {friendlyRef(submittedGoalId)}</span>}
       </div>
       <div className="button-row">
-        <InspectButton title="Active draft" payload={props.goalDraft ?? props.activeDraft.response} buttonLabel="Review" />
-        <button type="button" className="secondary-button" disabled={props.busy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
+        <button type="button" className="secondary-button" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
           <XCircle size={15} />
           Discard
         </button>
-        {props.goalDraft ? (
-          <button type="button" className="primary-button" disabled={props.busy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
+        {props.goalDraft && (
+          <button type="button" className="primary-button" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
             <ListChecks size={15} />
-            {submittedGoalId ? "Submitted" : props.busy ? "Submitting" : "Submit goal"}
-          </button>
-        ) : (
-          <button type="button" className="secondary-button" onClick={props.onOpenChat}>
-            <MessageSquareText size={15} />
-            Open chat
+            {submittedGoalId ? "Accepted" : props.goalSubmitBusy ? "Accepting" : "Accept draft"}
           </button>
         )}
       </div>
+      {props.goalSubmitError && <span className="error-text">{props.goalSubmitError.message}</span>}
     </section>
   );
+}
+
+function timeLabel(iso: string): string {
+  const elapsed = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(elapsed) || elapsed < 0) {
+    return "now";
+  }
+  if (elapsed < 2_000) {
+    return "now";
+  }
+  if (elapsed < 60_000) {
+    return `${Math.round(elapsed / 1_000)}s ago`;
+  }
+  return `${Math.round(elapsed / 60_000)}m ago`;
 }
 
 function createRunId(): string {
@@ -879,6 +903,79 @@ function goalDraftFromChatResponse(response?: ChatResponse): JsonRecord | null {
   return title && objective ? draft : null;
 }
 
+function draftReviewSummary(response?: ChatResponse, draft?: JsonRecord | null): DraftReviewSummary {
+  const compact = firstRecord([
+    at(response, ["draft_summary", "goal_spec"]),
+    at(response, ["draft_summary"]),
+    at(response, ["draft", "summary"]),
+    at(response, ["drafts", "goal_spec_summary"]),
+    at(response, ["drafts", "goal_summary"]),
+  ]);
+  const reference = stringValue(at(response, ["draft_ref"]))
+    || stringValue(at(response, ["draft", "ref"]))
+    || stringValue(at(response, ["drafts", "goal_spec_ref"]))
+    || stringValue(at(response, ["drafts", "goal_ref"]))
+    || stringValue(compact?.ref)
+    || stringValue(compact?.id)
+    || stringValue(draft?.draft_ref)
+    || stringValue(draft?.draft_id)
+    || stringValue(draft?.id);
+  const title = stringValue(compact?.title) || stringValue(draft?.title) || "Untitled goal draft";
+  const objective = stringValue(compact?.objective)
+    || stringValue(compact?.description)
+    || stringValue(compact?.detail)
+    || stringValue(draft?.objective);
+  const summary = stringValue(compact?.summary)
+    || stringValue(compact?.body)
+    || stringValue(at(draft, ["authoring", "intake_summary"]))
+    || stringValue(at(draft, ["plan", "summary"]))
+    || objective;
+  const evidenceCount = countFromCompact(compact?.evidence_count)
+    ?? countFromCompact(compact?.acceptance_evidence_count)
+    ?? listCount(compact?.acceptance_evidence)
+    ?? listCount(compact?.evidence)
+    ?? listCount(at(draft, ["authoring", "acceptance_evidence"]))
+    ?? 0;
+  const constraintCount = countFromCompact(compact?.constraint_count)
+    ?? countFromCompact(compact?.constraints_count)
+    ?? listCount(compact?.constraints)
+    ?? listCount(at(draft, ["authoring", "constraints"]))
+    ?? 0;
+  return {
+    title,
+    objective,
+    summary,
+    reference,
+    source: compact ? "Summary" : draft ? "GoalSpec payload" : "Draft response",
+    evidenceCount,
+    constraintCount,
+  };
+}
+
+function firstRecord(values: unknown[]): JsonRecord | null {
+  for (const value of values) {
+    if (isRecord(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function countFromCompact(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  return numberValue(value);
+}
+
+function listCount(value: unknown): number | null {
+  if (Array.isArray(value)) {
+    return value.length;
+  }
+  const lines = linesFromList(value);
+  return lines ? lines.split("\n").length : null;
+}
+
 function updateGoalDraftField(draft: JsonRecord, field: GoalDraftEditField, value: string): JsonRecord {
   if (field === "title" || field === "objective") {
     return { ...draft, [field]: value };
@@ -912,6 +1009,8 @@ function goalIdFromSubmitResponse(response: unknown): string {
   for (const path of [
     ["goal_id"],
     ["id"],
+    ["action", "goal_id"],
+    ["active_state", "goal_id"],
     ["goal", "id"],
     ["goal", "spec", "id"],
     ["state", "goal", "id"],
@@ -937,6 +1036,170 @@ function assertGoalSubmitReachedCoordinator(response: unknown): void {
   }
   const detail = typeof response.error === "string" ? response.error : typeof response.url === "string" ? response.url : "unknown upstream failure";
   throw new Error(`Goal submit returned an upstream failure: ${detail}`);
+}
+
+function activeStateFromActionResponse(response: unknown): GoalSnapshot | null {
+  if (!activeStateEnvelopeIsFresh(response)) {
+    return null;
+  }
+  const activeState = at(response, ["active_state"]);
+  return isRecord(activeState) ? activeState as GoalSnapshot : null;
+}
+
+function activeStateEnvelopeIsFresh(response: unknown): boolean {
+  if (!isRecord(response)) {
+    return false;
+  }
+  if ("active_state_available" in response) {
+    return response.active_state_available === true;
+  }
+  const status = stringValue(response.active_state_status) || stringValue(at(response, ["observability", "active_state_status"]));
+  return status ? status === "fresh" : true;
+}
+
+function applyActionEnvelopeToCache(queryClient: ReturnType<typeof useQueryClient>, response: unknown, fallbackGoalId = ""): void {
+  const snapshot = activeStateFromActionResponse(response);
+  const goalId = stringValue(at(response, ["action", "goal_id"])) || stringValue(snapshot?.goal_id) || fallbackGoalId;
+  if (goalId && snapshot) {
+    queryClient.setQueryData(["goal", goalId], snapshot);
+  }
+  if (goalId) {
+    void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
+  }
+  void queryClient.invalidateQueries({ queryKey: ["goals"] });
+  void queryClient.invalidateQueries({ queryKey: ["overview"] });
+  void queryClient.invalidateQueries({ queryKey: ["approvals"] });
+}
+
+function actionEnvelopeSummary(response: unknown): { label: string; detail: string; status: string } | null {
+  if (!isRecord(response)) {
+    return null;
+  }
+  const handler = stringValue(at(response, ["action", "handler"])) || "action";
+  const ok = response.ok !== false;
+  const observability = isRecord(response.observability) ? response.observability : {};
+  const attempts = numberValue(observability.active_state_attempts) ?? 0;
+  const elapsed = numberValue(observability.active_state_after_ms) ?? 0;
+  const stateStatus = stringValue(response.active_state_status) || stringValue(observability.active_state_status) || "fresh";
+  const unavailableReads = (Array.isArray(response.active_state_unavailable_reads)
+    ? response.active_state_unavailable_reads
+    : Array.isArray(observability.active_state_unavailable_reads)
+      ? observability.active_state_unavailable_reads
+      : [])
+    .map((value) => String(value))
+    .filter(Boolean);
+  const activeStateDetail = stateStatus === "fresh"
+    ? attempts
+      ? `Active state read after ${attempts} attempt${attempts === 1 ? "" : "s"} in ${elapsed}ms.`
+      : "Active state read pending."
+    : `Active state ${stateStatus}; ${unavailableReads.length ? `unavailable reads: ${unavailableReads.join(", ")}. ` : ""}Projection will refresh from the stream or next poll.`;
+  return {
+    label: ok ? `${humanActionName(handler)} accepted` : `${humanActionName(handler)} failed`,
+    detail: activeStateDetail,
+    status: ok ? "done" : "failed",
+  };
+}
+
+function humanActionName(handler: string): string {
+  return handler
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function useGoalStateStream(goalId: string, token: string, enabled: boolean): GoalStreamState {
+  const queryClient = useQueryClient();
+  const [state, setState] = useState<GoalStreamState>({ status: "idle", lastEventAt: "", error: "" });
+
+  useEffect(() => {
+    if (!enabled || !goalId) {
+      setState({ status: "idle", lastEventAt: "", error: "" });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setState((current) => ({ ...current, status: "connecting", error: "" }));
+
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const readStream = async () => {
+      let buffer = "";
+      const response = await fetch(`/api/goals/${encodeURIComponent(goalId)}/stream`, {
+        headers: token ? { authorization: `Bearer ${token}` } : undefined,
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`state stream failed with ${response.status}`);
+      }
+      setState((current) => ({ ...current, status: "live", error: "" }));
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\n\n/);
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+          const event = sseEventFromBlock(block);
+          if (event.name === "snapshot" && isRecord(event.data)) {
+            queryClient.setQueryData(["goal", goalId], event.data as GoalSnapshot);
+            setState({ status: "live", lastEventAt: new Date().toISOString(), error: "" });
+          } else if (event.name === "error") {
+            setState({ status: "error", lastEventAt: new Date().toISOString(), error: stringValue(at(event.data, ["error"])) || "state stream error" });
+          } else if (event.name === "done") {
+            return;
+          }
+        }
+      }
+    };
+
+    const run = async () => {
+      while (!controller.signal.aborted) {
+        try {
+          await readStream();
+          if (!controller.signal.aborted) {
+            setState((current) => ({ ...current, status: "connecting", error: "" }));
+            await wait(1_500);
+          }
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return;
+          }
+          setState({ status: "error", lastEventAt: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
+          await wait(3_000);
+        }
+      }
+    };
+
+    run().catch((error) => {
+      if (!controller.signal.aborted) {
+        setState({ status: "error", lastEventAt: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    return () => controller.abort();
+  }, [enabled, goalId, queryClient, token]);
+
+  return state;
+}
+
+function sseEventFromBlock(block: string): { name: string; data: unknown } {
+  const lines = block.split(/\r?\n/);
+  const name = lines.find((line) => line.startsWith("event:"))?.slice("event:".length).trim() || "message";
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart())
+    .join("\n");
+  return { name, data: data ? safeJsonValue(data) : null };
+}
+
+function safeJsonValue(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function mergeSubmittedGoalRows(projectedRows: GoalRow[], submittedDrafts: Record<string, SubmittedGoalDraft | JsonRecord>): GoalRow[] {
@@ -1150,45 +1413,12 @@ function titleFor(view: ViewKey): string {
     dashboard: "Overview",
     goals: "Goals",
     graph: "Work Graph",
-    control: "Goal Controls",
+    control: "Operator Actions",
     memory: "Shared Memory",
     plans: "Durable Plans",
-    human: "Human Queue",
+    human: "Action Queue",
     runners: "Runner Fleet",
-    actions: "Operator Actions",
   }[view];
-}
-
-function OperatorActionsView({ onOpenView }: { onOpenView: (view: ViewKey) => void }) {
-  return (
-    <section className="panel operator-actions-panel">
-      <div className="section-heading">
-        <div>
-          <h2>Operator actions</h2>
-          <span className="muted-small">Every canonical CLI group has a visible SPA panel or explicit operator command path.</span>
-        </div>
-        <InspectButton title="CLI coverage" payload={{ commands: operatorActionCatalog }} buttonLabel="Inspect coverage" />
-      </div>
-      <div className="action-catalog-grid">
-        {operatorActionCatalog.map((item) => (
-          <article key={item.command} className="action-catalog-card">
-            <div>
-              <code>{item.command}</code>
-              <strong>{item.panel}</strong>
-              <p>{item.summary}</p>
-            </div>
-            {item.view === "actions" ? (
-              <span className="status-pill muted">{item.primary}</span>
-            ) : (
-              <button type="button" className="secondary-button" onClick={() => onOpenView(item.view)}>
-                {item.primary}
-              </button>
-            )}
-          </article>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function ServiceStrip({ services }: { services: Overview["services"] }) {
@@ -1213,13 +1443,18 @@ function GoalContextBar(props: {
   selectedGoalId: string;
   open: boolean;
   loading: boolean;
+  cancelBusy: boolean;
+  cancelError: Error | null;
   onOpenChange: (open: boolean) => void;
   onSelectGoal: (goalId: string) => void;
+  onCancelGoal: () => void;
   onRefreshGoals: () => void;
   onOpenGraph: () => void;
 }) {
   const done = Math.round((props.selectedGoal?.progress ?? 0) * 100);
   const selectedState = props.selectedGoal ? operatorStateForStatus(props.selectedGoal.status) : null;
+  const selectedStatus = statusToken(props.selectedGoal?.status);
+  const canCancelSelectedGoal = Boolean(props.selectedGoalId && selectedStatus !== "cancelled" && selectedStatus !== "done");
   return (
     <Popover.Root open={props.open} onOpenChange={props.onOpenChange}>
       <div className="goal-context-bar">
@@ -1237,7 +1472,7 @@ function GoalContextBar(props: {
               {props.selectedGoal ? (
                 <small>{done}% · {props.selectedGoal.openTasks} open · {props.selectedGoal.blockedTasks} blocked · {selectedState?.label}</small>
               ) : (
-                <small>Chat, graph, controls, memory, and queue use this context</small>
+                <small>Chat, graph, actions, memory, and the action queue use this context</small>
               )}
             </div>
             <span className={clsx("operator-state-pill", selectedState ? stateTone(selectedState.key) : "muted")}>
@@ -1246,18 +1481,17 @@ function GoalContextBar(props: {
             <ChevronDown size={16} />
           </button>
         </Popover.Trigger>
-        {props.selectedGoal && (
-          <InspectButton
-            title="Current goal details"
-            payload={{
-              goal_id: props.selectedGoalId,
-              title: props.selectedGoal.title,
-              status: props.selectedGoal.status,
-              operator_state: selectedState,
-              objective: props.selectedGoal.objective,
-            }}
-            buttonLabel="Details"
-          />
+        {canCancelSelectedGoal && (
+          <button
+            type="button"
+            className="danger-button goal-context-cancel"
+            disabled={props.cancelBusy}
+            title="Stop this durable goal through the coordinator."
+            onClick={props.onCancelGoal}
+          >
+            <XCircle size={15} />
+            Cancel goal
+          </button>
         )}
         <Popover.Portal>
           <Popover.Content className="goal-picker" align="end" sideOffset={8}>
@@ -1301,19 +1535,31 @@ function GoalContextBar(props: {
                   type="button"
                   className="secondary-button"
                   disabled={!props.selectedGoalId}
+                  title="Clear the local goal selection. This does not cancel the goal."
                   onClick={() => {
                     props.onSelectGoal("");
                     props.onOpenChange(false);
                   }}
                 >
                   <XCircle size={15} />
-                  Clear goal
+                  Clear selection
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={!canCancelSelectedGoal || props.cancelBusy}
+                  title="Stop this durable goal through the coordinator."
+                  onClick={props.onCancelGoal}
+                >
+                  <XCircle size={15} />
+                  Cancel goal
                 </button>
                 <button type="button" className="primary-button" disabled={!props.selectedGoalId} onClick={props.onOpenGraph}>
                   <Network size={15} />
                   Open graph
                 </button>
               </div>
+              {props.cancelError && <span className="error-text">{props.cancelError.message}</span>}
             </Command>
           </Popover.Content>
         </Popover.Portal>
@@ -1351,8 +1597,10 @@ function CommandPanel(props: {
   const activityPayload = chatActivityPayload(props);
   const activityLabel = props.busy ? "Activity" : "Run details";
   const submittedGoalId = goalIdFromSubmitResponse(props.goalSubmitResult);
+  const draftSummary = draftReviewSummary(props.activeDraft?.response ?? props.latestResponse, props.goalDraft);
   const chatShellRef = useRef<HTMLDivElement>(null);
   const latestMessage = props.messages[props.messages.length - 1];
+  const draftFromOtherSession = Boolean(props.activeDraft && props.activeDraft.sessionId !== props.sessionId);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -1370,10 +1618,12 @@ function CommandPanel(props: {
     <section className="command-panel">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Start work</p>
-          <h2>{commandTitle(props.draftKind)}</h2>
+          <p className="eyebrow">Assistant</p>
+          <h2>Ask or draft</h2>
         </div>
-        <div className="mode-toggle" role="group" aria-label="Draft target">
+        <div className="draft-mode-group">
+          <span>Output</span>
+          <div className="mode-toggle" role="group" aria-label="Draft type">
           <button
             type="button"
             className={clsx("mode-option", props.draftKind === "plan" && "active")}
@@ -1401,58 +1651,56 @@ function CommandPanel(props: {
             <Search size={15} />
             Search
           </button>
+          </div>
         </div>
+      </div>
+      <div className="draft-mode-hint">
+        <strong>{draftModeHeadline(props.draftKind)}</strong>
+        <span>{draftModeDetail(props.draftKind)}</span>
       </div>
       <div className="outcome-meta" aria-label="Chat scope">
-        <span className="status-pill muted">Operator workspace</span>
+        <span className="status-pill muted">Assistant</span>
         <span className={clsx("status-pill", props.selectedGoal ? statusTone(props.selectedGoal.status) : "muted")}>
-          {props.selectedGoal ? `Selected goal: ${props.selectedGoal.title}` : "Selected goal: none"}
+          {props.selectedGoal ? `Context: ${props.selectedGoal.title}` : "Context: workspace"}
         </span>
         <span className={clsx("status-pill", props.activeDraft ? "status-runnable" : "muted")}>
-          {props.activeDraft ? `Active draft: ${draftKindLabel(props.activeDraft.kind)} · ${sessionDisplayLabel(props.activeDraft.sessionId)}` : "Active draft: none"}
+          {props.activeDraft ? `Draft: ${draftKindLabel(props.activeDraft.kind)}` : "Draft: none"}
         </span>
+        {draftFromOtherSession && <span className="status-pill status-waiting-input">Draft from {sessionDisplayLabel(props.activeDraft?.sessionId ?? "")}</span>}
         <span className={clsx("status-pill", props.busy ? "status-running" : "status-pending")}>
-          {props.busy ? commandBusyLabel(props.draftKind) : `Session: ${props.mode} · ${sessionDisplayLabel(props.sessionId)}`}
+          {props.busy ? commandBusyLabel(props.draftKind) : `History: ${sessionDisplayLabel(props.sessionId)}`}
         </span>
-        {(props.busy || props.chatRun || props.latestResponse || draftKeys.length > 0) && (
-          <InspectButton title="Chat activity" payload={activityPayload} buttonLabel={activityLabel} />
+        {!props.activeDraft && (props.busy || props.chatRun || props.latestResponse || draftKeys.length > 0) && (
+          <AdvancedInspect summaryLabel={activityLabel} title="Chat activity" payload={activityPayload} buttonLabel="Inspect JSON" />
         )}
       </div>
-      {props.activeDraft && (
-        <div className="draft-action-bar">
-          <span className="status-pill status-runnable">Saved {draftKindLabel(props.activeDraft.kind)}</span>
-          {props.goalDraft && <span className="status-pill status-runnable">Goal draft ready</span>}
-          {submittedGoalId && <span className="status-pill status-done">Submitted {friendlyRef(submittedGoalId)}</span>}
-          <InspectButton title={props.goalDraft ? "GoalSpec draft" : "Active draft"} payload={props.goalDraft ?? props.activeDraft.response} buttonLabel="Review draft" />
-          <button type="button" className="secondary-button" disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
-            <XCircle size={15} />
-            Discard draft
-          </button>
-          {props.goalDraft && (
-            <button type="button" className="primary-button" disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
-              <ListChecks size={15} />
-              {submittedGoalId ? "Submitted" : props.goalSubmitBusy ? "Submitting" : "Submit goal"}
-            </button>
-          )}
-        </div>
-      )}
       {props.goalDraft && (
         <GoalDraftEditor
           draft={props.goalDraft}
+          summary={draftSummary}
           disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)}
           onUpdate={props.onUpdateGoalDraftField}
         />
       )}
-      <div className="quick-prompts" aria-label="Goal action prompts">
-        {compilerPromptTemplates(props.selectedGoalId, props.selectedGoal?.title).map((template) => (
-          <button key={template.label} type="button" className="secondary-button" disabled={props.busy} onClick={() => props.onSend(template.prompt)}>
-            {template.icon === "graph" && <Network size={15} />}
-            {template.icon === "control" && <ShieldCheck size={15} />}
-            {template.icon === "research" && <Search size={15} />}
-            {template.label}
-          </button>
-        ))}
-      </div>
+      {props.activeDraft && !props.goalDraft && (
+        <DraftSummaryCard summary={draftSummary} />
+      )}
+      <details className="quick-prompts">
+        <summary>
+          <span>Prompt helpers</span>
+          <small>Optional chat shortcuts</small>
+        </summary>
+        <div aria-label="Goal action prompts">
+          {compilerPromptTemplates(props.selectedGoalId, props.selectedGoal?.title).map((template) => (
+            <button key={template.label} type="button" className="secondary-button" disabled={props.busy} onClick={() => props.onSend(template.prompt)}>
+              {template.icon === "graph" && <Network size={15} />}
+              {template.icon === "control" && <ShieldCheck size={15} />}
+              {template.icon === "research" && <Search size={15} />}
+              {template.label}
+            </button>
+          ))}
+        </div>
+      </details>
       <div className="chat-shell" ref={chatShellRef}>
         <MainContainer className="coat-chat-container" responsive>
           <ChatContainer>
@@ -1497,13 +1745,10 @@ function CommandPanel(props: {
   );
 }
 
-function GoalDraftEditor(props: { draft: JsonRecord; disabled: boolean; onUpdate: (field: GoalDraftEditField, value: string) => void }) {
+function GoalDraftEditor(props: { draft: JsonRecord; summary: DraftReviewSummary; disabled: boolean; onUpdate: (field: GoalDraftEditField, value: string) => void }) {
   return (
-    <details className="goal-draft-editor" open>
-      <summary>
-        <span>Edit draft</span>
-        <small>Review the fields that will be submitted to the coordinator</small>
-      </summary>
+    <section className="goal-draft-editor" aria-label="Goal draft review">
+      <DraftSummaryCard summary={props.summary} />
       <div className="draft-editor-grid">
         <label>
           Title
@@ -1538,8 +1783,31 @@ function GoalDraftEditor(props: { draft: JsonRecord; disabled: boolean; onUpdate
           />
         </label>
       </div>
-    </details>
+    </section>
   );
+}
+
+function DraftSummaryCard({ summary }: { summary: DraftReviewSummary }) {
+  return (
+    <div className="draft-summary-card">
+      <div>
+        <span className="goal-context-kicker">Draft review</span>
+        <strong>{summary.title}</strong>
+        {summary.objective && <p>{summary.objective}</p>}
+        {summary.summary && summary.summary !== summary.objective && <small>{summary.summary}</small>}
+      </div>
+      <div className="draft-summary-meta" aria-label="Draft summary">
+        {summary.reference && <span className="status-pill muted">{summary.reference}</span>}
+        <span className="status-pill muted">{summary.source}</span>
+        <span className="status-pill muted">{countLabel(summary.evidenceCount, "evidence item")}</span>
+        <span className="status-pill muted">{countLabel(summary.constraintCount, "constraint")}</span>
+      </div>
+    </div>
+  );
+}
+
+function countLabel(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 function compilerPromptTemplates(goalId: string, goalTitle?: string): Array<{ label: string; icon: "graph" | "control" | "research"; prompt: string }> {
@@ -1564,15 +1832,27 @@ function compilerPromptTemplates(goalId: string, goalTitle?: string): Array<{ la
 }
 
 function commandTitle(kind: DraftKind): string {
-  if (kind === "goal") return "Goal draft";
-  if (kind === "search") return "Search request";
-  return "Plan first";
+  if (kind === "goal") return "Goal";
+  if (kind === "search") return "Search";
+  return "Plan";
 }
 
 function draftKindLabel(kind: DraftKind): string {
   if (kind === "goal") return "Goal draft";
   if (kind === "search") return "Search request";
   return "Plan draft";
+}
+
+function draftModeHeadline(kind: DraftKind): string {
+  if (kind === "goal") return "New durable goal";
+  if (kind === "search") return "Research request";
+  return "Planning draft";
+}
+
+function draftModeDetail(kind: DraftKind): string {
+  if (kind === "goal") return "Create new work. Existing goals move through the graph and action queue above.";
+  if (kind === "search") return "Prepare a sourced research request for backend tools or coordinator work.";
+  return "Shape a plan before compiling it into a goal.";
 }
 
 function sessionDisplayLabel(sessionId: string): string {
@@ -1623,8 +1903,8 @@ function chatActivityPayload(props: {
     backend: props.latestResponse?.chat_backend ?? props.chatRun?.backend ?? null,
     model_params: props.latestResponse?.model_params ?? props.chatRun?.model_params ?? null,
     chat_log: props.latestResponse?.chat_log ?? props.chatRun?.chat_log ?? null,
-    drafts: props.latestResponse?.drafts ?? null,
-    ready_goal_draft: props.goalDraft ?? null,
+    draft_summary: props.latestResponse?.draft_summary ?? null,
+    draft_refs: props.latestResponse?.draft_refs ?? null,
     goal_submit: props.goalSubmitResult ?? null,
   };
 }
@@ -1642,7 +1922,7 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
     <div className="dashboard-grid">
       <MetricCard label="Active goals" value={String(props.goals.length)} detail="in progress" />
       <MetricCard label="Runners" value={String(runnerRows.length)} detail="available capacity" />
-      <MetricCard label="Human queue" value={String(approvalRows.length)} detail="waiting decisions" />
+      <MetricCard label="Action queue" value={String(approvalRows.length)} detail="waiting decisions" />
       <MetricCard label="Events" value={String(eventRows.length)} detail="recent signals" />
       <MetricCard label="Event sources" value={String(eventSourceRows.length)} detail="registered ingress" />
       <section className="panel span-2">
@@ -1808,7 +2088,7 @@ function SubgoalPlanPanel({ subgoals, source }: { subgoals: JsonRecord[]; source
               type="button"
               className={clsx("subgoal-card", selectedIndex === index && "active")}
               aria-pressed={selectedIndex === index}
-              aria-label={`Inspect subgoal ${title}`}
+              aria-label={`Open subgoal ${title}`}
               data-testid={`subgoal-card-${safeTestId(id || title)}`}
               onClick={() => setSelectedIndex(index)}
             >
@@ -1861,7 +2141,7 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submittedDraft?: JsonRecord | null; loading: boolean; onOpenGoalPicker: () => void }) {
+function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submittedDraft?: JsonRecord | null; loading: boolean; onOpenGoalPicker: () => void; onOpenControls: () => void }) {
   const [graphFilter, setGraphFilter] = useState<GraphFilter>("all");
   const projectedTasks = useMemo(() => taskRowsFromSnapshot(props.snapshot), [props.snapshot]);
   const draftTasks = useMemo(() => taskRowsFromGoalDraft(props.goalId, props.submittedDraft), [props.goalId, props.submittedDraft]);
@@ -1908,8 +2188,9 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
           <span className="filter-count">Showing {visibleCount} of {totalCount} {graphUnit}</span>
         </div>
       )}
-      {props.snapshot && <ActionNeededPanel items={actionNeeded} />}
       {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={taskCount} />}
+      {props.snapshot && <BlockerInsightPanel items={actionNeeded} onOpenControls={props.onOpenControls} />}
+      {props.snapshot && <ActionNeededPanel items={actionNeeded} />}
       {props.snapshot && <GraphStatusPanel counts={counts} taskCount={taskCount} />}
       {!props.goalId ? (
         <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
@@ -1932,12 +2213,29 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
       {subgoals.length > 0 && <SubgoalPlanPanel subgoals={subgoals} source={showingSubmittedDraft ? "submitted draft" : "goal projection"} />}
       {props.snapshot && (
         <>
-          {continuationCount > 0 && <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />}
-          <CompilerControlPanel goalId={props.goalId} snapshot={props.snapshot} compact />
+          {continuationCount > 0 && (
+            <details className="advanced-details">
+              <summary>
+                <span>Waiting continuations</span>
+                <small>Inline resume fields for delayed work</small>
+              </summary>
+              <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />
+            </details>
+          )}
+          <section className="graph-control-redirect">
+            <div>
+              <strong>Need action?</strong>
+              <span>Open operator actions to review evidence, recover blockers, ask for research, or choose another path.</span>
+            </div>
+            <button type="button" className="secondary-button" onClick={props.onOpenControls}>
+              <ShieldCheck size={15} />
+              Open actions
+            </button>
+          </section>
           <details className="advanced-details">
             <summary>
               <span>Advanced graph details</span>
-              <small>Raw task counts and compute projection</small>
+              <small>Task counts and compute projection</small>
             </summary>
             <TaskSummary snapshot={props.snapshot} counts={counts} />
             <ComputeGraphDetails snapshot={props.snapshot} />
@@ -1951,32 +2249,30 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
 function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onOpenGoalPicker: () => void }) {
   const tasks = taskRowsFromSnapshot(props.snapshot);
   const counts = taskStatusCounts(tasks);
-  const continuationCount = props.snapshot ? continuationRowsFromSnapshot(props.snapshot).length : 0;
   const actionNeeded = useMemo(() => actionNeededItemsFromSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
   return (
     <section className="panel">
       <div className="section-heading">
         <div>
-          <h2>Goal controls</h2>
-          <span className="muted-small">Primary actions first; detailed flow tools are collapsed below</span>
+          <h2>Operator actions</h2>
+          <span className="muted-small">Review evidence, recover blocked work, and choose one follow-up action when needed</span>
         </div>
       </div>
       {!props.goalId ? (
         <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
       ) : props.loading ? (
-        <EmptyState title="Loading controls" detail="Fetching workflow projection." />
+        <EmptyState title="Loading actions" detail="Fetching workflow projection." />
       ) : (
         <>
           {props.snapshot && <ActionNeededPanel items={actionNeeded} />}
           {props.snapshot && <EvidenceNextActionPanel snapshot={props.snapshot} counts={counts} taskCount={tasks.length} />}
           {props.snapshot && <GraphStatusPanel counts={counts} taskCount={tasks.length} />}
-          {props.snapshot && continuationCount > 0 && <ContinuationQueue goalId={props.goalId} snapshot={props.snapshot} />}
           <CompilerControlPanel goalId={props.goalId} snapshot={props.snapshot} />
           {props.snapshot && (
             <details className="advanced-details">
               <summary>
                 <span>Advanced projection details</span>
-                <small>Raw task counts and compute graph rows</small>
+                <small>Task counts and compute graph rows</small>
               </summary>
               <TaskSummary snapshot={props.snapshot} counts={counts} />
               <ComputeGraphDetails snapshot={props.snapshot} />
@@ -2204,6 +2500,84 @@ function ActionNeededPanel({ items }: { items: ActionNeededItem[] }) {
   );
 }
 
+function BlockerInsightPanel({ items, onOpenControls }: { items: ActionNeededItem[]; onOpenControls: () => void }) {
+  const blockers = items.filter((item) => {
+    const status = statusToken(item.status);
+    return ["failed", "blocked", "waiting-approval", "waiting-input"].includes(status) || item.kind === "thunk" || item.kind === "approval";
+  });
+  if (!blockers.length) {
+    return (
+      <section className="blocker-panel stable" aria-label="Why blocked">
+        <div>
+          <span className="goal-context-kicker">Why blocked</span>
+          <strong>No blockers projected</strong>
+          <small>The coordinator has not projected failed, blocked, approval, or waiting-input work for this goal.</small>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="blocker-panel" aria-label="Why blocked">
+      <div className="section-heading">
+        <div>
+          <span className="goal-context-kicker">Why blocked</span>
+          <h3>{blockers.length} item{blockers.length === 1 ? "" : "s"} need attention</h3>
+        </div>
+        <button type="button" className="secondary-button" onClick={onOpenControls}>
+          <ShieldCheck size={15} />
+          Controls
+        </button>
+      </div>
+      <div className="blocker-list">
+        {blockers.slice(0, 4).map((item) => (
+          <article key={`blocker-${item.key}`} className="blocker-card">
+            <span className={clsx("status-pill", statusTone(item.status))}>{statusLabel(item.status)}</span>
+            <strong>{item.label}</strong>
+            <p>{blockerReason(item)}</p>
+            <div className="blocker-meta">
+              <span>{blockerActionText(item)}</span>
+              {item.taskId && <small title={item.taskId}>task {friendlyRef(item.taskId)}</small>}
+              {item.approvalId && <small title={item.approvalId}>approval {friendlyRef(item.approvalId)}</small>}
+              {item.thunkId && <small title={item.thunkId}>continuation {friendlyRef(item.thunkId)}</small>}
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function blockerReason(item: ActionNeededItem): string {
+  if (item.detail) {
+    return item.detail;
+  }
+  const status = statusToken(item.status);
+  if (item.kind === "approval" || status === "waiting-approval") {
+    return item.risk ? `Approval is waiting because risk was classified as ${item.risk}.` : "A human approval gate is waiting.";
+  }
+  if (isResumableThunkItem(item)) {
+    return "A delayed compute continuation is waiting for operator input before the task graph can resume.";
+  }
+  if (status === "waiting-input") {
+    return "The task is waiting for input, but no resumable thunk is projected yet.";
+  }
+  if (status === "failed") {
+    return "The last task attempt failed and needs retry or replanning.";
+  }
+  return "The task is blocked and needs recovery, a dependency, or operator input.";
+}
+
+function blockerActionText(item: ActionNeededItem): string {
+  const affordance = actionAffordanceForItem(item);
+  if (affordance === "approve") return "Approve the gate in the Action queue.";
+  if (affordance === "resume") return "Provide the missing input and resume the continuation.";
+  const status = statusToken(item.status);
+  if (status === "failed") return "Retry failed work or open operator actions for a different recovery path.";
+  if (status === "blocked") return "Retry blocked work or open operator actions to replan.";
+  if (status === "waiting-input") return "Create a human prompt or replan; no continuation can resume yet.";
+  return "Review the item and choose a recovery action.";
+}
+
 function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false }: { snapshot: GoalSnapshot; counts: Map<string, number>; taskCount: number; compact?: boolean }) {
   const highlights = evidenceHighlights(snapshot, counts, taskCount);
   const nextAction = nextActionSummary(counts, taskCount, snapshot);
@@ -2212,15 +2586,6 @@ function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false 
       <section className="evidence-card">
         <div className="section-heading">
           <h3>Evidence</h3>
-          <InspectButton
-            title="Evidence detail"
-            payload={{
-              status_counts: Object.fromEntries(counts),
-              workflow_progress: workflowProgress(snapshot) ?? null,
-              compute_graph: workflowComputeGraph(snapshot) ?? null,
-            }}
-            buttonLabel="Inspect evidence"
-          />
         </div>
         <ul className="evidence-list">
           {highlights.map((item) => (
@@ -2419,10 +2784,27 @@ function actionNeededItemsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord, sel
   if (!snapshot) {
     return [];
   }
+  const continuationRows = continuationRowsFromSnapshot(snapshot as GoalSnapshot);
+  const continuationTaskIds = new Set(continuationRows.map((row) => row.taskId).filter(Boolean));
+  const taskRows = taskRowsFromSnapshot(snapshot).filter((task) => {
+    const status = statusToken(task.status ?? at(task, ["payload_json", "status"]));
+    const id = taskId(task as TaskRow) || stringValue(task.id);
+    return !(status === "waiting-input" && id && continuationTaskIds.has(id));
+  });
   return mergeActionNeededItems([
     ...actionNeededItemsFromApprovals(rowsFrom(at(snapshot, ["approvals", "data", "approvals"]) ?? at(snapshot, ["approvals", "approvals"]) ?? at(snapshot, ["approvals", "data"]) ?? snapshot.approvals), selectedGoalId),
-    ...actionNeededItemsFromTasks(taskRowsFromSnapshot(snapshot), selectedGoalId),
-    ...actionNeededItemsFromThunks(snapshot as GoalSnapshot, selectedGoalId),
+    ...actionNeededItemsFromTasks(taskRows, selectedGoalId),
+    ...continuationRows.map((row) => actionItemFromContinuation(selectedGoalId || stringValue(snapshot.goal_id), row)),
+  ]);
+}
+
+function queueItemsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord, selectedGoalId = ""): ActionNeededItem[] {
+  if (!snapshot) {
+    return [];
+  }
+  return mergeActionNeededItems([
+    ...actionNeededItemsFromSnapshot(snapshot, selectedGoalId),
+    ...cancelledItemsFromSnapshot(snapshot as GoalSnapshot, selectedGoalId),
   ]);
 }
 
@@ -2435,7 +2817,10 @@ function actionNeededItemsFromOverview(value?: unknown): ActionNeededItem[] {
 }
 
 function actionNeededItemsFromApprovals(rows: JsonRecord[], selectedGoalId = ""): ActionNeededItem[] {
-  return rows.map((row, index) => {
+  return rows.filter((row) => {
+    const status = normalizeStatus(row.status) || "pending";
+    return status === "pending" || status === "waiting-approval";
+  }).map((row, index) => {
     const approvalId = stringValue(row.approval_id) || stringValue(row.id) || stringValue(row.approval_ref);
     const goalId = stringValue(row.goal_id) || selectedGoalId;
     const risk = stringValue(row.risk) || stringValue(at(row, ["payload_json", "risk"]));
@@ -2446,10 +2831,12 @@ function actionNeededItemsFromApprovals(rows: JsonRecord[], selectedGoalId = "")
       label: action,
       status: normalizeStatus(row.status) || "pending",
       detail: risk ? `Risk: ${risk}` : "Human approval requested.",
+      requestedInput: stringValue(row.requested_input) || stringValue(row.question) || stringValue(at(row, ["payload_json", "requested_input"])) || stringValue(at(row, ["payload_json", "question"])),
       goalId,
       taskId: stringValue(row.task_id) || stringValue(at(row, ["payload_json", "task_id"])),
       approvalId,
       thunkId: "",
+      continuationId: "",
       risk,
       actionLabel: "Approve",
     };
@@ -2470,30 +2857,55 @@ function actionNeededItemsFromTasks(rows: JsonRecord[], selectedGoalId = ""): Ac
         label: title,
         status,
         detail: taskDetail(task, status),
+        requestedInput: stringValue(task.requested_input) || stringValue(task.question) || stringValue(at(task, ["payload_json", "requested_input"])) || stringValue(at(task, ["payload_json", "question"])),
         goalId,
         taskId: id,
         approvalId: stringValue(task.approval_id) || stringValue(task.approval_ref) || stringValue(at(task, ["payload_json", "approval_id"])) || stringValue(at(task, ["payload_json", "approval_ref"])),
-        thunkId: stringValue(task.thunk_id) || stringValue(task.continuation_id) || stringValue(at(task, ["payload_json", "thunk_id"])) || stringValue(at(task, ["payload_json", "continuation_id"])),
+        thunkId: "",
+        continuationId: "",
         risk: "",
-        actionLabel: status === "waiting-approval" ? "Approve" : status === "waiting-input" ? "Provide input" : "Review",
+        actionLabel: status === "waiting-approval" ? "Approve" : status === "waiting-input" ? "Create prompt" : "Review",
       };
     });
 }
 
 function actionNeededItemsFromThunks(snapshot: GoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
-  return continuationRowsFromSnapshot(snapshot).map((row) => ({
-    key: `thunk:${row.thunkId}`,
-    kind: "thunk" as const,
-    label: row.reason || "Continuation waiting for input",
-    status: row.status || "waiting-input",
-    detail: [row.waitKind ? `Wait: ${row.waitKind}` : "", row.waitReference ? `Ref ${friendlyRef(row.waitReference)}` : ""].filter(Boolean).join(" · ") || "Delayed compute continuation is paused.",
-    goalId: selectedGoalId,
-    taskId: row.taskId,
-    approvalId: "",
-    thunkId: row.thunkId,
-    risk: "",
-    actionLabel: "Resume",
-  }));
+  return continuationRowsFromSnapshot(snapshot).map((row) => actionItemFromContinuation(selectedGoalId || stringValue(snapshot.goal_id), row));
+}
+
+function cancelledItemsFromSnapshot(snapshot: GoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
+  const taskItems = taskRowsFromSnapshot(snapshot)
+    .filter((task) => statusToken(task.status ?? at(task, ["payload_json", "status"])) === "cancelled")
+    .map((task, index) => {
+      const id = taskId(task as TaskRow) || stringValue(task.id);
+      const goalId = stringValue(at(task, ["goal_id"])) || stringValue(at(task, ["payload_json", "goal_id"])) || selectedGoalId || stringValue(snapshot.goal_id);
+      return {
+        key: id ? `cancelled-task:${id}` : `cancelled-task:${goalId}:${index}`,
+        kind: "cancelled" as const,
+        label: taskTitle(task) || (id ? `Cancelled task ${friendlyRef(id)}` : "Cancelled task"),
+        status: "cancelled",
+        detail: taskDetail(task, "cancelled") || "Cancelled task retained for operator queue history.",
+        requestedInput: "",
+        goalId,
+        taskId: id,
+        approvalId: "",
+        thunkId: "",
+        continuationId: "",
+        risk: "",
+        actionLabel: "Cancelled",
+      };
+    });
+  const thunkItems = continuationRowsFromSnapshot(snapshot, true)
+    .filter((row) => row.status === "cancelled")
+    .map((row) => ({
+      ...actionItemFromContinuation(selectedGoalId || stringValue(snapshot.goal_id), row),
+      key: `cancelled-thunk:${row.thunkId}`,
+      kind: "cancelled" as const,
+      status: "cancelled",
+      actionLabel: "Cancelled",
+      detail: [row.waitKind ? `Wait: ${row.waitKind}` : "", row.waitReference ? `Ref ${friendlyRef(row.waitReference)}` : "", "Cancelled continuation retained for operator queue history."].filter(Boolean).join(" · "),
+    }));
+  return [...taskItems, ...thunkItems];
 }
 
 function mergeActionNeededItems(items: ActionNeededItem[]): ActionNeededItem[] {
@@ -2512,6 +2924,7 @@ function mergeActionNeededItems(items: ActionNeededItem[]): ActionNeededItem[] {
 
 function actionNeededPriority(item: ActionNeededItem): number {
   const status = statusToken(item.status);
+  if (item.kind === "cancelled" || status === "cancelled") return 4;
   if (item.kind === "approval" || status === "waiting-approval") return 0;
   if (status === "blocked" || status === "failed") return 1;
   if (item.kind === "thunk" || status === "waiting-input") return 2;
@@ -2529,39 +2942,147 @@ function taskTitle(task: JsonRecord): string {
 function taskDetail(task: JsonRecord, status: string): string {
   const role = stringValue(task.role) || stringValue(at(task, ["payload_json", "role"]));
   const subgoal = stringValue(task.subgoal_id) || stringValue(at(task, ["payload_json", "subgoal_id"]));
-  const reason = stringValue(task.reason) || stringValue(task.blocker) || stringValue(task.summary) || stringValue(at(task, ["payload_json", "reason"]));
+  const reason = taskBlockerReason(task);
   return [statusLabel(status), role, subgoal ? `subgoal ${subgoal}` : "", reason].filter(Boolean).join(" · ");
 }
 
-function continuationRowsFromSnapshot(snapshot?: GoalSnapshot): ContinuationRow[] {
+function taskBlockerReason(task: JsonRecord): string {
+  const payload = isRecord(task.payload_json) ? task.payload_json : {};
+  const result = isRecord(task.result) ? task.result : isRecord(payload.result) ? payload.result : {};
+  const candidates = [
+    task.reason,
+    task.blocker,
+    task.blocked_reason,
+    task.blocker_reason,
+    task.error,
+    task.last_error,
+    task.summary,
+    at(task, ["payload_json", "reason"]),
+    at(task, ["payload_json", "blocker"]),
+    at(task, ["payload_json", "blocked_reason"]),
+    at(task, ["payload_json", "blocker_reason"]),
+    at(task, ["payload_json", "error"]),
+    at(task, ["payload_json", "last_error"]),
+    at(task, ["payload_json", "summary"]),
+    result.reason,
+    result.error,
+    result.summary,
+    result.blocker,
+    result.blocked_reason,
+  ];
+  for (const candidate of candidates) {
+    const value = stringValue(candidate);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function continuationRowsFromSnapshot(snapshot?: GoalSnapshot, includeClosed = false): ContinuationRow[] {
   if (!snapshot) {
     return [];
   }
+  const rowVisible = (row: ContinuationRow | null): row is ContinuationRow => {
+    if (!row) {
+      return false;
+    }
+    return includeClosed || isOpenContinuationRow(row);
+  };
   const graph = workflowComputeGraph(snapshot);
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
-  return nodes
+  const thunkRecords = delayedThunkRecordsById(snapshot);
+  const graphRows = nodes
     .filter(isRecord)
     .filter((node) => normalizeStatus(node.kind) === "delayed-compute-thunk")
-    .map((node) => continuationRowFromNode(node as ComputeGraphNode))
-    .filter((row): row is ContinuationRow => Boolean(row))
-    .filter((row) => !["resumed", "cancelled", "expired", "done"].includes(row.status));
+    .map((node) => continuationRowFromNode(node as ComputeGraphNode, thunkRecords.get(stringValue(node.thunk_id))))
+    .filter(rowVisible);
+  const graphThunkIds = new Set(graphRows.map((row) => row.thunkId));
+  const recordRows = [...thunkRecords.values()]
+    .filter((record) => !graphThunkIds.has(stringValue(record.id)))
+    .map(continuationRowFromThunkRecord)
+    .filter(rowVisible);
+  return [...graphRows, ...recordRows];
 }
 
-function continuationRowFromNode(node: ComputeGraphNode): ContinuationRow | null {
+function delayedThunkRecordsById(snapshot: GoalSnapshot): Map<string, JsonRecord> {
+  const rows = rowsFrom(
+    at(snapshot, ["workflow_status", "data", "delayed_compute_thunks"])
+      ?? at(snapshot, ["workflow_status", "delayed_compute_thunks"])
+      ?? at(snapshot, ["workflow_progress", "data", "delayed_compute_thunks"])
+      ?? at(snapshot, ["workflow_progress", "delayed_compute_thunks"]),
+  );
+  return new Map(
+    rows
+      .map((row): [string, JsonRecord] => [stringValue(row.id), row])
+      .filter(([id]) => Boolean(id)),
+  );
+}
+
+function continuationRowFromNode(node: ComputeGraphNode, record?: JsonRecord): ContinuationRow | null {
   const thunkId = stringValue(node.thunk_id);
   if (!thunkId) {
     return null;
   }
-  const waitRef = isRecord(node.wait_ref) ? node.wait_ref : {};
+  const waitRef = isRecord(record?.wait_ref) ? record.wait_ref : isRecord(node.wait_ref) ? node.wait_ref : {};
+  const continuation = isRecord(record?.continuation) ? record.continuation : {};
   return {
     key: thunkId,
     thunkId,
-    continuationId: stringValue(node.continuation_id),
-    taskId: stringValue(node.task_id),
-    reason: stringValue(node.label) || "Waiting for input",
-    status: normalizeStatus(node.status),
+    continuationId: stringValue(node.continuation_id) || stringValue(continuation.continuation_id),
+    taskId: stringValue(node.task_id) || stringValue(record?.task_id),
+    reason: stringValue(record?.reason) || stringValue(node.label) || "Waiting for input",
+    requestedInput: stringValue(record?.requested_input) || stringValue(at(node, ["requested_input"])) || stringValue(at(node, ["payload_json", "requested_input"])) || stringValue(at(node, ["wait_ref", "requested_input"])),
+    status: continuationStatus(record?.status ?? node.status),
     waitKind: stringValue(waitRef.kind),
     waitReference: stringValue(waitRef.reference),
+  };
+}
+
+function continuationRowFromThunkRecord(record: JsonRecord): ContinuationRow | null {
+  const thunkId = stringValue(record.id);
+  if (!thunkId) {
+    return null;
+  }
+  const waitRef = isRecord(record.wait_ref) ? record.wait_ref : {};
+  const continuation = isRecord(record.continuation) ? record.continuation : {};
+  return {
+    key: thunkId,
+    thunkId,
+    continuationId: stringValue(continuation.continuation_id),
+    taskId: stringValue(record.task_id),
+    reason: stringValue(record.reason) || "Waiting for input",
+    requestedInput: stringValue(record.requested_input),
+    status: continuationStatus(record.status || "waiting-input"),
+    waitKind: stringValue(waitRef.kind),
+    waitReference: stringValue(waitRef.reference),
+  };
+}
+
+function isOpenContinuationRow(row: ContinuationRow): boolean {
+  return !["resumed", "cancelled", "expired", "done"].includes(row.status);
+}
+
+function continuationStatus(value: unknown): string {
+  const status = normalizeStatus(value);
+  return status === "pending" ? "waiting-input" : status;
+}
+
+function actionItemFromContinuation(goalId: string, row: ContinuationRow): ActionNeededItem {
+  return {
+    key: `thunk:${row.thunkId}`,
+    kind: "thunk",
+    label: row.reason || "Human prompt",
+    status: row.status || "waiting-input",
+    detail: [row.waitKind ? `Wait: ${row.waitKind}` : "", row.waitReference ? `Ref ${friendlyRef(row.waitReference)}` : ""].filter(Boolean).join(" · ") || "Delayed compute continuation is paused.",
+    requestedInput: row.requestedInput || row.reason || "Continue this work, or add the missing context.",
+    goalId,
+    taskId: row.taskId,
+    approvalId: "",
+    thunkId: row.thunkId,
+    continuationId: row.continuationId,
+    risk: "",
+    actionLabel: "Continue",
   };
 }
 
@@ -2569,15 +3090,10 @@ function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: Go
   const queryClient = useQueryClient();
   const rows = continuationRowsFromSnapshot(snapshot);
   const [responses, setResponses] = useState<Record<string, string>>({});
-  const resumeMutation = useMutation({
-    mutationFn: ({ row, responseSummary }: { row: ContinuationRow; responseSummary: string }) => resumeThunk(goalId, {
-      thunk_id: row.thunkId,
-      responder: "operator",
-      response_summary: responseSummary,
-      artifact_refs: [],
-    }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
+  const actionMutation = useMutation({
+    mutationFn: ({ item, responseSummary, intent }: ActionMutationInput) => runOperatorAction(item, responseSummary, intent),
+    onSuccess: (value) => {
+      applyActionEnvelopeToCache(queryClient, value, goalId);
     },
   });
 
@@ -2592,7 +3108,8 @@ function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: Go
         <span className="muted-small">{rows.length} waiting</span>
       </div>
       {rows.map((row) => {
-        const responseSummary = responses[row.thunkId] ?? "";
+        const item = actionItemFromContinuation(goalId, row);
+        const responseSummary = responses[item.key] ?? "";
         return (
           <div key={row.key} className="continuation-card">
             <div className="continuation-copy">
@@ -2602,22 +3119,14 @@ function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: Go
               {row.continuationId && <small title={row.continuationId}>continuation {friendlyRef(row.continuationId)}</small>}
               {row.waitReference && <small title={row.waitReference}>{row.waitKind || "wait_ref"} · {friendlyRef(row.waitReference)}</small>}
             </div>
-            <label>
-              Response summary
-              <textarea
-                value={responseSummary}
-                onChange={(event) => setResponses((current) => ({ ...current, [row.thunkId]: event.target.value }))}
-                placeholder="What input or decision should resume this continuation?"
-              />
-            </label>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!goalId || !responseSummary.trim() || resumeMutation.isPending}
-              onClick={() => resumeMutation.mutate({ row, responseSummary: responseSummary.trim() })}
-            >
-              Resume
-            </button>
+            <HumanPromptCard
+              item={item}
+              value={responseSummary}
+              onChange={(value) => setResponses((current) => ({ ...current, [item.key]: value }))}
+              onAction={(nextItem, nextSummary, intent) => actionMutation.mutate({ item: nextItem, responseSummary: nextSummary, intent })}
+              pending={actionMutation.isPending}
+              compact
+            />
           </div>
         );
       })}
@@ -2631,6 +3140,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
   const firstTaskId = taskId(tasks[0] ?? {});
   const [operator, setOperator] = useState("operator");
   const [result, setResult] = useState<unknown>(null);
+  const [otherAction, setOtherAction] = useState<OtherGoalAction>("review");
   const [voteReason, setVoteReason] = useState("Promote or demote this goal based on current priority.");
   const [voteWeight, setVoteWeight] = useState(1);
   const [suggestedRole, setSuggestedRole] = useState("peer_goal");
@@ -2640,7 +3150,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
   const [steerReason, setSteerReason] = useState("Evaluate whether the durable evidence satisfies the current objective.");
   const [reviewCheck, setReviewCheck] = useState("behavioral_testing");
   const [flowMode, setFlowMode] = useState("restart");
-  const [flowReason, setFlowReason] = useState("Operator requested control-plane action.");
+  const [flowReason, setFlowReason] = useState("Operator requested a follow-up action.");
   const [restartScope, setRestartScope] = useState("goal");
   const [restartTaskId, setRestartTaskId] = useState("");
   const [branchTargetTaskId, setBranchTargetTaskId] = useState("");
@@ -2667,9 +3177,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
     },
     onSuccess: (value) => {
       setResult(value);
-      void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
-      void queryClient.invalidateQueries({ queryKey: ["goals"] });
-      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+      applyActionEnvelopeToCache(queryClient, value.value, goalId);
     },
   });
   const disabled = !goalId || mutation.isPending;
@@ -2691,12 +3199,16 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
     <div className={clsx("compiler-control-panel", compact && "compact")}>
       <div className="section-heading">
         <div>
-          <h3>Goal controls</h3>
-          <span className="muted-small">Primary actions first; branching, restart, waits, and decision rounds stay in advanced controls.</span>
+          <h3>Operator actions</h3>
+          <span className="muted-small">Use a direct action, or configure one focused follow-up.</span>
         </div>
-        {result ? <InspectButton title="Last control action" payload={result} buttonLabel="Inspect result" /> : <span className="status-pill muted">Action result pending</span>}
+        {result ? (
+          <AdvancedInspect summaryLabel="Last action" title="Last goal action" payload={result} buttonLabel="Inspect JSON" />
+        ) : (
+          <span className="status-pill muted">Action result pending</span>
+        )}
       </div>
-      <div className="control-primary-grid" aria-label="Primary goal controls">
+      <div className="control-primary-grid" aria-label="Primary operator actions">
         <section className="primary-action-card">
           <span className="goal-context-kicker">Current state</span>
           <h4>{nextAction?.stateLabel ?? "Waiting"}</h4>
@@ -2728,16 +3240,27 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
               <ShieldCheck size={16} />
               Review evidence
             </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={disabled}
-              data-testid="primary-request-review"
-              onClick={() => runSteering("request review", "request_standard_review", "Run a focused standard review against the current task evidence.", "current task evidence")}
-            >
-              <CheckCircle2 size={16} />
-              Request review
-            </button>
+            {(failed + blocked) > 0 && (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={disabled}
+                data-testid="primary-recover-blockers"
+                onClick={() => run("recover blockers", () => restartGoal(goalId, {
+                  goal_id: goalId,
+                  scope: failed > 0 ? "failed" : "blocked",
+                  reason: "operator_requested",
+                  message: `Recover ${failed > 0 ? "failed" : "blocked"} work from primary operator actions.`,
+                  task_id: null,
+                  reset_attempts: false,
+                  preserve_artifacts: true,
+                  operator,
+                }))}
+              >
+                <RotateCcw size={16} />
+                Recover blockers
+              </button>
+            )}
             <button
               type="button"
               className="secondary-button"
@@ -2754,11 +3277,22 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
       <div className="control-grid">
         <details className="advanced-control-panel span-2">
           <summary>
-            <span>Advanced controls</span>
-            <small>Priority, steering fields, restart, branch, wait states, decision rounds, and ballots</small>
+            <span>More operator actions</span>
+            <small>Choose one focused action to configure</small>
           </summary>
+          <div className="other-action-picker">
+            <label>
+              Action
+              <select value={otherAction} onChange={(event) => setOtherAction(event.target.value as OtherGoalAction)}>
+                <option value="review">Request standard review</option>
+                <option value="research">Ask for research</option>
+                <option value="priority">Promote or demote priority</option>
+                <option value="steer">Steer the coordinator</option>
+              </select>
+            </label>
+          </div>
           <div className="control-grid nested">
-        <section className="control-card">
+        {otherAction === "priority" && <section className="control-card">
           <div className="section-heading">
             <h4>Goal priority</h4>
             <Vote size={17} />
@@ -2795,9 +3329,9 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
               Downvote
             </button>
           </div>
-        </section>
+        </section>}
 
-        <section className="control-card">
+        {otherAction === "steer" && <section className="control-card">
           <div className="section-heading">
             <h4>Steering directive</h4>
             <ShieldCheck size={17} />
@@ -2837,9 +3371,9 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
           <button type="button" className="primary-button" disabled={disabled || !steerReason.trim()} onClick={() => run("steer", () => steer(goalId, steeringPayload({ goalId, operator, taskId: steerTaskId, kind: steerKind, topic: steerTopic, reason: steerReason, reviewCheck })))}>
             Apply steering
           </button>
-        </section>
+        </section>}
 
-        <section className="control-card">
+        {otherAction === "restart_branch" && <section className="control-card">
           <div className="section-heading">
             <h4>Restart or branch</h4>
             <Split size={17} />
@@ -2898,9 +3432,9 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
               {flowActionButtonLabel(flowMode)}
             </button>
           </div>
-        </section>
+        </section>}
 
-        <section className="control-card">
+        {otherAction === "wait" && <section className="control-card">
           <div className="section-heading">
             <h4>Wait state</h4>
             <PauseCircle size={17} />
@@ -2934,9 +3468,9 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             <PauseCircle size={16} />
             Create wait state
           </button>
-        </section>
+        </section>}
 
-        <section className="control-card span-2">
+        {otherAction === "decision_round" && <section className="control-card span-2">
           <div className="section-heading">
             <h4>Decision round</h4>
             <Vote size={17} />
@@ -2973,9 +3507,9 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
             </button>
             <InspectButton title="Decision proposal format" payload={{ format: "label | description | proposer", example: mechanismProposals }} buttonLabel="Format" />
           </div>
-        </section>
+        </section>}
 
-        <section className="control-card">
+        {otherAction === "ballot" && <section className="control-card">
           <div className="section-heading">
             <h4>Decision ballot</h4>
             <FileJson size={17} />
@@ -2995,7 +3529,57 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
           <button type="button" className="secondary-button" disabled={disabled || !ballotRoundId || !ballotProposalId} onClick={() => run("cast ballot", () => mechanismBallot(goalId, mechanismBallotPayload({ goalId, roundId: ballotRoundId, proposalId: ballotProposalId, participant: operator, rationale: ballotRationale })))}>
             Cast ballot
           </button>
-        </section>
+        </section>}
+        {otherAction === "review" && <section className="control-card">
+          <div className="section-heading">
+            <h4>Request standard review</h4>
+            <CheckCircle2 size={17} />
+          </div>
+          <label>
+            Review focus
+            <select value={reviewCheck} onChange={(event) => setReviewCheck(event.target.value)}>
+              {standardReviewChecks.map((check) => <option key={check} value={check}>{statusLabel(check)}</option>)}
+            </select>
+          </label>
+          <label>
+            Topic
+            <input value={steerTopic} onChange={(event) => setSteerTopic(event.target.value)} placeholder="current evidence, a task id, or a risk" />
+          </label>
+          <label>
+            Reason
+            <textarea value={steerReason} onChange={(event) => setSteerReason(event.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={disabled || !steerReason.trim()}
+            onClick={() => runSteering("request review", "request_standard_review", steerReason, steerTopic || "current task evidence", reviewCheck)}
+          >
+            Request review
+          </button>
+        </section>}
+        {otherAction === "research" && <section className="control-card">
+          <div className="section-heading">
+            <h4>Ask for research</h4>
+            <Search size={17} />
+          </div>
+          <label>
+            Question
+            <input value={steerTopic} onChange={(event) => setSteerTopic(event.target.value)} placeholder="what should the research task answer?" />
+          </label>
+          <label>
+            Reason
+            <textarea value={steerReason} onChange={(event) => setSteerReason(event.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={disabled || !steerReason.trim()}
+            onClick={() => runSteering("request research", "request_research", steerReason, steerTopic || "highest-risk missing information")}
+          >
+            Ask for research
+          </button>
+        </section>}
           </div>
         </details>
       </div>
@@ -3082,7 +3666,7 @@ function steeringKindPayload(kind: string, topic: string, reason: string, review
   return { kind: "evaluate_goal_completion", reason };
 }
 
-function blockedTaskReplanPayload(item: ActionNeededItem): JsonRecord {
+function blockedTaskReplanPayload(item: ActionNeededItem, operatorContext = ""): JsonRecord {
   const subject = item.taskId ? `task ${friendlyRef(item.taskId)}` : "the blocked work";
   const reason = `${statusLabel(item.status)} requires operator recovery: ${item.detail || item.label}`;
   return {
@@ -3098,6 +3682,7 @@ function blockedTaskReplanPayload(item: ActionNeededItem): JsonRecord {
         `Re-plan or recover ${subject}.`,
         `Blocked item: ${item.label}.`,
         item.detail ? `Detail: ${item.detail}.` : "",
+        operatorContext ? `Operator context: ${operatorContext}.` : "",
         "Return concrete next tasks, evidence requirements, and any human inputs still needed.",
       ].filter(Boolean).join(" "),
       reason,
@@ -3107,18 +3692,44 @@ function blockedTaskReplanPayload(item: ActionNeededItem): JsonRecord {
 
 function blockedTaskRecoveryPayload(item: ActionNeededItem): JsonRecord {
   const status = statusToken(item.status);
-  const scope = status === "failed" ? "failed" : "blocked";
+  const fallbackScope = status === "failed" ? "failed" : "blocked";
+  const scope = item.taskId ? "task" : fallbackScope;
   const subject = item.taskId ? `task ${friendlyRef(item.taskId)}` : `${scope} work`;
   return {
     goal_id: item.goalId,
     scope,
     reason: "operator_requested",
     message: `Retry ${subject} from the action queue: ${item.detail || item.label}`,
-    task_id: null,
+    task_id: item.taskId || null,
     reset_attempts: false,
     preserve_artifacts: true,
     operator: "operator",
   };
+}
+
+function blockedTaskHumanPromptPayload(item: ActionNeededItem, operatorContext = ""): JsonRecord {
+  const subject = item.taskId ? `task ${friendlyRef(item.taskId)}` : "blocked work";
+  const requestedInput = operatorContext
+    || item.requestedInput
+    || item.detail
+    || `What operator input is required to unblock ${subject}?`;
+  return thunkPayload({
+    goalId: item.goalId,
+    taskId: item.taskId,
+    kind: "human_input",
+    reason: `Operator requested a human prompt for ${subject}: ${item.detail || item.label}`,
+    requestedInput,
+    timeoutSeconds: 0,
+  });
+}
+
+function blockedTaskCancelReason(item: ActionNeededItem, operatorContext = ""): string {
+  const subject = item.taskId ? `task ${friendlyRef(item.taskId)}` : "the selected goal";
+  return [
+    `Operator cancelled the goal from the action queue while reviewing ${subject}.`,
+    item.detail ? `Blocked detail: ${item.detail}.` : "",
+    operatorContext ? `Operator context: ${operatorContext}.` : "",
+  ].filter(Boolean).join(" ");
 }
 
 function flowActionButtonLabel(flowMode: string): string {
@@ -3574,7 +4185,9 @@ function MemoryView({ selectedGoalId }: { selectedGoalId: string }) {
         <div className="panel">
           <div className="section-heading">
             <h2>Memory events</h2>
-            {Boolean(memoryEventsQuery.data) && <InspectButton title="Memory events" payload={memoryEventsQuery.data} />}
+            {Boolean(memoryEventsQuery.data) && (
+              <AdvancedInspect summaryLabel="Details" title="Memory events" payload={memoryEventsQuery.data} buttonLabel="Inspect JSON" />
+            )}
           </div>
           <MemoryEventsTable selectedGoalId={selectedGoalId} value={memoryEventsQuery.data} loading={memoryEventsQuery.isFetching} />
         </div>
@@ -3665,7 +4278,7 @@ function MemoryDiffTable({ value }: { value: unknown }) {
         ])}
       />
       <div className="summary-row">
-        <InspectButton title="Memory edit preview" payload={record} buttonLabel="Inspect preview" />
+        <AdvancedInspect summaryLabel="Details" title="Memory edit preview" payload={record} buttonLabel="Inspect JSON" />
       </div>
     </>
   );
@@ -3735,7 +4348,7 @@ function PlansView() {
         <p className="body-copy">
           Open planning continuations and follow-up work.
         </p>
-        <InspectButton title="Plan projection" payload={planQuery.data ?? {}} buttonLabel="Inspect plans" />
+        <AdvancedInspect summaryLabel="Details" title="Plan projection" payload={planQuery.data ?? {}} buttonLabel="Inspect JSON" />
       </div>
     </section>
   );
@@ -3753,7 +4366,7 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
   const approvalRows = rowsFrom(at(approvalQuery.data, ["data"]) ?? approvalQuery.data);
   const actionItems = useMemo(() => {
     const approvalItems = actionNeededItemsFromApprovals(approvalRows, selectedGoalId);
-    const selectedGoalItems = selectedGoalId ? actionNeededItemsFromSnapshot(selectedGoalQuery.data, selectedGoalId) : [];
+    const selectedGoalItems = selectedGoalId ? queueItemsFromSnapshot(selectedGoalQuery.data, selectedGoalId) : [];
     const overviewItems = selectedGoalId ? [] : actionNeededItemsFromOverview(overviewQuery.data);
     return mergeActionNeededItems([...approvalItems, ...selectedGoalItems, ...overviewItems]);
   }, [approvalRows, overviewQuery.data, selectedGoalId, selectedGoalQuery.data]);
@@ -3763,7 +4376,7 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
       <div className="panel span-2">
         <div className="section-heading">
           <h2>Action queue</h2>
-          <span className="muted-small">Approvals, blockers, and waiting continuations</span>
+          <span className="muted-small">Approvals, recovery work, continuations, and stopped history</span>
         </div>
         <OperatorActionList items={actionItems} />
       </div>
@@ -3782,103 +4395,315 @@ function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
 
 function OperatorActionList({ items, compact = false }: { items: ActionNeededItem[]; compact?: boolean }) {
   const queryClient = useQueryClient();
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [responses, setResponses] = useState<Record<string, string>>({});
+  const [lastAction, setLastAction] = useState<{ item: ActionNeededItem; response: unknown } | null>(null);
   const actionMutation = useMutation({
-    mutationFn: ({ item, responseSummary }: ActionMutationInput) => runOperatorAction(item, responseSummary),
-    onSuccess: (_result, variables) => {
+    mutationFn: ({ item, responseSummary, intent }: ActionMutationInput) => runOperatorAction(item, responseSummary, intent),
+    onSuccess: (result, variables) => {
       setResponses((current) => {
         const next = { ...current };
         delete next[variables.item.key];
         return next;
       });
-      const goalId = variables.item.goalId;
-      if (goalId) {
-        void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
-      }
-      void queryClient.invalidateQueries({ queryKey: ["approvals"] });
-      void queryClient.invalidateQueries({ queryKey: ["overview"] });
-      void queryClient.invalidateQueries({ queryKey: ["goals"] });
+      setLastAction({ item: variables.item, response: result });
+      applyActionEnvelopeToCache(queryClient, result, variables.item.goalId);
     },
   });
+  const showQueueControls = !compact;
+  const visibleItems = showQueueControls ? items.filter((item) => queueItemMatchesFilter(item, queueFilter)) : items;
+  const groupedItems = showQueueControls ? queueGroupsForItems(visibleItems) : [];
+  const renderItem = (item: ActionNeededItem) => {
+    const responseSummary = responses[item.key] ?? "";
+    if (queueGroupForItem(item) === "cancelled") {
+      return <QueueHistoryCard key={item.key} item={item} />;
+    }
+    return (
+      <HumanPromptCard
+        key={item.key}
+        item={item}
+        value={responseSummary}
+        onChange={(value) => setResponses((current) => ({ ...current, [item.key]: value }))}
+        onAction={(nextItem, nextSummary, intent) => actionMutation.mutate({ item: nextItem, responseSummary: nextSummary, intent })}
+        pending={actionMutation.isPending}
+        compact={compact}
+      />
+    );
+  };
   return (
     <div className="approval-list">
-      {items.length ? items.map((item) => {
-        const affordance = actionAffordanceForItem(item);
-        const responseSummary = responses[item.key] ?? "";
-        const needsResponse = affordance === "resume";
-        const disabled = actionMutation.isPending || !item.goalId || (affordance === "approve" && !item.approvalId) || (affordance === "resume" && (!item.thunkId || !responseSummary.trim()));
-        return (
-          <div key={item.key} className="approval-card">
-            <div>
-              <strong>{item.label}</strong>
-              <span>{statusLabel(item.status)} · {item.goalId ? friendlyRef(item.goalId) : "no goal selected"}</span>
-              {item.detail && <small>{item.detail}</small>}
+      {showQueueControls && <QueueFilterBar items={items} active={queueFilter} onChange={setQueueFilter} />}
+      {lastAction && <ActionResultCard item={lastAction.item} response={lastAction.response} onClear={() => setLastAction(null)} />}
+      {visibleItems.length ? (
+        showQueueControls ? groupedItems.map((group) => (
+          <section key={group.group} className="queue-group" aria-label={`${queueGroupLabels[group.group]} queue`}>
+            <div className="queue-group-heading">
+              <strong>{queueGroupLabels[group.group]}</strong>
+              <span className="filter-count">{group.items.length} item{group.items.length === 1 ? "" : "s"}</span>
             </div>
-            {needsResponse && (
-              <label className="inline-action-input">
-                Response
-                <textarea
-                  value={responseSummary}
-                  onChange={(event) => setResponses((current) => ({ ...current, [item.key]: event.target.value }))}
-                  placeholder="Decision or missing input"
-                  rows={compact ? 2 : 3}
-                />
-              </label>
-            )}
-            <button
-              type="button"
-              className={affordance === "approve" || affordance === "resume" ? "primary-button" : "secondary-button"}
-              disabled={disabled}
-              onClick={() => actionMutation.mutate({ item, responseSummary: responseSummary.trim() })}
-            >
-              {operatorActionLabel(item, affordance)}
-            </button>
-          </div>
-        );
-      }) : <EmptyState title="Action queue clear" detail="Approvals, blocked tasks, and waiting continuations appear here." />}
+            {group.items.map(renderItem)}
+          </section>
+        )) : visibleItems.map(renderItem)
+      ) : (
+        <EmptyState
+          title={queueFilter === "all" ? "Action queue clear" : `${queueGroupLabels[queueFilter]} queue clear`}
+          detail={queueFilter === "all" ? "Approvals, recovery work, continuations, and stopped history appear here." : `No ${queueGroupLabels[queueFilter].toLowerCase()} rows match this filter.`}
+        />
+      )}
       {actionMutation.error && <span className="error-text">{(actionMutation.error as Error).message}</span>}
     </div>
   );
 }
 
+function QueueFilterBar({ items, active, onChange }: { items: ActionNeededItem[]; active: QueueFilter; onChange: (value: QueueFilter) => void }) {
+  return (
+    <div className="queue-toolbar" aria-label="Action queue filters">
+      <div className="graph-filter queue-filter" role="group" aria-label="Queue filter">
+        {queueFilterOptions.map((option) => {
+          const count = option.key === "all" ? items.length : items.filter((item) => queueItemMatchesFilter(item, option.key)).length;
+          return (
+            <button
+              key={option.key}
+              type="button"
+              className={clsx("graph-filter-button", active === option.key && "active")}
+              aria-pressed={active === option.key}
+              title={option.detail}
+              data-testid={`queue-filter-${option.key}`}
+              onClick={() => onChange(option.key)}
+            >
+              {option.label}
+              <span>{count}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ActionResultCard({ item, response, onClear }: { item: ActionNeededItem; response: unknown; onClear: () => void }) {
+  const summary = actionEnvelopeSummary(response);
+  if (!summary) {
+    return null;
+  }
+  return (
+    <div className="action-result-card">
+      <div>
+        <strong>{summary.label}</strong>
+        <span>{item.label}</span>
+        <small>{summary.detail}</small>
+        <small>Clearing this notice only updates this browser view; it does not cancel or change the goal.</small>
+      </div>
+      <div className="action-result-controls">
+        <AdvancedInspect summaryLabel="Details" title="Action result and active state" payload={response} buttonLabel="Inspect JSON" />
+        <button type="button" className="secondary-button" title="Dismiss this local notice only." onClick={onClear}>
+          Clear notice
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function QueueHistoryCard({ item }: { item: ActionNeededItem }) {
+  return (
+    <article className="approval-card queue-history-card">
+      <div>
+        <span className="goal-context-kicker">Stopped history</span>
+        <strong>{item.label}</strong>
+        <span>{statusLabel(item.status)} · {item.goalId ? friendlyRef(item.goalId) : "goal unknown"}</span>
+        <small>{item.detail || "This stopped row is kept for queue history."}</small>
+        <small>History rows are read-only; use Cancel goal only on active work.</small>
+      </div>
+      <span className="status-pill status-cancelled">Read-only</span>
+    </article>
+  );
+}
+
+function queueGroupsForItems(items: ActionNeededItem[]): Array<{ group: QueueGroup; items: ActionNeededItem[] }> {
+  return queueGroupOrder
+    .map((group) => ({ group, items: items.filter((item) => queueGroupForItem(item) === group) }))
+    .filter((group) => group.items.length > 0);
+}
+
+function queueItemMatchesFilter(item: ActionNeededItem, filter: QueueFilter): boolean {
+  return filter === "all" || queueGroupForItem(item) === filter;
+}
+
+function queueGroupForItem(item: ActionNeededItem): QueueGroup {
+  const status = statusToken(item.status);
+  if (item.kind === "cancelled" || status === "cancelled") return "cancelled";
+  if (item.kind === "approval" || status === "waiting-approval") return "approvals";
+  if (isResumableThunkItem(item)) return "thunks";
+  return "blocked";
+}
+
+function HumanPromptCard(props: {
+  item: ActionNeededItem;
+  value: string;
+  onChange: (value: string) => void;
+  onAction: (item: ActionNeededItem, responseSummary: string, intent: ActionIntent) => void;
+  pending: boolean;
+  compact?: boolean;
+}) {
+  const prompt = humanPromptForItem(props.item);
+  const affordance = actionAffordanceForItem(props.item);
+  const context = props.value.trim();
+  const missingTarget = !props.item.goalId || (affordance === "approve" && !props.item.approvalId) || (affordance === "resume" && !props.item.thunkId);
+  const primaryDisabled = props.pending || missingTarget;
+  const contextDisabled = primaryDisabled || !context;
+  const createPromptDisabled = props.pending || !props.item.goalId || !prompt.createPromptLabel;
+  const cancelDisabled = props.pending || !props.item.goalId || !prompt.cancelLabel;
+  return (
+    <article className={clsx("approval-card", "human-prompt-card", props.compact && "compact")}>
+      <div className="human-prompt-copy">
+        <span className="goal-context-kicker">{prompt.title}</span>
+        <strong>{prompt.question}</strong>
+        <span>{statusLabel(props.item.status)} · {props.item.goalId ? friendlyRef(props.item.goalId) : "no goal selected"}</span>
+        {prompt.detail && <small>{prompt.detail}</small>}
+      </div>
+      {prompt.showInput && (
+        <label className="inline-action-input human-prompt-input">
+          {prompt.inputLabel}
+          <textarea
+            value={props.value}
+            onChange={(event) => props.onChange(event.target.value)}
+            placeholder={prompt.placeholder}
+            rows={props.compact ? 2 : 3}
+          />
+        </label>
+      )}
+      <div className="human-prompt-actions">
+        <button
+          type="button"
+          className={affordance === "approve" || affordance === "resume" ? "primary-button" : "secondary-button"}
+          disabled={primaryDisabled}
+          onClick={() => props.onAction(props.item, prompt.defaultResponseSummary, "primary")}
+        >
+          {prompt.primaryLabel}
+        </button>
+        {prompt.showInput && (
+          <button type="button" className="secondary-button" disabled={contextDisabled} onClick={() => props.onAction(props.item, context, "context")}>
+            {prompt.contextLabel}
+          </button>
+        )}
+        {prompt.createPromptLabel && (
+          <button type="button" className="secondary-button" disabled={createPromptDisabled} onClick={() => props.onAction(props.item, context, "create-human-prompt")}>
+            {prompt.createPromptLabel}
+          </button>
+        )}
+        {prompt.cancelLabel && (
+          <button
+            type="button"
+            className="danger-button"
+            disabled={cancelDisabled}
+            title="Stop the durable goal. This is not a local clear action."
+            onClick={() => props.onAction(props.item, context, "cancel-goal")}
+          >
+            <XCircle size={15} />
+            {prompt.cancelLabel}
+          </button>
+        )}
+      </div>
+      {prompt.cancelLabel && <small className="danger-note">Cancel stops the goal. Clear only dismisses local notices or selection.</small>}
+    </article>
+  );
+}
+
+function humanPromptForItem(item: ActionNeededItem): HumanPromptSpec {
+  const status = statusToken(item.status);
+  const question = item.requestedInput || item.label || "What should the coordinator do next?";
+  if ((item.kind === "approval" || status === "waiting-approval") && item.approvalId) {
+    const approvalQuestion = item.requestedInput || "Approve this gate and continue?";
+    return {
+      title: "Approval",
+      question: approvalQuestion,
+      detail: item.detail || blockerReason(item),
+      primaryLabel: "Approve and continue",
+      contextLabel: "Approve with note",
+      inputLabel: "Approval note",
+      placeholder: "Add context for the approval record.",
+      showInput: true,
+      defaultResponseSummary: "Approved by operator.",
+    };
+  }
+  if (isResumableThunkItem(item)) {
+    return {
+      title: "Continuation",
+      question,
+      detail: item.detail || blockerReason(item),
+      primaryLabel: "Continue",
+      contextLabel: "Add context",
+      inputLabel: "Context for resume",
+      placeholder: "Optional context for the agent before continuing.",
+      showInput: true,
+      defaultResponseSummary: defaultContinuationSummary,
+    };
+  }
+  const failed = status === "failed";
+  const waitingWithoutThunk = status === "waiting-input";
+  return {
+    title: failed ? "Failed work" : waitingWithoutThunk ? "Waiting task" : "Recovery",
+    question: item.label || (failed ? "Retry failed work?" : waitingWithoutThunk ? "Create an operator prompt for this waiting task?" : "Recover blocked work?"),
+    detail: item.detail || blockerReason(item),
+    primaryLabel: waitingWithoutThunk ? "Create prompt" : "Retry work",
+    contextLabel: "Replan",
+    inputLabel: "Recovery context",
+    placeholder: waitingWithoutThunk ? "Describe the operator input this task needs." : "Add what changed, what to avoid, or what the next attempt should consider.",
+    showInput: true,
+    defaultResponseSummary: "",
+    createPromptLabel: waitingWithoutThunk ? undefined : "Ask for input",
+    cancelLabel: "Cancel goal",
+  };
+}
+
+function looksLikeQuestion(value: string): boolean {
+  const trimmed = value.trim();
+  return /\?\s*$/.test(trimmed) || /^(what|why|how|which|who|when|where|should|can|do|does|is|are)\b/i.test(trimmed);
+}
+
 function actionAffordanceForItem(item: ActionNeededItem): "approve" | "resume" | "replan" {
   const status = statusToken(item.status);
   if ((item.kind === "approval" || status === "waiting-approval") && item.approvalId) return "approve";
-  if (item.kind === "thunk" || (status === "waiting-input" && item.thunkId)) return "resume";
+  if (isResumableThunkItem(item)) return "resume";
   return "replan";
 }
 
-function operatorActionLabel(item: ActionNeededItem, affordance = actionAffordanceForItem(item)): string {
-  if (affordance === "approve") return "Approve";
-  if (affordance === "resume") return "Resume";
-  if (statusToken(item.status) === "failed") return "Retry failed work";
-  if (statusToken(item.status) === "blocked") return "Retry blocked work";
-  return "Request replan";
+function isResumableThunkItem(item: ActionNeededItem): boolean {
+  return item.kind === "thunk" && Boolean(item.thunkId);
 }
 
-function runOperatorAction(item: ActionNeededItem, responseSummary = ""): Promise<unknown> {
+function runOperatorAction(item: ActionNeededItem, responseSummary = "", intent: ActionIntent = "primary"): Promise<unknown> {
   if (!item.goalId) {
     throw new Error("This action is missing a goal id.");
+  }
+  if (intent === "cancel-goal") {
+    return cancelGoal(item.goalId, blockedTaskCancelReason(item, responseSummary.trim()));
   }
   const affordance = actionAffordanceForItem(item);
   if (affordance === "approve") {
     if (!item.approvalId) throw new Error("This approval is missing an approval id.");
-    return approve(item.goalId, { approval_id: item.approvalId, approved: true, comment: "Approved from Task Graph Manager" });
+    return approve(item.goalId, { approval_id: item.approvalId, approved: true, note: responseSummary.trim() || "Approved from Task Graph Manager" });
   }
   if (affordance === "resume") {
     if (!item.thunkId) throw new Error("This continuation is missing a thunk id.");
     return resumeThunk(item.goalId, {
       thunk_id: item.thunkId,
       responder: "operator",
-      response_summary: responseSummary.trim(),
+      response_summary: responseSummary.trim() || defaultContinuationSummary,
       artifact_refs: [],
     });
   }
+  if (intent === "create-human-prompt" || (statusToken(item.status) === "waiting-input" && !isResumableThunkItem(item) && intent === "primary")) {
+    return createThunk(item.goalId, blockedTaskHumanPromptPayload(item, responseSummary.trim()));
+  }
   const status = statusToken(item.status);
   if (status === "blocked" || status === "failed") {
+    if (intent === "context" || responseSummary.trim()) {
+      return steer(item.goalId, blockedTaskReplanPayload(item, responseSummary.trim()));
+    }
     return restartGoal(item.goalId, blockedTaskRecoveryPayload(item));
   }
-  return steer(item.goalId, blockedTaskReplanPayload(item));
+  return steer(item.goalId, blockedTaskReplanPayload(item, responseSummary.trim()));
 }
 
 function RunnersView({ overview }: { overview?: Overview }) {
@@ -3977,7 +4802,7 @@ function ResultList({ value }: { value: unknown }) {
       </ul>
     );
   }
-  return <InspectButton title="Memory response" payload={value} buttonLabel="Inspect response" />;
+  return <AdvancedInspect summaryLabel="Details" title="Memory response" payload={value} buttonLabel="Inspect JSON" />;
 }
 
 function SimpleTable({ headers, rows, empty }: { headers: string[]; rows: string[][]; empty: string }) {
@@ -4012,6 +4837,27 @@ function EmptyState({ title, detail, actionLabel, onAction }: { title: string; d
         </button>
       )}
     </div>
+  );
+}
+
+function AdvancedInspect({
+  title,
+  payload,
+  buttonLabel = "Inspect",
+  summaryLabel = "Advanced details",
+}: {
+  title: string;
+  payload: unknown;
+  buttonLabel?: string;
+  summaryLabel?: string;
+}) {
+  return (
+    <details className="advanced-inline-details">
+      <summary>{summaryLabel}</summary>
+      <div className="button-row">
+        <InspectButton title={title} payload={payload} buttonLabel={buttonLabel} />
+      </div>
+    </details>
   );
 }
 

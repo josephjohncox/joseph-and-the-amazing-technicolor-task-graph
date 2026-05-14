@@ -91,7 +91,8 @@
             "blocked": 1,
             "done": 0
           },
-          "wait_refs": ["wait://blocked_and_resumed/operator-answer"]
+          "wait_refs": ["wait://blocked_and_resumed/operator-answer"],
+          "continuation_refs": ["continuation://blocked_and_resumed/operator-answer"]
         }
       },
       {
@@ -194,15 +195,25 @@
             "thunk_id": "00000000-0000-4000-8000-000000002201",
             "kind": "human_input",
             "summary": "Choose the deterministic resume path.",
-            "wait_ref": "wait://blocked_and_resumed/operator-answer"
+            "wait_ref": "wait://blocked_and_resumed/operator-answer",
+            "continuation_ref": "continuation://blocked_and_resumed/operator-answer",
+            "human_prompt": {
+              "title": "Choose resume path",
+              "question": "Should the scenario continue on the deterministic path?",
+              "why_waiting": "The worker cannot choose the branch without operator input.",
+              "allowed_actions": ["answer", "continue", "replan"],
+              "required_context": "response_summary"
+            },
+            "operator_action": "Answer the human prompt and resume continuation://blocked_and_resumed/operator-answer"
           }
         ],
-        "next_actions": ["Resume with response_summary=approved deterministic path"]
+        "next_actions": ["Resume continuation://blocked_and_resumed/operator-answer with response_summary=approved deterministic path"]
       },
       "expect": {
         "goal_status": "blocked",
         "blocked_tasks": 1,
-        "wait_refs": 1
+        "wait_refs": 1,
+        "continuation_refs": 1
       }
     },
     {
@@ -214,8 +225,11 @@
       "after": ["block_task"],
       "resume": {
         "thunk_id": "00000000-0000-4000-8000-000000002201",
+        "continuation_ref": "continuation://blocked_and_resumed/operator-answer",
+        "action": "answer",
         "response_summary": "approved deterministic path",
-        "operator": "scenario-harness"
+        "operator": "scenario-harness",
+        "operator_action": "Resume continuation://blocked_and_resumed/operator-answer with approved deterministic path"
       },
       "expect": {
         "goal_status": "running",

@@ -1,0 +1,136 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_approval",
+  "title": "Bootstrap approval",
+  "description": "A worker requests operator approval before continuing through a durable continuation.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:10:00Z",
+    "seed": 3003,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003003",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003003",
+        "title": "Bootstrap approval gate",
+        "objective": "Require an explicit approval before completing the task.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Request approval",
+            "prompt": "Suspend until the operator approves the deterministic change.",
+            "reason": "Exercise approval-gated delayed compute.",
+            "tags": ["scenario", "bootstrap", "approval"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003003",
+      "description": "Submit the approval bootstrap goal."
+    },
+    {
+      "id": "request_approval",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003003",
+      "description": "Replay a worker result that requires explicit approval.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003301",
+        "status": "waiting_approval",
+        "summary": "Approval required before applying the deterministic fixture.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000003302",
+            "kind": "approval",
+            "summary": "Approve deterministic fixture application.",
+            "approval_ref": "approval://bootstrap/approval",
+            "continuation_ref": "continuation://bootstrap/approval",
+            "operator_action": "Approve the request and resume continuation://bootstrap/approval",
+            "approval_request": {
+              "title": "Approve bootstrap fixture",
+              "question": "Approve applying the deterministic fixture result?",
+              "allowed_actions": ["approve", "reject", "replan"],
+              "continuation_ref": "continuation://bootstrap/approval"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "approve_request",
+      "type": "resume_delayed_compute",
+      "goal_id": "00000000-0000-4000-8000-000000003003",
+      "description": "Approve and resume the continuation.",
+      "resume": {
+        "thunk_id": "00000000-0000-4000-8000-000000003302",
+        "approval_ref": "approval://bootstrap/approval",
+        "continuation_ref": "continuation://bootstrap/approval",
+        "action": "approve",
+        "operator_action": "Approve the request and resume continuation://bootstrap/approval"
+      }
+    },
+    {
+      "id": "complete_approved_task",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003003",
+      "description": "Replay approved task completion.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003301",
+        "status": "done",
+        "summary": "Approved bootstrap task completed.",
+        "confidence": 1.0,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "approval_record",
+            "uri": "artifact://scenarios/bootstrap_approval/approval-record.json",
+            "description": "Approval decision and completion evidence"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003003",
+      "description": "Validate approved work."
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "waiting_approval": 0,
+      "failed": 0
+    },
+    "required_events": ["approval_requested", "approval_granted", "delayed_compute_thunk_resumed", "goal_satisfied"],
+    "required_artifacts": ["artifact://scenarios/bootstrap_approval/approval-record.json"],
+    "satisfaction": {
+      "min_score": 0.9,
+      "required": true,
+      "rationale": "The approval gate was satisfied before the task completed with evidence."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "approval_resumed",
+      "kind": "approval",
+      "assertion": "approval.status == approved",
+      "expected": true,
+      "required": true
+    }
+  ]
+}

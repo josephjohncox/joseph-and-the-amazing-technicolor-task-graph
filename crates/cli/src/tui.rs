@@ -30,6 +30,8 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+const CANCEL_CONFIRM_WINDOW: Duration = Duration::from_secs(8);
+
 #[derive(Debug, Clone)]
 pub struct TuiConfig {
     pub control_gateway_url: String,
@@ -131,7 +133,7 @@ impl DashboardView {
         match self {
             Self::Overview => "Overview",
             Self::Goals => "Goals",
-            Self::Approvals => "Approvals",
+            Self::Approvals => "Actions",
             Self::Events => "Events",
             Self::Adversarial => "Adversarial",
             Self::Commands => "Commands",
@@ -278,14 +280,14 @@ struct EventSourceSummary {
 impl GoalDraftSummary {
     fn chat_preview(&self) -> String {
         format!(
-            "Goal draft ready for submission.\nTitle: {}\nObjective: {}\nInitial tasks: {}\nDone criteria: {}\nSubmit this exact draft with F5 or Ctrl-G.",
+            "Goal draft ready.\nTitle: {}\nObjective: {}\nInitial tasks: {}\nDone criteria: {}\nAccept this exact draft with F5 or Ctrl-G.",
             self.title, self.objective, self.initial_tasks, self.done_criteria
         )
     }
 
     fn submit_confirmation(&self, goal_id: &str) -> String {
         format!(
-            "Submitted drafted goal to the coordinator.\ngoal_id: {goal_id}\ntitle: {}\nobjective: {}\ninitial_tasks: {}\ndone_criteria: {}",
+            "Accepted draft and submitted goal to the coordinator.\ngoal_id: {goal_id}\ntitle: {}\nobjective: {}\ninitial_tasks: {}\ndone_criteria: {}",
             self.title, self.objective, self.initial_tasks, self.done_criteria
         )
     }
@@ -315,6 +317,7 @@ struct App {
     dashboard_view: DashboardView,
     dashboard_scroll: u16,
     action_index: usize,
+    cancel_goal_confirmation: Option<(String, Instant)>,
     last_refresh: Option<Instant>,
     busy: bool,
     pending_request: Option<PendingGatewayRequest>,
@@ -354,6 +357,7 @@ impl App {
             dashboard_view: DashboardView::Overview,
             dashboard_scroll: 0,
             action_index: 0,
+            cancel_goal_confirmation: None,
             last_refresh: None,
             busy: false,
             pending_request: None,
@@ -527,12 +531,12 @@ impl App {
                         content: draft.summary.chat_preview(),
                     });
                     self.status = format!(
-                        "{}; goal draft ready, review dashboard or chat, F5/Ctrl-G submit, Ctrl-D discard",
+                        "{}; goal draft ready, review dashboard or chat, F5/Ctrl-G accept, Ctrl-D discard",
                         chat_status(&value)
                     );
                 } else if self.active_goal_draft.is_some() {
                     self.status = format!(
-                        "{}; active goal draft still available, F5/Ctrl-G submit, Ctrl-D discard",
+                        "{}; active goal draft still available, F5/Ctrl-G accept, Ctrl-D discard",
                         chat_status(&value)
                     );
                 } else {
@@ -556,7 +560,7 @@ impl App {
     fn begin_submit_goal_draft(&mut self) -> anyhow::Result<()> {
         if self.pending_request.is_some() {
             self.status =
-                "gateway request is still running; wait before submitting the draft".to_string();
+                "gateway request is still running; wait before accepting the draft".to_string();
             return Ok(());
         }
         let Some(draft) = self.active_goal_draft.clone() else {
@@ -574,7 +578,7 @@ impl App {
             return Ok(());
         }
 
-        self.status = "submitting active goal draft to coordinator".to_string();
+        self.status = "accepting active goal draft with coordinator".to_string();
         self.busy = true;
         self.pending_request = Some(PendingGatewayRequest {
             kind: PendingRequestKind::GoalSubmit {
@@ -606,7 +610,7 @@ impl App {
                     .as_ref()
                     .map(|summary| summary.submit_confirmation(&goal_id))
                     .unwrap_or_else(|| {
-                        format!("Submitted drafted goal to the coordinator.\ngoal_id: {goal_id}")
+                        format!("Accepted draft and submitted goal to the coordinator.\ngoal_id: {goal_id}")
                     });
                 if goal_id != "assigned by coordinator" {
                     self.selected_goal_id = Some(goal_id.clone());
@@ -673,7 +677,7 @@ impl App {
         let len = self.current_action_items().len();
         if len == 0 {
             self.action_index = 0;
-            self.status = "action queue is clear".to_string();
+            self.status = "operator action queue is clear".to_string();
             return;
         }
         let current = self.action_index.min(len.saturating_sub(1));
@@ -682,16 +686,16 @@ impl App {
         } else {
             (current + 1).min(len.saturating_sub(1))
         };
-        self.status = format!("selected action {}/{}", self.action_index + 1, len);
+        self.status = format!("selected queue item {}/{}", self.action_index + 1, len);
     }
 
     fn begin_apply_selected_action(&mut self) -> anyhow::Result<()> {
         if self.pending_request.is_some() {
-            self.status = "gateway request is still running; action deferred".to_string();
+            self.status = "gateway request is still running; queue action deferred".to_string();
             return Ok(());
         }
         let Some(action) = self.selected_action_item() else {
-            self.status = "action queue is clear".to_string();
+            self.status = "operator action queue is clear".to_string();
             return Ok(());
         };
         let Some(goal_id) = action
@@ -700,14 +704,14 @@ impl App {
             .or_else(|| self.selected_goal_id.clone())
             .filter(|goal_id| !goal_id.trim().is_empty())
         else {
-            self.status = "selected action is missing a goal id".to_string();
+            self.status = "selected queue item is missing a goal id".to_string();
             return Ok(());
         };
         let (path, payload, label) = operator_action_request(&goal_id, &action, self.input.trim())?;
         if action_requires_input(&action) {
             self.input.clear();
         }
-        self.status = format!("applying action: {label}");
+        self.status = format!("running queue action: {label}");
         self.busy = true;
         self.pending_request = Some(PendingGatewayRequest {
             kind: PendingRequestKind::OperatorAction {
@@ -716,6 +720,70 @@ impl App {
             handle: self.spawn_post_json(&path, payload),
         });
         Ok(())
+    }
+
+    fn begin_cancel_selected_goal(&mut self) -> anyhow::Result<()> {
+        if self.pending_request.is_some() {
+            self.status = "gateway request is still running; cancel deferred".to_string();
+            return Ok(());
+        }
+        let Some(goal_id) = self
+            .selected_goal_id
+            .clone()
+            .filter(|goal_id| !goal_id.trim().is_empty())
+        else {
+            self.status = "select a goal before cancelling".to_string();
+            return Ok(());
+        };
+
+        let now = Instant::now();
+        let cancel_is_confirmed =
+            self.cancel_goal_confirmation
+                .as_ref()
+                .is_some_and(|(armed_goal_id, armed_at)| {
+                    armed_goal_id == &goal_id
+                        && now.duration_since(*armed_at) <= CANCEL_CONFIRM_WINDOW
+                });
+        if !cancel_is_confirmed {
+            self.cancel_goal_confirmation = Some((goal_id.clone(), now));
+            self.status = format!(
+                "cancel armed for {}; type a reason if needed, then press Ctrl-X again within {}s",
+                short_id(&goal_id),
+                CANCEL_CONFIRM_WINDOW.as_secs()
+            );
+            return Ok(());
+        }
+
+        let reason = if self.input.trim().is_empty() {
+            "cancelled from COAT TUI by operator".to_string()
+        } else {
+            self.input.trim().to_string()
+        };
+        let (path, payload, label) = cancel_goal_request(&goal_id, &reason);
+        self.input.clear();
+        self.cancel_goal_confirmation = None;
+        self.status = format!("cancelling selected goal: {}", short_id(&goal_id));
+        self.busy = true;
+        self.pending_request = Some(PendingGatewayRequest {
+            kind: PendingRequestKind::OperatorAction {
+                label: label.clone(),
+            },
+            handle: self.spawn_post_json(&path, payload),
+        });
+        Ok(())
+    }
+
+    fn clear_local_messages_and_result(&mut self) {
+        let message_count = self.messages.len();
+        let had_action_result = self.last_chat_response.take().is_some();
+        self.messages.clear();
+        self.active_goal_draft = None;
+        self.chat_scroll_from_bottom = 0;
+        self.cancel_goal_confirmation = None;
+        self.status = format!(
+            "cleared {message_count} local messages and {} action result; durable chat is unchanged",
+            if had_action_result { "the last" } else { "no" }
+        );
     }
 
     async fn finish_operator_action(
@@ -732,9 +800,9 @@ impl App {
                 self.last_chat_response = Some(value);
                 self.chat_scroll_from_bottom = 0;
                 self.action_index = 0;
-                let mut status = format!("action applied: {label}");
+                let mut status = format!("queue action complete: {label}");
                 if let Err(error) = self.refresh_dashboard().await {
-                    status = format!("action applied, dashboard refresh failed: {error}");
+                    status = format!("queue action complete, dashboard refresh failed: {error}");
                 }
                 self.status = status;
                 Ok(())
@@ -745,7 +813,7 @@ impl App {
                     content: format!("Action failed: {label}: {error}"),
                 });
                 self.chat_scroll_from_bottom = 0;
-                self.status = format!("action failed: {error}");
+                self.status = format!("queue action failed: {error}");
                 Ok(())
             }
         }
@@ -840,6 +908,7 @@ impl App {
         };
         self.selected_goal_id = Some(goal_id.clone());
         self.active_goal_draft = None;
+        self.cancel_goal_confirmation = None;
         self.dashboard_scroll = 0;
         self.status = format!("selected goal: {}", short_id(&goal_id));
         if let Err(error) = self.refresh_selected_goal_summary().await {
@@ -858,6 +927,7 @@ impl App {
         self.selected_goal_approvals.clear();
         self.selected_goal_events.clear();
         self.active_goal_draft = None;
+        self.cancel_goal_confirmation = None;
         self.dashboard_scroll = 0;
         self.status = "goal selection cleared".to_string();
         self.load_chat_session().await
@@ -994,6 +1064,14 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.input.clear();
+            Ok(false)
+        }
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.clear_local_messages_and_result();
+            Ok(false)
+        }
+        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.begin_cancel_selected_goal()?;
             Ok(false)
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1283,7 +1361,7 @@ fn overview_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ]),
         Line::from(format!("goals      {}", dashboard.goals_count)),
         Line::from(format!("runners    {}", dashboard.runners_count)),
-        Line::from(format!("approvals  {}", dashboard.approvals_count)),
+        Line::from(format!("actions    {}", dashboard.approvals_count)),
         Line::from(format!("events     {}", dashboard.events_count)),
         Line::from(format!("plans      {}", dashboard.plans_count)),
         Line::from(""),
@@ -1319,7 +1397,9 @@ fn goals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Ctrl-N/Ctrl-P or Up/Down selects a goal"),
+        Line::from(
+            "Ctrl-N/Ctrl-P or Up/Down selects. Ctrl-X cancels selected goal after confirmation.",
+        ),
         Line::from(""),
     ];
     if app.goals.is_empty() {
@@ -1377,22 +1457,34 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         &app.approvals
     };
     let value_width = width.saturating_sub(15).max(20) as usize;
+    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_approvals.is_empty() {
+        "selected goal"
+    } else {
+        "all goals"
+    };
     let mut lines = vec![
         Line::from(Span::styled(
-            "action queue",
+            "operator actions",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
+        Line::from(format!(
+            "queue {} ({}) scope {}",
+            approvals.len(),
+            action_queue_breakdown(approvals),
+            scope
+        )),
         Line::from(
-            "Up/Down selects. Enter or a applies. For continuations, type the response in the input line first.",
+            "Up/Down selects. Enter/a runs the selected action. Ctrl-X cancels selected goal.",
+        ),
+        Line::from(
+            "Human prompts: empty input = Continue; typed input = Add context/answer. Ctrl-L clears local results.",
         ),
         Line::from(""),
     ];
     if approvals.is_empty() {
-        lines.push(Line::from(
-            "No approvals, blocked tasks, or continuations need operator action.",
-        ));
+        lines.push(Line::from("No operator actions are waiting."));
         return lines;
     }
     for (index, approval) in approvals.iter().enumerate() {
@@ -1409,14 +1501,7 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 }),
             ),
             Span::raw(" "),
-            Span::styled(
-                approval.status.clone(),
-                Style::default().fg(if approval.status == "pending" {
-                    Color::Yellow
-                } else {
-                    Color::Cyan
-                }),
-            ),
+            Span::styled(approval.status.clone(), action_status_style(approval)),
             Span::raw(" "),
             Span::styled(
                 truncate_text(&approval.action, value_width),
@@ -1424,10 +1509,11 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             ),
         ]));
         lines.push(Line::from(format!(
-            "  action:{} id:{} risk:{} goal:{} task:{}",
+            "  kind:{} action:{} id:{} risk:{} goal:{} task:{}",
+            action_kind_label(approval),
             action_label,
             short_id(&approval.id),
-            approval.risk.as_deref().unwrap_or("unspecified"),
+            action_risk_label(approval),
             approval
                 .goal_id
                 .as_deref()
@@ -1441,7 +1527,11 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         )));
         if action_requires_input(approval) && selected {
             lines.push(Line::from(
-                "  input: type the resume decision below, then press Enter or a",
+                "  human prompt: press Enter to Continue, or type context/answer below first",
+            ));
+        } else if approval.id.starts_with("task:") && selected {
+            lines.push(Line::from(
+                "  recovery: retry task work, or request a replan with operator context",
             ));
         }
         if let Some(created_at) = approval.created_at.as_deref() {
@@ -1452,6 +1542,50 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+fn action_queue_breakdown(approvals: &[ApprovalSummary]) -> String {
+    let approval_count = approvals
+        .iter()
+        .filter(|action| !action.id.starts_with("task:") && !action.id.starts_with("thunk:"))
+        .count();
+    let task_count = approvals
+        .iter()
+        .filter(|action| action.id.starts_with("task:"))
+        .count();
+    let thunk_count = approvals
+        .iter()
+        .filter(|action| action.id.starts_with("thunk:"))
+        .count();
+    format!("approval gates:{approval_count} recovery:{task_count} prompts:{thunk_count}")
+}
+
+fn action_kind_label(action: &ApprovalSummary) -> &'static str {
+    if action.id.starts_with("thunk:") {
+        "human prompt"
+    } else if action.id.starts_with("task:") {
+        "recovery"
+    } else {
+        "approval gate"
+    }
+}
+
+fn action_risk_label(action: &ApprovalSummary) -> &str {
+    match action.risk.as_deref() {
+        Some("delayed compute thunk") => "human prompt",
+        Some(risk) => risk,
+        None => "unspecified",
+    }
+}
+
+fn action_status_style(action: &ApprovalSummary) -> Style {
+    match status_token(&action.status).as_str() {
+        "pending" | "waiting-approval" => Style::default().fg(Color::Yellow),
+        "blocked" | "failed" | "budget-exhausted" => Style::default().fg(Color::Red),
+        "waiting-input" if action.id.starts_with("thunk:") => Style::default().fg(Color::Green),
+        "waiting-input" => Style::default().fg(Color::Magenta),
+        _ => Style::default().fg(Color::Cyan),
+    }
+}
+
 fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let events = if app.selected_goal_id.is_some() && !app.selected_goal_events.is_empty() {
         &app.selected_goal_events
@@ -1459,6 +1593,11 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         &app.events
     };
     let value_width = width.saturating_sub(15).max(20) as usize;
+    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_events.is_empty() {
+        "selected goal"
+    } else {
+        "all goals"
+    };
     let mut lines = vec![
         Line::from(Span::styled(
             "events",
@@ -1466,7 +1605,13 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(format!("sources {}", app.event_sources.len())),
+        Line::from(format!(
+            "recent {} sources {} scope {}",
+            events.len(),
+            app.event_sources.len(),
+            scope
+        )),
+        Line::from("Ctrl-R refreshes projections. Ctrl-L clears local action/chat results."),
     ];
     for source in app.event_sources.iter().take(4) {
         lines.push(Line::from(format!(
@@ -1564,15 +1709,15 @@ fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
         },
         OperatorCommandCatalogItem {
             command: "coat goal",
-            surface: "Goals / Work Graph / Goal Controls / Adversarial",
-            action: "Open Goals, Graph, Controls, or Adversarial",
+            surface: "Goals / Work Graph / Operator Actions / Adversarial",
+            action: "Open Goals, Graph, Actions, or Adversarial",
             summary: "Submit, inspect, steer, vote, branch, restart, and evaluate goals.",
         },
         OperatorCommandCatalogItem {
             command: "coat human",
-            surface: "Approvals / Human Queue",
-            action: "Enter or a applies selected TUI action",
-            summary: "Approve gates, resume continuations, and inspect feedback threads.",
+            surface: "Actions / Human Prompts",
+            action: "Enter or a runs the selected queue action",
+            summary: "Approve gates, continue human prompts, and inspect feedback threads.",
         },
         OperatorCommandCatalogItem {
             command: "coat deploy",
@@ -1600,13 +1745,13 @@ fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
         },
         OperatorCommandCatalogItem {
             command: "coat event",
-            surface: "Events / Human Queue / Commands",
-            action: "Open Events or Human Queue",
+            surface: "Events / Actions / Commands",
+            action: "Open Events or Actions",
             summary: "Register, ingest, emit, poll, trigger, and route durable event sources.",
         },
         OperatorCommandCatalogItem {
             command: "coat store",
-            surface: "Dashboard / Goals / Plans / Human Queue",
+            surface: "Dashboard / Goals / Plans / Actions",
             action: "Open projection views",
             summary: "Read goal-store projections for goals, tasks, plans, events, artifacts, checkpoints, and approvals.",
         },
@@ -1626,7 +1771,7 @@ fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
             command: "coat tui",
             surface: "Terminal UI",
             action: "Already here",
-            summary: "Terminal dashboard mirrors SPA goal, action, runner, event, and command coverage.",
+            summary: "Terminal dashboard mirrors SPA goal, action queue, runner, event, and command coverage.",
         },
     ]
 }
@@ -1790,19 +1935,7 @@ fn adversarial_reference_lines(
 fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = Vec::new();
     for message in &app.messages {
-        let color = if message.role == "user" {
-            Color::Yellow
-        } else {
-            Color::Cyan
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", message.role),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(message.content.as_str()),
-        ]));
-        lines.push(Line::from(""));
+        lines.extend(chat_message_lines(message));
     }
     if app.busy {
         lines.push(Line::from(Span::styled(
@@ -1834,6 +1967,46 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
             &mut state,
         );
     }
+}
+
+fn chat_message_lines(message: &ChatLine) -> Vec<Line<'static>> {
+    let role_color = match message.role.as_str() {
+        "user" => Color::Yellow,
+        "assistant" => Color::Cyan,
+        _ => Color::White,
+    };
+    let role_style = Style::default().fg(role_color).add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(Color::White);
+    let code_style = Style::default().fg(Color::Green);
+    let mut in_code_block = false;
+    let mut lines = Vec::new();
+    let content_lines: Vec<&str> = if message.content.is_empty() {
+        vec![""]
+    } else {
+        message.content.lines().collect()
+    };
+
+    for (index, raw_line) in content_lines.into_iter().enumerate() {
+        let is_fence = raw_line.trim_start().starts_with("```");
+        let line_style = if in_code_block || is_fence {
+            code_style
+        } else {
+            text_style
+        };
+        let mut spans = Vec::new();
+        if index == 0 {
+            spans.push(Span::styled(format!("{}: ", message.role), role_style));
+        } else {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(raw_line.to_string(), line_style));
+        lines.push(Line::from(spans));
+        if is_fence {
+            in_code_block = !in_code_block;
+        }
+    }
+    lines.push(Line::from(""));
+    lines
 }
 
 fn render_scrollable_lines(
@@ -1894,7 +2067,7 @@ fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Tab focus  ←/→ or 1-6 views  ↑/↓ scroll/select  approvals: Enter/a acts  Ctrl-T mode  chat Enter sends  F5/Ctrl-G submit draft  Ctrl-D discard  Ctrl-R refresh  Esc quit",
+            "Tab focus  1-6 views  ↑/↓ scroll/select  Enter/a run action  Ctrl-X cancel goal  Ctrl-L clear local  F5/Ctrl-G accept draft  Ctrl-R refresh  Esc quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -1951,9 +2124,23 @@ fn approval_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
 }
 
 fn action_needed_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
+    let thunks = thunk_action_needed_summaries_from_value(value);
+    let thunk_task_ids = thunks
+        .iter()
+        .filter_map(|item| item.task_id.as_deref())
+        .collect::<Vec<_>>();
+    let tasks = task_action_needed_summaries_from_value(value)
+        .into_iter()
+        .filter(|item| {
+            !(status_token(&item.status) == "waiting-input"
+                && item
+                    .task_id
+                    .as_deref()
+                    .is_some_and(|task_id| thunk_task_ids.contains(&task_id)))
+        });
     let mut items = approval_summaries_from_value(value);
-    items.extend(task_action_needed_summaries_from_value(value));
-    items.extend(thunk_action_needed_summaries_from_value(value));
+    items.extend(tasks);
+    items.extend(thunks);
     dedupe_action_needed_summaries(items)
 }
 
@@ -1996,6 +2183,9 @@ fn approval_summary_from_value(value: &Value) -> Option<ApprovalSummary> {
     let status = compact_string_at_paths(value, &[&["status"], &["payload_json", "status"]])
         .map(|status| status_token(&status))
         .unwrap_or_else(|| "pending".to_string());
+    if status != "pending" && status != "waiting-approval" {
+        return None;
+    }
     let action = approval_action_text(value)
         .or_else(|| compact_string_at_paths(value, &[&["message"], &["summary"]]))
         .unwrap_or_else(|| "review requested".to_string());
@@ -2075,7 +2265,8 @@ fn task_action_needed_summary(task: &Value) -> Option<ApprovalSummary> {
 }
 
 fn thunk_action_needed_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
-    first_array_at_paths(
+    let records = delayed_thunk_records_from_value(value);
+    let mut items = first_array_at_paths(
         value,
         &[
             &["workflow_compute_graph", "data", "nodes"],
@@ -2099,30 +2290,136 @@ fn thunk_action_needed_summaries_from_value(value: &Value) -> Vec<ApprovalSummar
             "resumed" | "cancelled" | "expired" | "done"
         )
     })
-    .filter_map(thunk_action_needed_summary)
-    .collect()
+    .filter_map(|node| {
+        let thunk_id = compact_string_at_paths(node, &[&["thunk_id"], &["id"]])?;
+        let record = records.iter().find(|record| {
+            compact_string_at_paths(record, &[&["id"], &["thunk_id"]]).as_deref()
+                == Some(thunk_id.as_str())
+        });
+        thunk_action_needed_summary(node, record)
+    })
+    .collect::<Vec<_>>();
+    let graph_thunk_ids = items
+        .iter()
+        .filter_map(|item| item.id.strip_prefix("thunk:").map(str::to_string))
+        .collect::<Vec<_>>();
+    items.extend(
+        records
+            .iter()
+            .filter(|record| {
+                compact_string_at_paths(record, &[&["id"], &["thunk_id"]])
+                    .is_some_and(|id| !graph_thunk_ids.contains(&id))
+            })
+            .filter_map(thunk_record_action_needed_summary),
+    );
+    dedupe_action_needed_summaries(items)
 }
 
-fn thunk_action_needed_summary(node: &Value) -> Option<ApprovalSummary> {
+fn delayed_thunk_records_from_value(value: &Value) -> Vec<Value> {
+    first_array_at_paths(
+        value,
+        &[
+            &["workflow_status", "data", "delayed_compute_thunks"],
+            &["workflow_status", "delayed_compute_thunks"],
+            &["workflow_progress", "data", "delayed_compute_thunks"],
+            &["workflow_progress", "delayed_compute_thunks"],
+            &["delayed_compute_thunks"],
+        ],
+    )
+    .unwrap_or(&[])
+    .to_vec()
+}
+
+fn thunk_action_needed_summary(node: &Value, record: Option<&Value>) -> Option<ApprovalSummary> {
     let thunk_id = compact_string_at_paths(node, &[&["thunk_id"], &["id"]])?;
     let status = compact_string_at_paths(node, &[&["status"]])
+        .or_else(|| record.and_then(|record| compact_string_at_paths(record, &[&["status"]])))
         .map(|status| status_token(&status))
         .unwrap_or_else(|| "waiting-input".to_string());
-    let label = compact_string_at_paths(node, &[&["label"], &["reason"]])
-        .unwrap_or_else(|| "continuation waiting for operator input".to_string());
+    let label = compact_string_at_paths(
+        node,
+        &[
+            &["requested_input"],
+            &["payload_json", "requested_input"],
+            &["wait_ref", "requested_input"],
+            &["label"],
+            &["reason"],
+        ],
+    )
+    .or_else(|| {
+        record.and_then(|record| {
+            compact_string_at_paths(
+                record,
+                &[
+                    &["requested_input"],
+                    &["reason"],
+                    &["wait_ref", "requested_input"],
+                    &["label"],
+                ],
+            )
+        })
+    })
+    .unwrap_or_else(|| "Human prompt waiting for operator input".to_string());
     Some(ApprovalSummary {
         id: format!("thunk:{thunk_id}"),
         status,
         action: label,
-        risk: Some("delayed compute thunk".to_string()),
-        goal_id: compact_string_at_paths(node, &[&["goal_id"]]),
-        task_id: compact_string_at_paths(node, &[&["task_id"]]),
-        created_at: None,
+        risk: Some("human prompt".to_string()),
+        goal_id: compact_string_at_paths(node, &[&["goal_id"]])
+            .or_else(|| record.and_then(|record| compact_string_at_paths(record, &[&["goal_id"]]))),
+        task_id: compact_string_at_paths(node, &[&["task_id"]])
+            .or_else(|| record.and_then(|record| compact_string_at_paths(record, &[&["task_id"]]))),
+        created_at: record.and_then(|record| {
+            compact_string_at_paths(record, &[&["created_at"], &["payload_json", "created_at"]])
+        }),
+    })
+}
+
+fn thunk_record_action_needed_summary(record: &Value) -> Option<ApprovalSummary> {
+    let thunk_id = compact_string_at_paths(record, &[&["id"], &["thunk_id"]])?;
+    let status = compact_string_at_paths(record, &[&["status"]])
+        .map(|status| status_token(&status))
+        .unwrap_or_else(|| "waiting-input".to_string());
+    if matches!(
+        status.as_str(),
+        "resumed" | "cancelled" | "expired" | "done"
+    ) {
+        return None;
+    }
+    let label = compact_string_at_paths(
+        record,
+        &[
+            &["requested_input"],
+            &["reason"],
+            &["wait_ref", "requested_input"],
+            &["label"],
+        ],
+    )
+    .unwrap_or_else(|| "Human prompt waiting for operator input".to_string());
+    Some(ApprovalSummary {
+        id: format!("thunk:{thunk_id}"),
+        status,
+        action: label,
+        risk: Some("human prompt".to_string()),
+        goal_id: compact_string_at_paths(record, &[&["goal_id"]]),
+        task_id: compact_string_at_paths(record, &[&["task_id"]]),
+        created_at: compact_string_at_paths(
+            record,
+            &[&["created_at"], &["payload_json", "created_at"]],
+        ),
     })
 }
 
 fn action_requires_input(action: &ApprovalSummary) -> bool {
-    action.id.starts_with("thunk:") || status_token(&action.status) == "waiting-input"
+    action.id.starts_with("thunk:")
+}
+
+fn cancel_goal_request(goal_id: &str, reason: &str) -> (String, Value, String) {
+    (
+        format!("/api/goals/{}/cancel", percent_encode(goal_id)),
+        json!(reason),
+        format!("cancel goal {}", short_id(goal_id)),
+    )
 }
 
 fn operator_action_request(
@@ -2130,18 +2427,23 @@ fn operator_action_request(
     action: &ApprovalSummary,
     input: &str,
 ) -> anyhow::Result<(String, Value, String)> {
-    if action.id.starts_with("thunk:") || status_token(&action.status) == "waiting-input" {
+    if action.id.starts_with("thunk:") {
         let thunk_id = action
             .id
             .strip_prefix("thunk:")
             .unwrap_or(action.id.as_str());
         if thunk_id.trim().is_empty() {
-            bail!("selected continuation is missing a thunk id");
+            bail!("selected human prompt is missing a continuation id");
         }
         let response_summary = if input.trim().is_empty() {
-            "Resumed from the COAT TUI action queue.".to_string()
+            "Continue".to_string()
         } else {
             input.trim().to_string()
+        };
+        let action_label = if input.trim().is_empty() {
+            "continue"
+        } else {
+            "add context"
         };
         return Ok((
             format!("/api/goals/{}/resume_thunk", percent_encode(goal_id)),
@@ -2151,7 +2453,7 @@ fn operator_action_request(
                 "response_summary": response_summary,
                 "artifact_refs": []
             }),
-            format!("resume {}", short_id(thunk_id)),
+            format!("{action_label} {}", short_id(thunk_id)),
         ));
     }
 
@@ -2161,9 +2463,9 @@ fn operator_action_request(
             json!({
                 "approval_id": action.id,
                 "approved": true,
-                "comment": "Approved from COAT TUI action queue"
+                "note": "Approved through COAT TUI action queue"
             }),
-            format!("approve {}", short_id(&action.id)),
+            format!("approve and continue {}", short_id(&action.id)),
         ));
     }
 
@@ -2174,10 +2476,15 @@ fn operator_action_request(
         .unwrap_or_else(|| "blocked task".to_string());
     let status = status_token(&action.status);
     if status == "blocked" || status == "failed" {
-        let scope = if status == "failed" {
+        let fallback_scope = if status == "failed" {
             "failed"
         } else {
             "blocked"
+        };
+        let scope = if task_id.is_some() {
+            "task"
+        } else {
+            fallback_scope
         };
         return Ok((
             format!("/api/goals/{}/restart", percent_encode(goal_id)),
@@ -2186,7 +2493,7 @@ fn operator_action_request(
                 "scope": scope,
                 "reason": "operator_requested",
                 "message": format!("Retry {task_ref} from the action queue: {}", action.action),
-                "task_id": null,
+                "task_id": task_id,
                 "reset_attempts": false,
                 "preserve_artifacts": true,
                 "operator": "operator"
@@ -2218,12 +2525,15 @@ fn operator_action_request(
 }
 
 fn tui_action_label(action: &ApprovalSummary) -> &'static str {
-    if action.id.starts_with("thunk:") || status_token(&action.status) == "waiting-input" {
-        "Resume"
+    if action.id.starts_with("thunk:") {
+        "Continue / Add context"
     } else if action.id.starts_with("task:") {
-        "Request recovery"
+        match status_token(&action.status).as_str() {
+            "blocked" | "failed" => "Retry task",
+            _ => "Replan with context",
+        }
     } else {
-        "Approve"
+        "Approve and continue"
     }
 }
 
@@ -2432,6 +2742,9 @@ fn current_goal_lines(
                 lines.push(dashboard_value_line("next", next_task, value_width));
             }
             lines.push(dashboard_value_line("id", &short_id(&goal.id), value_width));
+            lines.push(Line::from(
+                "controls   Ctrl-X arm/cancel, Ctrl-O clear selection",
+            ));
         }
         None if let Some(goal_id) = selected_goal_id => {
             lines.push(dashboard_value_line(
@@ -2440,6 +2753,9 @@ fn current_goal_lines(
                 value_width,
             ));
             lines.push(Line::from("status     loading projection"));
+            lines.push(Line::from(
+                "controls   Ctrl-X arm/cancel, Ctrl-O clear selection",
+            ));
         }
         None => {
             lines.push(Line::from("select     Ctrl-N / Ctrl-P"));
@@ -3603,12 +3919,10 @@ fn durable_chat_lines(messages: &[ChatLine]) -> Vec<ChatLine> {
     messages
         .iter()
         .filter(|message| {
-            !message
-                .content
-                .starts_with("Goal draft ready for submission.")
+            !message.content.starts_with("Goal draft ready.")
                 && !message
                     .content
-                    .starts_with("Submitted drafted goal to the coordinator.")
+                    .starts_with("Accepted draft and submitted goal to the coordinator.")
                 && !message.content.starts_with("Goal submit failed:")
         })
         .cloned()
@@ -3743,7 +4057,7 @@ fn goal_draft_dashboard_lines(summary: &GoalDraftSummary, width: u16) -> Vec<Lin
         Line::from(format!("tasks      {}", summary.initial_tasks)),
         dashboard_value_line("criteria", &summary.done_criteria, value_width),
         Line::from(Span::styled(
-            "submit     F5 or Ctrl-G",
+            "accept     F5 or Ctrl-G",
             Style::default().fg(Color::Green),
         )),
     ]
@@ -4016,6 +4330,58 @@ mod tests {
     }
 
     #[test]
+    fn action_needed_summaries_prefer_real_thunk_over_waiting_task_row() {
+        let value = json!({
+            "tasks": {
+                "data": {
+                    "tasks": [
+                        {
+                            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+                            "task_id": "task-waiting-1",
+                            "title": "Generic waiting row",
+                            "status": "waiting_input"
+                        }
+                    ]
+                }
+            },
+            "workflow_status": {
+                "data": {
+                    "delayed_compute_thunks": [
+                        {
+                            "id": "thunk-1",
+                            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+                            "task_id": "task-waiting-1",
+                            "status": "pending",
+                            "requested_input": "Pick the recovery path.",
+                            "reason": "need operator input"
+                        }
+                    ]
+                }
+            },
+            "approvals": {
+                "data": {
+                    "approvals": [
+                        {
+                            "approval_id": "old-approval",
+                            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+                            "task_id": "task-waiting-1",
+                            "status": "cancelled",
+                            "requested_action": "old approval"
+                        }
+                    ]
+                }
+            }
+        });
+
+        let action_needed = action_needed_summaries_from_value(&value);
+
+        assert_eq!(action_needed.len(), 1);
+        assert_eq!(action_needed[0].id, "thunk:thunk-1");
+        assert_eq!(action_needed[0].action, "Pick the recovery path.");
+        assert_eq!(action_needed[0].task_id.as_deref(), Some("task-waiting-1"));
+    }
+
+    #[test]
     fn operator_action_request_builds_resume_and_recovery_payloads() {
         let goal_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756601";
         let thunk = ApprovalSummary {
@@ -4024,15 +4390,22 @@ mod tests {
             action: "Need operator decision".to_string(),
             goal_id: Some(goal_id.to_string()),
             task_id: Some("task-waiting-1".to_string()),
-            risk: Some("delayed compute thunk".to_string()),
+            risk: Some("human prompt".to_string()),
             created_at: None,
         };
         let (path, payload, label) =
-            operator_action_request(goal_id, &thunk, "Use option A").expect("resume payload");
+            operator_action_request(goal_id, &thunk, "").expect("continue payload");
+        assert!(path.ends_with("/resume_thunk"));
+        assert_eq!(payload["thunk_id"], "thunk-1");
+        assert_eq!(payload["response_summary"], "Continue");
+        assert!(label.contains("continue"));
+
+        let (path, payload, label) =
+            operator_action_request(goal_id, &thunk, "Use option A").expect("answer payload");
         assert!(path.ends_with("/resume_thunk"));
         assert_eq!(payload["thunk_id"], "thunk-1");
         assert_eq!(payload["response_summary"], "Use option A");
-        assert!(label.contains("resume"));
+        assert!(label.contains("add context"));
 
         let blocked = ApprovalSummary {
             id: "task:task-blocked-1".to_string(),
@@ -4046,10 +4419,93 @@ mod tests {
         let (path, payload, label) =
             operator_action_request(goal_id, &blocked, "").expect("recovery payload");
         assert!(path.ends_with("/restart"));
-        assert_eq!(payload["scope"], "blocked");
+        assert_eq!(payload["scope"], "task");
+        assert_eq!(payload["task_id"], "task-blocked-1");
         assert_eq!(payload["reason"], "operator_requested");
         assert_eq!(payload["preserve_artifacts"], true);
         assert!(label.contains("retry"));
+
+        let approval = ApprovalSummary {
+            id: "approval-1".to_string(),
+            status: "pending".to_string(),
+            action: "Approve sandbox profile".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            task_id: None,
+            risk: Some("approval required".to_string()),
+            created_at: None,
+        };
+        let (path, payload, label) =
+            operator_action_request(goal_id, &approval, "").expect("approval payload");
+        assert!(path.ends_with("/approve"));
+        assert_eq!(payload["approval_id"], "approval-1");
+        assert_eq!(payload["approved"], true);
+        assert_eq!(payload["note"], "Approved through COAT TUI action queue");
+        assert!(payload.get("comment").is_none());
+        assert!(label.contains("approve and continue"));
+
+        let waiting_task_without_thunk = ApprovalSummary {
+            id: "task:task-waiting-1".to_string(),
+            status: "waiting_input".to_string(),
+            action: "Task is waiting but no delayed compute thunk was projected".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            task_id: Some("task-waiting-1".to_string()),
+            risk: Some("task attention".to_string()),
+            created_at: None,
+        };
+        let (path, payload, label) =
+            operator_action_request(goal_id, &waiting_task_without_thunk, "")
+                .expect("recovery steer payload");
+        assert!(path.ends_with("/steer"));
+        assert_eq!(payload["task_id"], "task-waiting-1");
+        assert_eq!(payload["kind"]["kind"], "inject_task");
+        assert!(label.contains("request recovery"));
+    }
+
+    #[test]
+    fn cancel_goal_request_builds_gateway_cancel_payload() {
+        let (path, payload, label) =
+            cancel_goal_request("goal:abc/123", "Stop this goal from the TUI.");
+
+        assert_eq!(path, "/api/goals/goal%3Aabc%2F123/cancel");
+        assert_eq!(payload, json!("Stop this goal from the TUI."));
+        assert_eq!(label, "cancel goal goal:abc");
+    }
+
+    #[test]
+    fn human_action_labels_are_explicit_for_tui_prompts() {
+        let thunk = ApprovalSummary {
+            id: "thunk:thunk-1".to_string(),
+            status: "waiting-input".to_string(),
+            action: "Need operator decision".to_string(),
+            goal_id: None,
+            task_id: None,
+            risk: None,
+            created_at: None,
+        };
+        let approval = ApprovalSummary {
+            id: "approval-1".to_string(),
+            status: "pending".to_string(),
+            action: "Approve sandbox profile".to_string(),
+            goal_id: None,
+            task_id: None,
+            risk: None,
+            created_at: None,
+        };
+        let waiting_task = ApprovalSummary {
+            id: "task:task-waiting-1".to_string(),
+            status: "waiting-input".to_string(),
+            action: "Task is waiting for a materialized thunk".to_string(),
+            goal_id: None,
+            task_id: Some("task-waiting-1".to_string()),
+            risk: None,
+            created_at: None,
+        };
+
+        assert_eq!(tui_action_label(&thunk), "Continue / Add context");
+        assert_eq!(tui_action_label(&approval), "Approve and continue");
+        assert_eq!(tui_action_label(&waiting_task), "Replan with context");
+        assert!(action_requires_input(&thunk));
+        assert!(!action_requires_input(&waiting_task));
     }
 
     #[test]
@@ -4126,6 +4582,7 @@ mod tests {
         assert_eq!(DashboardView::Commands.next(), DashboardView::Overview);
         assert_eq!(DashboardView::Overview.previous(), DashboardView::Commands);
         assert_eq!(DashboardView::Approvals.key_hint(), "3");
+        assert_eq!(DashboardView::Approvals.title(), "Actions (3)");
         assert_eq!(DashboardView::Events.title(), "Events (4)");
         assert_eq!(DashboardView::Adversarial.title(), "Adversarial (5)");
         assert_eq!(DashboardView::Commands.title(), "Commands (6)");
@@ -4190,9 +4647,18 @@ mod tests {
         let approvals = lines_to_plain_text(&approvals_dashboard_lines(&app, 96));
         let events = lines_to_plain_text(&events_dashboard_lines(&app, 96));
 
+        assert!(
+            approvals.contains("queue 1 (approval gates:1 recovery:0 prompts:0) scope all goals")
+        );
+        assert!(approvals.contains("kind:approval gate"));
+        assert!(approvals.contains("Enter/a runs the selected action"));
+        assert!(approvals.contains("Ctrl-L clears local results"));
         assert!(approvals.contains("approve network-open research task"));
         assert!(approvals.contains("critical"));
         assert!(approvals.contains("018f8f2f"));
+        assert!(events.contains("recent 1 sources 0 scope all goals"));
+        assert!(events.contains("Ctrl-R refreshes projections"));
+        assert!(events.contains("Ctrl-L clears local action/chat results"));
         assert!(events.contains("pull_request_check_failed"));
         assert!(events.contains("CI build failed on ubuntu-24.04-arm"));
         assert!(events.contains("github-actions"));
@@ -4613,7 +5079,7 @@ mod tests {
         let messages = durable_chat_lines(&[
             ChatLine {
                 role: "assistant".to_string(),
-                content: "Goal draft ready for submission.\nTitle: X".to_string(),
+                content: "Goal draft ready.\nTitle: X".to_string(),
             },
             ChatLine {
                 role: "user".to_string(),
@@ -4621,7 +5087,8 @@ mod tests {
             },
             ChatLine {
                 role: "assistant".to_string(),
-                content: "Submitted drafted goal to the coordinator.\ngoal_id: g1".to_string(),
+                content: "Accepted draft and submitted goal to the coordinator.\ngoal_id: g1"
+                    .to_string(),
             },
         ]);
         let payload = chat_request_payload(
@@ -4769,6 +5236,81 @@ mod tests {
         assert_eq!(app.focus, TuiFocus::Input);
     }
 
+    #[tokio::test]
+    async fn ctrl_l_clears_local_messages_and_last_action_result() {
+        let mut app = test_app();
+        app.messages = vec![
+            ChatLine {
+                role: "assistant".to_string(),
+                content: "Action applied: retry task".to_string(),
+            },
+            ChatLine {
+                role: "assistant".to_string(),
+                content: "Local note".to_string(),
+            },
+        ];
+        app.last_chat_response = Some(json!({"ok": true}));
+        app.active_goal_draft = Some(ActiveGoalDraft {
+            goal_spec: json!({"title": "Clear me"}),
+            summary: GoalDraftSummary {
+                title: "Clear me".to_string(),
+                objective: "Local draft only.".to_string(),
+                initial_tasks: 0,
+                done_criteria: "not specified".to_string(),
+            },
+            session_id: "operator:default".to_string(),
+            selected_goal_id: None,
+        });
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("clear local messages");
+
+        assert!(app.messages.is_empty());
+        assert!(app.last_chat_response.is_none());
+        assert!(app.active_goal_draft.is_none());
+        assert!(app.status.contains("cleared 2 local messages"));
+        assert!(app.status.contains("durable chat is unchanged"));
+    }
+
+    #[tokio::test]
+    async fn ctrl_x_arms_then_confirms_selected_goal_cancel() {
+        let mut app = test_app();
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string());
+        app.input = "Stop from key handling test.".to_string();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("arm cancel");
+
+        assert!(app.pending_request.is_none());
+        assert!(!app.busy);
+        assert!(app.status.contains("cancel armed"));
+        assert!(app.input.contains("Stop from key handling test."));
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("confirm cancel");
+
+        assert!(app.busy);
+        assert!(app.input.is_empty());
+        let pending = app.pending_request.as_ref().expect("pending cancel");
+        let PendingRequestKind::OperatorAction { label } = &pending.kind else {
+            panic!("expected operator action");
+        };
+        assert!(label.contains("cancel goal"));
+        pending.handle.abort();
+    }
+
     #[test]
     fn goal_draft_extraction_reads_gateway_drafts() {
         let response = json!({
@@ -4838,7 +5380,7 @@ mod tests {
             "drafts": {
                 "goal_spec": {
                     "title": "Review before submit",
-                    "objective": "Keep the exact goal draft visible until the operator submits or discards it.",
+                    "objective": "Keep the exact goal draft visible until the operator accepts or discards it.",
                     "done_criteria": {"tests_pass": true},
                     "initial_tasks": [{"role": "codex", "prompt": "Patch the TUI."}]
                 }
@@ -4852,7 +5394,7 @@ mod tests {
         assert_eq!(draft.summary.title, "Review before submit");
         assert_eq!(draft.session_id, "operator:default");
         assert_eq!(draft.selected_goal_id, None);
-        assert!(app.status.contains("F5/Ctrl-G"));
+        assert!(app.status.contains("F5/Ctrl-G accept"));
         let rendered = goal_draft_dashboard_lines(&draft.summary, 80)
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -4875,7 +5417,7 @@ mod tests {
             "drafts": {
                 "goal_spec": {
                     "title": "Submit from TUI",
-                    "objective": "Make F5 and Ctrl-G submit the visible active draft.",
+                    "objective": "Make F5 and Ctrl-G accept the visible active draft.",
                     "done_criteria": {"tests_pass": true}
                 }
             }
@@ -5009,5 +5551,30 @@ mod tests {
         assert_eq!(chat_scroll_y(30, 10, 5), 15);
         assert_eq!(chat_scroll_y(30, 10, u16::MAX), 0);
         assert_eq!(chat_scroll_y(5, 10, 0), 0);
+    }
+
+    #[test]
+    fn chat_message_lines_preserve_multiline_and_code_blocks() {
+        let lines = chat_message_lines(&ChatLine {
+            role: "assistant".to_string(),
+            content: "First line\n```rust\ncoat tui\n```\nFinal line".to_string(),
+        });
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered[0], "assistant: First line");
+        assert_eq!(rendered[1], "  ```rust");
+        assert_eq!(rendered[2], "  coat tui");
+        assert_eq!(rendered[3], "  ```");
+        assert_eq!(rendered[4], "  Final line");
+        assert_eq!(rendered[5], "");
+        assert_eq!(rendered_row_count(&lines, 120), 6);
     }
 }

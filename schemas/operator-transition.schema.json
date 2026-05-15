@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorTransition",
+  "type": "string",
+  "enum": [
+    "submit_goal",
+    "draft_accepted",
+    "task_dispatched",
+    "worker_result_received",
+    "task_blocked",
+    "thunk_created",
+    "thunk_resumed",
+    "approval_requested",
+    "approval_resolved",
+    "review_completed",
+    "branch_selected",
+    "goal_steered",
+    "goal_cancelled",
+    "goal_satisfied"
+  ]
+}

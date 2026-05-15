@@ -180,11 +180,14 @@ state.
 Ratatui and Crossterm for terminal rendering and keyboard handling, and it
 talks to the same backend routes used by the TypeScript SPA:
 
-- `GET /api/config`
-- `GET /api/overview`
+- `GET /api/operator/workspace`
 - `GET /api/chat/session`
 - `POST /api/chat`
-- `POST /api/goals/submit` only when the operator explicitly accepts a goal draft
+- `POST /api/operator/goals` only when the operator explicitly accepts a goal draft
+
+The operator workspace projection includes the sanitized chat/backend summary
+needed for dashboard status; the TUI does not require a separate config read
+for normal startup.
 
 The TUI never calls model providers directly. Chat requests are operator-chat
 requests routed through the control gateway, which handles backend selection,

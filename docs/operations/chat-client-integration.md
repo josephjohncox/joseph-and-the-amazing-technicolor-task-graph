@@ -138,15 +138,15 @@ The installed skill enforces these rules as XML-like instruction blocks:
 Use the MCP tools in this order for normal work:
 
 1. `coat_subagent_policy`
-2. `coat_overview`
+2. `coat_operator_workspace`
 3. `coat_plan_list`, `coat_plan_get`, or `coat_plan_continuity`
 4. `coat_chat_assist`
 5. `coat_plan_draft` or `coat_plan_revise`
 6. `coat_plan_compile`
-7. `coat_goal_submit` only after explicit user confirmation
-8. `coat_goal_snapshot`, `coat_agent_activity`, and `coat_checkpoint_history`
-9. `coat_approval_queue` and `coat_approve_goal` only after explicit user confirmation
-10. `coat_steer_goal` for user-approved steering
+7. `coat_operator_goal_submit` only after explicit user confirmation
+8. `coat_operator_goal`, `coat_operator_workspace`, and `coat_checkpoint_history`
+9. `coat_operator_actions` and `coat_operator_action_resolve` only after explicit user confirmation
+10. `coat_operator_goal_steer` for user-approved steering
 
 ## Non-Local Runners
 

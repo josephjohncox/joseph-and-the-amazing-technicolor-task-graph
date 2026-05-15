@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorEventListResponse",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/DurableEventEnvelope"
+      }
+    }
+  },
+  "$defs": {
+    "DurableEventEnvelope": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/OperatorActorRef"
+        },
+        "causation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "restate_invocation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transition": {
+          "$ref": "#/$defs/OperatorTransition"
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "actor",
+        "transition",
+        "idempotency_key",
+        "created_at"
+      ]
+    },
+    "OperatorActorKind": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "thunk",
+        "worker_run",
+        "review",
+        "approval",
+        "event"
+      ]
+    },
+    "OperatorActorRef": {
+      "type": "object",
+      "properties": {
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/OperatorActorKind"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "OperatorTransition": {
+      "type": "string",
+      "enum": [
+        "submit_goal",
+        "draft_accepted",
+        "task_dispatched",
+        "worker_result_received",
+        "task_blocked",
+        "thunk_created",
+        "thunk_resumed",
+        "approval_requested",
+        "approval_resolved",
+        "review_completed",
+        "branch_selected",
+        "goal_steered",
+        "goal_cancelled",
+        "goal_satisfied"
+      ]
+    }
+  }
+}

@@ -48,22 +48,7 @@ export type ColorRef = {
   meaning?: string;
 };
 
-export type Overview = {
-  generated_at?: string;
-  services?: ServiceHealth[];
-  goals?: unknown;
-  agents?: unknown;
-  plans?: unknown;
-  approvals?: unknown;
-  runner_status?: unknown;
-  human_threads?: unknown;
-  follow_ups?: unknown;
-  event_sources?: unknown;
-  recent_events?: unknown;
-  triggers?: unknown;
-};
-
-export type GoalSnapshot = {
+export type ComposedGoalSnapshot = {
   goal_id?: string;
   goal_store_goal?: unknown;
   workflow_progress?: unknown;
@@ -141,4 +126,92 @@ export type ChatRunTrace = {
   chat_log?: JsonRecord;
   error?: string;
   steps?: Array<{ stage?: string; at?: string; detail?: JsonRecord }>;
+};
+
+export type OperatorWorkspaceSnapshot = {
+  generated_at?: string;
+  selected_goal_id?: string;
+  goals?: OperatorGoalSummary[];
+  selected_goal?: OperatorGoalDetail | null;
+  actions?: OperatorAction[];
+  events?: OperatorEvent[];
+  worker_runs?: OperatorWorkerRun[];
+  evidence?: OperatorEvidence[];
+  services?: ServiceHealth[];
+  runners?: unknown;
+  event_sources?: unknown;
+  human_threads?: unknown;
+  config?: JsonRecord;
+};
+
+export type OperatorGoalSummary = {
+  goal_id?: string;
+  id?: string;
+  title?: string;
+  objective?: string;
+  status?: string;
+  percent_done?: number;
+  open_tasks?: number;
+  blocked_tasks?: number;
+  failed_tasks?: number;
+  satisfied?: boolean;
+  updated_at?: string;
+};
+
+export type OperatorGoalDetail = {
+  summary?: OperatorGoalSummary;
+  progress?: unknown;
+  graph?: unknown;
+  tasks?: TaskRow[];
+  actions?: OperatorAction[];
+  evidence?: OperatorEvidence[];
+  snapshot?: ComposedGoalSnapshot;
+};
+
+export type OperatorAction = {
+  action_id?: string;
+  kind?: string;
+  goal_id?: string;
+  task_id?: string | null;
+  title?: string;
+  question?: string;
+  status?: string;
+  allowed_resolutions?: string[];
+  approval?: JsonRecord | null;
+  thunk?: JsonRecord | null;
+  payload_json?: JsonRecord;
+};
+
+export type OperatorEvent = {
+  event_id?: string;
+  event_type?: string;
+  goal_id?: string | null;
+  task_id?: string | null;
+  title?: string;
+  detail?: string;
+  created_at?: string | null;
+  payload_json?: JsonRecord;
+};
+
+export type OperatorEvidence = {
+  evidence_id?: string;
+  goal_id?: string;
+  task_id?: string | null;
+  title?: string;
+  uri?: string | null;
+  checkpoint?: JsonRecord | null;
+  created_at?: string | null;
+  payload_json?: JsonRecord;
+};
+
+export type OperatorWorkerRun = {
+  run_id?: string;
+  goal_id?: string;
+  task_id?: string | null;
+  worker?: string;
+  status?: string;
+  summary?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  payload_json?: JsonRecord;
 };

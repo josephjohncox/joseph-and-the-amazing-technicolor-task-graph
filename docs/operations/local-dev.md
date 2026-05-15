@@ -139,7 +139,7 @@ The Rust service image builds all `coat` Rust binaries once in a shared builder 
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
-The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Accepting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up. With a goal selected, the SPA opens `/api/goals/<goal_id>/stream` and keeps the visible graph, action queue, and control state updated from backend snapshots. Workflow actions such as approve, resume, restart, steer, vote, branch, and cancel return an action envelope with the upstream Restate result plus the active state read after the mutation.
+The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Accepting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up. With a goal selected, the SPA opens `/api/operator/stream?goal_id=<goal_id>` and keeps the visible graph, action queue, worker runs, evidence, and control state updated from backend projections. Workflow actions such as approve, resume, restart, steer, vote, branch, and cancel return an action envelope with the upstream Restate result plus the active state read after the mutation.
 
 For a browser proof against real local services, run:
 
@@ -646,7 +646,7 @@ with a journaled notifier outbox entry, while the notifier unit tests cover
 local acknowledgement mutation, retry scheduling, journal replay, and DLQ state
 transitions.
 
-`coat-goal-store` listens on `http://localhost:9088` in Compose. It stores queryable goal, task, event, approval, and artifact projections in an append-only JSONL journal at `/data/goal-store.jsonl` by default. Restate remains authoritative; the goal store is for local operator inspection and future dashboards.
+`coat-goal-store` listens on `http://localhost:9088` in Compose. It stores queryable goal, task, event, operator-event, approval, and artifact projections in an append-only JSONL journal at `/data/goal-store.jsonl` by default. Restate remains authoritative; the goal store is for local operator inspection and future dashboards.
 
 Inspect projections with:
 
@@ -655,6 +655,7 @@ coat store policy
 coat store goal --goal-id <goal-id>
 coat store tasks --goal-id <goal-id>
 coat store events --goal-id <goal-id>
+coat store operator-events --goal-id <goal-id> --limit 25
 coat store artifacts --goal-id <goal-id>
 coat store goal-approvals --goal-id <goal-id>
 coat store event-source-approvals --limit 25
@@ -666,16 +667,16 @@ The web gateway uses the goal-store list endpoints for dashboard views:
 ```sh
 curl -sS http://localhost:9090/api/plans
 curl -sS http://localhost:9090/api/plans/<plan-id>/continuity
-curl -sS http://localhost:9090/api/follow-ups
-curl -sS http://localhost:9090/api/goals
-curl -sS http://localhost:9090/api/agents
-curl -sS http://localhost:9090/api/approvals
+curl -sS http://localhost:9090/api/operator/workspace
+curl -sS http://localhost:9090/api/operator/goals
+curl -sS http://localhost:9090/api/operator/actions
 ```
 
 Per-goal views combine Restate workflow handlers with goal-store projection data so operators can inspect current task prompts from `TaskRecord.payload_json.prompt`:
 
 ```sh
-curl -sS http://localhost:9090/api/goals/<goal-id>
+curl -sS http://localhost:9090/api/operator/goals/<goal-id>
+curl -sS http://localhost:9090/api/operator/goals/<goal-id>/agent-context
 ```
 
 The MCP dashboard surface is available at `POST /mcp`:

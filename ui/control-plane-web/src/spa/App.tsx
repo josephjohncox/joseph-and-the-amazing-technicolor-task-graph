@@ -51,7 +51,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  approvals,
   approve,
   at,
   authToken,
@@ -61,8 +60,6 @@ import {
   chatRun,
   chatSession,
   createThunk,
-  goalSnapshot,
-  goals,
   isRecord,
   mechanismBallot,
   mechanismStart,
@@ -72,19 +69,26 @@ import {
   memoryEvents,
   memorySearch,
   memoryWrite,
-  overview,
+  operatorGoalDetail,
+  operatorGoals,
+  operatorWorkspace,
+  operatorActions,
   plans,
+  resolveOperatorAction,
   restartGoal,
   resumeThunk,
   rowsFrom,
   selectBranch,
   setAuthToken,
   steer,
-  submitGoal,
-  threads,
+  submitOperatorGoal,
   voteGoal,
 } from "./api";
-import type { ChatMessage, ChatResponse, ChatRunTrace, ColorRef, ComputeGraphNode, GoalRow, GoalSnapshot, JsonRecord, Overview, TaskRow } from "./types";
+import type { ChatMessage, ChatResponse, ChatRunTrace, ColorRef, ComputeGraphNode, GoalRow, ComposedGoalSnapshot, JsonRecord, OperatorGoalDetail, OperatorWorkspaceSnapshot, ServiceHealth, TaskRow } from "./types";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
+import { ScrollArea } from "./components/ui/scroll-area";
 
 type ViewKey = "dashboard" | "goals" | "graph" | "control" | "memory" | "plans" | "human" | "runners";
 type ThemePreference = "system" | "light" | "dark";
@@ -98,6 +102,7 @@ type OperatorStateKey = "action-needed" | "running" | "waiting" | "reviewing" | 
 type OtherGoalAction = "review" | "research" | "priority" | "steer" | "restart_branch" | "wait" | "decision_round" | "ballot";
 type ActionNeededKind = "approval" | "blocked-task" | "waiting-task" | "thunk" | "cancelled";
 type ActionNeededItem = {
+  actionId: string;
   key: string;
   kind: ActionNeededKind;
   label: string;
@@ -311,8 +316,12 @@ export function App() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => initialThemePreference());
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(initialThemePreference()));
 
-  const overviewQuery = useQuery({ queryKey: ["overview"], queryFn: overview });
-  const goalsQuery = useQuery({ queryKey: ["goals"], queryFn: goals });
+  const goalsQuery = useQuery({ queryKey: ["goals"], queryFn: operatorGoals });
+  const operatorWorkspaceQuery = useQuery({
+    queryKey: ["operator-workspace", selectedGoalId],
+    queryFn: () => operatorWorkspace(selectedGoalId || undefined),
+    refetchInterval: 5_000,
+  });
   const chatSessionId = selectedGoalId ? `goal:${selectedGoalId}` : "operator:default";
   const activeDraftForSession = activeDraft?.sessionId === chatSessionId ? activeDraft : null;
   const visibleActiveDraft = activeDraftForSession ?? activeDraft;
@@ -322,8 +331,8 @@ export function App() {
   });
   const messages = sessionMessages[chatSessionId] ?? starterMessages;
   const selectedGoalQuery = useQuery({
-    queryKey: ["goal", selectedGoalId],
-    queryFn: () => goalSnapshot(selectedGoalId),
+    queryKey: ["operator-goal", selectedGoalId],
+    queryFn: () => operatorGoalDetail(selectedGoalId),
     enabled: Boolean(selectedGoalId),
     refetchInterval: () => {
       if (!selectedGoalId) {
@@ -349,9 +358,8 @@ export function App() {
     mutationFn: async (goalId: string) => cancelGoal(goalId, "Operator cancelled the selected goal from the current-goal control."),
     onSuccess: (response, goalId) => {
       applyActionEnvelopeToCache(queryClient, response, goalId);
-      void queryClient.refetchQueries({ queryKey: ["goal", goalId] });
+      void queryClient.refetchQueries({ queryKey: ["operator-goal", goalId] });
       void queryClient.refetchQueries({ queryKey: ["goals"] });
-      void queryClient.refetchQueries({ queryKey: ["overview"] });
     },
   });
 
@@ -406,7 +414,7 @@ export function App() {
       if (!draft) {
         throw new Error("Generate a goal draft first.");
       }
-      const response = await submitGoal(draft);
+      const response = await submitOperatorGoal(draft);
       assertGoalSubmitReachedCoordinator(response);
       return { response, draft };
     },
@@ -425,13 +433,11 @@ export function App() {
         selectGoalId(goalId);
         setActiveView("graph");
         setActiveDraft(null);
-        void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
-        void queryClient.refetchQueries({ queryKey: ["goal", goalId] });
+        void queryClient.invalidateQueries({ queryKey: ["operator-goal", goalId] });
+        void queryClient.refetchQueries({ queryKey: ["operator-goal", goalId] });
       }
       void queryClient.invalidateQueries({ queryKey: ["goals"] });
-      void queryClient.invalidateQueries({ queryKey: ["overview"] });
       void queryClient.refetchQueries({ queryKey: ["goals"] });
-      void queryClient.refetchQueries({ queryKey: ["overview"] });
     },
   });
 
@@ -521,7 +527,7 @@ export function App() {
   }, [chatSessionId, chatSessionQuery.data, chatSessionQuery.dataUpdatedAt]);
 
   useEffect(() => {
-    if (!selectedGoalId || !submittedGoalDrafts[selectedGoalId] || !goalSnapshotHasProjectedTasks(selectedGoalQuery.data)) {
+    if (!selectedGoalId || !submittedGoalDrafts[selectedGoalId] || !composedSnapshotHasProjectedTasks(composedSnapshotFromOperatorGoalDetail(selectedGoalQuery.data))) {
       return;
     }
     setSubmittedGoalDrafts((current) => {
@@ -533,9 +539,7 @@ export function App() {
       return next;
     });
     void queryClient.invalidateQueries({ queryKey: ["goals"] });
-    void queryClient.invalidateQueries({ queryKey: ["overview"] });
     void queryClient.refetchQueries({ queryKey: ["goals"] });
-    void queryClient.refetchQueries({ queryKey: ["overview"] });
   }, [queryClient, selectedGoalId, selectedGoalQuery.data, submittedGoalDrafts]);
 
   const saveToken = (value: string) => {
@@ -544,14 +548,18 @@ export function App() {
     refreshAll();
   };
 
-  const overviewData = overviewQuery.data;
-  const projectedGoalRows = useMemo(() => rowsFrom(at(goalsQuery.data, ["data"]) ?? goalsQuery.data) as GoalRow[], [goalsQuery.data]);
+  const operatorWorkspaceData = operatorWorkspaceQuery.data;
+  const projectedGoalRows = useMemo(() => {
+    const operatorRows = rowsFrom(operatorWorkspaceData?.goals);
+    return (operatorRows.length ? operatorRows : rowsFrom(at(goalsQuery.data, ["data"]) ?? goalsQuery.data)) as GoalRow[];
+  }, [goalsQuery.data, operatorWorkspaceData?.goals]);
   const goalRows = useMemo(() => mergeSubmittedGoalRows(projectedGoalRows, submittedGoalDrafts), [projectedGoalRows, submittedGoalDrafts]);
-  const currentGoal = selectedGoalQuery.data;
+  const currentGoalDetail = selectedGoalQuery.data;
+  const currentGoal = composedSnapshotFromOperatorGoalDetail(currentGoalDetail);
   const selectedSubmittedDraft = selectedGoalId ? submittedGoalDrafts[selectedGoalId]?.draft ?? null : null;
   const selectedGoal = useMemo(() => selectedGoalSummary(selectedGoalId, goalRows, currentGoal, selectedSubmittedDraft), [currentGoal, goalRows, selectedGoalId, selectedSubmittedDraft]);
   const selectableGoals = useMemo(() => goalRowsWithSelected(goalRows, selectedGoal), [goalRows, selectedGoal]);
-  const serviceRows = overviewData?.services ?? [];
+  const serviceRows = operatorWorkspaceData?.services ?? [];
 
   return (
     <div className="app-shell">
@@ -622,7 +630,7 @@ export function App() {
             onCancelGoal={() => selectedGoalId && selectedGoalCancel.mutate(selectedGoalId)}
             onRefreshGoals={() => {
               void queryClient.invalidateQueries({ queryKey: ["goals"] });
-              void queryClient.invalidateQueries({ queryKey: ["overview"] });
+              void queryClient.invalidateQueries({ queryKey: ["operator-workspace"] });
             }}
             onOpenGraph={() => selectedGoalId && setActiveView("graph")}
           />
@@ -652,7 +660,7 @@ export function App() {
         <section className="content-grid">
           {activeView === "dashboard" && (
             <Dashboard
-              overview={overviewData}
+              workspace={operatorWorkspaceData}
               goals={goalRows}
               selectedGoalId={selectedGoalId}
               onSelectGoal={(goalId) => {
@@ -686,8 +694,8 @@ export function App() {
           )}
           {activeView === "memory" && <MemoryView selectedGoalId={selectedGoalId} />}
           {activeView === "plans" && <PlansView />}
-          {activeView === "human" && <HumanQueueView selectedGoalId={selectedGoalId} />}
-          {activeView === "runners" && <RunnersView overview={overviewData} />}
+          {activeView === "human" && <HumanQueueView selectedGoalId={selectedGoalId} workspace={operatorWorkspaceData} />}
+          {activeView === "runners" && <RunnersView workspace={operatorWorkspaceData} />}
           <CommandPanel
             messages={messages}
             input={chatInput}
@@ -730,7 +738,7 @@ function modeForDraftKind(kind: DraftKind): string {
 
 function ActiveGoalRuntimeBar(props: {
   selectedGoal: GoalSummary | null;
-  snapshot?: GoalSnapshot;
+  snapshot?: ComposedGoalSnapshot;
   stream: GoalStreamState;
   actionBusy: boolean;
   onOpenGraph: () => void;
@@ -741,9 +749,9 @@ function ActiveGoalRuntimeBar(props: {
     return null;
   }
   const snapshot = props.snapshot ?? { goal_id: props.selectedGoal.id };
-  const tasks = snapshot.agent_activity ?? [];
+  const tasks = taskRowsFromComposedSnapshot(snapshot);
   const counts = taskStatusCounts(tasks);
-  const actions = actionNeededItemsFromSnapshot(props.snapshot, props.selectedGoal.id);
+  const actions = actionNeededItemsFromComposedSnapshot(props.snapshot, props.selectedGoal.id);
   const state = nextActionSummary(counts, tasks.length, snapshot);
   const streamTone = props.stream.status === "live" ? "status-running" : props.stream.status === "error" ? "status-failed" : "status-pending";
   return (
@@ -759,7 +767,7 @@ function ActiveGoalRuntimeBar(props: {
         </span>
         <span className="status-pill muted">{tasks.length} tasks</span>
         <span className={clsx("status-pill", actions.length ? "status-waiting-approval" : "status-done")}>{actions.length} actions</span>
-        <span className="status-pill muted">{props.stream.lastEventAt ? `Updated ${timeLabel(props.stream.lastEventAt)}` : "Snapshot pending"}</span>
+        <span className="status-pill muted">{props.stream.lastEventAt ? `Updated ${timeLabel(props.stream.lastEventAt)}` : "Projection pending"}</span>
         {props.actionBusy && <span className="status-pill status-running">Accepting draft</span>}
       </div>
       <div className="button-row">
@@ -806,15 +814,15 @@ function DraftReviewDock(props: {
         {submittedGoalId && <span className="status-pill status-done">Accepted {friendlyRef(submittedGoalId)}</span>}
       </div>
       <div className="button-row">
-        <button type="button" className="secondary-button" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
+        <Button type="button" variant="outline" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
           <XCircle size={15} />
           Discard
-        </button>
+        </Button>
         {props.goalDraft && (
-          <button type="button" className="primary-button" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
+          <Button type="button" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
             <ListChecks size={15} />
             {submittedGoalId ? "Accepted" : props.goalSubmitBusy ? "Accepting" : "Accept draft"}
-          </button>
+          </Button>
         )}
       </div>
       {props.goalSubmitError && <span className="error-text">{props.goalSubmitError.message}</span>}
@@ -1010,11 +1018,11 @@ function goalIdFromSubmitResponse(response: unknown): string {
     ["goal_id"],
     ["id"],
     ["action", "goal_id"],
+    ["result", "goal_id"],
     ["active_state", "goal_id"],
     ["goal", "id"],
     ["goal", "spec", "id"],
     ["state", "goal", "id"],
-    ["result", "goal_id"],
     ["result", "id"],
   ]) {
     const candidate = valueAt(response, path);
@@ -1023,27 +1031,45 @@ function goalIdFromSubmitResponse(response: unknown): string {
     }
   }
   const url = isRecord(response) && typeof response.url === "string" ? response.url : "";
-  return url.match(/\/GoalWorkflow\/([0-9a-f-]{36})\/run$/i)?.[1] ?? "";
+  const nestedUrl = stringValue(at(response, ["result", "url"]));
+  return (url || nestedUrl).match(/\/GoalWorkflow\/([0-9a-f-]{36})\/run$/i)?.[1] ?? "";
 }
 
 function assertGoalSubmitReachedCoordinator(response: unknown): void {
   if (!isRecord(response)) {
     return;
   }
-  const proxyStatus = typeof response.status === "number" ? response.status : null;
+  const nested = isRecord(response.result) ? response.result : {};
+  const proxyStatus = typeof response.status === "number"
+    ? response.status
+    : typeof nested.status === "number"
+      ? nested.status
+      : null;
   if (proxyStatus === null || (proxyStatus >= 200 && proxyStatus < 400)) {
     return;
   }
-  const detail = typeof response.error === "string" ? response.error : typeof response.url === "string" ? response.url : "unknown upstream failure";
+  const detail = typeof response.error === "string"
+    ? response.error
+    : typeof nested.error === "string"
+      ? nested.error
+      : typeof response.url === "string"
+        ? response.url
+        : typeof nested.url === "string"
+          ? nested.url
+          : "unknown upstream failure";
   throw new Error(`Goal submit returned an upstream failure: ${detail}`);
 }
 
-function activeStateFromActionResponse(response: unknown): GoalSnapshot | null {
+function activeStateFromActionResponse(response: unknown): ComposedGoalSnapshot | null {
   if (!activeStateEnvelopeIsFresh(response)) {
     return null;
   }
   const activeState = at(response, ["active_state"]);
-  return isRecord(activeState) ? activeState as GoalSnapshot : null;
+  if (isRecord(activeState)) {
+    return activeState as ComposedGoalSnapshot;
+  }
+  const nestedActiveState = at(response, ["result", "data", "active_state"]);
+  return isRecord(nestedActiveState) ? nestedActiveState as ComposedGoalSnapshot : null;
 }
 
 function activeStateEnvelopeIsFresh(response: unknown): boolean {
@@ -1060,15 +1086,13 @@ function activeStateEnvelopeIsFresh(response: unknown): boolean {
 function applyActionEnvelopeToCache(queryClient: ReturnType<typeof useQueryClient>, response: unknown, fallbackGoalId = ""): void {
   const snapshot = activeStateFromActionResponse(response);
   const goalId = stringValue(at(response, ["action", "goal_id"])) || stringValue(snapshot?.goal_id) || fallbackGoalId;
-  if (goalId && snapshot) {
-    queryClient.setQueryData(["goal", goalId], snapshot);
-  }
   if (goalId) {
-    void queryClient.invalidateQueries({ queryKey: ["goal", goalId] });
+    void queryClient.invalidateQueries({ queryKey: ["operator-goal", goalId] });
+    void queryClient.invalidateQueries({ queryKey: ["operator-actions", goalId] });
   }
+  void queryClient.invalidateQueries({ queryKey: ["operator-actions"] });
+  void queryClient.invalidateQueries({ queryKey: ["operator-workspace"] });
   void queryClient.invalidateQueries({ queryKey: ["goals"] });
-  void queryClient.invalidateQueries({ queryKey: ["overview"] });
-  void queryClient.invalidateQueries({ queryKey: ["approvals"] });
 }
 
 function actionEnvelopeSummary(response: unknown): { label: string; detail: string; status: string } | null {
@@ -1122,7 +1146,7 @@ function useGoalStateStream(goalId: string, token: string, enabled: boolean): Go
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const readStream = async () => {
       let buffer = "";
-      const response = await fetch(`/api/goals/${encodeURIComponent(goalId)}/stream`, {
+      const response = await fetch(`/api/operator/stream?goal_id=${encodeURIComponent(goalId)}`, {
         headers: token ? { authorization: `Bearer ${token}` } : undefined,
         signal: controller.signal,
       });
@@ -1142,12 +1166,16 @@ function useGoalStateStream(goalId: string, token: string, enabled: boolean): Go
         buffer = blocks.pop() ?? "";
         for (const block of blocks) {
           const event = sseEventFromBlock(block);
-          if (event.name === "snapshot" && isRecord(event.data)) {
-            queryClient.setQueryData(["goal", goalId], event.data as GoalSnapshot);
+          if (operatorStreamCarriesWorkspace(event.name) && isRecord(event.data)) {
+            queryClient.setQueryData(["operator-workspace", goalId], event.data);
+            const selectedGoal = at(event.data, ["selected_goal"]);
+            if (isRecord(selectedGoal)) {
+              queryClient.setQueryData(["operator-goal", goalId], selectedGoal as OperatorGoalDetail);
+            }
             setState({ status: "live", lastEventAt: new Date().toISOString(), error: "" });
-          } else if (event.name === "error") {
+          } else if (event.name === "stream.error" || event.name === "error") {
             setState({ status: "error", lastEventAt: new Date().toISOString(), error: stringValue(at(event.data, ["error"])) || "state stream error" });
-          } else if (event.name === "done") {
+          } else if (event.name === "stream.done" || event.name === "done") {
             return;
           }
         }
@@ -1182,6 +1210,25 @@ function useGoalStateStream(goalId: string, token: string, enabled: boolean): Go
   }, [enabled, goalId, queryClient, token]);
 
   return state;
+}
+
+function operatorStreamCarriesWorkspace(eventName: string): boolean {
+  return [
+    "message",
+    "workspace.updated",
+    "goal.updated",
+    "task.updated",
+    "worker.started",
+    "worker.output",
+    "worker.completed",
+    "thunk.created",
+    "approval.requested",
+    "action.required",
+    "evidence.added",
+    "review.completed",
+    "goal.satisfied",
+    "goal.cancelled",
+  ].includes(eventName);
 }
 
 function sseEventFromBlock(block: string): { name: string; data: unknown } {
@@ -1242,7 +1289,7 @@ function goalSummaryFromRow(goal: GoalRow): GoalSummary | null {
   };
 }
 
-function selectedGoalSummary(goalId: string, rows: GoalRow[], snapshot?: GoalSnapshot, submittedDraft?: JsonRecord | null): GoalSummary | null {
+function selectedGoalSummary(goalId: string, rows: GoalRow[], snapshot?: ComposedGoalSnapshot, submittedDraft?: JsonRecord | null): GoalSummary | null {
   if (!goalId) {
     return null;
   }
@@ -1262,6 +1309,44 @@ function selectedGoalSummary(goalId: string, rows: GoalRow[], snapshot?: GoalSna
     blockedTasks: numberValue(at(snapshot, ["goal_store_goal", "data", "goal", "blocked_tasks"])) ?? 0,
     failedTasks: numberValue(at(snapshot, ["goal_store_goal", "data", "goal", "failed_tasks"])) ?? 0,
     updatedAt: stringValue(at(snapshot, ["goal_store_goal", "data", "goal", "updated_at"])),
+  };
+}
+
+function composedSnapshotFromOperatorGoalDetail(detail?: OperatorGoalDetail | null): ComposedGoalSnapshot | undefined {
+  if (!detail) {
+    return undefined;
+  }
+  if (isRecord(detail.snapshot)) {
+    return detail.snapshot as ComposedGoalSnapshot;
+  }
+  const summary = isRecord(detail.summary) ? detail.summary : {};
+  const goalId = stringValue(summary.goal_id) || stringValue(summary.id);
+  const tasks = rowsFrom(detail.tasks);
+  return {
+    goal_id: goalId,
+    goal_store_goal: {
+      data: {
+        goal: {
+          goal_id: goalId,
+          status: summary.status,
+          percent_done: summary.percent_done,
+          open_tasks: summary.open_tasks,
+          blocked_tasks: summary.blocked_tasks,
+          failed_tasks: summary.failed_tasks,
+          updated_at: summary.updated_at,
+          payload_json: {
+            title: summary.title,
+            objective: summary.objective,
+          },
+        },
+      },
+    },
+    workflow_progress: { data: detail.progress ?? {} },
+    workflow_compute_graph: { data: detail.graph ?? {} },
+    tasks: { data: { tasks } },
+    approvals: { data: { approvals: [] } },
+    checkpoints: { data: { checkpoints: [] } },
+    agent_activity: tasks as TaskRow[],
   };
 }
 
@@ -1295,11 +1380,11 @@ function pendingGoalRow(goalId: string, draft: JsonRecord): GoalRow {
   };
 }
 
-function goalSnapshotHasProjectedTasks(snapshot?: GoalSnapshot): boolean {
-  const agentRows = snapshot?.agent_activity ?? [];
+function composedSnapshotHasProjectedTasks(snapshot?: ComposedGoalSnapshot): boolean {
+  const projectedTasks = taskRowsFromComposedSnapshot(snapshot);
   const taskRows = rowsFrom(at(snapshot, ["tasks", "data"]) ?? snapshot?.tasks);
   const computeNodes = rowsFrom(at(snapshot, ["workflow_compute_graph", "data", "nodes"]) ?? at(snapshot, ["workflow_compute_graph", "nodes"]));
-  return Boolean(agentRows.length || taskRows.length || computeNodes.length);
+  return Boolean(projectedTasks.length || taskRows.length || computeNodes.length);
 }
 
 function taskRowsFromGoalDraft(goalId: string, draft?: JsonRecord | null): TaskRow[] {
@@ -1341,7 +1426,7 @@ function goalSubgoalsFromDraft(draft?: JsonRecord | null): JsonRecord[] {
   return rowsFrom(at(draft, ["plan", "subgoals"]));
 }
 
-function goalSubgoalsFromSnapshotOrDraft(snapshot?: GoalSnapshot, draft?: JsonRecord | null): JsonRecord[] {
+function goalSubgoalsFromComposedSnapshotOrDraft(snapshot?: ComposedGoalSnapshot, draft?: JsonRecord | null): JsonRecord[] {
   const projected = rowsFrom(at(snapshot, ["goal_store_goal", "data", "goal", "payload_json", "plan", "subgoals"]));
   return projected.length ? projected : goalSubgoalsFromDraft(draft);
 }
@@ -1421,7 +1506,7 @@ function titleFor(view: ViewKey): string {
   }[view];
 }
 
-function ServiceStrip({ services }: { services: Overview["services"] }) {
+function ServiceStrip({ services }: { services?: ServiceHealth[] }) {
   if (!services?.length) {
     return <span className="status-pill muted">Services pending</span>;
   }
@@ -1909,21 +1994,22 @@ function chatActivityPayload(props: {
   };
 }
 
-function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalId: string; onSelectGoal: (goalId: string) => void }) {
-  const runnerRows = rowsFrom(at(props.overview, ["runner_status", "data"]) ?? props.overview?.runner_status);
-  const approvalRows = rowsFrom(at(props.overview, ["approvals", "data"]) ?? props.overview?.approvals);
-  const eventRows = rowsFrom(at(props.overview, ["recent_events", "data"]) ?? props.overview?.recent_events);
-  const eventSourceRows = rowsFrom(at(props.overview, ["event_sources", "data"]) ?? props.overview?.event_sources);
+function Dashboard(props: { workspace?: OperatorWorkspaceSnapshot; goals: GoalRow[]; selectedGoalId: string; onSelectGoal: (goalId: string) => void }) {
+  const runnerRows = rowsFrom(at(props.workspace?.runners, ["data"]) ?? props.workspace?.runners);
+  const eventSourceRows = rowsFrom(at(props.workspace?.event_sources, ["data"]) ?? props.workspace?.event_sources);
+  const actionCount = props.workspace?.actions?.length ?? 0;
+  const operatorEventCount = props.workspace?.events?.length ?? 0;
   const attentionGoals = props.goals.filter((goal) => {
     const status = String(goal.status ?? "").toLowerCase();
     return status.includes("blocked") || status.includes("failed") || Number(goal.blocked_tasks ?? 0) > 0 || Number(goal.failed_tasks ?? 0) > 0;
   }).length;
   return (
     <div className="dashboard-grid">
+      <OperatorWorkspaceCard workspace={props.workspace} />
       <MetricCard label="Active goals" value={String(props.goals.length)} detail="in progress" />
       <MetricCard label="Runners" value={String(runnerRows.length)} detail="available capacity" />
-      <MetricCard label="Action queue" value={String(approvalRows.length)} detail="waiting decisions" />
-      <MetricCard label="Events" value={String(eventRows.length)} detail="recent signals" />
+      <MetricCard label="Action queue" value={String(actionCount)} detail="waiting decisions" />
+      <MetricCard label="Events" value={String(operatorEventCount)} detail="recent signals" />
       <MetricCard label="Event sources" value={String(eventSourceRows.length)} detail="registered ingress" />
       <section className="panel span-2">
         <div className="section-heading">
@@ -1938,14 +2024,55 @@ function Dashboard(props: { overview?: Overview; goals: GoalRow[]; selectedGoalI
           <Sparkles size={18} />
         </div>
         <ul className="outcome-list">
-          <OutcomeRow label="Approvals" value={approvalRows.length} tone={approvalRows.length ? "waiting-approval" : "done"} />
-          <OutcomeRow label="Events" value={eventRows.length} tone={eventRows.length ? "runnable" : "done"} />
+          <OutcomeRow label="Actions" value={actionCount} tone={actionCount ? "waiting-approval" : "done"} />
+          <OutcomeRow label="Events" value={operatorEventCount} tone={operatorEventCount ? "runnable" : "done"} />
           <OutcomeRow label="Goal attention" value={attentionGoals} tone={attentionGoals ? "blocked" : "done"} />
           <OutcomeRow label="Runners" value={runnerRows.length} tone={runnerRows.length ? "running" : "pending"} />
         </ul>
       </section>
       <EventSourcesPanel rows={eventSourceRows} />
     </div>
+  );
+}
+
+function OperatorWorkspaceCard({ workspace }: { workspace?: OperatorWorkspaceSnapshot }) {
+  const selected = workspace?.selected_goal?.summary;
+  const actions = workspace?.actions?.length ?? 0;
+  const workerRuns = workspace?.worker_runs?.length ?? 0;
+  const evidence = workspace?.evidence?.length ?? 0;
+  return (
+    <Card className="operator-workspace-card span-2">
+      <CardHeader>
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Operator workspace</p>
+            <CardTitle>{selected?.title || "No goal selected"}</CardTitle>
+            <CardDescription>
+              {selected?.objective || "Select or submit a goal to see live state, actions, worker runs, and evidence."}
+            </CardDescription>
+          </div>
+          <Badge variant={actions ? "destructive" : "secondary"}>{actions} actions</Badge>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="operator-workspace-grid">
+          <span><strong>{Math.round(numericProgress(selected?.percent_done) * 100)}%</strong><small>complete</small></span>
+          <span><strong>{selected?.open_tasks ?? 0}</strong><small>open tasks</small></span>
+          <span><strong>{workerRuns}</strong><small>worker runs</small></span>
+          <span><strong>{evidence}</strong><small>evidence</small></span>
+        </div>
+        <ScrollArea className="operator-action-preview">
+          {(workspace?.actions ?? []).slice(0, 4).map((action) => (
+            <div key={action.action_id || action.title} className="operator-action-preview-row">
+              <Badge variant="outline">{action.kind || "action"}</Badge>
+              <span>{action.title || "Action required"}</span>
+              <small>{action.question || "Review this item."}</small>
+            </div>
+          ))}
+          {!actions && <span className="muted-small">No pending operator actions.</span>}
+        </ScrollArea>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2141,9 +2268,9 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submittedDraft?: JsonRecord | null; loading: boolean; onOpenGoalPicker: () => void; onOpenControls: () => void }) {
+function TaskGraphView(props: { goalId: string; snapshot?: ComposedGoalSnapshot; submittedDraft?: JsonRecord | null; loading: boolean; onOpenGoalPicker: () => void; onOpenControls: () => void }) {
   const [graphFilter, setGraphFilter] = useState<GraphFilter>("all");
-  const projectedTasks = useMemo(() => taskRowsFromSnapshot(props.snapshot), [props.snapshot]);
+  const projectedTasks = useMemo(() => taskRowsFromComposedSnapshot(props.snapshot), [props.snapshot]);
   const draftTasks = useMemo(() => taskRowsFromGoalDraft(props.goalId, props.submittedDraft), [props.goalId, props.submittedDraft]);
   const tasks = projectedTasks.length ? projectedTasks : draftTasks;
   const computeGraph = useMemo(() => props.snapshot ? workflowComputeGraph(props.snapshot) : undefined, [props.snapshot]);
@@ -2152,14 +2279,14 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
   const filteredTasks = useMemo(() => tasks.filter((task) => taskMatchesGraphFilter(task, graphFilter)), [tasks, graphFilter]);
   const graph = useMemo(() => computeNodes.length ? graphFromComputeGraph(computeGraph, filteredComputeNodes) : graphFromTasks(filteredTasks), [computeGraph, computeNodes.length, filteredComputeNodes, filteredTasks]);
   const counts = useMemo(() => taskStatusCounts(tasks), [tasks]);
-  const subgoals = useMemo(() => goalSubgoalsFromSnapshotOrDraft(props.snapshot, props.submittedDraft), [props.snapshot, props.submittedDraft]);
+  const subgoals = useMemo(() => goalSubgoalsFromComposedSnapshotOrDraft(props.snapshot, props.submittedDraft), [props.snapshot, props.submittedDraft]);
   const showingSubmittedDraft = Boolean(props.submittedDraft && !projectedTasks.length);
   const taskCount = tasks.length;
   const visibleCount = computeNodes.length ? filteredComputeNodes.length : filteredTasks.length;
   const totalCount = computeNodes.length ? computeNodes.length : taskCount;
   const graphUnit = computeNodes.length ? "compute nodes" : "tasks";
-  const continuationCount = props.snapshot ? continuationRowsFromSnapshot(props.snapshot).length : 0;
-  const actionNeeded = useMemo(() => actionNeededItemsFromSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
+  const continuationCount = props.snapshot ? continuationRowsFromComposedSnapshot(props.snapshot).length : 0;
+  const actionNeeded = useMemo(() => actionNeededItemsFromComposedSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
   return (
     <section className="panel graph-panel">
       <div className="section-heading">
@@ -2195,7 +2322,7 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
       {!props.goalId ? (
         <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
       ) : props.loading && !showingSubmittedDraft ? (
-        <EmptyState title="Loading task graph" detail="Fetching goal snapshot and agent activity." />
+        <EmptyState title="Loading task graph" detail="Fetching operator goal detail and agent activity." />
       ) : taskCount === 0 ? (
         <EmptyState title="Task activity pending" detail="Waiting for the first projected task." />
       ) : graph.nodes.length ? (
@@ -2246,10 +2373,10 @@ function TaskGraphView(props: { goalId: string; snapshot?: GoalSnapshot; submitt
   );
 }
 
-function CompilerControlView(props: { goalId: string; snapshot?: GoalSnapshot; loading: boolean; onOpenGoalPicker: () => void }) {
-  const tasks = taskRowsFromSnapshot(props.snapshot);
+function CompilerControlView(props: { goalId: string; snapshot?: ComposedGoalSnapshot; loading: boolean; onOpenGoalPicker: () => void }) {
+  const tasks = taskRowsFromComposedSnapshot(props.snapshot);
   const counts = taskStatusCounts(tasks);
-  const actionNeeded = useMemo(() => actionNeededItemsFromSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
+  const actionNeeded = useMemo(() => actionNeededItemsFromComposedSnapshot(props.snapshot, props.goalId), [props.snapshot, props.goalId]);
   return (
     <section className="panel">
       <div className="section-heading">
@@ -2394,7 +2521,7 @@ function computeNodeMatchesGraphFilter(node: ComputeGraphNode, filter: GraphFilt
   return status === "done" || status === "cancelled";
 }
 
-function ComputeGraphDetails({ snapshot }: { snapshot: GoalSnapshot }) {
+function ComputeGraphDetails({ snapshot }: { snapshot: ComposedGoalSnapshot }) {
   const graph = workflowComputeGraph(snapshot);
   const nodes = computeGraphNodes(graph);
   const openRows = nodes.filter((node) => computeNodeMatchesGraphFilter(node, "attention")).slice(0, 8);
@@ -2444,7 +2571,7 @@ function taskMatchesGraphFilter(task: TaskRow, filter: GraphFilter): boolean {
   return status === "done" || status === "cancelled";
 }
 
-function TaskSummary({ snapshot, counts }: { snapshot: GoalSnapshot; counts: Map<string, number> }) {
+function TaskSummary({ snapshot, counts }: { snapshot: ComposedGoalSnapshot; counts: Map<string, number> }) {
   const entries = sortedStatusEntries(counts);
   const computeGraph = workflowComputeGraph(snapshot);
   const progress = workflowProgress(snapshot);
@@ -2480,7 +2607,7 @@ function TaskSummary({ snapshot, counts }: { snapshot: GoalSnapshot; counts: Map
           compute graph: {graphNodeCount} nodes · {graphEdgeCount} edges · {openThunkCount} thunks
         </span>
       )}
-      <InspectButton title="Goal snapshot" payload={snapshot} />
+      <InspectButton title="Operator goal detail" payload={snapshot} />
     </div>
   );
 }
@@ -2578,7 +2705,7 @@ function blockerActionText(item: ActionNeededItem): string {
   return "Review the item and choose a recovery action.";
 }
 
-function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false }: { snapshot: GoalSnapshot; counts: Map<string, number>; taskCount: number; compact?: boolean }) {
+function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false }: { snapshot: ComposedGoalSnapshot; counts: Map<string, number>; taskCount: number; compact?: boolean }) {
   const highlights = evidenceHighlights(snapshot, counts, taskCount);
   const nextAction = nextActionSummary(counts, taskCount, snapshot);
   return (
@@ -2608,7 +2735,7 @@ function EvidenceNextActionPanel({ snapshot, counts, taskCount, compact = false 
   );
 }
 
-function evidenceHighlights(snapshot: GoalSnapshot, counts: Map<string, number>, taskCount: number): Array<{ label: string; value: string; state: OperatorStateKey }> {
+function evidenceHighlights(snapshot: ComposedGoalSnapshot, counts: Map<string, number>, taskCount: number): Array<{ label: string; value: string; state: OperatorStateKey }> {
   const computeGraph = workflowComputeGraph(snapshot);
   const progress = workflowProgress(snapshot);
   const nodeCount = Array.isArray(computeGraph?.nodes) ? computeGraph.nodes.length : 0;
@@ -2627,7 +2754,7 @@ function evidenceHighlights(snapshot: GoalSnapshot, counts: Map<string, number>,
   ];
 }
 
-function nextActionSummary(counts: Map<string, number>, taskCount: number, snapshot: GoalSnapshot): { title: string; detail: string; state: OperatorStateKey; stateLabel: string } {
+function nextActionSummary(counts: Map<string, number>, taskCount: number, snapshot: ComposedGoalSnapshot): { title: string; detail: string; state: OperatorStateKey; stateLabel: string } {
   const failed = countForStatusToken(counts, "failed");
   const blocked = countForStatusToken(counts, "blocked");
   const approvals = countForStatusToken(counts, "waiting-approval");
@@ -2759,7 +2886,7 @@ function countForStatusToken(counts: Map<string, number>, token: string): number
   return total;
 }
 
-function workflowComputeGraph(snapshot: GoalSnapshot): Record<string, unknown> | undefined {
+function workflowComputeGraph(snapshot: ComposedGoalSnapshot): Record<string, unknown> | undefined {
   const direct = snapshot.workflow_compute_graph as Record<string, unknown> | undefined;
   if (direct && typeof direct === "object") {
     const data = (direct as { data?: unknown }).data;
@@ -2768,7 +2895,7 @@ function workflowComputeGraph(snapshot: GoalSnapshot): Record<string, unknown> |
   return undefined;
 }
 
-function taskRowsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord): TaskRow[] {
+function taskRowsFromComposedSnapshot(snapshot?: ComposedGoalSnapshot | JsonRecord): TaskRow[] {
   if (!snapshot) {
     return [];
   }
@@ -2780,13 +2907,13 @@ function taskRowsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord): TaskRow[] {
   return taskRows as TaskRow[];
 }
 
-function actionNeededItemsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord, selectedGoalId = ""): ActionNeededItem[] {
+function actionNeededItemsFromComposedSnapshot(snapshot?: ComposedGoalSnapshot | JsonRecord, selectedGoalId = ""): ActionNeededItem[] {
   if (!snapshot) {
     return [];
   }
-  const continuationRows = continuationRowsFromSnapshot(snapshot as GoalSnapshot);
+  const continuationRows = continuationRowsFromComposedSnapshot(snapshot as ComposedGoalSnapshot);
   const continuationTaskIds = new Set(continuationRows.map((row) => row.taskId).filter(Boolean));
-  const taskRows = taskRowsFromSnapshot(snapshot).filter((task) => {
+  const taskRows = taskRowsFromComposedSnapshot(snapshot).filter((task) => {
     const status = statusToken(task.status ?? at(task, ["payload_json", "status"]));
     const id = taskId(task as TaskRow) || stringValue(task.id);
     return !(status === "waiting-input" && id && continuationTaskIds.has(id));
@@ -2798,22 +2925,53 @@ function actionNeededItemsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord, sel
   ]);
 }
 
-function queueItemsFromSnapshot(snapshot?: GoalSnapshot | JsonRecord, selectedGoalId = ""): ActionNeededItem[] {
+function queueItemsFromComposedSnapshot(snapshot?: ComposedGoalSnapshot | JsonRecord, selectedGoalId = ""): ActionNeededItem[] {
   if (!snapshot) {
     return [];
   }
   return mergeActionNeededItems([
-    ...actionNeededItemsFromSnapshot(snapshot, selectedGoalId),
-    ...cancelledItemsFromSnapshot(snapshot as GoalSnapshot, selectedGoalId),
+    ...actionNeededItemsFromComposedSnapshot(snapshot, selectedGoalId),
+    ...cancelledItemsFromComposedSnapshot(snapshot as ComposedGoalSnapshot, selectedGoalId),
   ]);
 }
 
-function actionNeededItemsFromOverview(value?: unknown): ActionNeededItem[] {
-  const source = isRecord(value) ? value : {};
-  return mergeActionNeededItems([
-    ...actionNeededItemsFromApprovals(rowsFrom(at(source, ["approvals", "data", "approvals"]) ?? at(source, ["approvals", "approvals"]) ?? at(source, ["approvals", "data"]) ?? source.approvals)),
-    ...actionNeededItemsFromTasks(rowsFrom(at(source, ["agents", "data", "tasks"]) ?? at(source, ["agents", "tasks"]) ?? at(source, ["tasks", "data", "tasks"]) ?? source.agents)),
-  ]);
+function actionNeededItemsFromOperatorActions(value?: unknown): ActionNeededItem[] {
+  return rowsFrom(value).map((row, index) => {
+    const actionId = stringValue(row.action_id) || `operator-action:${index}`;
+    const goalId = stringValue(row.goal_id);
+    const taskId = stringValue(row.task_id);
+    const kind = stringValue(row.kind);
+    const status = normalizeStatus(row.status) || "pending";
+    const approval = isRecord(row.approval) ? row.approval : {};
+    const thunk = isRecord(row.thunk) ? row.thunk : {};
+    const approvalId = stringValue(approval.approval_id) || (kind === "resolve_approval" ? actionId.split(":").at(-1) ?? "" : "");
+    const thunkId = stringValue(thunk.id) || stringValue(thunk.thunk_id) || (kind === "resume_thunk" ? actionId.split(":").at(-1) ?? "" : "");
+    const derivedKind: ActionNeededKind = kind === "resolve_approval"
+      ? "approval"
+      : kind === "resume_thunk"
+        ? "thunk"
+        : status === "cancelled"
+          ? "cancelled"
+          : status === "waiting_input" || status === "waiting-input"
+            ? "waiting-task"
+            : "blocked-task";
+    return {
+      actionId,
+      key: actionId,
+      kind: derivedKind,
+      label: stringValue(row.title) || stringValue(row.question) || "Action needed",
+      status,
+      detail: stringValue(row.question) || stringValue(at(row, ["payload_json", "reason"])) || "Operator action projected by the backend.",
+      requestedInput: stringValue(row.question) || stringValue(thunk.requested_input) || "",
+      goalId,
+      taskId,
+      approvalId,
+      thunkId,
+      continuationId: stringValue(at(thunk, ["continuation", "continuation_id"])),
+      risk: stringValue(approval.risk),
+      actionLabel: derivedKind === "approval" ? "Approve" : derivedKind === "thunk" ? "Continue" : "Review",
+    };
+  });
 }
 
 function actionNeededItemsFromApprovals(rows: JsonRecord[], selectedGoalId = ""): ActionNeededItem[] {
@@ -2826,6 +2984,7 @@ function actionNeededItemsFromApprovals(rows: JsonRecord[], selectedGoalId = "")
     const risk = stringValue(row.risk) || stringValue(at(row, ["payload_json", "risk"]));
     const action = stringValue(row.requested_action) || stringValue(row.reason) || stringValue(at(row, ["payload_json", "requested_action"])) || stringValue(at(row, ["payload_json", "reason"])) || risk || "Review approval request";
     return {
+      actionId: approvalId && goalId ? `approval:${goalId}:${approvalId}` : "",
       key: approvalId ? `approval:${approvalId}` : `approval:${goalId}:${index}`,
       kind: "approval" as const,
       label: action,
@@ -2852,6 +3011,7 @@ function actionNeededItemsFromTasks(rows: JsonRecord[], selectedGoalId = ""): Ac
       const goalId = stringValue(task.goal_id) || stringValue(at(task, ["payload_json", "goal_id"])) || selectedGoalId;
       const title = taskTitle(task) || (id ? `Task ${friendlyRef(id)}` : "Task needs operator action");
       return {
+        actionId: id && goalId ? `task:${goalId}:${id}` : "",
         key: id ? `task:${id}` : `task:${goalId}:${index}`,
         kind: status === "blocked" || status === "failed" ? "blocked-task" as const : "waiting-task" as const,
         label: title,
@@ -2869,17 +3029,18 @@ function actionNeededItemsFromTasks(rows: JsonRecord[], selectedGoalId = ""): Ac
     });
 }
 
-function actionNeededItemsFromThunks(snapshot: GoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
-  return continuationRowsFromSnapshot(snapshot).map((row) => actionItemFromContinuation(selectedGoalId || stringValue(snapshot.goal_id), row));
+function actionNeededItemsFromThunks(snapshot: ComposedGoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
+  return continuationRowsFromComposedSnapshot(snapshot).map((row) => actionItemFromContinuation(selectedGoalId || stringValue(snapshot.goal_id), row));
 }
 
-function cancelledItemsFromSnapshot(snapshot: GoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
-  const taskItems = taskRowsFromSnapshot(snapshot)
+function cancelledItemsFromComposedSnapshot(snapshot: ComposedGoalSnapshot, selectedGoalId = ""): ActionNeededItem[] {
+  const taskItems = taskRowsFromComposedSnapshot(snapshot)
     .filter((task) => statusToken(task.status ?? at(task, ["payload_json", "status"])) === "cancelled")
     .map((task, index) => {
       const id = taskId(task as TaskRow) || stringValue(task.id);
       const goalId = stringValue(at(task, ["goal_id"])) || stringValue(at(task, ["payload_json", "goal_id"])) || selectedGoalId || stringValue(snapshot.goal_id);
       return {
+        actionId: id && goalId ? `task:${goalId}:${id}` : "",
         key: id ? `cancelled-task:${id}` : `cancelled-task:${goalId}:${index}`,
         kind: "cancelled" as const,
         label: taskTitle(task) || (id ? `Cancelled task ${friendlyRef(id)}` : "Cancelled task"),
@@ -2895,7 +3056,7 @@ function cancelledItemsFromSnapshot(snapshot: GoalSnapshot, selectedGoalId = "")
         actionLabel: "Cancelled",
       };
     });
-  const thunkItems = continuationRowsFromSnapshot(snapshot, true)
+  const thunkItems = continuationRowsFromComposedSnapshot(snapshot, true)
     .filter((row) => row.status === "cancelled")
     .map((row) => ({
       ...actionItemFromContinuation(selectedGoalId || stringValue(snapshot.goal_id), row),
@@ -2979,7 +3140,7 @@ function taskBlockerReason(task: JsonRecord): string {
   return "";
 }
 
-function continuationRowsFromSnapshot(snapshot?: GoalSnapshot, includeClosed = false): ContinuationRow[] {
+function continuationRowsFromComposedSnapshot(snapshot?: ComposedGoalSnapshot, includeClosed = false): ContinuationRow[] {
   if (!snapshot) {
     return [];
   }
@@ -2991,7 +3152,7 @@ function continuationRowsFromSnapshot(snapshot?: GoalSnapshot, includeClosed = f
   };
   const graph = workflowComputeGraph(snapshot);
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
-  const thunkRecords = delayedThunkRecordsById(snapshot);
+  const thunkRecords = delayedThunkRecordsByIdFromComposedSnapshot(snapshot);
   const graphRows = nodes
     .filter(isRecord)
     .filter((node) => normalizeStatus(node.kind) === "delayed-compute-thunk")
@@ -3005,7 +3166,7 @@ function continuationRowsFromSnapshot(snapshot?: GoalSnapshot, includeClosed = f
   return [...graphRows, ...recordRows];
 }
 
-function delayedThunkRecordsById(snapshot: GoalSnapshot): Map<string, JsonRecord> {
+function delayedThunkRecordsByIdFromComposedSnapshot(snapshot: ComposedGoalSnapshot): Map<string, JsonRecord> {
   const rows = rowsFrom(
     at(snapshot, ["workflow_status", "data", "delayed_compute_thunks"])
       ?? at(snapshot, ["workflow_status", "delayed_compute_thunks"])
@@ -3070,6 +3231,7 @@ function continuationStatus(value: unknown): string {
 
 function actionItemFromContinuation(goalId: string, row: ContinuationRow): ActionNeededItem {
   return {
+    actionId: row.thunkId && goalId ? `thunk:${goalId}:${row.thunkId}` : "",
     key: `thunk:${row.thunkId}`,
     kind: "thunk",
     label: row.reason || "Human prompt",
@@ -3086,9 +3248,9 @@ function actionItemFromContinuation(goalId: string, row: ContinuationRow): Actio
   };
 }
 
-function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: GoalSnapshot }) {
+function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: ComposedGoalSnapshot }) {
   const queryClient = useQueryClient();
-  const rows = continuationRowsFromSnapshot(snapshot);
+  const rows = continuationRowsFromComposedSnapshot(snapshot);
   const [responses, setResponses] = useState<Record<string, string>>({});
   const actionMutation = useMutation({
     mutationFn: ({ item, responseSummary, intent }: ActionMutationInput) => runOperatorAction(item, responseSummary, intent),
@@ -3134,9 +3296,9 @@ function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapshot?: Go
   );
 }
 
-function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: string; snapshot?: GoalSnapshot; compact?: boolean }) {
+function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: string; snapshot?: ComposedGoalSnapshot; compact?: boolean }) {
   const queryClient = useQueryClient();
-  const tasks = (snapshot?.agent_activity ?? []) as TaskRow[];
+  const tasks = taskRowsFromComposedSnapshot(snapshot);
   const firstTaskId = taskId(tasks[0] ?? {});
   const [operator, setOperator] = useState("operator");
   const [result, setResult] = useState<unknown>(null);
@@ -3187,7 +3349,7 @@ function CompilerControlPanel({ goalId, snapshot, compact = false }: { goalId: s
   const failed = countForStatusToken(counts, "failed");
   const blocked = countForStatusToken(counts, "blocked");
   const approvals = countForStatusToken(counts, "waiting-approval");
-  const continuations = snapshot ? continuationRowsFromSnapshot(snapshot).length : 0;
+  const continuations = snapshot ? continuationRowsFromComposedSnapshot(snapshot).length : 0;
   const accepted = countForStatusToken(counts, "done");
   const primaryTaskId = steerTaskId || firstTaskId;
   const runSteering = (label: string, kind: string, reason: string, topic = "", check = reviewCheck) => run(
@@ -3848,7 +4010,7 @@ function mechanismBallotPayload(input: { goalId: string; roundId: string; propos
   };
 }
 
-function workflowProgress(snapshot: GoalSnapshot): Record<string, unknown> | undefined {
+function workflowProgress(snapshot: ComposedGoalSnapshot): Record<string, unknown> | undefined {
   const direct = snapshot.workflow_progress as Record<string, unknown> | undefined;
   if (direct && typeof direct === "object") {
     const data = (direct as { data?: unknown }).data;
@@ -4354,23 +4516,23 @@ function PlansView() {
   );
 }
 
-function HumanQueueView({ selectedGoalId }: { selectedGoalId: string }) {
-  const approvalQuery = useQuery({ queryKey: ["approvals"], queryFn: approvals });
-  const overviewQuery = useQuery({ queryKey: ["overview"], queryFn: overview, enabled: !selectedGoalId });
+function HumanQueueView({ selectedGoalId, workspace }: { selectedGoalId: string; workspace?: OperatorWorkspaceSnapshot }) {
+  const operatorActionsQuery = useQuery({
+    queryKey: ["operator-actions", selectedGoalId],
+    queryFn: () => operatorActions(selectedGoalId || undefined),
+    refetchInterval: 5_000,
+  });
   const selectedGoalQuery = useQuery({
-    queryKey: ["goal", selectedGoalId],
-    queryFn: () => goalSnapshot(selectedGoalId),
+    queryKey: ["operator-goal", selectedGoalId],
+    queryFn: () => operatorGoalDetail(selectedGoalId),
     enabled: Boolean(selectedGoalId),
   });
-  const threadQuery = useQuery({ queryKey: ["threads"], queryFn: threads });
-  const approvalRows = rowsFrom(at(approvalQuery.data, ["data"]) ?? approvalQuery.data);
   const actionItems = useMemo(() => {
-    const approvalItems = actionNeededItemsFromApprovals(approvalRows, selectedGoalId);
-    const selectedGoalItems = selectedGoalId ? queueItemsFromSnapshot(selectedGoalQuery.data, selectedGoalId) : [];
-    const overviewItems = selectedGoalId ? [] : actionNeededItemsFromOverview(overviewQuery.data);
-    return mergeActionNeededItems([...approvalItems, ...selectedGoalItems, ...overviewItems]);
-  }, [approvalRows, overviewQuery.data, selectedGoalId, selectedGoalQuery.data]);
-  const threadRows = rowsFrom(at(threadQuery.data, ["data"]) ?? threadQuery.data);
+    const operatorItems = actionNeededItemsFromOperatorActions(operatorActionsQuery.data ?? workspace?.actions);
+    const selectedGoalItems = selectedGoalId ? queueItemsFromComposedSnapshot(composedSnapshotFromOperatorGoalDetail(selectedGoalQuery.data), selectedGoalId) : [];
+    return mergeActionNeededItems([...operatorItems, ...selectedGoalItems]);
+  }, [operatorActionsQuery.data, selectedGoalId, selectedGoalQuery.data, workspace?.actions]);
+  const threadRows = rowsFrom(at(workspace?.human_threads, ["data"]) ?? workspace?.human_threads);
   return (
     <section className="dashboard-grid">
       <div className="panel span-2">
@@ -4615,7 +4777,7 @@ function humanPromptForItem(item: ActionNeededItem): HumanPromptSpec {
   if ((item.kind === "approval" || status === "waiting-approval") && item.approvalId) {
     const approvalQuestion = item.requestedInput || "Approve this gate and continue?";
     return {
-      title: "Approval",
+      title: "Approval prompt",
       question: approvalQuestion,
       detail: item.detail || blockerReason(item),
       primaryLabel: "Approve and continue",
@@ -4628,13 +4790,13 @@ function humanPromptForItem(item: ActionNeededItem): HumanPromptSpec {
   }
   if (isResumableThunkItem(item)) {
     return {
-      title: "Continuation",
+      title: "Human prompt",
       question,
       detail: item.detail || blockerReason(item),
       primaryLabel: "Continue",
       contextLabel: "Add context",
-      inputLabel: "Context for resume",
-      placeholder: "Optional context for the agent before continuing.",
+      inputLabel: "Context",
+      placeholder: "Add context for the agent, or leave blank and press Continue.",
       showInput: true,
       defaultResponseSummary: defaultContinuationSummary,
     };
@@ -4676,21 +4838,39 @@ function runOperatorAction(item: ActionNeededItem, responseSummary = "", intent:
   if (!item.goalId) {
     throw new Error("This action is missing a goal id.");
   }
+  const actionId = item.actionId || actionIdForItem(item);
+  const baseResolutionPayload = {
+    goal_id: item.goalId,
+    task_id: item.taskId || undefined,
+    approval_id: item.approvalId || undefined,
+    thunk_id: item.thunkId || undefined,
+    operator: "operator",
+    response_summary: responseSummary.trim(),
+    answer: responseSummary.trim() || undefined,
+    artifact_refs: [],
+  };
   if (intent === "cancel-goal") {
-    return cancelGoal(item.goalId, blockedTaskCancelReason(item, responseSummary.trim()));
+    return resolveOperatorAction(actionId, {
+      ...baseResolutionPayload,
+      resolution: "cancel_goal",
+      response_summary: blockedTaskCancelReason(item, responseSummary.trim()),
+    });
   }
   const affordance = actionAffordanceForItem(item);
   if (affordance === "approve") {
     if (!item.approvalId) throw new Error("This approval is missing an approval id.");
-    return approve(item.goalId, { approval_id: item.approvalId, approved: true, note: responseSummary.trim() || "Approved from Task Graph Manager" });
+    return resolveOperatorAction(actionId, {
+      ...baseResolutionPayload,
+      resolution: "approve",
+      response_summary: responseSummary.trim() || "Approved from Task Graph Manager",
+    });
   }
   if (affordance === "resume") {
     if (!item.thunkId) throw new Error("This continuation is missing a thunk id.");
-    return resumeThunk(item.goalId, {
-      thunk_id: item.thunkId,
-      responder: "operator",
+    return resolveOperatorAction(actionId, {
+      ...baseResolutionPayload,
+      resolution: intent === "context" ? "add_context" : "continue",
       response_summary: responseSummary.trim() || defaultContinuationSummary,
-      artifact_refs: [],
     });
   }
   if (intent === "create-human-prompt" || (statusToken(item.status) === "waiting-input" && !isResumableThunkItem(item) && intent === "primary")) {
@@ -4699,15 +4879,34 @@ function runOperatorAction(item: ActionNeededItem, responseSummary = "", intent:
   const status = statusToken(item.status);
   if (status === "blocked" || status === "failed") {
     if (intent === "context" || responseSummary.trim()) {
-      return steer(item.goalId, blockedTaskReplanPayload(item, responseSummary.trim()));
+      return resolveOperatorAction(actionId, {
+        ...baseResolutionPayload,
+        resolution: "replan",
+        response_summary: responseSummary.trim() || "Operator requested replan.",
+      });
     }
-    return restartGoal(item.goalId, blockedTaskRecoveryPayload(item));
+    return resolveOperatorAction(actionId, {
+      ...baseResolutionPayload,
+      resolution: "retry",
+      response_summary: "Operator requested retry.",
+    });
   }
-  return steer(item.goalId, blockedTaskReplanPayload(item, responseSummary.trim()));
+  return resolveOperatorAction(actionId, {
+    ...baseResolutionPayload,
+    resolution: "replan",
+    response_summary: responseSummary.trim() || "Operator requested replan.",
+  });
 }
 
-function RunnersView({ overview }: { overview?: Overview }) {
-  const rows = rowsFrom(at(overview, ["runner_status", "data"]) ?? overview?.runner_status);
+function actionIdForItem(item: ActionNeededItem): string {
+  if (item.kind === "approval" && item.approvalId) return `approval:${item.goalId}:${item.approvalId}`;
+  if (item.kind === "thunk" && item.thunkId) return `thunk:${item.goalId}:${item.thunkId}`;
+  if (item.taskId) return `task:${item.goalId}:${item.taskId}`;
+  return `goal:${item.goalId}:action`;
+}
+
+function RunnersView({ workspace }: { workspace?: OperatorWorkspaceSnapshot }) {
+  const rows = rowsFrom(at(workspace?.runners, ["data"]) ?? workspace?.runners);
   const tableRows = rows.map(runnerTableRow);
   const statuses = rows.map(runnerStatusFromRow);
   const active = statuses.filter((status) => ["active", "running", "dispatchable"].includes(status)).length;

@@ -24,6 +24,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod operator;
+pub use operator::*;
+
 pub type GoalId = Uuid;
 pub type PlanId = Uuid;
 pub type TaskId = Uuid;

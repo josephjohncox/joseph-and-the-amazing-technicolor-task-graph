@@ -55,9 +55,7 @@ try {
   await assertArchitectureGuardrails();
   await assertMemoryReplacementDiffRender();
   await assertOperatorWorkflowRender();
-  await assertOverviewApi();
-  await assertFollowUpsApi();
-  await assertFollowUpDraftApi();
+  await assertOperatorWorkspaceApi();
   await assertChatApi();
   await assertDurableChatSessionApi();
   await assertChatApiDiscoversRegisteredModel();
@@ -66,7 +64,6 @@ try {
   await assertBackendBackedControlSurfaces();
   await assertMcpTools();
   await assertMcpChatAssistBehavior();
-  await assertMcpFollowUpDraftBehavior();
   await assertMcpApplyResearchOutputBehavior();
   console.log("coat-control-plane-web smoke passed");
 } catch (error) {
@@ -191,8 +188,39 @@ async function assertArchitectureGuardrails() {
   const apiSource = await readFile(new URL("../src/spa/api.ts", import.meta.url), "utf8");
   const serverSource = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
   const designDoc = await readFile(new URL("../../../docs/design-docs/110-control-gateway-spa.md", import.meta.url), "utf8");
+  const removedGoalRoute = "/api/" + "goals";
+  const removedApprovalRoute = "/api/" + "approvals";
+  const removedAgentRoute = "/api/" + "agents";
+  const removedFollowUpsRoute = "/api/" + "follow-ups";
+  const removedOverviewRoute = "/api/" + "overview";
+  const removedRunnersRoute = "/api/" + "runners";
+  const removedHumanThreadsRoute = "/api/" + "human/threads";
 
   assert(apiSource.includes('"/api/chat"'), "SPA chat API remains gateway-owned");
+  assert(apiSource.includes("/api/operator/actions"), "SPA has compact operator action API helpers");
+  assert(apiSource.includes('"actions"'), "SPA row parser recognizes operator action lists");
+  assert(apiSource.includes("operatorGoalDetail("), "SPA API client exposes operator goal detail as the selected-goal contract");
+  assert(!apiSource.includes("export function goals("), "SPA API client does not hide operator goals behind old helper names");
+  assert(!apiSource.includes("export function approvals("), "SPA API client does not hide operator actions behind old helper names");
+  assert(!apiSource.includes("operatorGoalSnapshot("), "SPA API client does not expose raw snapshots as the selected-goal contract");
+  assert(!apiSource.includes(removedGoalRoute), "SPA API client does not call removed goal routes");
+  assert(!apiSource.includes(removedApprovalRoute), "SPA API client does not call removed approval routes");
+  assert(!apiSource.includes(removedAgentRoute), "SPA API client does not call removed agent routes");
+  assert(!apiSource.includes(removedFollowUpsRoute), "SPA API client does not call removed follow-up helper routes");
+  assert(!apiSource.includes(removedOverviewRoute), "SPA API client does not call removed overview route");
+  assert(!apiSource.includes(removedRunnersRoute), "SPA API client does not call removed runner list route");
+  assert(!apiSource.includes(removedHumanThreadsRoute), "SPA API client does not call removed human thread route");
+  assert(!serverSource.includes(`url.pathname === "${removedGoalRoute}"`), "gateway does not keep removed goal-list route");
+  assert(!serverSource.includes(`url.pathname === "${removedGoalRoute}/submit"`), "gateway does not keep removed goal-submit route");
+  assert(!serverSource.includes(`url.pathname === "${removedApprovalRoute}"`), "gateway does not keep removed approval route");
+  assert(!serverSource.includes(`url.pathname === "${removedAgentRoute}"`), "gateway does not keep removed agent route");
+  assert(!serverSource.includes(`url.pathname === "${removedFollowUpsRoute}"`), "gateway does not keep removed follow-up route");
+  assert(!serverSource.includes(`url.pathname === "${removedOverviewRoute}"`), "gateway does not keep removed overview route");
+  assert(!serverSource.includes(`url.pathname === "${removedRunnersRoute}"`), "gateway does not keep removed runner route");
+  assert(!serverSource.includes(`url.pathname === "${removedHumanThreadsRoute}"`), "gateway does not keep removed human thread route");
+  assert(!serverSource.includes(`coat_follow_ups`), "gateway MCP surface does not keep removed follow-up tools");
+  assert(appSource.includes("operatorActions("), "SPA reads action queue through /api/operator/actions");
+  assert(appSource.includes("resolveOperatorAction("), "SPA resolves human prompts through /api/operator/actions/{id}/resolve");
   assert(appSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
   assert(!appSource.includes("@ai-sdk/react"), "SPA does not call AI SDK useChat directly");
   assert(!appSource.includes("assistant-ui"), "SPA does not replace chat with assistant-ui directly");
@@ -332,7 +360,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ActionResultCard, BlockerInsightPanel, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, DraftReviewDock, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, OperatorActionList, QueueFilterBar, RunnersView, SubgoalPlanPanel, TaskSummary, actionNeededItemsFromApprovals, actionNeededItemsFromSnapshot, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSnapshotHasProjectedTasks, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, queueGroupForItem, queueGroupsForItems, queueItemsFromSnapshot, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
+            return `${code}\nexport { ActionResultCard, BlockerInsightPanel, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, DraftReviewDock, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, OperatorActionList, QueueFilterBar, RunnersView, SubgoalPlanPanel, TaskSummary, actionNeededItemsFromApprovals, actionNeededItemsFromComposedSnapshot, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromComposedSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, composedSnapshotHasProjectedTasks, goalSubgoalsFromComposedSnapshotOrDraft, mergeSubmittedGoalRows, queueGroupForItem, queueGroupsForItems, queueItemsFromComposedSnapshot, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -365,20 +393,20 @@ async function assertOperatorWorkflowRender() {
       SubgoalPlanPanel,
       TaskSummary,
       actionNeededItemsFromApprovals,
-      actionNeededItemsFromSnapshot,
+      actionNeededItemsFromComposedSnapshot,
       computeGraphNodes,
       computeNodeMatchesGraphFilter,
-      continuationRowsFromSnapshot,
+      continuationRowsFromComposedSnapshot,
       eventSourceTableRow,
       goalDraftFromChatResponse,
       goalIdFromSubmitResponse,
       goalRowsWithSelected,
-      goalSnapshotHasProjectedTasks,
-      goalSubgoalsFromSnapshotOrDraft,
+      composedSnapshotHasProjectedTasks,
+      goalSubgoalsFromComposedSnapshotOrDraft,
       mergeSubmittedGoalRows,
       queueGroupForItem,
       queueGroupsForItems,
-      queueItemsFromSnapshot,
+      queueItemsFromComposedSnapshot,
       runnerTableRow,
       selectedGoalIdFromLocation,
       selectedGoalSummary,
@@ -442,15 +470,20 @@ async function assertOperatorWorkflowRender() {
         approval_id: "approval-source-github",
       },
     ];
-    const overview = {
-      runner_status: { data: runnerRows },
-      approvals: { data: approvals },
-      recent_events: {
-        data: [
-          { event_type: "TaskStarted", goal_id: goalId },
-          { event_type: "ApprovalRequested", goal_id: goalId },
-        ],
-      },
+    const workspace = {
+      runners: { data: runnerRows },
+      actions: approvals.map((approval) => ({
+        action_id: `approval:${approval.goal_id}:${approval.approval_id}`,
+        kind: "resolve_approval",
+        title: "Approval required",
+        goal_id: approval.goal_id,
+        status: "waiting-approval",
+        approval,
+      })),
+      events: [
+        { event_type: "TaskStarted", goal_id: goalId },
+        { event_type: "ApprovalRequested", goal_id: goalId },
+      ],
       event_sources: { sources: eventSources },
     };
 
@@ -575,19 +608,19 @@ async function assertOperatorWorkflowRender() {
     const draftTaskRows = taskRowsFromGoalDraft("018f8f2f-1fd8-7688-bb12-8bfb6b756999", goalDraft);
     assertEqual(draftTaskRows.length, 1, "submitted draft exposes seeded task rows before projection");
     assertEqual(draftTaskRows[0].subgoal_id, "sg-submit", "submitted draft task preserves subgoal id");
-    assertEqual(goalSnapshotHasProjectedTasks({
+    assertEqual(composedSnapshotHasProjectedTasks({
       goal_store_goal: { data: { goal: { payload_json: { title: "Projection shell" } } } },
       workflow_status: { data: { status: "submitted" } },
       workflow_compute_graph: { data: { nodes: [], edges: [] } },
       tasks: { data: { tasks: [] } },
       agent_activity: [],
     }), false, "projection shell without task content keeps submitted-draft fallback");
-    assertEqual(goalSnapshotHasProjectedTasks({
+    assertEqual(composedSnapshotHasProjectedTasks({
       agent_activity: [{ task_id: "projected-task", status: "running" }],
     }), true, "projected task content retires submitted-draft fallback");
-    const draftSubgoals = goalSubgoalsFromSnapshotOrDraft(undefined, goalDraft);
+    const draftSubgoals = goalSubgoalsFromComposedSnapshotOrDraft(undefined, goalDraft);
     assertEqual(draftSubgoals.length, 2, "submitted draft exposes subgoals before projection");
-    const projectedSubgoals = goalSubgoalsFromSnapshotOrDraft({
+    const projectedSubgoals = goalSubgoalsFromComposedSnapshotOrDraft({
       goal_store_goal: {
         data: {
           goal: {
@@ -632,7 +665,7 @@ async function assertOperatorWorkflowRender() {
 
     const dashboardMarkup = renderToStaticMarkup(
       React.createElement(Dashboard, {
-        overview,
+        workspace,
         goals,
         selectedGoalId: goalId,
         onSelectGoal: () => {},
@@ -803,7 +836,7 @@ async function assertOperatorWorkflowRender() {
     }
     const emptyBlockerMarkup = renderToStaticMarkup(React.createElement(BlockerInsightPanel, { items: [], onOpenControls: () => {} }));
     assert(emptyBlockerMarkup.includes("No blockers projected"), "empty blocker panel explains stable state");
-    const actionItems = actionNeededItemsFromSnapshot({
+    const actionItems = actionNeededItemsFromComposedSnapshot({
       goal_id: goalId,
       agent_activity: [
         {
@@ -869,7 +902,7 @@ async function assertOperatorWorkflowRender() {
     assertEqual(waitingTaskItem?.thunkId, "", "waiting task without projected continuation cannot resume");
     assertEqual(thunkActionItem?.kind, "thunk", "projected continuation becomes a thunk action item");
     assertEqual(thunkActionItem?.continuationId, "real-continuation", "thunk action preserves continuation id");
-    const queueItems = queueItemsFromSnapshot({
+    const queueItems = queueItemsFromComposedSnapshot({
       goal_id: goalId,
       agent_activity: [
         { goal_id: goalId, task_id: "task-blocked", title: "Blocked task", status: "blocked" },
@@ -967,7 +1000,7 @@ async function assertOperatorWorkflowRender() {
         },
       },
     };
-    const continuationRows = continuationRowsFromSnapshot(continuationSnapshot);
+    const continuationRows = continuationRowsFromComposedSnapshot(continuationSnapshot);
     assertEqual(continuationRows.length, 1, "only open continuation thunks are actionable");
     assertEqual(continuationRows[0].reason, "Need operator answer", "continuation row preserves reason");
     assertEqual(continuationRows[0].taskId, "task-plan", "continuation row preserves task id");
@@ -984,9 +1017,9 @@ async function assertOperatorWorkflowRender() {
       "task Ref task-plan",
       "continuation Ref operator-answer",
       "webhook_correlation · Ref input",
-      "Continuation",
-      "Optional context for the agent before continuing.",
-      "Context for resume",
+      "Human prompt",
+      "Add context for the agent, or leave blank and press Continue.",
+      "Context",
       "Continue",
       "Add context",
     ]) {
@@ -1114,9 +1147,9 @@ async function assertOperatorWorkflowRender() {
       ),
     );
     assert(thunkMarkup.includes("Need rollout decision"), "action queue renders waiting continuation text");
-    assert(thunkMarkup.includes("Continuation"), "action queue renders a concrete continuation prompt");
-    assert(thunkMarkup.includes("Optional context for the agent before continuing."), "action queue explains the continuation choices");
-    assert(thunkMarkup.includes("Context for resume"), "action queue labels continuation context clearly");
+    assert(thunkMarkup.includes("Human prompt"), "action queue renders a concrete human prompt");
+    assert(thunkMarkup.includes("Add context for the agent, or leave blank and press Continue."), "action queue explains the continuation choices");
+    assert(thunkMarkup.includes("Context"), "action queue labels continuation context clearly");
     assert(thunkMarkup.includes("Add context"), "action queue renders context input for continuations");
     assert(thunkMarkup.includes(">Continue<"), "action queue renders one-click continue command");
     assert(thunkMarkup.includes(">Add context<"), "action queue renders context command");
@@ -1200,7 +1233,7 @@ async function assertOperatorWorkflowRender() {
     assert(actionResultMarkup.includes("Clear notice"), "action result exposes local-only clear control");
     assert(actionResultMarkup.includes("Clearing this notice only updates this browser view; it does not cancel or change the goal."), "action result explains clear is local-only");
 
-    const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { overview }));
+    const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { workspace }));
     for (const expected of [
       "model-provider (Ref codex-runner-a)",
       "local-dev-a",
@@ -1211,7 +1244,7 @@ async function assertOperatorWorkflowRender() {
       assert(runnersMarkup.includes(expected), `runner fleet markup includes ${expected}`);
     }
     const runnerRow = runnerTableRow(runnerRows[0]);
-    assertEqual(runnerRow[0], "model-provider (Ref codex-runner-a)", "runner row derives display name without exposing lane labels");
+    assertEqual(runnerRow[0], "model-provider (Ref codex-runner-a)", "runner row derives display name from runner metadata");
     assertEqual(runnerRow[3], "2/3 free, 1 running", "runner row derives remaining capacity");
 
     const eventsMarkup = renderToStaticMarkup(
@@ -1523,18 +1556,19 @@ async function assertChatApiDiscoversRegisteredModel() {
     assertEqual(chatRequests.length, 0, "default chat backend does not call registered runner models");
 
     await waitForProcessHealth(discoveryBaseUrl, discoveryServer, () => ({ stdout: discoveryStdout, stderr: discoveryStderr }));
-    const runnersResponse = await fetch(`${discoveryBaseUrl}/api/runners`);
-    assert(runnersResponse.ok, "runners api returns normalized registry rows");
+    const runnersResponse = await fetch(`${discoveryBaseUrl}/api/operator/workspace`);
+    assert(runnersResponse.ok, "operator workspace returns normalized registry rows");
     const runnersBody = await runnersResponse.json();
-    const runnerRows = Array.isArray(runnersBody.data) ? runnersBody.data : [];
-    assertEqual(runnerRows.length, 2, "runners api preserves registered runner count");
-    assertEqual(runnerRows[0].runner_id, "unlabeled-work-runner", "runners api flattens nested runner id");
-    assertEqual(runnerRows[0].node_id, "worker-node-a", "runners api flattens nested node id");
-    assertEqual(runnerRows[0].endpoint, "http://work-runner.example:9093", "runners api flattens nested endpoint");
-    assertEqual(runnerRows[0].display_name, "model-provider", "runners api derives readable runner display name without exposing lane labels");
-    assertEqual(runnerRows[0].status, "active", "runners api derives active status");
-    assertEqual(runnerRows[0].capacity_remaining, 3, "runners api preserves remaining capacity");
-    assertEqual(runnerRows[0].max_concurrency, 4, "runners api exposes registration max concurrency");
+    const runnerRows = Array.isArray(runnersBody.runners?.data) ? runnersBody.runners.data : [];
+    assertEqual(runnerRows.length, 2, "operator workspace preserves registered runner count");
+    assertEqual(runnerRows[0].runner_id, "unlabeled-work-runner", "operator workspace flattens nested runner id");
+    assertEqual(runnerRows[0].node_id, "worker-node-a", "operator workspace flattens nested node id");
+    assertEqual(runnerRows[0].endpoint, "http://work-runner.example:9093", "operator workspace flattens nested endpoint");
+    assertEqual(runnerRows[0].display_name, "model-provider", "operator workspace derives readable runner display name");
+    assertEqual(runnerRows[0].lane, undefined, "operator workspace keeps lane labels inside runner labels");
+    assertEqual(runnerRows[0].status, "active", "operator workspace derives active status");
+    assertEqual(runnerRows[0].capacity_remaining, 3, "operator workspace preserves remaining capacity");
+    assertEqual(runnerRows[0].max_concurrency, 4, "operator workspace exposes registration max concurrency");
     const response = await fetch(`${discoveryBaseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1567,27 +1601,27 @@ async function assertChatApiDiscoversRegisteredModel() {
   }
 }
 
-async function assertOverviewApi() {
-  const response = await fetch(`${baseUrl}/api/overview`);
-  assert(response.ok, "overview api returns ok even when backend services are absent");
+async function assertOperatorWorkspaceApi() {
+  const response = await fetch(`${baseUrl}/api/operator/workspace`);
+  assert(response.ok, "operator workspace api returns ok even when backend services are absent");
   const body = await response.json();
-  assertEqual(body.control_surface, "coat-control-plane-web", "overview control surface");
+  assertEqual(body.source.gateway, "api_and_sse_projection", "operator workspace identifies gateway projection role");
   assert(
-    String(body.authority_note).includes("Restate and the Rust services remain authoritative"),
-    "overview states that the gateway is not the durable engine",
+    body.source.restate === "durable_orchestration",
+    "operator workspace states that Restate owns durable orchestration",
   );
-  assert(Array.isArray(body.services), "overview includes service health rows");
+  assert(Array.isArray(body.services), "operator workspace includes service health rows");
   assert(
     body.services.some((service) => service.name === "goal-store" && typeof service.url === "string"),
-    "overview reports goal-store backend health probe target",
+    "operator workspace reports goal-store backend health probe target",
   );
-  assert(body.follow_ups && Array.isArray(body.follow_ups.items), "overview includes flattened follow-up queue");
-  assert(body.goals && typeof body.goals.status === "number", "overview includes goal-store proxy result");
-  assert(body.runner_status && typeof body.runner_status.status === "number", "overview includes runner registry proxy result");
+  assert(Array.isArray(body.goals), "operator workspace includes goal summaries");
+  assert(Array.isArray(body.actions), "operator workspace includes action queue rows");
+  assert(body.runners && typeof body.runners.status === "number", "operator workspace includes runner registry proxy result");
 }
 
 async function assertGoalSubmitAssignsWorkflowId() {
-  const response = await fetch(`${baseUrl}/api/goals/submit`, {
+  const response = await fetch(`${baseUrl}/api/operator/goals`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1608,16 +1642,16 @@ async function assertGoalSubmitAssignsWorkflowId() {
 
 async function assertUnsupportedWorkflowHandlerGuard() {
   const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
-  const response = await fetch(`${baseUrl}/api/goals/${goalId}/native-subagent-spawn`, {
+  const response = await fetch(`${baseUrl}/api/operator/goals/${goalId}/native-subagent-spawn`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   });
-  assertEqual(response.status, 400, "unsupported workflow handler is rejected before proxying");
+  assertEqual(response.status, 400, "unsupported operator goal action is rejected before proxying");
   const body = await response.json();
   assert(
-    String(body.error).includes("unsupported workflow handler"),
-    "unsupported workflow handler response explains the guardrail",
+    String(body.error).includes("unsupported operator goal action"),
+    "unsupported operator goal action response explains the guardrail",
   );
 }
 
@@ -2139,7 +2173,7 @@ async function assertBackendBackedControlSurfaces() {
   try {
     await waitForProcessHealth(backendBaseUrl, backendServer, () => ({ stdout: backendStdout, stderr: backendStderr }));
 
-    const submitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+    const submitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2189,7 +2223,7 @@ async function assertBackendBackedControlSurfaces() {
     assert(compactDraft.draft_id, "backend-backed goal draft includes server-side draft id");
     assert(!("root_budget" in compactDraft), "compact goal draft omits default budget payload");
 
-    const compactSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+    const compactSubmitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2212,7 +2246,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(compactReceived.plan.subgoals[0].id, "plan-next-frontier", "compact submit preserves stored subgoal payload");
     assertEqual(compactReceived.authoring.constraints[0], "Preserve the stored full draft when submitting compact review edits.", "compact submit applies edited authoring fields");
 
-    const badSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+    const badSubmitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2224,20 +2258,21 @@ async function assertBackendBackedControlSurfaces() {
     const badSubmitBody = await badSubmitResponse.json();
     assertEqual(badSubmitBody.status, 400, "goal submit preserves upstream proxy status in the response body");
 
-    const snapshotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}`);
-    assert(snapshotResponse.ok, "backend-backed goal snapshot returns ok");
-    const snapshot = await snapshotResponse.json();
-    assertEqual(snapshot.goal_id, goalId, "goal snapshot preserves requested goal id");
-    assertEqual(snapshot.goal_store_goal.status, 200, "goal snapshot includes successful goal projection status");
-    assertEqual(snapshot.goal_store_goal.data.objective, "Exercise real control-plane projections", "goal snapshot preserves backend objective");
-    assertEqual(snapshot.workflow_status.data.durable_owner, "restate", "goal snapshot includes Restate workflow status");
-    assertEqual(snapshot.workflow_progress.data.satisfaction_score, 0.42, "goal snapshot includes workflow progress score");
-    assertEqual(snapshot.workflow_compute_graph.data.open_thunks, 1, "goal snapshot includes live compute graph thunk count");
-    assertEqual(snapshot.workflow_compute_graph.data.nodes.length, 3, "goal snapshot includes live compute graph nodes");
-    assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "goal snapshot includes actionable continuation thunk id");
-    assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "goal snapshot includes checkpoint refs");
-    assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "goal snapshot includes human approval gates");
-    assertEqual(snapshot.agent_activity.length, 2, "goal snapshot derives agent activity rows from projected tasks");
+    const snapshotResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}`);
+    assert(snapshotResponse.ok, "backend-backed operator goal detail returns ok");
+    const snapshotDetail = await snapshotResponse.json();
+    const snapshot = snapshotDetail.snapshot ?? snapshotDetail;
+    assertEqual(snapshot.goal_id, goalId, "operator goal detail preserves requested goal id");
+    assertEqual(snapshot.goal_store_goal.status, 200, "operator goal detail includes successful goal projection status");
+    assertEqual(snapshot.goal_store_goal.data.objective, "Exercise real control-plane projections", "operator goal detail preserves backend objective");
+    assertEqual(snapshot.workflow_status.data.durable_owner, "restate", "operator goal detail includes Restate workflow status");
+    assertEqual(snapshot.workflow_progress.data.satisfaction_score, 0.42, "operator goal detail includes workflow progress score");
+    assertEqual(snapshot.workflow_compute_graph.data.open_thunks, 1, "operator goal detail includes live compute graph thunk count");
+    assertEqual(snapshot.workflow_compute_graph.data.nodes.length, 3, "operator goal detail includes live compute graph nodes");
+    assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "operator goal detail includes actionable continuation thunk id");
+    assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "operator goal detail includes checkpoint refs");
+    assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "operator goal detail includes human approval gates");
+    assertEqual(snapshot.agent_activity.length, 2, "operator goal detail derives agent activity rows from projected tasks");
     const activity = snapshot.agent_activity[0];
     assertEqual(activity.task_id, "task-plan", "agent activity preserves task id");
     assertEqual(activity.current_prompt, taskPrompt, "agent activity exposes current prompt payload");
@@ -2252,7 +2287,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(activity.budget.max_attempts, 2, "agent activity exposes task budget");
     assertEqual(activity.sandbox.network, "disabled", "agent activity exposes sandbox policy");
     assertEqual(activity.done_criteria.tests_pass, true, "agent activity exposes done criteria");
-    assertEqual(snapshot.chat_session.messages[0].content, "What is the planner waiting on?", "goal snapshot includes compact goal chat messages");
+    assertEqual(snapshot.chat_session.messages[0].content, "What is the planner waiting on?", "operator goal detail includes compact goal chat messages");
     assertEqual(snapshot.agent_context.chat_session.session_id, `goal:${goalId}`, "agent context advertises goal chat session ref");
     assertEqual(snapshot.agent_context.chat_session.latest_turns[0].content, "What is the planner waiting on?", "agent context includes latest compact chat turns");
     assertEqual(snapshot.agent_context.tasks[0].current_prompt, taskPrompt, "agent context exposes drill-down current prompt");
@@ -2264,7 +2299,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(snapshot.agent_context.tasks[0].thread_refs.payload_thread_id, "thr-task-plan-001", "agent context exposes payload thread ref");
     assertEqual(snapshot.agent_context.notification_threads[0].thread_key, `approval:${approvalId}`, "agent context includes relevant notifier thread summary");
 
-    const agentContextResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/agent-context?task_id=task-plan`);
+    const agentContextResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/agent-context?task_id=task-plan`);
     assert(agentContextResponse.ok, "agent context api returns ok");
     const agentContext = await agentContextResponse.json();
     assertEqual(agentContext.found, true, "agent context task filter finds projected task");
@@ -2272,7 +2307,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(agentContext.tasks[0].chat_session_ref, `goal:${goalId}`, "agent context endpoint returns chat session ref");
     assertEqual(agentContext.tasks[0].notification_threads[0].latest_status, "waiting_operator", "agent context endpoint returns relevant notification thread");
     const adversarialActivity = snapshot.agent_activity.find((row) => row.task_id === "task-adversarial");
-    assert(adversarialActivity, "goal snapshot keeps adversarial review task visible");
+    assert(adversarialActivity, "operator goal detail keeps adversarial review task visible");
     assert(
       adversarialActivity.current_prompt.includes("native subagent"),
       "agent activity preserves adversarial prompt text as inspectable context",
@@ -2291,11 +2326,12 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(adversarialActivity.sandbox.network, "disabled", "adversarial task preserves sandbox network policy");
     assertEqual(adversarialActivity.done_criteria.evidence[0], "review rejects native subagent delegation", "adversarial task preserves review evidence criteria");
 
-    const mcpSnapshot = await callMcpAt(backendBaseUrl, "coat_goal_snapshot", { goal_id: goalId });
-    assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp goal snapshot uses the same backend aggregation path");
-    assertEqual(mcpSnapshot.agent_activity[1].execution.subagents.native_spawning, "disabled", "mcp goal snapshot projects disabled native spawning");
-    assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp goal snapshot includes compute graph continuation edge");
-    const mcpAgentContext = await callMcpAt(backendBaseUrl, "coat_agent_context", { goal_id: goalId, task_id: "task-plan" });
+    const mcpSnapshotDetail = await callMcpAt(backendBaseUrl, "coat_operator_goal", { goal_id: goalId });
+    const mcpSnapshot = mcpSnapshotDetail.snapshot ?? mcpSnapshotDetail;
+    assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp operator goal detail uses the same backend aggregation path");
+    assertEqual(mcpSnapshot.agent_activity[1].execution.subagents.native_spawning, "disabled", "mcp operator goal detail projects disabled native spawning");
+    assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp operator goal detail includes compute graph continuation edge");
+    const mcpAgentContext = await callMcpAt(backendBaseUrl, "coat_operator_agent_context", { goal_id: goalId, task_id: "task-plan" });
     assertEqual(mcpAgentContext.tasks[0].current_prompt, taskPrompt, "mcp agent context uses the same drill-down aggregation path");
     assertEqual(mcpAgentContext.tasks[0].runner.runner_id, "codex-runner-a", "mcp agent context exposes runner routing");
 
@@ -2303,18 +2339,19 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(checkpointHistory.data.checkpoints[0].git.commit, "abc1234", "checkpoint history returns git checkpoint commit");
     assertEqual(checkpointHistory.data.checkpoints[0].task_id, "task-plan", "checkpoint history preserves task ownership");
 
-    const threadsResponse = await fetch(`${backendBaseUrl}/api/human/threads`);
-    assert(threadsResponse.ok, "human threads api returns ok");
-    const threads = await threadsResponse.json();
-    assertEqual(threads.data.data[0].thread_key, `approval:${approvalId}`, "human threads preserve notifier thread key");
-    assertEqual(threads.data.data[0].latest_status, "waiting_operator", "human threads preserve waiting status");
-    const approvalQueue = await callMcpAt(backendBaseUrl, "coat_approval_queue", { limit: 3 });
-    assertEqual(approvalQueue.data.data[0].approval_id, approvalId, "approval queue reads projected human gate");
+    const workspaceResponse = await fetch(`${backendBaseUrl}/api/operator/workspace?goal_id=${encodeURIComponent(goalId)}`);
+    assert(workspaceResponse.ok, "operator workspace returns ok");
+    const workspace = await workspaceResponse.json();
+    assertEqual(workspace.human_threads.data.data[0].thread_key, `approval:${approvalId}`, "operator workspace preserves notifier thread key");
+    assertEqual(workspace.human_threads.data.data[0].latest_status, "waiting_operator", "operator workspace preserves waiting status");
+    const approvalQueue = await callMcpAt(backendBaseUrl, "coat_operator_actions", { goal_id: goalId });
+    const projectedApprovalAction = approvalQueue.actions.find((action) => action.approval?.approval_id === approvalId);
+    assert(projectedApprovalAction, "operator actions read projected human gate");
     assert(
-      calls.goalStore.some((call) => call.url === "/goal-store/approvals?limit=3"),
-      "mcp approval queue forwards requested limit to goal-store",
+      calls.goalStore.some((call) => call.url === `/goal-store/approvals?limit=100&goal_id=${encodeURIComponent(goalId)}`),
+      "mcp operator actions forwards selected goal filter to goal-store",
     );
-    const approvalResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/approve`, {
+    const approvalResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/approve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ approval_id: approvalId, approved: true, note: "smoke approval" }),
@@ -2345,7 +2382,7 @@ async function assertBackendBackedControlSurfaces() {
       kind: { kind: "add_constraint", constraint: "Keep fake backend assertions behavior-level." },
       message: "Pin behavioral smoke coverage.",
     };
-    const steerResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/steer`, {
+    const steerResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/steer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(directive),
@@ -2357,7 +2394,7 @@ async function assertBackendBackedControlSurfaces() {
     const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer`);
     assertEqual(steerCall?.body?.message, "Pin behavioral smoke coverage.", "goal steering forwards operator message");
 
-    const staleSteerResponse = await fetch(`${backendBaseUrl}/api/goals/${staleGoalId}/steer`, {
+    const staleSteerResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${staleGoalId}/steer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2382,7 +2419,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(staleSteerBody.active_state.workflow_status.data.unavailable, true, "null workflow status read carries unavailable label");
     assertEqual(staleSteerBody.active_state.workflow_status.data.stale, true, "null workflow status read carries stale label");
 
-    const voteResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/vote`, {
+    const voteResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/vote`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2402,7 +2439,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(voteCall?.body?.direction, "up", "goal vote forwards vote direction");
     assertEqual(voteCall?.body?.suggested_role, "overarching_goal", "goal vote forwards promotion role");
 
-    const restartResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/restart`, {
+    const restartResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/restart`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2422,7 +2459,7 @@ async function assertBackendBackedControlSurfaces() {
     const restartCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/restart`);
     assertEqual(restartCall?.body?.task_id, "task-plan", "goal restart forwards target task");
 
-    const branchResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/branch`, {
+    const branchResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/branch`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2445,7 +2482,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(branchCall?.body?.candidate_count, 2, "goal branch forwards candidate count");
 
     const groupId = "018f8f2f-1fd8-7688-bb12-8bfb6b756888";
-    const selectBranchResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/select_branch`, {
+    const selectBranchResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/select_branch`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2462,7 +2499,7 @@ async function assertBackendBackedControlSurfaces() {
     const selectBranchCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/select_branch`);
     assertEqual(selectBranchCall?.body?.group_id, groupId, "goal branch selection forwards group id");
 
-    const thunkCreateResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/create_thunk`, {
+    const thunkCreateResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/create_thunk`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2487,7 +2524,7 @@ async function assertBackendBackedControlSurfaces() {
     const thunkCreateCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/create_thunk`);
     assertEqual(thunkCreateCall?.body?.continuation?.boundary, "task_dispatch", "goal thunk create forwards continuation boundary");
 
-    const mechanismResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/mechanism_start`, {
+    const mechanismResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/mechanism_start`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2508,7 +2545,7 @@ async function assertBackendBackedControlSurfaces() {
     const mechanismCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/mechanism_start`);
     assertEqual(mechanismCall?.body?.target, "branch_selection", "goal mechanism start forwards target");
 
-    const ballotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/mechanism_ballot`, {
+    const ballotResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/mechanism_ballot`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2526,7 +2563,7 @@ async function assertBackendBackedControlSurfaces() {
     const ballotCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/mechanism_ballot`);
     assertEqual(ballotCall?.body?.allocations?.[0]?.support, 1, "goal mechanism ballot forwards allocation support");
 
-    const resumeResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/resume_thunk`, {
+    const resumeResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/resume_thunk`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2543,7 +2580,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(resumeCall?.body?.thunk_id, thunkId, "goal thunk resume forwards thunk id");
     assertEqual(resumeCall?.body?.responder, "operator", "goal thunk resume forwards responder");
 
-    const cancelResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/cancel`, {
+    const cancelResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/cancel`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify("Cancel from control surface smoke."),
@@ -2647,37 +2684,6 @@ async function assertBackendBackedControlSurfaces() {
   }
 }
 
-async function assertFollowUpsApi() {
-  const response = await fetch(`${baseUrl}/api/follow-ups`);
-  assert(response.ok, "follow-ups api returns ok");
-  const body = await response.json();
-  assert(Array.isArray(body.plans), "follow-ups response includes plans");
-  assert(Array.isArray(body.items), "follow-ups response includes flattened items");
-  assert(typeof body.follow_up_count === "number", "follow-ups response includes count");
-}
-
-async function assertFollowUpDraftApi() {
-  const response = await fetch(`${baseUrl}/api/follow-ups/draft-plan`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      plan: "Smoke Plan",
-      path: "docs/exec-plans/active/smoke.md",
-      index: 0,
-      text: "Make follow-ups actionable from the control surface.",
-    }),
-  });
-  assert(response.ok, "follow-up draft api returns ok");
-  const body = await response.json();
-  assertEqual(body.mode, "draft_plan", "follow-up draft mode");
-  assert(body.prompt.includes("<task>"), "follow-up draft prompt is structured");
-  assert(body.prompt.includes("<instruction>MUST turn this durable continuation item"), "follow-up draft uses hard instruction text");
-  assert(body.prompt.includes("MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates"), "follow-up draft requests durable execution criteria");
-  assert(body.prompt.includes("<source_plan>Smoke Plan</source_plan>"), "follow-up draft preserves source plan");
-  assert(body.prompt.includes("<source_path>docs/exec-plans/active/smoke.md</source_path>"), "follow-up draft preserves source path");
-  assert(body.prompt.includes("<follow_up>Make follow-ups actionable from the control surface.</follow_up>"), "follow-up draft prompt includes source item");
-}
-
 async function assertMcpTools() {
   const response = await fetch(`${baseUrl}/mcp`, {
     method: "POST",
@@ -2688,14 +2694,33 @@ async function assertMcpTools() {
   const body = await response.json();
   const names = new Set(body.result.tools.map((tool) => tool.name));
   for (const expected of [
-    "coat_goal_snapshot",
+    "coat_operator_workspace",
+    "coat_operator_goal",
+    "coat_operator_actions",
+    "coat_operator_action_resolve",
+    "coat_operator_agent_context",
+    "coat_operator_goal_submit",
+    "coat_operator_goal_steer",
     "coat_chat_assist",
-    "coat_steer_goal",
-    "coat_follow_up_draft_plan",
     "coat_memory_edit_preview",
     "coat_apply_research_output",
   ]) {
     assert(names.has(expected), `mcp tools include ${expected}`);
+  }
+  const removedTool = (suffix) => ["coat", suffix].join("_");
+  for (const removed of [
+    removedTool("overview"),
+    removedTool(["goal", "snapshot"].join("_")),
+    removedTool(["agent", "activity"].join("_")),
+    removedTool(["human", "threads"].join("_")),
+    removedTool(["approval", "queue"].join("_")),
+    removedTool(["approve", "goal"].join("_")),
+    removedTool(["runner", "list"].join("_")),
+    removedTool(["agent", "context"].join("_")),
+    removedTool(["goal", "submit"].join("_")),
+    removedTool(["steer", "goal"].join("_")),
+  ]) {
+    assert(!names.has(removed), `mcp tools do not include removed operator tool ${removed}`);
   }
 }
 
@@ -2717,27 +2742,6 @@ async function assertMcpChatAssistBehavior() {
   assert(
     goal.plan.distribution_notes.some((note) => note.includes("Coordinator owns task creation")),
     "mcp chat draft preserves durable subagent routing rule",
-  );
-}
-
-async function assertMcpFollowUpDraftBehavior() {
-  const body = await callMcp("coat_follow_up_draft_plan", {
-    plan: "Behavioral Coverage Plan",
-    path: "docs/exec-plans/active/060-test-review-validator.md",
-    index: 2,
-    text: "Replace presence-only smoke tests with workflow tests that fail on broken goal authoring.",
-  });
-  assertEqual(body.mode, "draft_plan", "mcp follow-up draft mode");
-  assertEqual(body.item.plan, "Behavioral Coverage Plan", "mcp follow-up preserves source plan");
-  assertEqual(body.item.path, "docs/exec-plans/active/060-test-review-validator.md", "mcp follow-up preserves source path");
-  assertEqual(body.item.index, 2, "mcp follow-up preserves source index");
-  assert(
-    body.prompt.includes("<follow_up>Replace presence-only smoke tests with workflow tests that fail on broken goal authoring.</follow_up>"),
-    "mcp follow-up prompt preserves actionable text",
-  );
-  assert(
-    body.prompt.includes("MUST identify any questions that block execution"),
-    "mcp follow-up prompt requires blocking questions",
   );
 }
 
@@ -2892,7 +2896,7 @@ function assert(value, message) {
 
 function assertNoAmbiguousLaneCopy(markup, label) {
   const ambiguousLaneCopy = /\b(?:runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?\b/i;
-  assert(!ambiguousLaneCopy.test(markup), `${label} does not expose ambiguous lane copy`);
+  assert(!ambiguousLaneCopy.test(markup), `${label} has no ambiguous runner-lane copy`);
 }
 
 function assertNoCliCoverageOrDebugInventory(markup, label) {

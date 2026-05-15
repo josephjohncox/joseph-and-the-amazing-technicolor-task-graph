@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorEvent",
+  "type": "object",
+  "properties": {
+    "created_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "detail": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "payload_json": {
+      "default": null
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "title",
+    "detail"
+  ]
+}

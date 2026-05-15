@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   color-scheme: light;
   --bg: #f5f6f4;
@@ -206,6 +208,56 @@ label {
   display: grid;
   grid-template-columns: 278px minmax(0, 1fr);
   min-height: 100vh;
+}
+
+.operator-workspace-card {
+  overflow: hidden;
+}
+
+.operator-workspace-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.operator-workspace-grid span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.operator-workspace-grid strong {
+  font-size: 20px;
+}
+
+.operator-workspace-grid small,
+.operator-action-preview-row small {
+  color: var(--muted);
+}
+
+.operator-action-preview {
+  max-height: 180px;
+}
+
+.operator-action-preview-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.operator-action-preview-row small {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar {
@@ -1599,15 +1651,16 @@ label {
   justify-content: center;
   gap: 8px;
   min-height: 36px;
-  border: 1px solid var(--bad);
+  border: 1px solid #f87171;
   border-radius: 7px;
-  background: var(--bad);
+  background: #b42318;
   color: #fff;
   padding: 8px 11px;
 }
 
 .danger-button:hover {
-  border-color: var(--status-failed);
+  border-color: #fecaca;
+  background: #991b1b;
 }
 
 @media (max-width: 900px) {

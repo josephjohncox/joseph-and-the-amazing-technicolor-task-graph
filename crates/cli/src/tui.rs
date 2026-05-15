@@ -1,8 +1,8 @@
 //! Terminal operator UI for COAT.
 //!
 //! This module intentionally mirrors the TypeScript control gateway instead of
-//! bypassing it. The TUI reads `/api/overview`, `/api/config`, and
-//! `/api/chat*` from the gateway, so terminal chat remains an operator surface
+//! bypassing it. The TUI reads `/api/operator/workspace` and `/api/chat*` from
+//! the gateway, so terminal chat remains an operator surface
 //! over backend APIs rather than a second durable engine.
 
 use std::{
@@ -136,7 +136,7 @@ impl DashboardView {
             Self::Approvals => "Actions",
             Self::Events => "Events",
             Self::Adversarial => "Adversarial",
-            Self::Commands => "Commands",
+            Self::Commands => "Debug",
         }
     }
 
@@ -375,18 +375,41 @@ impl App {
     }
 
     async fn refresh_dashboard(&mut self) -> anyhow::Result<()> {
-        let config = self.get_json("/api/config").await?;
-        let overview = self.get_json("/api/overview").await?;
-        let goals = self.get_json("/api/goals?limit=100").await?;
-        self.goals = goal_summaries_from_value(&goals);
-        if self.goals.is_empty() {
-            self.goals = goal_summaries_from_value(&overview);
-        }
-        self.approvals = action_needed_summaries_from_value(&overview);
-        self.events = event_summaries_from_value(&overview);
-        self.event_sources = event_source_summaries_from_value(&overview);
+        let operator_path = match self.selected_goal_id.as_deref() {
+            Some(goal_id) => format!(
+                "/api/operator/workspace?goal_id={}",
+                percent_encode(goal_id)
+            ),
+            None => "/api/operator/workspace".to_string(),
+        };
+        let operator_workspace = self.get_json(&operator_path).await?;
+        let goals = self.get_json("/api/operator/goals?limit=100").await?;
+        let workspace_goals = goal_summaries_from_value(&operator_workspace);
+        self.goals = if workspace_goals.is_empty() {
+            goal_summaries_from_value(&goals)
+        } else {
+            workspace_goals
+        };
+        self.approvals = operator_action_summaries_from_value(&operator_workspace);
+        self.events = event_summaries_from_value(&operator_workspace);
+        self.event_sources = event_source_summaries_from_value(&operator_workspace);
         let mut status = "dashboard refreshed".to_string();
-        if let Err(error) = self.refresh_selected_goal_summary().await {
+        if let Some(selected_goal) = operator_workspace.get("selected_goal")
+            && !selected_goal.is_null()
+        {
+            if let Some(snapshot) = selected_goal.get("snapshot").cloned() {
+                self.selected_goal_outline = goal_outline_from_snapshot(&snapshot);
+                self.selected_goal_approvals =
+                    operator_action_summaries_from_value(&operator_workspace);
+                self.selected_goal_events = event_summaries_from_value(&operator_workspace);
+                if let Some(goal_id) = self.selected_goal_id.clone()
+                    && let Some(summary) = goal_summary_from_snapshot(&snapshot, &goal_id)
+                {
+                    upsert_goal_summary(&mut self.goals, summary);
+                }
+                self.selected_goal_snapshot = Some(snapshot);
+            }
+        } else if let Err(error) = self.refresh_selected_goal_summary().await {
             status = format!("dashboard refreshed; selected goal snapshot failed: {error}");
         }
         let action_count = self.current_action_items().len();
@@ -395,7 +418,7 @@ impl App {
         } else {
             self.action_index = self.action_index.min(action_count - 1);
         }
-        self.dashboard = dashboard_summary(&config, &overview, &self.goals);
+        self.dashboard = dashboard_summary(&operator_workspace, &self.goals);
         self.last_refresh = Some(Instant::now());
         self.status = status;
         Ok(())
@@ -406,8 +429,12 @@ impl App {
             return Ok(());
         };
         self.selected_goal_snapshot = None;
-        let path = format!("/api/goals/{}", percent_encode(&goal_id));
-        let snapshot = self.get_json(&path).await?;
+        let path = format!("/api/operator/goals/{}", percent_encode(&goal_id));
+        let detail = self.get_json(&path).await?;
+        let snapshot = detail
+            .get("snapshot")
+            .cloned()
+            .unwrap_or_else(|| detail.clone());
         self.selected_goal_outline = goal_outline_from_snapshot(&snapshot);
         self.selected_goal_approvals = action_needed_summaries_from_value(&snapshot);
         self.selected_goal_events = event_summaries_from_value(&snapshot);
@@ -585,7 +612,7 @@ impl App {
                 goal_spec: draft.goal_spec.clone(),
                 draft_summary: Some(draft.summary),
             },
-            handle: self.spawn_post_json("/api/goals/submit", draft.goal_spec),
+            handle: self.spawn_post_json("/api/operator/goals", draft.goal_spec),
         });
         Ok(())
     }
@@ -1668,14 +1695,12 @@ fn command_coverage_dashboard_lines(width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(16).max(24) as usize;
     let mut lines = vec![
         Line::from(Span::styled(
-            "operator command coverage",
+            "debug",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(
-            "Each canonical CLI group has a TUI panel, SPA panel, or explicit CLI-only action path.",
-        ),
+        Line::from("Use this panel only when inspecting endpoints and advanced operator paths."),
         Line::from(""),
     ];
     for item in operator_command_catalog() {
@@ -1703,8 +1728,8 @@ fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
     &[
         OperatorCommandCatalogItem {
             command: "coat plan",
-            surface: "Plans / Commands",
-            action: "Open Plans in SPA, Commands in TUI",
+            surface: "Plans / Debug",
+            action: "Open Plans in SPA, Debug in TUI",
             summary: "Draft, list, show, revise, compile, and continue durable plans.",
         },
         OperatorCommandCatalogItem {
@@ -1721,31 +1746,31 @@ fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
         },
         OperatorCommandCatalogItem {
             command: "coat deploy",
-            surface: "Commands",
+            surface: "Debug",
             action: "Run explicit CLI deploy command",
             summary: "Local, cluster, chart, and Restate Cloud deployment remains operator-run.",
         },
         OperatorCommandCatalogItem {
             command: "coat runner",
-            surface: "Runners / Commands",
+            surface: "Runners / Debug",
             action: "Open runner status",
             summary: "Inspect runner registration, capacity, endpoints, and routing pressure.",
         },
         OperatorCommandCatalogItem {
             command: "coat tool",
-            surface: "Commands",
+            surface: "Debug",
             action: "Run CLI tool command",
             summary: "List tools, call MCP tools, and route web-search through backend tooling.",
         },
         OperatorCommandCatalogItem {
             command: "coat memory",
-            surface: "Memory / Commands",
+            surface: "Memory / Debug",
             action: "Open Memory",
             summary: "Search, write, context, join, edit, repair, and inspect memory events.",
         },
         OperatorCommandCatalogItem {
             command: "coat event",
-            surface: "Events / Actions / Commands",
+            surface: "Events / Actions / Debug",
             action: "Open Events or Actions",
             summary: "Register, ingest, emit, poll, trigger, and route durable event sources.",
         },
@@ -1757,13 +1782,13 @@ fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
         },
         OperatorCommandCatalogItem {
             command: "coat scenario",
-            surface: "Commands",
+            surface: "Debug",
             action: "Run explicit CLI scenario command",
             summary: "List, run, and report deterministic scenario evidence.",
         },
         OperatorCommandCatalogItem {
             command: "coat setup",
-            surface: "Commands",
+            surface: "Debug",
             action: "Run explicit CLI setup command",
             summary: "Login, SSO, model index, config, local auth, and chat-client setup.",
         },
@@ -2088,8 +2113,8 @@ async fn parse_response(response: reqwest::Response) -> anyhow::Result<Value> {
     Ok(value)
 }
 
-fn dashboard_summary(config: &Value, overview: &Value, goals: &[GoalSummary]) -> DashboardSummary {
-    let services = find_first_array(overview, &["services"]).unwrap_or(&[]);
+fn dashboard_summary(workspace: &Value, goals: &[GoalSummary]) -> DashboardSummary {
+    let services = find_first_array(workspace, &["services"]).unwrap_or(&[]);
     let services_ok = services
         .iter()
         .filter(|service| {
@@ -2104,13 +2129,11 @@ fn dashboard_summary(config: &Value, overview: &Value, goals: &[GoalSummary]) ->
         services_ok,
         services_total: services.len(),
         goals_count: goals.len(),
-        runners_count: find_first_array(overview, &["runner_status", "runners", "data"])
-            .map_or(0, <[Value]>::len),
-        approvals_count: action_needed_summaries_from_value(overview).len(),
-        events_count: find_first_array(overview, &["recent_events", "events"])
-            .map_or(0, <[Value]>::len),
-        plans_count: find_first_array(overview, &["plans"]).map_or(0, <[Value]>::len),
-        chat_backend: chat_backend_label(config),
+        runners_count: find_first_array(workspace, &["runners", "data"]).map_or(0, <[Value]>::len),
+        approvals_count: operator_action_summaries_from_value(workspace).len(),
+        events_count: find_first_array(workspace, &["events"]).map_or(0, <[Value]>::len),
+        plans_count: find_first_array(workspace, &["plans"]).map_or(0, <[Value]>::len),
+        chat_backend: chat_backend_label(workspace.get("config").unwrap_or(&Value::Null)),
         latest_goals: goals.iter().take(5).map(goal_label).collect(),
     }
 }
@@ -2124,6 +2147,10 @@ fn approval_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
 }
 
 fn action_needed_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
+    let operator_actions = operator_action_summaries_from_value(value);
+    if !operator_actions.is_empty() {
+        return operator_actions;
+    }
     let thunks = thunk_action_needed_summaries_from_value(value);
     let thunk_task_ids = thunks
         .iter()
@@ -2142,6 +2169,45 @@ fn action_needed_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
     items.extend(tasks);
     items.extend(thunks);
     dedupe_action_needed_summaries(items)
+}
+
+fn operator_action_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
+    first_array_at_paths(
+        value,
+        &[
+            &["actions"],
+            &["selected_goal", "actions"],
+            &["data", "actions"],
+            &["operator", "actions"],
+        ],
+    )
+    .unwrap_or(&[])
+    .iter()
+    .filter_map(operator_action_summary_from_value)
+    .collect()
+}
+
+fn operator_action_summary_from_value(value: &Value) -> Option<ApprovalSummary> {
+    let id = compact_string_at_paths(value, &[&["action_id"], &["id"]])?;
+    let status = compact_string_at_paths(value, &[&["status"]])
+        .map(|status| status_token(&status))
+        .unwrap_or_else(|| "pending".to_string());
+    if matches!(status.as_str(), "done" | "resolved" | "cancelled") {
+        return None;
+    }
+    Some(ApprovalSummary {
+        id,
+        status,
+        action: compact_string_at_paths(value, &[&["question"], &["title"], &["detail"]])
+            .unwrap_or_else(|| "operator action required".to_string()),
+        risk: compact_string_at_paths(value, &[&["kind"], &["risk"]]),
+        goal_id: compact_string_at_paths(value, &[&["goal_id"]]),
+        task_id: compact_string_at_paths(value, &[&["task_id"]]),
+        created_at: compact_string_at_paths(
+            value,
+            &[&["created_at"], &["payload_json", "created_at"]],
+        ),
+    })
 }
 
 fn dedupe_action_needed_summaries(items: Vec<ApprovalSummary>) -> Vec<ApprovalSummary> {
@@ -2416,7 +2482,7 @@ fn action_requires_input(action: &ApprovalSummary) -> bool {
 
 fn cancel_goal_request(goal_id: &str, reason: &str) -> (String, Value, String) {
     (
-        format!("/api/goals/{}/cancel", percent_encode(goal_id)),
+        format!("/api/operator/goals/{}/cancel", percent_encode(goal_id)),
         json!(reason),
         format!("cancel goal {}", short_id(goal_id)),
     )
@@ -2427,100 +2493,51 @@ fn operator_action_request(
     action: &ApprovalSummary,
     input: &str,
 ) -> anyhow::Result<(String, Value, String)> {
-    if action.id.starts_with("thunk:") {
-        let thunk_id = action
-            .id
-            .strip_prefix("thunk:")
-            .unwrap_or(action.id.as_str());
-        if thunk_id.trim().is_empty() {
-            bail!("selected human prompt is missing a continuation id");
-        }
-        let response_summary = if input.trim().is_empty() {
-            "Continue".to_string()
-        } else {
-            input.trim().to_string()
-        };
-        let action_label = if input.trim().is_empty() {
+    let resolution = if action.id.starts_with("thunk:") {
+        if input.trim().is_empty() {
             "continue"
         } else {
-            "add context"
-        };
-        return Ok((
-            format!("/api/goals/{}/resume_thunk", percent_encode(goal_id)),
-            json!({
-                "thunk_id": thunk_id,
-                "responder": "operator",
-                "response_summary": response_summary,
-                "artifact_refs": []
-            }),
-            format!("{action_label} {}", short_id(thunk_id)),
-        ));
-    }
-
-    if !action.id.starts_with("task:") {
-        return Ok((
-            format!("/api/goals/{}/approve", percent_encode(goal_id)),
-            json!({
-                "approval_id": action.id,
-                "approved": true,
-                "note": "Approved through COAT TUI action queue"
-            }),
-            format!("approve and continue {}", short_id(&action.id)),
-        ));
-    }
-
-    let task_id = action.task_id.clone();
-    let task_ref = task_id
-        .as_deref()
-        .map(short_id)
-        .unwrap_or_else(|| "blocked task".to_string());
-    let status = status_token(&action.status);
-    if status == "blocked" || status == "failed" {
-        let fallback_scope = if status == "failed" {
-            "failed"
+            "add_context"
+        }
+    } else if action.id.starts_with("task:") {
+        let status = status_token(&action.status);
+        if status == "blocked" || status == "failed" {
+            "retry"
         } else {
-            "blocked"
-        };
-        let scope = if task_id.is_some() {
-            "task"
-        } else {
-            fallback_scope
-        };
-        return Ok((
-            format!("/api/goals/{}/restart", percent_encode(goal_id)),
-            json!({
-                "goal_id": goal_id,
-                "scope": scope,
-                "reason": "operator_requested",
-                "message": format!("Retry {task_ref} from the action queue: {}", action.action),
-                "task_id": task_id,
-                "reset_attempts": false,
-                "preserve_artifacts": true,
-                "operator": "operator"
-            }),
-            format!("retry {scope} work"),
-        ));
-    }
-
+            "replan"
+        }
+    } else {
+        "approve"
+    };
+    let response_summary = if input.trim().is_empty() {
+        match resolution {
+            "continue" => "Continue".to_string(),
+            "approve" => "Approved through COAT TUI action queue".to_string(),
+            "retry" => format!("Retry from action queue: {}", action.action),
+            "replan" => format!("Request replan from action queue: {}", action.action),
+            _ => "Resolved through COAT TUI action queue".to_string(),
+        }
+    } else {
+        input.trim().to_string()
+    };
+    let payload = json!({
+        "goal_id": goal_id,
+        "task_id": action.task_id,
+        "approval_id": if action.id.starts_with("task:") || action.id.starts_with("thunk:") { Value::Null } else { Value::String(action.id.clone()) },
+        "thunk_id": action.id.strip_prefix("thunk:"),
+        "resolution": resolution,
+        "operator": "operator",
+        "response_summary": response_summary,
+        "answer": input.trim(),
+        "artifact_refs": []
+    });
     Ok((
-        format!("/api/goals/{}/steer", percent_encode(goal_id)),
-        json!({
-            "id": Uuid::new_v4(),
-            "goal_id": goal_id,
-            "task_id": task_id,
-            "operator": "operator",
-            "message": format!("Request coordinator-owned recovery for {task_ref}."),
-            "kind": {
-                "kind": "inject_task",
-                "role": "planner",
-                "prompt": format!(
-                    "Re-plan or recover {task_ref}. Blocked item: {}. Return concrete next tasks, evidence requirements, and any human inputs still needed.",
-                    action.action
-                ),
-                "reason": format!("{} requires operator recovery: {}", action.status, action.action)
-            }
-        }),
-        format!("request recovery for {task_ref}"),
+        format!(
+            "/api/operator/actions/{}/resolve",
+            percent_encode(&action.id)
+        ),
+        payload,
+        format!("{} {}", resolution.replace('_', " "), short_id(&action.id)),
     ))
 }
 
@@ -2538,7 +2555,7 @@ fn tui_action_label(action: &ApprovalSummary) -> &'static str {
 }
 
 fn event_summaries_from_value(value: &Value) -> Vec<EventSummary> {
-    find_first_array(value, &["recent_events", "events"])
+    find_first_array(value, &["events", "recent_events"])
         .unwrap_or(&[])
         .iter()
         .filter_map(event_summary_from_value)
@@ -4163,29 +4180,29 @@ mod tests {
 
     #[test]
     fn dashboard_summary_reads_gateway_proxy_shapes() {
-        let config = json!({
-            "chat_backend": {
-                "mode": "runner_registry",
-                "provider": "openai_compatible",
-                "model_configured": true
-            }
-        });
-        let overview = json!({
+        let workspace = json!({
+            "config": {
+                "chat_backend": {
+                    "mode": "runner_registry",
+                    "provider": "openai_compatible",
+                    "model_configured": true
+                }
+            },
             "services": [
                 {"name": "goal-store", "ok": true},
                 {"name": "runner-registry", "status": 503}
             ],
-            "goals": {"data": {"goals": [
+            "goals": [
                 {"goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601", "title": "Ship TUI", "status": "running"}
-            ]}},
-            "runner_status": {"data": {"runners": [{"runner_id": "r1"}]}},
-            "approvals": {"data": [{"id": "a1"}, {"id": "a2"}]},
-            "recent_events": {"data": {"events": [{"id": "e1"}]}},
+            ],
+            "runners": {"data": [{"runner_id": "r1"}]},
+            "actions": [{"action_id": "a1"}, {"action_id": "a2"}],
+            "events": [{"id": "e1", "message": "event"}],
             "plans": {"data": []}
         });
 
-        let goals = goal_summaries_from_value(&overview);
-        let summary = dashboard_summary(&config, &overview, &goals);
+        let goals = goal_summaries_from_value(&workspace);
+        let summary = dashboard_summary(&workspace, &goals);
 
         assert_eq!(summary.services_ok, 1);
         assert_eq!(summary.services_total, 2);
@@ -4395,15 +4412,15 @@ mod tests {
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &thunk, "").expect("continue payload");
-        assert!(path.ends_with("/resume_thunk"));
-        assert_eq!(payload["thunk_id"], "thunk-1");
+        assert!(path.ends_with("/api/operator/actions/thunk%3Athunk-1/resolve"));
+        assert_eq!(payload["resolution"], "continue");
         assert_eq!(payload["response_summary"], "Continue");
         assert!(label.contains("continue"));
 
         let (path, payload, label) =
             operator_action_request(goal_id, &thunk, "Use option A").expect("answer payload");
-        assert!(path.ends_with("/resume_thunk"));
-        assert_eq!(payload["thunk_id"], "thunk-1");
+        assert!(path.ends_with("/api/operator/actions/thunk%3Athunk-1/resolve"));
+        assert_eq!(payload["resolution"], "add_context");
         assert_eq!(payload["response_summary"], "Use option A");
         assert!(label.contains("add context"));
 
@@ -4418,11 +4435,9 @@ mod tests {
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &blocked, "").expect("recovery payload");
-        assert!(path.ends_with("/restart"));
-        assert_eq!(payload["scope"], "task");
+        assert!(path.ends_with("/api/operator/actions/task%3Atask-blocked-1/resolve"));
+        assert_eq!(payload["resolution"], "retry");
         assert_eq!(payload["task_id"], "task-blocked-1");
-        assert_eq!(payload["reason"], "operator_requested");
-        assert_eq!(payload["preserve_artifacts"], true);
         assert!(label.contains("retry"));
 
         let approval = ApprovalSummary {
@@ -4436,12 +4451,13 @@ mod tests {
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &approval, "").expect("approval payload");
-        assert!(path.ends_with("/approve"));
-        assert_eq!(payload["approval_id"], "approval-1");
-        assert_eq!(payload["approved"], true);
-        assert_eq!(payload["note"], "Approved through COAT TUI action queue");
-        assert!(payload.get("comment").is_none());
-        assert!(label.contains("approve and continue"));
+        assert!(path.ends_with("/api/operator/actions/approval-1/resolve"));
+        assert_eq!(payload["resolution"], "approve");
+        assert_eq!(
+            payload["response_summary"],
+            "Approved through COAT TUI action queue"
+        );
+        assert!(label.contains("approve"));
 
         let waiting_task_without_thunk = ApprovalSummary {
             id: "task:task-waiting-1".to_string(),
@@ -4455,10 +4471,10 @@ mod tests {
         let (path, payload, label) =
             operator_action_request(goal_id, &waiting_task_without_thunk, "")
                 .expect("recovery steer payload");
-        assert!(path.ends_with("/steer"));
+        assert!(path.ends_with("/api/operator/actions/task%3Atask-waiting-1/resolve"));
+        assert_eq!(payload["resolution"], "replan");
         assert_eq!(payload["task_id"], "task-waiting-1");
-        assert_eq!(payload["kind"]["kind"], "inject_task");
-        assert!(label.contains("request recovery"));
+        assert!(label.contains("replan"));
     }
 
     #[test]
@@ -4466,7 +4482,7 @@ mod tests {
         let (path, payload, label) =
             cancel_goal_request("goal:abc/123", "Stop this goal from the TUI.");
 
-        assert_eq!(path, "/api/goals/goal%3Aabc%2F123/cancel");
+        assert_eq!(path, "/api/operator/goals/goal%3Aabc%2F123/cancel");
         assert_eq!(payload, json!("Stop this goal from the TUI."));
         assert_eq!(label, "cancel goal goal:abc");
     }
@@ -4585,7 +4601,7 @@ mod tests {
         assert_eq!(DashboardView::Approvals.title(), "Actions (3)");
         assert_eq!(DashboardView::Events.title(), "Events (4)");
         assert_eq!(DashboardView::Adversarial.title(), "Adversarial (5)");
-        assert_eq!(DashboardView::Commands.title(), "Commands (6)");
+        assert_eq!(DashboardView::Commands.title(), "Debug (6)");
     }
 
     #[test]

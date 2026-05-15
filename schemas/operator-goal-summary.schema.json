@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorGoalSummary",
+  "type": "object",
+  "properties": {
+    "blocked_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "failed_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "open_tasks": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "percent_done": {
+      "type": "number",
+      "format": "float"
+    },
+    "satisfied": {
+      "type": "boolean"
+    },
+    "status": {
+      "$ref": "#/$defs/GoalStatus"
+    },
+    "title": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "goal_id",
+    "title",
+    "objective",
+    "status",
+    "percent_done",
+    "open_tasks",
+    "blocked_tasks",
+    "failed_tasks",
+    "satisfied"
+  ],
+  "$defs": {
+    "GoalStatus": {
+      "type": "string",
+      "enum": [
+        "running",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "paused",
+        "cancelled"
+      ]
+    }
+  }
+}

@@ -642,7 +642,7 @@ async fn execute_action(
             index,
             kind: action.kind.clone(),
             label: action.label.clone(),
-            url: Some(format!("{}/api/goals/{}", gateway_url, goal_id)),
+            url: Some(format!("{}/api/operator/goals/{}", gateway_url, goal_id)),
             status: Some(200),
             ok: true,
             response: serde_json::to_value(projection)?,
@@ -748,7 +748,7 @@ async fn fetch_projection(
     goal_id: &str,
 ) -> anyhow::Result<ScenarioProjection> {
     let control_url = format!(
-        "{}/api/goals/{}",
+        "{}/api/operator/goals/{}",
         gateway_url.trim_end_matches('/'),
         goal_id
     );
@@ -2788,7 +2788,10 @@ fn projection_from_gateway(
             &["goal", "status"],
             &["goal", "goal", "status"],
             &["progress", "status"],
+            &["summary", "status"],
+            &["snapshot", "goal_status"],
             &["workflow_status", "status"],
+            &["snapshot", "workflow_status", "status"],
         ],
     )
     .unwrap_or_default();
@@ -2798,6 +2801,7 @@ fn projection_from_gateway(
             &["terminal_state"],
             &["goal", "terminal_state"],
             &["workflow_status", "terminal_state"],
+            &["snapshot", "workflow_status", "terminal_state"],
         ],
     )
     .unwrap_or_else(|| terminal_state_from_goal_status(&goal_status));
@@ -2807,7 +2811,10 @@ fn projection_from_gateway(
             &["goal_id"],
             &["goal", "goal_id"],
             &["goal", "goal", "goal_id"],
+            &["summary", "goal_id"],
             &["workflow_status", "goal_id"],
+            &["snapshot", "goal_id"],
+            &["snapshot", "workflow_status", "goal_id"],
         ],
     )
     .or(fallback_goal_id)
@@ -2820,21 +2827,60 @@ fn projection_from_gateway(
             &["goal", "goal", "payload_json", "plan", "subgoals"],
             &["goal", "plan", "subgoals"],
             &["progress", "subgoals"],
+            &[
+                "snapshot",
+                "goal_store_goal",
+                "data",
+                "goal",
+                "payload_json",
+                "plan",
+                "subgoals",
+            ],
+            &["snapshot", "goal", "payload_json", "plan", "subgoals"],
         ],
     );
     let tasks = first_array(
         &value,
-        &[&["tasks", "tasks"], &["tasks"], &["agent_activity"]],
+        &[
+            &["tasks", "tasks"],
+            &["tasks"],
+            &["agent_activity"],
+            &["snapshot", "tasks", "data", "tasks"],
+            &["snapshot", "agent_activity"],
+        ],
     );
-    let events = first_array(&value, &[&["events", "events"], &["events"]]);
-    let artifacts = first_array(&value, &[&["artifacts", "artifacts"], &["artifacts"]]);
-    let checkpoints = first_array(&value, &[&["checkpoints", "checkpoints"], &["checkpoints"]]);
+    let events = first_array(
+        &value,
+        &[
+            &["events", "events"],
+            &["events"],
+            &["snapshot", "events", "data", "events"],
+        ],
+    );
+    let artifacts = first_array(
+        &value,
+        &[
+            &["artifacts", "artifacts"],
+            &["artifacts"],
+            &["snapshot", "artifacts", "data", "artifacts"],
+        ],
+    );
+    let checkpoints = first_array(
+        &value,
+        &[
+            &["checkpoints", "checkpoints"],
+            &["checkpoints"],
+            &["snapshot", "checkpoints", "data", "checkpoints"],
+        ],
+    );
     let compute_graph_nodes = first_array(
         &value,
         &[
+            &["graph", "nodes"],
             &["compute_graph", "nodes"],
             &["compute_graph_nodes"],
             &["progress", "compute_graph", "nodes"],
+            &["snapshot", "workflow_compute_graph", "data", "nodes"],
         ],
     );
     let mut ui_projection = BTreeMap::new();
@@ -2961,28 +3007,28 @@ fn action_path(action: &ScenarioAction, known_goal_ids: &[String]) -> anyhow::Re
         return Ok(path.clone());
     }
     match action.kind {
-        ScenarioActionKind::SubmitGoal => Ok("/api/goals/submit".to_string()),
+        ScenarioActionKind::SubmitGoal => Ok("/api/operator/goals".to_string()),
         ScenarioActionKind::EmitEvent | ScenarioActionKind::EmitExternalEvent => {
             Ok("/api/events?route=true".to_string())
         }
         ScenarioActionKind::Approve => Ok(format!(
-            "/api/goals/{}/approve",
+            "/api/operator/goals/{}/approve",
             action_goal_id(action, known_goal_ids)?
         )),
         ScenarioActionKind::ResumeThunk | ScenarioActionKind::ResumeDelayedCompute => Ok(format!(
-            "/api/goals/{}/resume_thunk",
+            "/api/operator/goals/{}/resume_thunk",
             action_goal_id(action, known_goal_ids)?
         )),
         ScenarioActionKind::Steer => Ok(format!(
-            "/api/goals/{}/steer",
+            "/api/operator/goals/{}/steer",
             action_goal_id(action, known_goal_ids)?
         )),
         ScenarioActionKind::Vote => Ok(format!(
-            "/api/goals/{}/vote",
+            "/api/operator/goals/{}/vote",
             action_goal_id(action, known_goal_ids)?
         )),
         ScenarioActionKind::BranchSelect => Ok(format!(
-            "/api/goals/{}/select_branch",
+            "/api/operator/goals/{}/select_branch",
             action_goal_id(action, known_goal_ids)?
         )),
         ScenarioActionKind::GetJson | ScenarioActionKind::PostJson => {

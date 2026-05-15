@@ -125,10 +125,48 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 
 - Add browser E2E over the full Compose stack for goal selection, task graph inspection, memory preview/apply, approval/reject/comment, runner status, and event source management.
 - Evidence 2026-05-11: `ui/control-plane-web` smoke coverage now renders event-source activation, approval queues, runner capacity, memory events, goal progress, and task graph filters against gateway-backed fixtures.
-- Evidence 2026-05-11: gateway goal snapshots now read `GoalWorkflow/compute_graph`, expose `workflow_compute_graph` through `/api/goals/{goal_id}` and MCP `coat_goal_snapshot`, and the SPA renders `waiting_input` continuation state plus compute-graph node/edge/thunk counters in task summaries.
+- Evidence 2026-05-11: gateway goal detail reads `GoalWorkflow/compute_graph`,
+  exposes `workflow_compute_graph` through `/api/operator/goals/{goal_id}` and
+  MCP `coat_operator_goal`, and the SPA renders `waiting_input` continuation
+  state plus compute-graph node/edge/thunk counters in task summaries.
 - Evidence 2026-05-11: operator continuations are now actionable in the SPA: open delayed-compute thunk nodes render reason, task ID, thunk ID, continuation ID, wait ref, response-summary input, and a guarded `resume_thunk` backend mutation; resumed/cancelled thunks are filtered out of the actionable queue.
 - Verify UI mutations use backend APIs only and never mutate goal-store projections directly.
 - Keep existing gateway contract smoke tests as the fast CI path.
+- Evidence 2026-05-14: PLAN-1 backend-first operator projection started by adding
+  `/api/operator/*` as the SPA/TUI-facing surface, routing goal submit and
+  action resolution through typed backend APIs, appending durable operator event
+  envelopes to `coat-goal-store`, and streaming `/api/operator/stream` with
+  product-level event names plus operator-event filtering.
+- Evidence 2026-05-14: the React/Vite SPA now uses real Tailwind/shadcn
+  dependencies for the first operator workspace card/components while keeping
+  the current app architecture and backend-owned chat/draft persistence.
+- Evidence 2026-05-14: the Rust TUI now consumes `/api/operator/workspace` and
+  resolves actions through `/api/operator/actions/{action_id}/resolve`, so
+  approval/thunk/recovery commands share the same operator projection as the
+  SPA.
+- Evidence 2026-05-14: the SPA Action Queue now reads
+  `/api/operator/actions`, resolves human prompts through
+  `/api/operator/actions/{action_id}/resolve`, and treats product-level SSE
+  events such as `goal.updated`, `task.updated`, `approval.requested`, and
+  `goal.cancelled` as workspace projection updates.
+- Evidence 2026-05-14: the old browser/operator helper routes for overview,
+  runner lists, human threads, and plan follow-up queues were removed from the
+  SPA/gateway public surface. SPA, TUI, scenario, and smoke coverage now use
+  `/api/operator/workspace`, `/api/operator/goals`, and
+  `/api/operator/actions` for product state; durable plan continuity remains
+  under `/api/plans/{plan_id}/continuity` and MCP `coat_plan_continuity`.
+- Evidence 2026-05-14: MCP read and mutation tools now mirror the operator
+  state-machine surface with `coat_operator_workspace`, `coat_operator_goal`,
+  `coat_operator_actions`, `coat_operator_action_resolve`,
+  `coat_operator_agent_context`, `coat_operator_goal_submit`, and
+  `coat_operator_goal_steer`; old overview/snapshot/activity/approval/runner
+  compatibility tool names were removed from docs, skill guidance, and smoke
+  fixtures.
+- Evidence 2026-05-14: the TUI no longer needs a separate `/api/config`
+  startup read. The sanitized gateway/chat configuration summary is carried in
+  `/api/operator/workspace`, the standalone config route was removed, and the
+  remaining gateway composition helper is named as a backend projection instead
+  of the old overview surface.
 - Evidence 2026-05-12: CI and docs now define the deterministic PR-gated
   scenario workstream as a loop over `scenarios/e2e/*.json` with
   `target/debug/coat scenario run --file <scenario> --output-dir
@@ -172,6 +210,14 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Evidence 2026-05-11: Buf SDK generation is scaffolded through `buf.gen.yaml`, `make proto-sdk-generate`, and `make proto-sdk-check`, generating Rust and TypeScript outputs under `target/generated-sdks` without committing generated artifacts.
 - Decision 2026-05-11: generated SDK wrappers are internal validation artifacts for now, not published packages. Reserve `coat-protocol-sdk` and `@coat/protocol-sdk`, keep generation under `target/generated-sdks/`, and defer package metadata/release jobs until a published-SDK compatibility milestone is selected.
 - Add or change public types only where needed for Kubernetes provision/result records, executor attestations, object upload status, retryable event delivery, and observability correlation.
+- Evidence 2026-05-14: `crates/domain` now has shared operator projection and
+  actor contracts for workspace snapshots, goal summaries/details, graph,
+  actions, events, evidence, worker runs, durable event envelopes, and
+  append/list operator-event API payloads.
+- Evidence 2026-05-14: the operator actor contract validates goal, task, thunk,
+  worker-run, review, approval, and append-only event transitions with recovery
+  hints, preserving recoverable blocked/waiting/failed states while rejecting
+  invalid transition attempts before they become UI no-ops.
 - Evidence 2026-05-11: `crates/domain` now models goal ranking votes as an opt-in extension with upvote/downvote promotion or demotion decisions, plus first-class delayed compute thunks for human input, approvals, timers, callbacks, resource waits, model availability, delimited continuation refs, worker `waiting` results, and derived compute graph snapshots; `coat-coordinator` exposes `vote`, `create_thunk`, `resume_thunk`, and `compute_graph`, and the CLI exposes `coat goal vote`, `coat goal thunk create`, `coat goal compute-graph`, and `coat human resume-thunk`.
 - Evidence 2026-05-11: `crates/domain` now includes opt-in `mechanism_policy` and `MechanismRound` state for distributed consensus, voting, Delphi-style rounds, sealed-bid/Vickrey auctions, and contract-net allocation; `coat-coordinator` exposes `mechanism_start` and `mechanism_ballot`, and the CLI exposes `coat goal mechanism start|ballot`.
 - Before moving any linked plan to completed, preserve every remaining follow-up here, record direct evidence, or write an explicit supersession note.
@@ -210,6 +256,7 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
 - `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
 - `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events.
+- `UIE2E`: continue replacing monolithic SPA sections with shadcn-backed feature modules over the compact `/api/operator/*` API without making the frontend the durable state owner.
 - `UIE2E`: add persisted SPA screenshots and TUI transcripts to scenario artifacts when the scenario runner grows first-class terminal and browser capture paths.
 - `UIE2E`: consider a gated LLM usability evaluator later; PR CI should keep using deterministic coherence checks.
 - `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.

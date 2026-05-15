@@ -31,8 +31,8 @@ test.describe("COAT live deterministic stack", () => {
       intervals: [500, 1_000, 2_000],
     }).toBe(true);
 
-    await expect.poll(async () => goalSnapshotHasProjectedWork(page, goalId), {
-      message: "goal snapshot should expose projected tasks or compute graph nodes",
+    await expect.poll(async () => operatorGoalDetailHasProjectedWork(page, goalId), {
+      message: "operator goal detail should expose projected tasks or compute graph nodes",
       timeout: 60_000,
       intervals: [500, 1_000, 2_000],
     }).toBe(true);
@@ -111,23 +111,26 @@ async function selectedGoalIdFromUrl(page: Page): Promise<string> {
 
 async function goalListContains(page: Page, goalId: string, title: string): Promise<boolean> {
   const response = await page.evaluate(async () => {
-    const result = await fetch("/api/goals?limit=100");
+    const result = await fetch("/api/operator/goals?limit=100");
     return result.json();
   });
   const text = JSON.stringify(response);
   return text.includes(goalId) && text.includes(title);
 }
 
-async function goalSnapshotHasProjectedWork(page: Page, goalId: string): Promise<boolean> {
+async function operatorGoalDetailHasProjectedWork(page: Page, goalId: string): Promise<boolean> {
   const response = await page.evaluate(async (selectedGoalId) => {
-    const result = await fetch(`/api/goals/${encodeURIComponent(selectedGoalId)}`);
+    const result = await fetch(`/api/operator/goals/${encodeURIComponent(selectedGoalId)}`);
     return result.json();
   }, goalId);
   const text = JSON.stringify(response);
   if (!text.includes(goalId)) {
     return false;
   }
-  const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+  const detail = response && typeof response === "object" ? response as Record<string, unknown> : {};
+  const record = detail.snapshot && typeof detail.snapshot === "object"
+    ? detail.snapshot as Record<string, unknown>
+    : detail;
   const tasks = rowsFrom((record.tasks as Record<string, unknown> | undefined)?.data ?? record.tasks);
   const agentActivity = Array.isArray(record.agent_activity) ? record.agent_activity : [];
   const workflowGraph = record.workflow_compute_graph && typeof record.workflow_compute_graph === "object"
@@ -243,8 +246,8 @@ async function memoryEventsContain(page: Page, goalId: string, key: string): Pro
 }
 
 async function runnerCount(page: Page): Promise<number> {
-  const response = await apiJson(page, "/api/runners");
-  return rowsFrom((response as Record<string, unknown>).data ?? response).length;
+  const response = await apiJson(page, "/api/operator/workspace");
+  return rowsFrom((response as Record<string, unknown>).runners).length;
 }
 
 async function eventSourcesContain(page: Page, sourceId: string): Promise<boolean> {

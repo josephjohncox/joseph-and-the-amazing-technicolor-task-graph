@@ -109,13 +109,6 @@ type StoredDraft = {
   payload: JsonMap;
 };
 
-type FollowUpItem = {
-  plan: string;
-  path: string;
-  index: number;
-  text: string;
-};
-
 const port = Number(process.env.PORT ?? "9090");
 const host = process.env.HOST ?? "0.0.0.0";
 const gatewayToken = process.env.COAT_CONTROL_GATEWAY_TOKEN ?? "";
@@ -420,7 +413,7 @@ async function healthCheck(service: ServiceRef): Promise<ProxyResult & { name: s
   return { name: service.name, ...result };
 }
 
-async function overview(): Promise<JsonMap> {
+async function backendProjection(): Promise<JsonMap> {
   const [health, runnerStatus, threads, eventSources, events, triggers] = await Promise.all([
     Promise.all(services.map(healthCheck)),
     proxyJson(runnerRegistryUrl, "/runners/status", { method: "GET" }),
@@ -433,17 +426,13 @@ async function overview(): Promise<JsonMap> {
     proxyJson(goalStoreUrl, "/goal-store/goals?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/tasks?limit=100", { method: "GET" }),
   ]);
-  const [plans, approvals, followUps] = await Promise.all([
+  const [plans, approvals] = await Promise.all([
     proxyJson(goalStoreUrl, "/goal-store/plans?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/approvals?limit=50", { method: "GET" }),
-    durablePlanFollowUps(false),
   ]);
 
   return {
     generated_at: new Date().toISOString(),
-    control_surface: "coat-control-plane-web",
-    authority_note:
-      "This gateway reads projections and submits workflow signals; Restate and the Rust services remain authoritative.",
     services: health,
     runner_status: normalizeRunnerStatusResult(runnerStatus),
     human_threads: threads,
@@ -454,12 +443,33 @@ async function overview(): Promise<JsonMap> {
     agents,
     plans,
     approvals,
-    follow_ups: followUps,
   };
 }
 
 async function runnerStatus(): Promise<ProxyResult> {
   return normalizeRunnerStatusResult(await proxyJson(runnerRegistryUrl, "/runners/status", { method: "GET" }));
+}
+
+function operatorGatewayConfig(): JsonMap {
+  return {
+    gateway_token_required: Boolean(gatewayToken),
+    endpoints: {
+      restate_ingress: restateIngress,
+      goal_store: goalStoreUrl,
+      event_gateway: eventGatewayUrl,
+      notifier: notifierUrl,
+      runner_registry: runnerRegistryUrl,
+      memory_gateway: memoryGatewayUrl,
+      restate_admin: restateAdminUrl,
+    },
+    chat_backend: {
+      mode: chatBackendMode,
+      provider: controlChatProvider || null,
+      model_configured: Boolean(chatModel),
+      completions_url_configured: Boolean(chatCompletionsUrl),
+      runner_registry_discovery: chatRunnerDiscoveryEnabled(),
+    },
+  };
 }
 
 function normalizeRunnerStatusResult(result: ProxyResult): ProxyResult {
@@ -496,7 +506,6 @@ function normalizeRunnerRow(value: unknown): JsonMap {
   const nodeId = stringField(row, "node_id") || stringField(registration, "node_id");
   const endpoint = stringField(row, "endpoint") || stringField(registration, "endpoint");
   const runtime = stringField(labels, "runtime");
-  const lane = stringField(labels, "lane");
   const pool = stringField(labels, "pool");
   const displayName = stringField(row, "display_name")
     || stringField(labels, "display_name")
@@ -511,7 +520,6 @@ function normalizeRunnerRow(value: unknown): JsonMap {
     endpoint,
     display_name: displayName,
     runtime: runtime || null,
-    lane: lane || null,
     pool: pool || null,
     labels,
     roles: arrayField(registration, "roles"),
@@ -535,97 +543,7 @@ function stringField(record: JsonMap, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-async function durablePlanFollowUps(includeEmpty: boolean): Promise<JsonMap> {
-  const planList = await proxyJson(goalStoreUrl, "/goal-store/plans?limit=100", { method: "GET" });
-  const planRows = rowsFromData(planList.data);
-  const plans: JsonMap[] = [];
-  const items: JsonMap[] = [];
-
-  for (const row of planRows) {
-    const planId = stringField(row, "plan_id") || stringField(row, "id");
-    if (!planId) {
-      continue;
-    }
-    const continuity = await planContinuity(planId);
-    const continuityBody = asRecord(continuity.continuity);
-    const nextActions = arrayField(continuityBody, "next_actions").map(String).filter((item) => item.trim());
-    const title = String(continuity.title ?? row.title ?? planId);
-    nextActions.forEach((text, index) => {
-      items.push({
-        source: "durable_plan_continuity",
-        plan: title,
-        plan_id: planId,
-        path: `goal-store/plans/${planId}`,
-        index,
-        text,
-      });
-    });
-    if (includeEmpty || nextActions.length > 0) {
-      plans.push({
-        source: "durable_plan_continuity",
-        plan_id: planId,
-        path: `goal-store/plans/${planId}`,
-        title,
-        status: continuity.status ?? row.status ?? "",
-        follow_ups: nextActions,
-        next_actions: nextActions,
-        continuity,
-      });
-    }
-  }
-
-  return {
-    source: "durable_plan_continuity",
-    source_status: {
-      ok: planList.ok,
-      status: planList.status,
-      url: planList.url,
-    },
-    plan_count: plans.length,
-    follow_up_count: items.length,
-    next_action_count: items.length,
-    items,
-    plans,
-  };
-}
-
-function followUpDraftPlan(payload: unknown): JsonMap {
-  const item = followUpItemFromPayload(payload);
-  return {
-    mode: "draft_plan",
-    item,
-    prompt: followUpDraftPrompt(item),
-  };
-}
-
-function followUpItemFromPayload(payload: unknown): FollowUpItem {
-  const body = asRecord(payload);
-  const source = Object.keys(asRecord(body.item)).length > 0 ? asRecord(body.item) : body;
-  const text = String(source.text ?? source.follow_up ?? source.followup ?? "").trim();
-  if (!text) {
-    throw new Error("follow-up text is required");
-  }
-  const rawIndex = Number(source.index ?? source.follow_up_index ?? 0);
-  return {
-    plan: String(source.plan ?? source.title ?? source.source_plan ?? "Execution plan"),
-    path: String(source.path ?? source.source_path ?? ""),
-    index: Number.isFinite(rawIndex) && rawIndex >= 0 ? Math.floor(rawIndex) : 0,
-    text,
-  };
-}
-
-function followUpDraftPrompt(item: FollowUpItem): string {
-  return `<task>
-  <mode>draft_durable_plan</mode>
-  <instruction>MUST turn this durable continuation item into a concrete durable plan draft for COAT. MUST preserve the source plan and path. MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates, and next implementation steps. MUST identify any questions that block execution.</instruction>
-  <source_plan>${escapeXml(item.plan)}</source_plan>
-  <source_path>${escapeXml(item.path)}</source_path>
-  <follow_up_index>${item.index}</follow_up_index>
-  <follow_up>${escapeXml(item.text)}</follow_up>
-</task>`;
-}
-
-async function goalSnapshot(goalId: string): Promise<JsonMap> {
+async function composedGoalSnapshot(goalId: string): Promise<JsonMap> {
   const encodedGoalId = encodeURIComponent(goalId);
   const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph, humanThreads, goalChatSession] = await Promise.all([
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}`, { method: "GET" }),
@@ -661,7 +579,566 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
   };
 }
 
-async function streamGoalState(req: any, res: any, goalId: string): Promise<void> {
+async function operatorWorkspace(
+  goalId?: string | null,
+  eventFilter: { eventType?: string | null; since?: string | null } = {},
+): Promise<JsonMap> {
+  const operatorEventParams = new URLSearchParams({ limit: "100" });
+  if (goalId) operatorEventParams.set("goal_id", goalId);
+  if (eventFilter.eventType) operatorEventParams.set("event_type", eventFilter.eventType);
+  if (eventFilter.since) operatorEventParams.set("since", eventFilter.since);
+  const operatorEventPath = `/goal-store/operator-events?${operatorEventParams.toString()}`;
+  const [backendProjectionResult, goalsResult, approvalsResult, tasksResult, operatorEventsResult, runnersResult, selectedGoal] = await Promise.all([
+    backendProjection(),
+    proxyJson(goalStoreUrl, "/goal-store/goals?limit=100", { method: "GET" }),
+    proxyJson(goalStoreUrl, "/goal-store/approvals?limit=100", { method: "GET" }),
+    proxyJson(goalStoreUrl, "/goal-store/tasks?limit=200", { method: "GET" }),
+    proxyJson(goalStoreUrl, operatorEventPath, { method: "GET" }),
+    runnerStatus(),
+    goalId ? composedGoalSnapshot(goalId) : Promise.resolve(null),
+  ]);
+  const goalRows = rowsFromProxyResult(goalsResult, "goals");
+  const taskRows = rowsFromProxyResult(tasksResult, "tasks");
+  const approvalRows = rowsFromProxyResult(approvalsResult, "approvals");
+  const selectedGoalId = goalId ?? firstGoalId(goalRows);
+  const selectedSnapshot = selectedGoal ?? (selectedGoalId ? await composedGoalSnapshot(selectedGoalId) : null);
+  const actions = operatorActionsFromRows(approvalRows, taskRows, selectedSnapshot);
+  return {
+    generated_at: new Date().toISOString(),
+    selected_goal_id: selectedGoalId,
+    goals: goalRows.map(operatorGoalSummary),
+    selected_goal: selectedSnapshot ? operatorGoalDetail(selectedSnapshot) : null,
+    actions,
+    events: [
+      ...operatorEventsFromDurableEvents(operatorEventsResult.data),
+      ...operatorEventsFromBackendProjection(backendProjectionResult),
+    ],
+    event_sources: backendProjectionResult.event_sources ?? null,
+    human_threads: backendProjectionResult.human_threads ?? null,
+    worker_runs: operatorWorkerRuns(taskRows),
+    evidence: selectedSnapshot ? operatorEvidenceFromSnapshot(selectedSnapshot) : [],
+    services: backendProjectionResult.services ?? [],
+    runners: runnersResult,
+    config: operatorGatewayConfig(),
+    source: {
+      restate: "durable_orchestration",
+      postgres_goal_store: "operator_event_log_and_projection",
+      gateway: "api_and_sse_projection",
+    },
+  };
+}
+
+async function operatorGoalList(search: string): Promise<JsonMap> {
+  const result = await proxyJson(goalStoreUrl, `/goal-store/goals${search || "?limit=100"}`, { method: "GET" });
+  return {
+    generated_at: new Date().toISOString(),
+    goals: rowsFromProxyResult(result, "goals").map((goal) => operatorGoalSummary(goal)),
+    source: result,
+  };
+}
+
+async function operatorGoalGraph(goalId: string): Promise<JsonMap> {
+  const snapshot = await composedGoalSnapshot(goalId);
+  const graph = asRecord(asRecord(snapshot.workflow_compute_graph).data ?? snapshot.workflow_compute_graph);
+  return {
+    generated_at: new Date().toISOString(),
+    goal_id: goalId,
+    graph,
+    tasks: arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks"),
+    actions: operatorActionsFromRows([], [], snapshot),
+  };
+}
+
+async function submitOperatorGoalSpec(input: unknown, causationId = "operator_goal_submit"): Promise<JsonMap> {
+  const { goalId, spec } = goalSpecWithId(input);
+  const specRecord = asRecord(spec);
+  const result = await workflowMutationEnvelope(goalId, "run", spec);
+  const operatorEvent = await appendOperatorEvent({
+    transition: "submit_goal",
+    actor: goalActor(goalId),
+    payload: {
+      goal_id: goalId,
+      title: specRecord.title ?? "Untitled goal",
+      objective: specRecord.objective ?? "",
+      accepted: Boolean((result as JsonMap).ok),
+      result,
+    },
+    idempotencyKey: `operator:goal:${goalId}:submit`,
+    causationId,
+    correlationId: goalId,
+  });
+  return {
+    ...result,
+    goal_id: goalId,
+    result,
+    operator_event: operatorEvent,
+    active_state: activeStateFromActionEnvelope(result as ProxyResult),
+  };
+}
+
+async function operatorGoalActionEnvelope(
+  goalId: string,
+  action: string,
+  body: unknown,
+  causationId = `operator_goal_${action}`,
+): Promise<JsonMap> {
+  const handler = action === "select-branch" ? "select_branch" : action;
+  if (!workflowHandlers.has(handler)) {
+    return { ok: false, status: 400, error: `unsupported operator goal action: ${action}`, goal_id: goalId, action };
+  }
+  const result = await workflowMutationEnvelope(goalId, handler, body);
+  const operatorEvent = await appendOperatorEvent({
+    transition: transitionForGoalAction(action),
+    actor: goalActor(goalId),
+    payload: {
+      goal_id: goalId,
+      action,
+      request: asRecord(body),
+      accepted: Boolean((result as JsonMap).ok),
+      result,
+    },
+    idempotencyKey: `operator:goal:${goalId}:${action}:${String(asRecord(body).request_id ?? Date.now())}`,
+    causationId,
+    correlationId: goalId,
+  });
+  return {
+    ...result,
+    goal_id: goalId,
+    action,
+    result,
+    operator_event: operatorEvent,
+    active_state: activeStateFromActionEnvelope(result as ProxyResult),
+  };
+}
+
+type OperatorActorRef = {
+  kind: "goal" | "task" | "thunk" | "worker_run" | "review" | "approval" | "event";
+  id: string;
+  goal_id: string | null;
+  task_id: string | null;
+};
+
+function operatorEventTypeForTransition(transition: string): string {
+  const eventTypes: Record<string, string> = {
+    submit_goal: "goal.updated",
+    draft_accepted: "goal.updated",
+    task_dispatched: "task.updated",
+    worker_result_received: "worker.completed",
+    task_blocked: "task.updated",
+    thunk_created: "thunk.created",
+    thunk_resumed: "task.updated",
+    approval_requested: "approval.requested",
+    approval_resolved: "task.updated",
+    review_completed: "review.completed",
+    branch_selected: "task.updated",
+    goal_steered: "goal.updated",
+    goal_cancelled: "goal.cancelled",
+    goal_satisfied: "goal.satisfied",
+  };
+  return eventTypes[transition] ?? "goal.updated";
+}
+
+function goalActor(goalId: string): OperatorActorRef {
+  return {
+    kind: "goal",
+    id: goalId,
+    goal_id: goalId,
+    task_id: null,
+  };
+}
+
+async function appendOperatorEvent(input: {
+  transition: string;
+  actor: OperatorActorRef;
+  payload: JsonMap;
+  idempotencyKey: string;
+  causationId?: string | null;
+  correlationId?: string | null;
+}): Promise<JsonMap> {
+  const event = {
+    event_id: crypto.randomUUID(),
+    event_type: operatorEventTypeForTransition(input.transition),
+    actor: input.actor,
+    transition: input.transition,
+    idempotency_key: input.idempotencyKey,
+    causation_id: input.causationId ?? null,
+    correlation_id: input.correlationId ?? input.actor.goal_id ?? null,
+    restate_invocation_id: null,
+    created_at: new Date().toISOString(),
+    payload_json: input.payload,
+  };
+  const result = await proxyJson(goalStoreUrl, "/goal-store/operator-events", {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ event }),
+  });
+  if (!result.ok) {
+    console.warn("append operator event failed", result.status, result.data);
+  }
+  return {
+    ok: result.ok,
+    status: result.status,
+    event,
+    data: result.data,
+  };
+}
+
+function transitionForResolvedAction(kind: string, resolution: string): string {
+  if (kind === "approval" || resolution === "approve" || resolution === "reject") return "approval_resolved";
+  if (kind === "thunk" || ["continue", "answer", "add_context"].includes(resolution)) return "thunk_resumed";
+  if (resolution === "cancel_goal" || kind === "cancel") return "goal_cancelled";
+  return "goal_steered";
+}
+
+function transitionForGoalAction(action: string): string {
+  if (action === "cancel") return "goal_cancelled";
+  if (action === "select-branch" || action === "select_branch") return "branch_selected";
+  if (action === "approve") return "approval_resolved";
+  if (action === "resume_thunk") return "thunk_resumed";
+  if (action === "run") return "submit_goal";
+  return "goal_steered";
+}
+
+function actorForResolvedAction(parsed: { kind: string; goalId: string; targetId: string }, record: JsonMap, goalId: string): OperatorActorRef {
+  const taskId = record.task_id ? String(record.task_id) : null;
+  if (parsed.kind === "approval" || record.approval_id) {
+    const approvalId = String(record.approval_id ?? parsed.targetId);
+    return { kind: "approval", id: approvalId, goal_id: goalId, task_id: taskId };
+  }
+  if (parsed.kind === "thunk" || record.thunk_id) {
+    const thunkId = String(record.thunk_id ?? parsed.targetId);
+    return { kind: "thunk", id: thunkId, goal_id: goalId, task_id: taskId };
+  }
+  if (taskId || parsed.kind === "task") {
+    const id = taskId ?? parsed.targetId;
+    return { kind: "task", id, goal_id: goalId, task_id: id };
+  }
+  return goalActor(goalId);
+}
+
+async function operatorActionList(goalId?: string | null): Promise<JsonMap> {
+  const [approvalsResult, tasksResult, selectedGoal] = await Promise.all([
+    proxyJson(goalStoreUrl, `/goal-store/approvals?limit=100${goalId ? `&goal_id=${encodeURIComponent(goalId)}` : ""}`, { method: "GET" }),
+    proxyJson(goalStoreUrl, `/goal-store/tasks?limit=200${goalId ? `&goal_id=${encodeURIComponent(goalId)}` : ""}`, { method: "GET" }),
+    goalId ? composedGoalSnapshot(goalId) : Promise.resolve(null),
+  ]);
+  return {
+    generated_at: new Date().toISOString(),
+    actions: operatorActionsFromRows(
+      rowsFromProxyResult(approvalsResult, "approvals"),
+      rowsFromProxyResult(tasksResult, "tasks"),
+      selectedGoal,
+    ),
+  };
+}
+
+function rowsFromProxyResult(result: ProxyResult, key: string): JsonMap[] {
+  const data = result.data;
+  if (Array.isArray(data)) {
+    return data.map(asRecord);
+  }
+  const record = asRecord(data);
+  const direct = arrayField(record, key);
+  if (direct.length) {
+    return direct.map(asRecord);
+  }
+  const nestedData = record.data;
+  if (Array.isArray(nestedData)) {
+    return nestedData.map(asRecord);
+  }
+  const nestedRows = arrayField(asRecord(nestedData), key);
+  return nestedRows.map(asRecord);
+}
+
+async function resolveOperatorAction(actionId: string, body: unknown): Promise<JsonMap> {
+  const record = asRecord(body);
+  const parsed = parseOperatorActionId(actionId);
+  const goalId = String(record.goal_id ?? parsed.goalId ?? "");
+  if (!goalId) {
+    return { ok: false, error: "goal_id is required to resolve an operator action", action_id: actionId };
+  }
+  const resolution = String(record.resolution ?? record.intent ?? parsed.kind ?? "continue").trim().toLowerCase();
+  const responseSummary = String(record.response_summary ?? record.answer ?? record.context ?? "Operator resolved the action.").trim();
+  let result: JsonMap;
+  if (parsed.kind === "approval" || resolution === "approve" || resolution === "reject") {
+    const approvalId = String(record.approval_id ?? parsed.targetId ?? "");
+    if (!approvalId) {
+      return { ok: false, error: "approval_id is required for approval resolution", action_id: actionId, goal_id: goalId };
+    }
+    result = await workflowMutationEnvelope(goalId, "approve", {
+      approval_id: approvalId,
+      approved: resolution !== "reject",
+      note: responseSummary,
+    });
+  } else if (parsed.kind === "thunk" || resolution === "continue" || resolution === "answer" || resolution === "add_context") {
+    const thunkId = String(record.thunk_id ?? parsed.targetId ?? "");
+    if (!thunkId) {
+      return { ok: false, error: "thunk_id is required for continuation resume", action_id: actionId, goal_id: goalId };
+    }
+    result = await workflowMutationEnvelope(goalId, "resume_thunk", {
+      thunk_id: thunkId,
+      responder: String(record.operator ?? "operator"),
+      response_summary: responseSummary,
+      artifact_refs: Array.isArray(record.artifact_refs) ? record.artifact_refs : [],
+    });
+  } else if (resolution === "cancel_goal" || parsed.kind === "cancel") {
+    result = await workflowMutationEnvelope(goalId, "cancel", responseSummary || "Operator cancelled the goal.");
+  } else if (resolution === "replan") {
+    result = await workflowMutationEnvelope(goalId, "steer", {
+      id: crypto.randomUUID(),
+      goal_id: goalId,
+      task_id: record.task_id ?? parsed.targetId ?? null,
+      operator: record.operator ?? "operator",
+      message: responseSummary || "Operator requested replan.",
+      kind: {
+        request_replan: {
+          reason: responseSummary || "Operator requested replan.",
+        },
+      },
+    });
+  } else {
+    result = await workflowMutationEnvelope(goalId, "restart", {
+      goal_id: goalId,
+      scope: record.task_id || parsed.targetId ? "task" : "goal",
+      reason: "operator_requested",
+      message: responseSummary || "Operator requested restart.",
+      task_id: record.task_id ?? parsed.targetId ?? null,
+      reset_attempts: true,
+      preserve_artifacts: true,
+      operator: record.operator ?? "operator",
+    });
+  }
+  const operatorEvent = await appendOperatorEvent({
+    transition: transitionForResolvedAction(parsed.kind, resolution),
+    actor: actorForResolvedAction(parsed, record, goalId),
+    payload: {
+      action_id: actionId,
+      goal_id: goalId,
+      resolution,
+      request: record,
+      result,
+    },
+    idempotencyKey: `operator:action:${actionId}:${resolution}:${String(record.request_id ?? record.idempotency_key ?? Date.now())}`,
+    causationId: actionId,
+    correlationId: goalId,
+  });
+  return {
+    action_id: actionId,
+    goal_id: goalId,
+    resolution,
+    result,
+    operator_event: operatorEvent,
+    active_state: activeStateFromActionEnvelope(result),
+  };
+}
+
+function parseOperatorActionId(actionId: string): { kind: string; goalId: string; targetId: string } {
+  const [kind = "", goalId = "", targetId = ""] = actionId.split(":");
+  return { kind, goalId, targetId };
+}
+
+function firstGoalId(rows: JsonMap[]): string {
+  return String(rows[0]?.goal_id ?? rows[0]?.id ?? "").trim();
+}
+
+function operatorGoalSummary(row: JsonMap): JsonMap {
+  const goalId = String(row.goal_id ?? row.id ?? "");
+  return {
+    goal_id: goalId,
+    id: goalId,
+    title: row.title ?? "Untitled goal",
+    objective: row.objective ?? "",
+    status: row.status ?? "unknown",
+    percent_done: row.percent_done ?? 0,
+    open_tasks: row.open_tasks ?? 0,
+    blocked_tasks: row.blocked_tasks ?? 0,
+    failed_tasks: row.failed_tasks ?? 0,
+    satisfied: row.satisfied === true,
+    updated_at: row.updated_at ?? row.updated_at_text ?? null,
+  };
+}
+
+function operatorGoalDetail(snapshot: JsonMap): JsonMap {
+  const goal = asRecord(asRecord(snapshot.goal_store_goal).data ?? snapshot.goal_store_goal);
+  const goalRecord = asRecord(goal.goal);
+  const summary = operatorGoalSummary(goalRecord);
+  return {
+    summary,
+    progress: asRecord(asRecord(snapshot.workflow_progress).data ?? snapshot.workflow_progress),
+    graph: asRecord(asRecord(snapshot.workflow_compute_graph).data ?? snapshot.workflow_compute_graph),
+    tasks: arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks"),
+    actions: operatorActionsFromRows([], [], snapshot),
+    evidence: operatorEvidenceFromSnapshot(snapshot),
+    snapshot,
+  };
+}
+
+function operatorActionsFromRows(approvals: JsonMap[], tasks: JsonMap[], snapshot: JsonMap | null): JsonMap[] {
+  const actions: JsonMap[] = [];
+  for (const approval of approvals) {
+    const status = String(approval.status ?? "");
+    if (status && status !== "pending") continue;
+    const goalId = String(approval.goal_id ?? "");
+    const approvalId = String(approval.approval_id ?? approval.id ?? "");
+    if (!goalId || !approvalId) continue;
+    actions.push({
+      action_id: `approval:${goalId}:${approvalId}`,
+      kind: "resolve_approval",
+      goal_id: goalId,
+      task_id: approval.task_id ?? null,
+      title: "Approval required",
+      question: approval.requested_action ?? approval.reason ?? "Approve or reject this request.",
+      status: "pending",
+      allowed_resolutions: ["approve", "reject", "add_context", "cancel_goal"],
+      approval,
+      payload_json: approval,
+    });
+  }
+
+  const statusPayload = asRecord(asRecord(snapshot ?? {}).workflow_status);
+  const progressPayload = asRecord(asRecord(snapshot ?? {}).workflow_progress);
+  const statusData = asRecord(statusPayload.data ?? statusPayload);
+  const progressData = asRecord(progressPayload.data ?? progressPayload);
+  const thunks = arrayField(statusData, "delayed_compute_thunks")
+    .concat(arrayField(progressData, "delayed_compute_thunks"));
+  const seenThunkIds = new Set<string>();
+  for (const thunkValue of thunks) {
+    const thunk = asRecord(thunkValue);
+    const status = String(thunk.status ?? "");
+    const thunkId = String(thunk.id ?? thunk.thunk_id ?? "");
+    const goalId = String(thunk.goal_id ?? asRecord(snapshot ?? {}).goal_id ?? "");
+    if (!thunkId || !goalId || seenThunkIds.has(thunkId) || (status && status !== "pending")) continue;
+    seenThunkIds.add(thunkId);
+    actions.push({
+      action_id: `thunk:${goalId}:${thunkId}`,
+      kind: "resume_thunk",
+      goal_id: goalId,
+      task_id: thunk.task_id ?? null,
+      title: "Input needed",
+      question: thunk.requested_input ?? thunk.reason ?? "Continue this delayed work.",
+      status: status || "pending",
+      allowed_resolutions: ["continue", "answer", "add_context", "replan", "cancel_goal"],
+      thunk,
+      payload_json: thunk,
+    });
+  }
+
+  const tasksPayload = asRecord(asRecord(snapshot ?? {}).tasks);
+  const taskRows = tasks.length ? tasks : arrayField(asRecord(tasksPayload.data ?? tasksPayload), "tasks");
+  for (const taskValue of taskRows) {
+    const task = asRecord(taskValue);
+    const status = String(task.status ?? "");
+    if (!["blocked", "failed", "waiting_input", "waiting-input"].includes(status)) continue;
+    const goalId = String(task.goal_id ?? asRecord(snapshot ?? {}).goal_id ?? "");
+    const taskId = String(task.task_id ?? task.id ?? "");
+    if (!goalId || !taskId) continue;
+    actions.push({
+      action_id: `task:${goalId}:${taskId}`,
+      kind: "restart_task",
+      goal_id: goalId,
+      task_id: taskId,
+      title: status.includes("waiting") ? "Task waiting" : "Recover task",
+      question: task.title ?? task.current_prompt ?? "Restart, replan, or cancel this work.",
+      status,
+      allowed_resolutions: ["retry", "replan", "add_context", "cancel_goal"],
+      payload_json: task,
+    });
+  }
+  return actions;
+}
+
+function operatorEventsFromBackendProjection(value: JsonMap): JsonMap[] {
+  return arrayField(asRecord(asRecord(value.recent_events).data ?? value.recent_events), "events")
+    .map(asRecord)
+    .map((event) => ({
+      event_id: String(event.event_id ?? event.id ?? event.sequence ?? crypto.randomUUID()),
+      event_type: String(event.kind ?? event.event_type ?? "event"),
+      goal_id: event.goal_id ?? null,
+      task_id: event.task_id ?? null,
+      title: String(event.message ?? event.kind ?? "Event"),
+      detail: String(event.actor ?? event.source ?? ""),
+      created_at: event.created_at ?? null,
+      payload_json: event,
+    }));
+}
+
+function operatorEventsFromDurableEvents(value: unknown): JsonMap[] {
+  return arrayField(asRecord(value), "events")
+    .map(asRecord)
+    .map((event) => {
+      const actor = asRecord(event.actor);
+      return {
+        event_id: String(event.event_id ?? crypto.randomUUID()),
+        event_type: String(event.event_type ?? "event"),
+        goal_id: actor.goal_id ?? null,
+        task_id: actor.task_id ?? null,
+        title: titleForOperatorEvent(String(event.event_type ?? "event"), String(event.transition ?? "")),
+        detail: detailForOperatorEvent(event),
+        created_at: event.created_at ?? null,
+        payload_json: event,
+      };
+    });
+}
+
+function titleForOperatorEvent(eventType: string, transition: string): string {
+  if (transition === "submit_goal") return "Goal submitted";
+  if (transition === "draft_accepted") return "Draft accepted";
+  if (transition === "thunk_resumed") return "Input provided";
+  if (transition === "approval_resolved") return "Approval resolved";
+  if (transition === "goal_cancelled") return "Goal cancelled";
+  if (transition === "goal_satisfied") return "Goal satisfied";
+  if (transition === "review_completed") return "Review completed";
+  if (eventType === "worker.completed") return "Worker completed";
+  return transition.replaceAll("_", " ") || eventType;
+}
+
+function detailForOperatorEvent(event: JsonMap): string {
+  const payload = asRecord(event.payload_json);
+  const request = asRecord(payload.request);
+  return String(payload.summary ?? payload.message ?? request.response_summary ?? request.answer ?? "");
+}
+
+function operatorEvidenceFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  return arrayField(asRecord(asRecord(snapshot.artifacts).data ?? snapshot.artifacts), "artifacts")
+    .map(asRecord)
+    .map((artifact) => {
+      const ref = asRecord(artifact.artifact);
+      const checkpoint = asRecord(artifact.checkpoint);
+      return {
+        evidence_id: String(ref.uri ?? checkpoint.id ?? crypto.randomUUID()),
+        goal_id: artifact.goal_id ?? snapshot.goal_id ?? null,
+        task_id: artifact.task_id ?? null,
+        title: String(ref.description ?? checkpoint.label ?? "Evidence"),
+        uri: ref.uri ?? null,
+        checkpoint: Object.keys(checkpoint).length ? checkpoint : null,
+        created_at: artifact.created_at ?? null,
+        payload_json: artifact,
+      };
+    });
+}
+
+function operatorWorkerRuns(tasks: JsonMap[]): JsonMap[] {
+  return tasks.map((task) => ({
+    run_id: String(task.run_id ?? task.task_id ?? task.id ?? crypto.randomUUID()),
+    goal_id: task.goal_id ?? null,
+    task_id: task.task_id ?? task.id ?? null,
+    worker: task.role ?? "planner",
+    status: task.status ?? "unknown",
+    summary: task.title ?? task.current_prompt ?? "",
+    started_at: task.started_at ?? null,
+    finished_at: task.finished_at ?? null,
+    payload_json: task,
+  }));
+}
+
+function activeStateFromActionEnvelope(result: unknown): JsonMap | null {
+  const record = asRecord(result);
+  const data = asRecord(record.data);
+  const active = asRecord(record.active_state ?? data.active_state);
+  return Object.keys(active).length ? active : null;
+}
+
+async function streamOperatorState(req: any, res: any, url: URL): Promise<void> {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
@@ -672,17 +1149,23 @@ async function streamGoalState(req: any, res: any, goalId: string): Promise<void
   req.on("close", () => {
     closed = true;
   });
-
+  const goalId = url.searchParams.get("goal_id");
+  const eventTypeFilter = url.searchParams.get("event_type");
+  const eventSince = url.searchParams.get("event_since");
   const started = Date.now();
-  let sequence = 0;
+  let sequence = Number(req.headers["last-event-id"] ?? url.searchParams.get("since") ?? 0) || 0;
   while (!closed && Date.now() - started < 5 * 60 * 1000) {
     try {
-      const snapshot = await goalSnapshot(goalId);
-      res.write(`event: snapshot\n`);
+      const workspace = await operatorWorkspace(goalId, {
+        eventType: eventTypeFilter,
+        since: eventSince,
+      });
+      const eventName = eventTypeFilter || "goal.updated";
+      res.write(`event: ${eventName}\n`);
       res.write(`id: ${sequence}\n`);
-      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      res.write(`data: ${JSON.stringify(workspace)}\n\n`);
     } catch (error) {
-      res.write(`event: error\n`);
+      res.write(`event: stream.error\n`);
       res.write(`id: ${sequence}\n`);
       res.write(`data: ${JSON.stringify({ error: errorMessage(error), goal_id: goalId })}\n\n`);
     }
@@ -690,14 +1173,14 @@ async function streamGoalState(req: any, res: any, goalId: string): Promise<void
     await sleep(1_500);
   }
   if (!closed) {
-    res.write(`event: done\n`);
-    res.write(`data: ${JSON.stringify({ goal_id: goalId, reason: "stream_ttl_elapsed" })}\n\n`);
+    res.write(`event: stream.done\n`);
+    res.write(`data: ${JSON.stringify({ reason: "stream_ttl_elapsed", goal_id: goalId })}\n\n`);
     res.end();
   }
 }
 
 async function goalAgentContext(goalId: string, taskId: string | null): Promise<JsonMap> {
-  const snapshot = await goalSnapshot(goalId);
+  const snapshot = await composedGoalSnapshot(goalId);
   const context = asRecord(snapshot.agent_context);
   if (!taskId) {
     return context;
@@ -1151,7 +1634,7 @@ async function workflowMutationEnvelope(goalId: string, handler: string, body: u
       active_state_available: activeState.status === "fresh",
       active_state_unavailable_reads: activeState.unavailableReads,
       active_state_error: activeState.error ?? null,
-      stream_url: `/api/goals/${encodeURIComponent(goalId)}/stream`,
+      stream_url: `/api/operator/stream?goal_id=${encodeURIComponent(goalId)}`,
     },
   };
 }
@@ -1164,7 +1647,7 @@ async function readActiveGoalState(goalId: string, maxAttempts: number): Promise
   const attempts = Math.max(1, maxAttempts);
   for (let index = 0; index < attempts; index += 1) {
     try {
-      const snapshot = await goalSnapshot(goalId);
+      const snapshot = await composedGoalSnapshot(goalId);
       const activeState = activeStateHealth(snapshot);
       if (activeState.status === "fresh") {
         return {
@@ -1944,7 +2427,7 @@ async function chatContext(goalId: string): Promise<JsonMap> {
     return context;
   }
   try {
-    context.goal = compactGoalContext(await goalSnapshot(goalId));
+    context.goal = compactGoalContext(await composedGoalSnapshot(goalId));
   } catch (error) {
     context.goal_error = error instanceof Error ? error.message : String(error);
   }
@@ -2667,37 +3150,61 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   const segments = url.pathname.split("/").filter(Boolean);
 
-  if (req.method === "GET" && url.pathname === "/api/config") {
-    sendJson(res, 200, {
-      gateway_token_required: Boolean(gatewayToken),
-      endpoints: {
-        restate_ingress: restateIngress,
-        goal_store: goalStoreUrl,
-        event_gateway: eventGatewayUrl,
-        notifier: notifierUrl,
-        runner_registry: runnerRegistryUrl,
-        memory_gateway: memoryGatewayUrl,
-        restate_admin: restateAdminUrl,
-      },
-      chat_backend: {
-        mode: chatBackendMode,
-        provider: controlChatProvider || null,
-        model_configured: Boolean(chatModel),
-        completions_url_configured: Boolean(chatCompletionsUrl),
-        runner_registry_discovery: chatRunnerDiscoveryEnabled(),
-      },
-    });
+  if (req.method === "GET" && url.pathname === "/api/operator/stream") {
+    await streamOperatorState(req, res, url);
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/overview") {
-    sendJson(res, 200, await overview());
+  if (req.method === "GET" && url.pathname === "/api/operator/workspace") {
+    sendJson(res, 200, await operatorWorkspace(url.searchParams.get("goal_id")));
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/runners") {
-    sendJson(res, 200, await runnerStatus());
+  if (req.method === "GET" && url.pathname === "/api/operator/goals") {
+    sendJson(res, 200, await operatorGoalList(url.search));
     return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/operator/goals") {
+    const result = await submitOperatorGoalSpec(await readJson(req));
+    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/operator/actions") {
+    sendJson(res, 200, await operatorActionList(url.searchParams.get("goal_id")));
+    return;
+  }
+
+  if (segments[0] === "api" && segments[1] === "operator" && segments[2] === "actions" && segments[3] && segments[4] === "resolve") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "operator action resolution requires POST" });
+      return;
+    }
+    sendJson(res, 200, await resolveOperatorAction(decodeURIComponent(segments[3]), await readJson(req)));
+    return;
+  }
+
+  if (segments[0] === "api" && segments[1] === "operator" && segments[2] === "goals" && segments[3]) {
+    const goalId = decodeURIComponent(segments[3]);
+    if (req.method === "GET" && segments.length === 4) {
+      sendJson(res, 200, operatorGoalDetail(await composedGoalSnapshot(goalId)));
+      return;
+    }
+    if (req.method === "GET" && segments[4] === "graph") {
+      sendJson(res, 200, await operatorGoalGraph(goalId));
+      return;
+    }
+    if (req.method === "GET" && segments[4] === "agent-context") {
+      sendJson(res, 200, await goalAgentContext(goalId, url.searchParams.get("task_id")));
+      return;
+    }
+    if (req.method === "POST" && segments[4]) {
+      const action = segments[4];
+      const result = await operatorGoalActionEnvelope(goalId, action, await readJson(req));
+      sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
+      return;
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/chat") {
@@ -2712,22 +3219,6 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (req.method === "GET" && segments[0] === "api" && segments[1] === "chat" && segments[2] === "runs" && segments[3]) {
     sendJson(res, 200, chatRunSnapshot(decodeURIComponent(segments[3])));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/follow-ups") {
-    const includeEmpty = url.searchParams.get("include_empty") === "true";
-    sendJson(res, 200, await durablePlanFollowUps(includeEmpty));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/follow-ups/draft-plan") {
-    sendJson(res, 200, followUpDraftPlan(await readJson(req)));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/goals") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/goals${url.search}`, { method: "GET" }));
     return;
   }
 
@@ -2776,67 +3267,11 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
     }
   }
 
-  if (req.method === "GET" && url.pathname === "/api/agents") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/tasks${url.search}`, { method: "GET" }));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/approvals") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/approvals${url.search}`, { method: "GET" }));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/goals/submit") {
-    const { goalId, spec } = goalSpecWithId(await readJson(req));
-    const result = await workflowMutationEnvelope(goalId, "run", spec);
-    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
-    return;
-  }
-
-  if (segments[0] === "api" && segments[1] === "goals" && segments[2]) {
-    const goalId = decodeURIComponent(segments[2]);
-    if (req.method === "GET" && segments[3] === "stream") {
-      await streamGoalState(req, res, goalId);
-      return;
-    }
-    if (req.method === "GET" && segments.length === 3) {
-      sendJson(res, 200, await goalSnapshot(goalId));
-      return;
-    }
-    if (req.method === "GET" && segments[3] === "agent-context") {
-      sendJson(res, 200, await goalAgentContext(goalId, url.searchParams.get("task_id")));
-      return;
-    }
-    if (req.method === "POST" && segments.length === 4) {
-      const handler = segments[3];
-      if (!workflowHandlers.has(handler)) {
-        sendJson(res, 400, { error: `unsupported workflow handler: ${handler}` });
-        return;
-      }
-      const body = await readJson(req);
-      const result = workflowReadHandlers.has(handler)
-        ? await workflowReadPost(goalId, handler, body)
-        : await workflowMutationEnvelope(goalId, handler, body);
-      sendJson(res, workflowReadHandlers.has(handler) ? 200 : workflowMutationHttpStatus(result as ProxyResult), result);
-      return;
-    }
-  }
-
   if (req.method === "POST" && segments[0] === "api" && segments[1] === "research" && segments[2] === "apply") {
     const body = await readJson(req);
     const record = asRecord(body);
     const goalId = String(record.goal_id ?? "");
     sendJson(res, 200, await applyResearchOutput(goalId, body));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/human/threads") {
-    sendJson(res, 200, await proxyJson(notifierUrl, "/threads", { method: "GET" }));
-    return;
-  }
-
-  if (req.method === "GET" && segments[0] === "api" && segments[1] === "human" && segments[2] === "threads" && segments[3]) {
-    sendJson(res, 200, await proxyJson(notifierUrl, `/threads/${encodeURIComponent(decodeURIComponent(segments[3]))}`, { method: "GET" }));
     return;
   }
 
@@ -3242,13 +3677,21 @@ async function routeMcp(req: any, res: any): Promise<void> {
 function mcpTools(): unknown[] {
   return [
     {
-      name: "coat_overview",
-      description: "Read service health, runner status, notification threads, event sources, recent events, and triggers.",
-      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      name: "coat_operator_workspace",
+      description: "Read the compact COAT operator workspace: goals, selected goal, actions, events, worker runs, evidence, service health, runners, event sources, and human threads.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string" },
+          event_type: { type: "string" },
+          since: { type: "string" },
+        },
+      },
     },
     {
-      name: "coat_goal_snapshot",
-      description: "Read a goal snapshot from Restate workflow handlers and the goal-store projection.",
+      name: "coat_operator_goal",
+      description: "Read the product-shaped operator goal detail for one goal.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -3257,26 +3700,34 @@ function mcpTools(): unknown[] {
       },
     },
     {
-      name: "coat_human_threads",
-      description: "List local human feedback and approval notification threads.",
-      inputSchema: { type: "object", additionalProperties: false, properties: {} },
-    },
-    {
-      name: "coat_approval_queue",
-      description: "List projected durable approval records across goals.",
-      inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1 } } },
-    },
-    {
-      name: "coat_agent_activity",
-      description: "Read projected task/agent rows globally or for one goal, including prompt payloads when projected.",
+      name: "coat_operator_actions",
+      description: "List product-shaped operator actions across goals or for one selected goal.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        properties: { goal_id: { type: "string" }, limit: { type: "integer", minimum: 1 } },
+        properties: { goal_id: { type: "string" } },
       },
     },
     {
-      name: "coat_agent_context",
+      name: "coat_operator_action_resolve",
+      description: "Resolve a product-shaped operator action such as approval, continuation, retry, replan, or cancel.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["action_id", "goal_id", "resolution"],
+        properties: {
+          action_id: { type: "string" },
+          goal_id: { type: "string" },
+          resolution: { type: "string" },
+          response_summary: { type: "string" },
+          approval_id: { type: "string" },
+          thunk_id: { type: "string" },
+          task_id: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "coat_operator_agent_context",
       description: "Read drill-down task context for a goal from existing task, chat-session, artifact, and notification-thread projections.",
       inputSchema: {
         type: "object",
@@ -3336,32 +3787,8 @@ function mcpTools(): unknown[] {
       },
     },
     {
-      name: "coat_follow_ups",
-      description: "List durable plan-continuity next actions through the legacy follow-up response shape.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: { include_empty: { type: "boolean" } },
-      },
-    },
-    {
-      name: "coat_follow_up_draft_plan",
-      description: "Turn one durable continuation item into the standard structured draft-plan prompt without mutating durable state.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["text"],
-        properties: {
-          plan: { type: "string" },
-          path: { type: "string" },
-          index: { type: "number" },
-          text: { type: "string" },
-        },
-      },
-    },
-    {
-      name: "coat_steer_goal",
-      description: "Submit a SteeringDirective to GoalWorkflow/steer.",
+      name: "coat_operator_goal_steer",
+      description: "Submit a SteeringDirective through the operator goal action surface.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -3370,24 +3797,9 @@ function mcpTools(): unknown[] {
       },
     },
     {
-      name: "coat_goal_submit",
-      description: "Submit a GoalSpec to GoalWorkflow/run. If id is omitted, the gateway assigns one before submission.",
+      name: "coat_operator_goal_submit",
+      description: "Submit a GoalSpec through the operator goal surface. If id is omitted, the gateway assigns one before submission.",
       inputSchema: { type: "object", additionalProperties: true },
-    },
-    {
-      name: "coat_approve_goal",
-      description: "Approve or reject a durable HumanApproval request for a goal.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["goal_id", "approval_id", "approved"],
-        properties: {
-          goal_id: { type: "string" },
-          approval_id: { type: "string" },
-          approved: { type: "boolean" },
-          note: { type: "string" },
-        },
-      },
     },
     {
       name: "coat_chat_assist",
@@ -3417,11 +3829,6 @@ function mcpTools(): unknown[] {
         required: ["goal_id"],
         properties: { goal_id: { type: "string" } },
       },
-    },
-    {
-      name: "coat_runner_list",
-      description: "List registered runners and status from the runner registry.",
-      inputSchema: { type: "object", additionalProperties: false, properties: { status: { type: "boolean" } } },
     },
     {
       name: "coat_runner_register",
@@ -3513,32 +3920,33 @@ function mcpTools(): unknown[] {
 }
 
 async function callMcpTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  if (name === "coat_overview") {
-    return overview();
+  if (name === "coat_operator_workspace") {
+    return operatorWorkspace(
+      typeof args.goal_id === "string" ? args.goal_id : null,
+      {
+        eventType: typeof args.event_type === "string" ? args.event_type : null,
+        since: typeof args.since === "string" ? args.since : null,
+      },
+    );
   }
-  if (name === "coat_goal_snapshot") {
+  if (name === "coat_operator_goal") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
     }
-    return goalSnapshot(goalId);
+    return operatorGoalDetail(await composedGoalSnapshot(goalId));
   }
-  if (name === "coat_human_threads") {
-    return proxyJson(notifierUrl, "/threads", { method: "GET" });
+  if (name === "coat_operator_actions") {
+    return operatorActionList(typeof args.goal_id === "string" ? args.goal_id : null);
   }
-  if (name === "coat_approval_queue") {
-    const limit = typeof args.limit === "number" ? args.limit : 50;
-    return proxyJson(goalStoreUrl, `/goal-store/approvals?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
-  }
-  if (name === "coat_agent_activity") {
-    const goalId = typeof args.goal_id === "string" ? args.goal_id : "";
-    const limit = typeof args.limit === "number" ? args.limit : 100;
-    if (goalId) {
-      return goalSnapshot(goalId);
+  if (name === "coat_operator_action_resolve") {
+    const actionId = String(args.action_id ?? "");
+    if (!actionId) {
+      throw new Error("action_id is required");
     }
-    return proxyJson(goalStoreUrl, `/goal-store/tasks?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
+    return resolveOperatorAction(actionId, args);
   }
-  if (name === "coat_agent_context") {
+  if (name === "coat_operator_agent_context") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
@@ -3593,34 +4001,15 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
     }
     return planContinuity(planId);
   }
-  if (name === "coat_follow_ups") {
-    return durablePlanFollowUps(args.include_empty === true);
-  }
-  if (name === "coat_follow_up_draft_plan") {
-    return followUpDraftPlan(args);
-  }
-  if (name === "coat_steer_goal") {
+  if (name === "coat_operator_goal_steer") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
     }
-    return workflowPost(goalId, "steer", args.directive ?? {});
+    return operatorGoalActionEnvelope(goalId, "steer", args.directive ?? {}, "mcp_steer_goal");
   }
-  if (name === "coat_goal_submit") {
-    const { goalId, spec } = goalSpecWithId(args);
-    return workflowPost(goalId, "run", spec);
-  }
-  if (name === "coat_approve_goal") {
-    const goalId = String(args.goal_id ?? "");
-    const approvalId = String(args.approval_id ?? "");
-    if (!goalId || !approvalId) {
-      throw new Error("goal_id and approval_id are required");
-    }
-    return workflowPost(goalId, "approve", {
-      approval_id: approvalId,
-      approved: args.approved === true,
-      note: typeof args.note === "string" ? args.note : null,
-    });
+  if (name === "coat_operator_goal_submit") {
+    return submitOperatorGoalSpec(args, "mcp_goal_submit");
   }
   if (name === "coat_chat_assist") {
     return controlChat(args);
@@ -3643,11 +4032,6 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       throw new Error("goal_id is required");
     }
     return proxyJson(goalStoreUrl, `/goal-store/goals/${encodeURIComponent(goalId)}/checkpoints`, { method: "GET" });
-  }
-  if (name === "coat_runner_list") {
-    return args.status === false
-      ? proxyJson(runnerRegistryUrl, "/runners", { method: "GET" })
-      : runnerStatus();
   }
   if (name === "coat_runner_register") {
     return proxyJson(runnerRegistryUrl, "/runners", {

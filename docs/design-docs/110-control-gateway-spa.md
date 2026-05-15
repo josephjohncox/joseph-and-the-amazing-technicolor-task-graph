@@ -22,24 +22,21 @@ The gateway must never own durable orchestration state. Restate remains the dura
 
 - `ui/control-plane-web`: TypeScript gateway plus Vite/React SPA.
 - `GET /`: browser operator UI.
-- `GET /api/overview`: composed health, runner, notification, event, goal, and agent summary.
-- `GET /api/approvals`: projected durable approval queue.
-- `GET /api/follow-ups`: compatibility projection for durable plan-continuity next actions from goal-store plans.
-- `GET /api/goals`: goal-store projection list.
+- `GET /api/operator/workspace`: compact operator projection for the SPA and TUI. It returns goals, selected-goal detail, action queue items, events, worker runs, evidence, service health, and runner state.
+- `GET /api/operator/goals`: product-shaped goal list over the goal-store projection.
+- `POST /api/operator/goals`: submit a `GoalSpec` through `GoalWorkflow/run`.
+- `GET /api/operator/goals/{goal_id}`: product-shaped selected-goal detail.
+- `GET /api/operator/goals/{goal_id}/graph`: selected-goal compute graph, tasks, and action projection.
+- `GET /api/operator/actions`: product-shaped action queue across goals or filtered by `goal_id`.
+- `POST /api/operator/actions/{action_id}/resolve`: resolve an approval, resume a delayed compute thunk, retry/replan blocked work, or cancel a goal through typed coordinator handlers.
+- `GET /api/operator/stream`: SSE stream for operator projections. It emits product-level projection events such as `goal.updated`, `task.updated`, `worker.completed`, `approval.requested`, `review.completed`, `goal.satisfied`, `goal.cancelled`, and `stream.error`.
 - `GET /api/plans`: durable planning-mode list.
 - `POST /api/plans`: create a durable plan.
 - `GET /api/plans/{plan_id}`: inspect a durable plan.
 - `GET /api/plans/{plan_id}/continuity`: summarize durable plan questions, decisions, subgoals, initial tasks, revisions, and next actions.
 - `POST /api/plans/{plan_id}/revisions`: append a plan revision.
 - `POST /api/plans/{plan_id}/compile`: compile a plan into `GoalSpec`.
-- `GET /api/goals/{goal_id}`: composed Restate plus goal-store snapshot.
-- `GET /api/goals/{goal_id}/stream`: selected-goal snapshot stream for the SPA/TUI operator view. The stream repeatedly emits the same composed goal snapshot shape as `/api/goals/{goal_id}` and is only a read surface.
-- `GET /api/goals/{goal_id}/agent-context`: composed drill-down over projected task context, `goal:{goal_id}` chat session turns, artifacts/events, and notifier thread summaries. Optional `task_id` narrows the returned task list.
-- `POST /api/goals/submit`: submits a `GoalSpec` through `GoalWorkflow/run`.
-- `POST /api/goals/{goal_id}/{handler}`: calls approved workflow handlers such as `steer`, `vote`, `approve`, `cancel`, `restart`, `branch`, `select_branch`, `create_thunk`, `resume_thunk`, `mechanism_start`, `mechanism_ballot`, `tasks`, `status`, `progress`, and `compute_graph`. Mutating handlers return an action envelope with the upstream Restate result, the action metadata, an immediate active-state snapshot when available, and observability fields for the UI.
-- `GET /api/agents`: projected task/agent rows across goals.
-- `GET /api/runners`: normalized runner-registry status rows with top-level `runner_id`, `node_id`, `endpoint`, `display_name`, status, capacity, labels, roles, capabilities, and model candidates for fleet UI and MCP clients.
-- `GET /api/human/threads`: local notification and feedback threads.
+- `GET /api/operator/goals/{goal_id}/agent-context`: composed drill-down over projected task context, `goal:{goal_id}` chat session turns, artifacts/events, and notifier thread summaries. Optional `task_id` narrows the returned task list.
 - `POST /api/chat`: backend chat assistant endpoint. The browser posts only to the control gateway; the gateway either uses explicit chat-completions config, discovers a dispatchable OpenAI-compatible/local model from the runner registry, or falls back to the local stub. User and assistant turns are journaled through the goal-store chat-turn API when available.
 - `GET /api/chat/session`: read a durable chat session for the selected goal or operator workspace.
 - `GET /api/events`, `/api/events/sources`, `/api/events/triggers`: event gateway read surfaces.
@@ -74,6 +71,7 @@ The frontend stack is intentionally standard:
 
 - Vite for TypeScript React bundling and production assets;
 - React for product-facing pages and component composition;
+- Tailwind CSS plus shadcn UI conventions for reusable product components;
 - TanStack Query for server-state fetching, caching, refresh, and mutation state;
 - Chatscope React components for the chat composer, message list, send behavior, and typing state;
 - React Flow for task-graph visualization;
@@ -92,12 +90,16 @@ mutation, or human-action resume semantics.
 The SPA has one global current-goal selector in the top bar. Operators choose a
 projected goal there or submit a new chat-authored goal draft; normal Chat,
 Work Graph, intent controls, Memory, and Human Queue use that current goal and
-must not ask for raw UUID entry in each panel. After `/api/goals/submit`
+must not ask for raw UUID entry in each panel. After `/api/operator/goals`
 returns, the SPA selects the returned `goal_id` immediately and shows the
 submitted-draft overlay until goal-store projects the durable task graph.
-When a current goal is selected, the SPA also opens the selected-goal stream so
-the graph, Human Queue, and control state update from backend snapshots rather
-than relying on a manual refresh after every operator action.
+When a current goal is selected, the SPA opens `/api/operator/stream` with the
+selected `goal_id`. The stream updates the operator workspace cache and, when
+present, the selected-operator goal detail. `event_type` filters both the SSE event
+name and the operator-event projection; `event_since` filters the append-only
+operator event log by timestamp, while SSE `Last-Event-ID`/`since` remain stream
+sequence cursors. Clients must use the actor-style `/api/operator/*`
+state-machine surface for goal, graph, action, and stream state.
 
 The SPA is a direct task-graph management surface, not a CLI coverage matrix.
 It should expose the current goal's Work Graph, Human Queue, next action,
@@ -115,24 +117,24 @@ decision, not compete with status, blockers, evidence, and next action.
 
 The SPA may edit text in browser forms, but edits become backend commands:
 
-- new goal: `GoalWorkflow/run`;
+- new goal: `POST /api/operator/goals`;
 - new/revised/compiled plan: `coat-goal-store` plan APIs;
-- steering: `GoalWorkflow/steer`;
-- goal ranking vote: `GoalWorkflow/vote`;
-- approval: `GoalWorkflow/approve`;
-- cancellation: `GoalWorkflow/cancel`;
+- steering: `POST /api/operator/goals/{goal_id}/steer`;
+- goal ranking vote: `POST /api/operator/goals/{goal_id}/vote`;
+- approval: `POST /api/operator/actions/{action_id}/resolve`;
+- cancellation: `POST /api/operator/goals/{goal_id}/cancel` or a cancel action resolution;
 - restart, branch, or branch selection: workflow handler;
-- delayed compute thunk creation or resume: `GoalWorkflow/create_thunk` and `GoalWorkflow/resume_thunk`;
-- mechanism round start or ballot: `GoalWorkflow/mechanism_start` and `GoalWorkflow/mechanism_ballot`;
+- delayed compute thunk creation or resume: `POST /api/operator/goals/{goal_id}/create_thunk` and `POST /api/operator/actions/{action_id}/resolve`;
+- mechanism round start or ballot: `POST /api/operator/goals/{goal_id}/mechanism_start` and `POST /api/operator/goals/{goal_id}/mechanism_ballot`;
 - memory note: `coat-memory-gateway`;
 - memory join or repair: `coat-memory-gateway`;
 - memory retraction or replacement: `coat-memory-gateway`;
-- research application: `GoalWorkflow/steer` directives derived from the sourced `InformationUsePlan`;
+- research application: operator steering directives derived from the sourced `InformationUsePlan`;
 - event source or trigger: `coat-event-gateway`.
 
-The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns compact draft review payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. Chat inherits the current goal: with a selected goal it uses the `goal:<goal_id>` session and sends `goal_id` context, otherwise it uses the operator workspace session. Durable mutations still require the operator to press an explicit control. For GoalSpec drafts, the SPA keeps the full draft server-side behind a `draft_id`, renders editable review fields in the chat panel, and `Accept draft` calls `/api/goals/submit`; the coordinator remains responsible for projecting workflow state into goal-store.
+The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns compact draft review payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. Chat inherits the current goal: with a selected goal it uses the `goal:<goal_id>` session and sends `goal_id` context, otherwise it uses the operator workspace session. Durable mutations still require the operator to press an explicit control. For GoalSpec drafts, the SPA keeps the full draft server-side behind a `draft_id`, renders editable review fields in the chat panel, and `Accept draft` calls `/api/operator/goals`; the coordinator remains responsible for projecting workflow state into goal-store.
 
-Chat draft payloads are compact operator payloads, not copied transcripts. The `drafts` object may contain `goal_spec`, `plan_draft`, `search_request`, or `steering_directive`, but it must not duplicate chat messages, run traces, backend-resolution details, model raw output, or goal snapshots. Those diagnostics stay in `chat_run`, `chat_log`, backend metadata, and goal snapshot APIs. The UI renders friendly draft fields for normal review; compact JSON is available only behind inspect controls for debugging, audit, and exact handoff.
+Chat draft payloads are compact operator payloads, not copied transcripts. The `drafts` object may contain `goal_spec`, `plan_draft`, `search_request`, or `steering_directive`, but it must not duplicate chat messages, run traces, backend-resolution details, model raw output, or operator goal details. Those diagnostics stay in `chat_run`, `chat_log`, backend metadata, and goal detail APIs. The UI renders friendly draft fields for normal review; compact JSON is available only behind inspect controls for debugging, audit, and exact handoff. Draft submission uses `/api/operator/goals`.
 
 Chat supports three primary authoring modes: durable plan draft, GoalSpec draft, and search request. Search mode emits a structured `search_request` plus an optional coordinator-owned research steering directive. It must not claim live memory, web, or reference search occurred unless a backend tool result is present.
 
@@ -158,7 +160,13 @@ badge, chat suggestion, notification thread, or raw JSON payload is not enough.
 If the gateway cannot find such an action, it should label the projection as
 invalid or incomplete rather than presenting the item as operator-resolvable.
 
-The Human Queue and graph Action Needed panels must be directly actionable. Approval rows call `GoalWorkflow/approve`; delayed compute thunk rows render a typed human prompt and call `GoalWorkflow/resume_thunk`; blocked or failed task rows request a coordinator-owned recovery action through the typed restart or steering handlers. The graph must also include a plain "why blocked" explanation before asking the operator to choose a recovery path. These controls are not chat prompts. Their responses must be rendered as action results, must include active state when the gateway can read it, and must refresh goal, approval, and overview projections after mutation.
+The Human Queue and graph Action Needed panels must be directly actionable. Approval rows and delayed compute thunk rows call `POST /api/operator/actions/{action_id}/resolve`; blocked or failed task rows request a coordinator-owned recovery action through typed restart or steering handlers. The graph must also include a plain "why blocked" explanation before asking the operator to choose a recovery path. These controls are not chat prompts. Their responses must be rendered as action results, must include active state when the gateway can read it, and must refresh goal, action, and operator-workspace projections after mutation.
+
+New SPA and TUI action queues should prefer `GET /api/operator/actions` and
+`POST /api/operator/actions/{action_id}/resolve` over direct workflow-handler
+calls. The gateway translates those product actions into coordinator handlers,
+appends a durable operator event, and returns active-state projection evidence
+for cache refresh.
 
 Human prompts are the user-facing form of delayed compute thunks and other wait states. A prompt should be shaped like a small task contract:
 
@@ -199,7 +207,7 @@ the generated steering, branch, vote, research, approval, or unifier request
 before submission.
 
 The terminal TUI follows the same split at smaller scope: chat uses
-`/api/chat`, dashboard cards are derived from `/api/overview`, and durable
+`/api/chat`, dashboard cards are derived from `/api/operator/workspace`, and durable
 mutations remain explicit operator actions. `Ctrl-N` and `Ctrl-P` cycle through
 projected goals, `Ctrl-O` clears the selected goal, and
 `Ctrl-R` refreshes projection state. With a selected goal, the TUI uses the
@@ -239,7 +247,7 @@ separate chat-focused surface, while the Rust TUI remains the durable operator
 dashboard unless a measured migration proves lower operational complexity.
 
 Scenario E2E treats this selected-goal model as a product contract. Browser
-scenarios should create or select goals through `/api/goals/submit` and the
+scenarios should create or select goals through `/api/operator/goals` and the
 top-bar selector, then assert that Chat, Work Graph, intent controls, Memory,
 and Human Queue inherit the same goal without local UUID entry fields. Terminal
 scenarios should use `coat tui` or its gateway contract to prove `Ctrl-N`,
@@ -330,7 +338,7 @@ The gateway must not write Restate state, runner rows, or memory storage directl
 ## Agent Visibility
 
 Agent state comes from projected `TaskRecord` rows plus the full `TaskNode` stored in `TaskRecord.payload_json`.
-Agent-to-agent context visibility is a composed read model. `GET /api/goals/{goal_id}` includes `agent_context`, and `GET /api/goals/{goal_id}/agent-context` returns the same focused projection for UI/TUI drill-down. The gateway reads the current prompt, persona, model route, runner route, purpose, budget, sandbox, and done criteria from goal-store task payloads; it reads `goal:{goal_id}` chat turns through the goal-store chat-session API or configured chat fallback; it reads relevant human/chat notification summaries from notifier `/threads`; and it attaches task-local events and artifacts already present in the goal snapshot. The gateway must not create a new conversation store or durable task state for this view.
+Agent-to-agent context visibility is a composed read model. `GET /api/operator/goals/{goal_id}` includes selected-goal detail, and `GET /api/operator/goals/{goal_id}/agent-context` returns the focused projection for UI/TUI drill-down. The gateway reads the current prompt, persona, model route, runner route, purpose, budget, sandbox, and done criteria from goal-store task payloads; it reads `goal:{goal_id}` chat turns through the goal-store chat-session API or configured chat fallback; it reads relevant human/chat notification summaries from notifier `/threads`; and it attaches task-local events and artifacts already present in the operator goal detail. The gateway must not create a new conversation store or durable task state for this view.
 
 The UI should show:
 
@@ -354,7 +362,7 @@ goal can open the associated `goal:<goal_id>` chat session and any task/session
 refs returned by the runner, but new work still becomes `steer`, `branch`,
 `mechanism`, `approve`, `resume-thunk`, or `research/apply` commands.
 
-This is intentionally projection-based. If exact live state is needed, the gateway also calls `GoalWorkflow/status`, `GoalWorkflow/progress`, and `GoalWorkflow/compute_graph`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
+This is intentionally projection-based. If exact live state is needed, the gateway calls coordinator-owned handlers behind `/api/operator/*`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
 
 ## Continuation Work
 
@@ -370,7 +378,7 @@ User-facing continuation work comes from standard backend records:
 
 Repo markdown `## Follow-Ups` remains a developer doc-gardening convention for active execution plans. It is not the product queue.
 
-The gateway keeps `GET /api/follow-ups`, `POST /api/follow-ups/draft-plan`, MCP `coat_follow_ups`, and MCP `coat_follow_up_draft_plan` as compatibility surfaces, but their operator-facing semantics are durable plan-continuity next actions. New UI work should prefer Plans, Goals, Events, and Human Queue views.
+Plan continuity belongs under the durable plan surface: `GET /api/plans/{plan_id}/continuity` and MCP `coat_plan_continuity`. Do not add standalone follow-up queues beside operator state; product work should appear as goals, tasks, thunks, events, plan continuity, or human actions.
 
 ## Human Queue
 
@@ -403,24 +411,20 @@ human, external callback, resource, model route, or timer.
 
 The gateway exposes MCP tools so agent/chat clients can inspect and steer the system without using the SPA:
 
-- `coat_overview`;
-- `coat_goal_snapshot`;
-- `coat_agent_activity`;
-- `coat_agent_context`;
+- `coat_operator_workspace`;
+- `coat_operator_goal`;
+- `coat_operator_actions`;
+- `coat_operator_action_resolve`;
+- `coat_operator_agent_context`;
 - `coat_plan_list`;
 - `coat_plan_draft`;
 - `coat_plan_get`;
 - `coat_plan_revise`;
 - `coat_plan_continuity`;
 - `coat_plan_compile`;
-- `coat_follow_ups`;
-- `coat_goal_submit`;
-- `coat_human_threads`;
-- `coat_approval_queue`;
-- `coat_approve_goal`;
-- `coat_steer_goal`;
+- `coat_operator_goal_submit`;
+- `coat_operator_goal_steer`;
 - `coat_chat_assist`;
-- `coat_runner_list`;
 - `coat_runner_register`;
 - `coat_memory_search`;
 - `coat_memory_context`;
@@ -448,7 +452,7 @@ Backend tokens are still resolved by the gateway from environment or Kubernetes 
 - `COAT_MEMORY_GATEWAY_TOKEN`;
 - service URLs for Restate, goal store, event gateway, notifier, runner registry, and memory gateway.
 
-The gateway must not echo backend tokens in `/api/config`, MCP results, diagnostics, or UI output.
+The gateway must not echo backend tokens in operator workspace config summaries, MCP results, diagnostics, or UI output.
 
 ## Deployment
 

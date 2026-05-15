@@ -37,7 +37,7 @@ adds the typed shortcut surface, operator visibility, and gateway drill-down.
 - Personas and model labels are task-local inputs to the shortcut; they do not
   redefine global runner roles.
 - Agent-to-agent context is exposed by gateway projection and MCP through
-  `coat_agent_context`, using prompt/session/thread refs and compact task
+  `coat_operator_agent_context`, using prompt/session/thread refs and compact task
   metadata.
 - The TUI gets a dedicated Adversarial tab for satisfaction, actor candidates,
   critic checks, research, unification, votes, and context refs.

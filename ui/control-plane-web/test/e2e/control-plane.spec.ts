@@ -172,8 +172,8 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.getByLabel("Continuations")).toContainText("1 waiting");
     await expect(page.getByLabel("Continuations")).toContainText("wait Ref thunk-approval-1");
 
-    await openPrimaryNav(page, "Human Queue");
-    await expect(page.getByRole("heading", { name: "Action queue" })).toBeVisible();
+    await openPrimaryNav(page, "Action Queue");
+    await expect(page.getByRole("heading", { level: 1, name: "Action Queue" })).toBeVisible();
     await expect(page.locator(".approval-list")).toContainText("Review action-needed thunk");
     await expect(page.locator(".approval-list")).toContainText("Action needed: approve sandbox profile");
     const approvalCard = page.locator(".approval-card").filter({ hasText: "sandbox profile approval" }).first();
@@ -304,13 +304,7 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
   const method = request.method();
   const path = url.pathname;
 
-  if (method === "GET" && path === "/api/overview") {
-    countRequest(state, "overview");
-    await json(route, overviewFixture(state));
-    return;
-  }
-
-  if (method === "GET" && path === "/api/goals") {
+  if (method === "GET" && path === "/api/operator/goals") {
     countRequest(state, "goals");
     await json(route, { ok: true, status: 200, data: { goals: goalRows(state) } });
     return;
@@ -337,7 +331,7 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
     return;
   }
 
-  if (method === "POST" && path === "/api/goals/submit") {
+  if (method === "POST" && path === "/api/operator/goals") {
     state.submittedGoalSpec = await requestBody(request);
     await json(route, {
       ok: true,
@@ -349,20 +343,33 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
     return;
   }
 
-  const goalMatch = path.match(/^\/api\/goals\/([^/]+)(?:\/([^/]+))?$/);
-  if (goalMatch && method === "GET" && !goalMatch[2]) {
-    const goalId = decodeURIComponent(goalMatch[1]);
-    countRequest(state, `goal:${goalId}`);
-    await json(route, goalSnapshotFixture(goalId, state));
-    return;
-  }
-
-  if (goalMatch && method === "GET" && goalMatch[2] === "stream") {
-    const goalId = decodeURIComponent(goalMatch[1]);
+  if (method === "GET" && path === "/api/operator/stream") {
+    const goalId = url.searchParams.get("goal_id") ?? goalA;
     await route.fulfill({
       status: 200,
       contentType: "text/event-stream",
-      body: `event: snapshot\ndata: ${JSON.stringify(goalSnapshotFixture(goalId, state))}\n\n`,
+      body: `event: goal.updated\ndata: ${JSON.stringify(operatorWorkspaceFixture(goalId, state))}\n\n`,
+    });
+    return;
+  }
+
+  const goalMatch = path.match(/^\/api\/operator\/goals\/([^/]+)(?:\/([^/]+))?$/);
+  if (goalMatch && method === "GET" && !goalMatch[2]) {
+    const goalId = decodeURIComponent(goalMatch[1]);
+    countRequest(state, `goal:${goalId}`);
+    await json(route, operatorGoalDetailFixture(composedGoalProjectionFixture(goalId, state)));
+    return;
+  }
+
+  if (goalMatch && method === "GET" && goalMatch[2] === "graph") {
+    const goalId = decodeURIComponent(goalMatch[1]);
+    const snapshot = composedGoalProjectionFixture(goalId, state);
+    await json(route, {
+      generated_at: "2026-05-12T12:00:00.000Z",
+      goal_id: goalId,
+      graph: (snapshot.workflow_compute_graph as JsonRecord)?.data ?? {},
+      tasks: rowsFrom((snapshot.tasks as JsonRecord)?.data ?? snapshot.tasks),
+      actions: operatorActionsFixture(goalId),
     });
     return;
   }
@@ -380,13 +387,34 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
     return;
   }
 
-  if (method === "GET" && path === "/api/approvals") {
-    await json(route, { ok: true, status: 200, data: { approvals: approvalsFixture() } });
+  if (method === "GET" && path === "/api/operator/actions") {
+    await json(route, { actions: operatorActionsFixture(url.searchParams.get("goal_id") ?? undefined) });
     return;
   }
 
-  if (method === "GET" && path === "/api/human/threads") {
-    await json(route, { ok: true, status: 200, data: { threads: [] } });
+  const actionResolveMatch = path.match(/^\/api\/operator\/actions\/([^/]+)\/resolve$/);
+  if (method === "POST" && actionResolveMatch) {
+    const body = await requestBody(request);
+    const actionId = decodeURIComponent(actionResolveMatch[1]);
+    const action = operatorActionsFixture().find((item) => item.action_id === actionId);
+    const handler = action?.handler ? String(action.handler) : actionId.startsWith("approval:")
+      ? "approve"
+      : actionId.startsWith("thunk:")
+        ? "resume_thunk"
+        : "steer";
+    state.actions.push({ handler, body });
+    await json(route, {
+      action_id: actionId,
+      goal_id: body.goal_id ?? goalA,
+      resolution: body.resolution ?? "continue",
+      result: {
+        ok: true,
+        status: 202,
+        url: `http://fixture.local/GoalWorkflow/${body.goal_id ?? goalA}/${handler}`,
+        data: { accepted: true, handler, body },
+      },
+      active_state: composedGoalProjectionFixture(String(body.goal_id ?? goalA), state),
+    });
     return;
   }
 
@@ -415,10 +443,9 @@ async function json(route: Route, body: unknown, status = 200): Promise<void> {
   });
 }
 
-function overviewFixture(state?: FixtureState): JsonRecord {
+function backendProjectionFixture(state?: FixtureState): JsonRecord {
   return {
     generated_at: "2026-05-12T12:00:00.000Z",
-    control_surface: "coat-control-plane-web",
     services: [
       { name: "goal-store", ok: true, status: 200 },
       { name: "runner-registry", ok: true, status: 200 },
@@ -444,7 +471,6 @@ function overviewFixture(state?: FixtureState): JsonRecord {
     goals: { ok: true, status: 200, data: { goals: goalRows(state) } },
     agents: { ok: true, status: 200, data: { tasks: goalATasks() } },
     plans: { ok: true, status: 200, data: { plans: [] } },
-    follow_ups: { items: [] },
   };
 }
 
@@ -489,7 +515,46 @@ function goalRows(state?: FixtureState): JsonRecord[] {
   return rows;
 }
 
-function goalSnapshotFixture(goalId: string, state?: FixtureState): JsonRecord {
+function operatorWorkspaceFixture(goalId: string, state?: FixtureState): JsonRecord {
+  const snapshot = composedGoalProjectionFixture(goalId, state);
+  return {
+    generated_at: "2026-05-12T12:00:00.000Z",
+    goals: goalRows(state),
+    selected_goal: operatorGoalDetailFixture(snapshot),
+    actions: operatorActionsFixture(goalId),
+    events: [],
+    worker_runs: rowsFrom((snapshot.tasks as JsonRecord)?.data ?? snapshot.tasks),
+    evidence: [],
+    services: backendProjectionFixture(state).services,
+    runners: (backendProjectionFixture(state).runner_status as JsonRecord)?.data ?? [],
+  };
+}
+
+function operatorGoalDetailFixture(snapshot: JsonRecord): JsonRecord {
+  const goal = (((snapshot.goal_store_goal as JsonRecord)?.data as JsonRecord)?.goal ?? {}) as JsonRecord;
+  return {
+    summary: {
+      goal_id: goal.goal_id ?? snapshot.goal_id,
+      id: goal.goal_id ?? snapshot.goal_id,
+      title: ((goal.payload_json as JsonRecord)?.title ?? "Untitled goal"),
+      objective: ((goal.payload_json as JsonRecord)?.objective ?? ""),
+      status: goal.status ?? "unknown",
+      percent_done: goal.percent_done ?? 0,
+      open_tasks: goal.open_tasks ?? 0,
+      blocked_tasks: goal.blocked_tasks ?? 0,
+      failed_tasks: goal.failed_tasks ?? 0,
+      updated_at: goal.updated_at ?? "2026-05-12T12:00:00.000Z",
+    },
+    progress: (snapshot.workflow_progress as JsonRecord)?.data ?? {},
+    graph: (snapshot.workflow_compute_graph as JsonRecord)?.data ?? {},
+    tasks: rowsFrom((snapshot.tasks as JsonRecord)?.data ?? snapshot.tasks),
+    actions: operatorActionsFixture(String(goal.goal_id ?? snapshot.goal_id ?? "")),
+    evidence: [],
+    snapshot,
+  };
+}
+
+function composedGoalProjectionFixture(goalId: string, state?: FixtureState): JsonRecord {
   if (goalId === submittedGoal) {
     if ((state?.requestCounts[`goal:${submittedGoal}`] ?? 0) <= 2) {
       return submittedProjectionShell();
@@ -726,6 +791,44 @@ function approvalsFixture(): JsonRecord[] {
   ];
 }
 
+function operatorActionsFixture(goalId?: string): JsonRecord[] {
+  const approvalActions = approvalsFixture()
+    .filter((approval) => !goalId || approval.goal_id === goalId)
+    .map((approval) => ({
+      action_id: `approval:${approval.goal_id}:${approval.approval_id}`,
+      kind: "resolve_approval",
+      handler: "approve",
+      goal_id: approval.goal_id,
+      task_id: approval.task_id ?? "review-task",
+      title: "Approval required",
+      question: "Approve this gate and continue?",
+      status: "pending",
+      allowed_resolutions: ["approve", "reject", "add_context", "cancel_goal"],
+      approval,
+      payload_json: approval,
+    }));
+  const thunkActions = !goalId || goalId === goalA
+    ? [{
+        action_id: `thunk:${goalA}:thunk-approval-1`,
+        kind: "resume_thunk",
+        handler: "resume_thunk",
+        goal_id: goalA,
+        task_id: "root-task",
+        title: "Action needed: approve sandbox profile",
+        question: "Provide the missing input and resume the continuation.",
+        status: "pending",
+        allowed_resolutions: ["continue", "add_context", "replan", "cancel_goal"],
+        thunk_id: "thunk-approval-1",
+        payload_json: {
+          id: "thunk-approval-1",
+          status: "pending",
+          question: "Provide the missing input and resume the continuation.",
+        },
+      }]
+    : [];
+  return [...approvalActions, ...thunkActions];
+}
+
 function chatResponseFixture(body: JsonRecord): JsonRecord {
   const messages = Array.isArray(body.messages) ? body.messages.filter(isRecord) : [];
   const latest = [...messages].reverse().find((message) => message.role === "user")?.content;
@@ -787,4 +890,20 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function rowsFrom(value: unknown): JsonRecord[] {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord);
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  for (const key of ["tasks", "nodes", "goals", "actions", "items", "records", "rows", "data"]) {
+    const rows = rowsFrom(value[key]);
+    if (rows.length) {
+      return rows;
+    }
+  }
+  return [];
 }

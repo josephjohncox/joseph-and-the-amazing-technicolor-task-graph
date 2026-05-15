@@ -58,7 +58,22 @@ coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
 ```
 
-The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model runners. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, model route, and typed model params instead of assuming one local agent.
+The default Compose stack starts multiple stub runners: Codex coding, Codex
+review/test, Claude Code, staff-engineer, generic model-provider, research, and
+host-local model runners. They all register with `coat-runner-registry` so the
+coordinator can route tasks by role, capability, label, model route, and typed
+model params instead of assuming one local agent.
+
+After the stack is up, seed real coordinator-created demo goals for local UI/TUI
+navigation with:
+
+```sh
+make bootstrap-goals
+```
+
+That creates a completed executor lifecycle goal, a pending approval goal, and a
+pending human-prompt thunk. Use fixture seeding only for read-model tests:
+`make bootstrap-fixture-goals`.
 
 Set up local provider credentials and model endpoints when you want live hosted or local models. The no-flag command starts an interactive wizard; explicit flags keep setup scriptable:
 
@@ -92,11 +107,11 @@ needs those Claude Code auth options.
 
 The interactive setup flow includes indexed fast, speed-tier, fast-completions,
 balanced, deep-review, xhigh reasoning, deterministic JSON/tool-output, and
-custom runtime parameter choices for local and hosted model routes. Codex setup is separate from OpenAI hosted model-provider
-setup: selecting the OpenAI hosted surface writes the generic model-provider
-runner config and can also write the research runner config. It can also run selected
-device/browser login, AWS SSO, Ollama pull, and preflight steps directly after
-writing the env file.
+custom runtime parameter choices for local and hosted model routes. Codex setup
+is separate from OpenAI hosted model-provider setup: selecting the OpenAI hosted
+surface writes the generic model-provider runner config and can also write the
+research runner config. It can also run selected device/browser login, AWS SSO,
+Ollama pull, and preflight steps directly after writing the env file.
 
 `coat init` writes `.coat/project.json`, a non-secret project config used by
 CLI preflight checks and profile defaults for `cli`, `local`, `restate-cloud`,

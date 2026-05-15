@@ -20,12 +20,9 @@ Use `@ctxr/agent-staff-engineer` as a specialized issue-to-PR worker after depen
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  Codex App Server remains the first live worker reference; staff-engineer live
-  package verification and issue-to-PR smoke remain gated until package behavior,
-  isolated repo install, tracker auth, and Claude Code auth distribution are
-  approved.
+None currently. Staff-engineer live package verification and issue-to-PR smoke
+are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

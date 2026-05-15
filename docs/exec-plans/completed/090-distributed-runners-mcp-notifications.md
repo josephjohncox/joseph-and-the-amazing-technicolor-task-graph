@@ -58,12 +58,12 @@ Make runner placement, model routing, MCP context, and human-feedback notificati
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  Remaining live runner/provider verification, non-SQS provider adapters, and
-  live notification smoke tests live there. `make compose-runner-smoke` remains a
-  pull-request and workflow-dispatch check; do not add cron-based execution
-  unless a future plan introduces a distinct non-PR maintenance workload.
+None currently. Remaining live runner/provider verification, non-SQS provider
+adapters, and live notification smoke tests are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`make compose-runner-smoke` remains a pull-request and workflow-dispatch check;
+do not add cron-based execution unless a future plan introduces a distinct
+non-PR maintenance workload.
 
 ## Acceptance
 

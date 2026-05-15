@@ -24,8 +24,5 @@ Make Restate Cloud a supported durable substrate for personal COAT usage and cor
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  ReleaseHardening owns cloud overlay timing, selected provider overlays, and
-  service-level journal-encryption guidance when the deployed Rust SDK path
-  supports it.
+None currently. ReleaseHardening follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.

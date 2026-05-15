@@ -6,6 +6,7 @@ NODE ?= node
 BUF ?= buf
 COAT ?= $(COAT_BIN_DIR)/coat
 BUF_GENERATE_HOME ?= $(CURDIR)/target/buf-home
+NODE_MIN_VERSION ?= 22.12.0
 SCENARIO_E2E_OUT ?= target/coat-scenarios
 SCENARIO_E2E_SPECS ?= scenarios/e2e/*.json
 SCENARIO_E2E_STACK ?= auto
@@ -70,7 +71,7 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 
 .PHONY: \
 	build coat-cli coat-cli-release coat-path \
-	ci ci-rust fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
+	ci ci-rust ci-node ci-pr fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
 	proto-sdk-generate proto-sdk-check \
 	event-gateway-smoke event-gateway-compose-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
 	scenario-e2e scenario-e2e-stack scenario-e2e-ui scenario-e2e-ui-live \
@@ -78,7 +79,7 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 	bootstrap-goals bootstrap-fixture-goals \
 	reset-help reset-smoke scenario-reset scenario-reset-dry-run bootstrap-reset bootstrap-reset-dry-run compose-reset compose-reset-dry-run \
 	release-binary-smoke release-helm-smoke \
-	ts-install sidecars-build control-web-build control-web-smoke ts-build \
+	node-version-check ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
 	compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down \
 	k8s-render
@@ -272,14 +273,17 @@ proto-sdk-check: proto-sdk-generate
 docs-check:
 	sh scripts/coat-doc-gardener.sh
 
-ts-install:
+node-version-check:
+	@$(NODE) -e 'const min = "$(NODE_MIN_VERSION)".split(".").map(Number); const got = process.versions.node.split(".").map(Number); const ok = got[0] > min[0] || (got[0] === min[0] && (got[1] > min[1] || (got[1] === min[1] && got[2] >= min[2]))); if (!ok) { console.error("Node " + process.versions.node + " is too old; COAT TypeScript builds require >= $(NODE_MIN_VERSION). Run `nvm use`, install the version in .nvmrc, or set NODE=/path/to/node."); process.exit(1); } console.log("Node " + process.versions.node + " satisfies >= $(NODE_MIN_VERSION)");'
+
+ts-install: node-version-check
 	@set -eu; \
 	for dir in $(TS_DIRS); do \
 		echo "installing $$dir"; \
 		$(NPM) ci --prefix "$$dir" $(NPM_CI_FLAGS); \
 	done
 
-sidecars-build:
+sidecars-build: node-version-check
 	@set -eu; \
 	for dir in $(SIDECAR_DIRS); do \
 		echo "building $$dir"; \
@@ -293,7 +297,7 @@ sidecars-build:
 		fi; \
 	done
 
-control-web-build:
+control-web-build: node-version-check
 	@set -eu; \
 	dir=ui/control-plane-web; \
 	echo "building $$dir"; \
@@ -306,6 +310,11 @@ control-web-smoke: control-web-build
 	$(NPM) run --prefix ui/control-plane-web smoke
 
 ts-build: sidecars-build control-web-build
+
+ci-node: ts-install
+	$(MAKE) sidecars-build
+	$(MAKE) control-web-build
+	$(NPM) run --prefix ui/control-plane-web smoke
 
 helm-lint:
 	$(COAT) deploy chart lint
@@ -396,7 +405,10 @@ release-helm-smoke: coat-cli
 	fi; \
 	echo "smoked published Helm chart $(CHART_VERSION) with image tag $$app_version"
 
-ci: ci-rust proto-check docs-check ts-install ts-build control-web-smoke
+ci: ci-rust proto-check docs-check ci-node
+	git diff --check
+
+ci-pr: ci-rust proto-check docs-check reset-smoke validate-task-graph-bootstraps ci-node scenario-e2e scenario-e2e-ui
 	git diff --check
 
 compose-config:

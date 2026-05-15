@@ -23,6 +23,8 @@ Safe defaults:
   With no action flags, this helper only prints help.
   Evidence cleanup removes known generated run directories under target/.
   No shortcut mode deletes Compose volumes; --delete-volumes must be explicit.
+  Read-model records seeded into goal-store are cleared by resetting the local
+  stack/volumes, not by deleting evidence files.
 
 Actions:
   --mode scenario          Remove generated scenario evidence for known specs.

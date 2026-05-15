@@ -37,9 +37,5 @@ CI now calls the same `make proto-check` target so protobuf linting, protobuf fo
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  RuntimeVerifier owns the Docker Testcontainers Restate restart/resume proof.
-  ProtocolSDK owns generated SDK target selection; SDK generation remains an
-  internal validation target until the active plan chooses a publishing
-  milestone.
+None currently. RuntimeVerifier and ProtocolSDK follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.

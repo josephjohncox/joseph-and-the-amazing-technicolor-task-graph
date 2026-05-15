@@ -54,12 +54,8 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  Provisioner owns Kubernetes executor proof, object upload promotion,
-  coordinator-approved capacity provisioning, enforcement attestations, and any
-  provider-backed sandbox adapter that can return validator-reviewable
-  attestations.
+None currently. Provisioner follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

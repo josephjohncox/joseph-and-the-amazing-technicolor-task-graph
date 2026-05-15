@@ -43,12 +43,8 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  ReleaseHardening owns release workflow drift, published binary and Helm smoke
-  evidence, and provider overlays. Provisioner owns the production
-  controller/provisioner loop for coordinator-approved executor Jobs and
-  completion attestations.
+None currently. ReleaseHardening and Provisioner follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

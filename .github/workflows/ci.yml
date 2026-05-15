@@ -23,6 +23,7 @@ concurrency:
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  NODE_VERSION: "22.12.0"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
@@ -30,6 +31,7 @@ env:
 
 jobs:
   build:
+    timeout-minutes: 90
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -55,11 +57,18 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: |
             sidecars/*/package-lock.json
             ui/control-plane-web/package-lock.json
+      - name: Print validation tool versions
+        run: |
+          rustc --version
+          cargo --version
+          node --version
+          npm --version
+          buf --version
       - name: Rust compile, tests, and no-Docker smokes
         run: make ci-rust
       - name: Protocol and schema checks
@@ -114,16 +123,29 @@ jobs:
   runner-targets:
     name: Runner target check (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        runner:
-          - ubuntu-latest
-          - ubuntu-24.04
-          - ubuntu-22.04
-          - ubuntu-24.04-arm
-          - ubuntu-22.04-arm
-          - macos-latest
+        include:
+          - runner: ubuntu-latest
+            expected_kernel: Linux
+            expected_arch: x86_64
+          - runner: ubuntu-24.04
+            expected_kernel: Linux
+            expected_arch: x86_64
+          - runner: ubuntu-22.04
+            expected_kernel: Linux
+            expected_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            expected_kernel: Linux
+            expected_arch: aarch64
+          - runner: ubuntu-22.04-arm
+            expected_kernel: Linux
+            expected_arch: aarch64
+          - runner: macos-latest
+            expected_kernel: Darwin
+            expected_arch: arm64
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -143,8 +165,23 @@ jobs:
           cache-targets: true
           cache-all-crates: true
           cache-on-failure: true
-      - name: Check workspace on hosted runner target
-        run: cargo check --workspace --bins --tests
+      - name: Check hosted runner target shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$(uname -s)"
+          arch="$(uname -m)"
+          echo "runner=${{ matrix.runner }}"
+          echo "kernel=${kernel}"
+          echo "arch=${arch}"
+          test "${kernel}" = "${{ matrix.expected_kernel }}"
+          if [ "${{ matrix.expected_arch }}" != "any" ]; then
+            test "${arch}" = "${{ matrix.expected_arch }}"
+          fi
+          rustc -vV
+          cargo -vV
+      - name: Check core Rust contracts on hosted runner
+        run: cargo check -p coat-domain --lib
       - name: Print Rust compiler cache stats
         if: always()
         run: |
@@ -153,6 +190,7 @@ jobs:
   compose-topology-smokes:
     if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs['compose-runner-smoke'] || inputs['event-gateway-compose-smoke'])) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always

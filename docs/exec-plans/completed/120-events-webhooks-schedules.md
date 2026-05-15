@@ -34,8 +34,6 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  EventOps owns OpenTelemetry, provider adapters, Google Calendar, Outlook, and
-  Compose or cluster topology proof. SQS/LocalStack proof is closed by the active
-  plan's EventOps evidence.
+None currently. EventOps follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`. SQS/LocalStack
+proof is closed by the active plan's EventOps evidence.

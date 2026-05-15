@@ -20,9 +20,9 @@ Create the repo harness that lets agents and engineers navigate the project with
 
 ## Follow-Ups
 
-- Keep `docs/exec-plans/active/` current as new work appears, and move finished plans to `docs/exec-plans/completed/` only after acceptance evidence is recorded.
-- Extend doc-gardening checks when a new source-of-truth doc, service entrypoint, or public contract becomes mandatory.
-- Keep stale command checks aligned with the canonical hierarchy whenever the CLI tree changes.
+None currently. Ongoing doc gardening is normal maintenance, and active
+cross-cutting work is tracked in
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

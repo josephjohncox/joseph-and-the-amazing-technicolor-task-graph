@@ -26,8 +26,8 @@ Implement the shared Rust contracts that every coordinator, worker, validator, a
 
 ## Follow-Ups
 
-- Keep adding focused domain tests when goal lifecycle contracts grow, especially for restart, checkpoint, branch, approval, memory, and review gates.
-- Regenerate schemas and update dependent protobuf/goal-store projection docs whenever a cross-service type changes.
+None currently. Future lifecycle contract growth, schema alignment, and
+projection proof are tracked by the active master plan.
 
 ## Acceptance
 

@@ -1853,16 +1853,22 @@ fn evaluate_custom_check(
         "artifact_policy" => artifact_policy_check(spec, projection, assertion, expected),
         "state_transition" => state_transition_check(spec, projection, assertion, expected),
         "continuation" => continuation_behavior_check(spec, projection, assertion, expected),
+        "approval" => approval_behavior_check(spec, projection, assertion, expected),
         "event_dedupe" => event_dedupe_check(spec, assertion, expected),
         "projection_lineage" => projection_lineage_check(spec, projection, assertion, expected),
         "child_tasks" => child_task_check(spec, assertion, expected),
         "terminal_frontier" => terminal_frontier_check(spec, projection, assertion, expected),
         "budget" => budget_check(spec, assertion, expected),
+        "recovery" => recovery_check(spec, projection, assertion, expected),
         "review_gate" => review_gate_check(spec, projection, assertion, expected),
         "review_round" => review_round_check(spec, projection, assertion, expected),
         "control_loop" => control_loop_check(spec, assertion, expected),
         "satisfaction" => satisfaction_check(spec, assertion, expected),
+        "task_count" => task_count_check(projection, assertion, expected),
         "task_graph" => task_graph_check(spec, projection, assertion, expected),
+        "graph_shape" => graph_shape_check(projection, assertion, expected),
+        "research" => research_check(spec, projection, assertion, expected),
+        "state_machine" => state_machine_custom_check(spec, projection, assertion, expected),
         "queue_history" => queue_history_check(spec, projection, assertion, expected),
         other => (
             false,
@@ -2043,6 +2049,64 @@ fn continuation_behavior_check(
     )
 }
 
+fn approval_behavior_check(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let approval_refs = approval_request_refs(spec, projection);
+    let approval_events = projection
+        .events
+        .iter()
+        .filter_map(|event| {
+            let event_type = text_field(event, "event_type");
+            matches!(
+                normalize_token(&event_type).as_str(),
+                "approval_granted" | "approval_decided" | "approval_resolved"
+            )
+            .then_some(event_type)
+        })
+        .collect::<Vec<_>>();
+    let resumed_approval_thunks = projection
+        .compute_graph_nodes
+        .iter()
+        .filter(|node| {
+            node.get("kind").and_then(Value::as_str) == Some("delayed_compute_thunk")
+                && approval_ref_from_value(node).is_some()
+                && matches!(
+                    normalize_token(&text_field(node, "status")).as_str(),
+                    "resumed" | "done" | "completed" | "approved"
+                )
+        })
+        .count();
+    let approval_resume_actions = spec
+        .actions
+        .iter()
+        .filter(|action| is_approval_resume_action(action))
+        .count();
+    let requested_approved = normalize_token(assertion).contains("approved")
+        || normalize_token(assertion).contains("approval_status_approved");
+    let approved = !approval_refs.is_empty()
+        && approval_resume_actions > 0
+        && (!approval_events.is_empty() || resumed_approval_thunks > 0);
+    let pass = if requested_approved {
+        approved
+    } else {
+        !approval_refs.is_empty()
+    };
+    (
+        pass == expected_bool(expected),
+        json!({
+            "approval_refs": approval_refs,
+            "approval_events": approval_events,
+            "approval_resume_actions": approval_resume_actions,
+            "resumed_approval_thunks": resumed_approval_thunks,
+        }),
+        format!("approval behavior check {assertion:?} failed"),
+    )
+}
+
 fn event_dedupe_check(
     spec: &ScenarioSpec,
     assertion: &str,
@@ -2182,6 +2246,55 @@ fn budget_check(spec: &ScenarioSpec, assertion: &str, expected: &Value) -> (bool
     )
 }
 
+fn recovery_check(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let blocked_results = spec
+        .actions
+        .iter()
+        .flat_map(action_worker_result_values)
+        .filter(|result| normalize_token(&text_field(result, "status")) == "blocked")
+        .collect::<Vec<_>>();
+    let recovery_actions = blocked_results
+        .iter()
+        .flat_map(|result| string_array(result.get("recovery_actions")))
+        .map(|action| normalize_token(&action))
+        .collect::<BTreeSet<_>>();
+    let has_restart_or_retry =
+        recovery_actions.contains("restart") || recovery_actions.contains("retry");
+    let blocked_thunks = blocked_results
+        .iter()
+        .flat_map(|result| delayed_compute_thunks_from_value(result))
+        .count();
+    let done_tasks = projection
+        .tasks
+        .iter()
+        .filter(|task| normalize_token(&text_field(task, "status")) == "done")
+        .count();
+    let expected_done = expected_task_counts(spec)
+        .get("done")
+        .copied()
+        .unwrap_or(done_tasks);
+    let pass = !blocked_results.is_empty()
+        && has_restart_or_retry
+        && blocked_thunks == 0
+        && done_tasks >= expected_done;
+    (
+        pass == expected_bool(expected),
+        json!({
+            "blocked_results": blocked_results.len(),
+            "recovery_actions": recovery_actions,
+            "blocked_delayed_compute_thunks": blocked_thunks,
+            "done_tasks": done_tasks,
+            "expected_done_tasks": expected_done,
+        }),
+        format!("recovery check {assertion:?} failed"),
+    )
+}
+
 fn review_gate_check(
     spec: &ScenarioSpec,
     projection: &ScenarioProjection,
@@ -2307,6 +2420,40 @@ fn satisfaction_check(
     )
 }
 
+fn task_count_check(
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let status = if normalize_token(assertion).contains("done") {
+        "done"
+    } else if normalize_token(assertion).contains("blocked") {
+        "blocked"
+    } else if normalize_token(assertion).contains("failed") {
+        "failed"
+    } else {
+        "all"
+    };
+    let actual = projection
+        .tasks
+        .iter()
+        .filter(|task| status == "all" || normalize_token(&text_field(task, "status")) == status)
+        .count();
+    let expected_count = expected
+        .as_u64()
+        .map(|value| value as usize)
+        .unwrap_or(actual);
+    (
+        actual == expected_count,
+        json!({
+            "status": status,
+            "actual": actual,
+            "expected": expected_count,
+        }),
+        format!("task count check {assertion:?} failed"),
+    )
+}
+
 fn task_graph_check(
     spec: &ScenarioSpec,
     projection: &ScenarioProjection,
@@ -2334,6 +2481,100 @@ fn task_graph_check(
             "compute_graph_nodes": projection.compute_graph_nodes.len(),
         }),
         format!("task graph check {assertion:?} failed"),
+    )
+}
+
+fn graph_shape_check(
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let normalized = normalize_token(assertion);
+    let target = if normalized.contains("review_unifier") {
+        "review_unifier"
+    } else if normalized.contains("fanout") {
+        "fanout"
+    } else if normalized.contains("thunk") {
+        "delayed_compute_thunk"
+    } else {
+        ""
+    };
+    let contains_target = !target.is_empty()
+        && projection.compute_graph_nodes.iter().any(|node| {
+            normalize_token(&text_field(node, "kind")) == target || value_contains(node, target)
+        });
+    (
+        contains_target == expected_bool(expected),
+        json!({
+            "target": target,
+            "contains_target": contains_target,
+            "compute_graph_nodes": projection.compute_graph_nodes,
+        }),
+        format!("graph shape check {assertion:?} failed"),
+    )
+}
+
+fn research_check(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let events = projection
+        .events
+        .iter()
+        .map(|event| text_field(event, "event_type"))
+        .collect::<Vec<_>>();
+    let artifact_text = projection
+        .artifacts
+        .iter()
+        .map(|artifact| serde_json::to_string(artifact).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let task_text = spec
+        .actions
+        .iter()
+        .flat_map(action_worker_result_values)
+        .map(|result| serde_json::to_string(&result).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let has_sources = events
+        .iter()
+        .any(|event| event == "research_sources_captured")
+        || artifact_text.contains("research-output")
+        || task_text.contains("sources");
+    let has_memory_write = events.iter().any(|event| event == "memory_write_proposed")
+        || artifact_text.contains("memory-write")
+        || task_text.contains("proposed_memory");
+    let pass = has_sources && has_memory_write;
+    (
+        pass == expected_bool(expected),
+        json!({
+            "has_sources": has_sources,
+            "has_memory_write": has_memory_write,
+            "events": events,
+            "artifact_text": artifact_text,
+        }),
+        format!("research check {assertion:?} failed"),
+    )
+}
+
+fn state_machine_custom_check(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let checks = state_machine_contract_checks(spec, projection);
+    let failed = checks
+        .iter()
+        .filter(|check| !check.passed)
+        .map(|check| check.name.clone())
+        .collect::<Vec<_>>();
+    (
+        failed.is_empty() == expected_bool(expected),
+        json!({ "failed_checks": failed, "check_count": checks.len() }),
+        format!("state machine check {assertion:?} failed"),
     )
 }
 
@@ -4542,6 +4783,86 @@ mod tests {
         let verdict = evaluate(&spec, &spec.fixtures.projection);
         assert_eq!(verdict.status, "passed");
         assert!(verdict.findings.is_empty());
+    }
+
+    #[test]
+    fn core_scenario_specs_execute_behavioral_evaluator_checks() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let scenarios = [
+            "scenarios/e2e/goal_lifecycle_basic.json",
+            "scenarios/e2e/blocked_and_resumed.json",
+            "scenarios/e2e/signal_driven_goal.json",
+            "scenarios/e2e/fanout_until_done.json",
+            "scenarios/e2e/fork_join_review.json",
+            "scenarios/e2e/long_iterative_loop.json",
+            "scenarios/e2e/bootstrap_cancelled_queue_history.json",
+        ];
+        for scenario in scenarios {
+            let spec = read_spec(&root.join(scenario)).expect(scenario);
+            let verdict = evaluate(&spec, &spec.fixtures.projection);
+            assert_eq!(
+                verdict.status, "passed",
+                "{scenario} findings: {:?}",
+                verdict.findings
+            );
+            let scenario_check_count = verdict
+                .checks
+                .iter()
+                .filter(|check| check.name.starts_with("scenario_check:"))
+                .count();
+            assert_eq!(
+                scenario_check_count,
+                spec.evaluator_checks.len(),
+                "{scenario} should execute every authored evaluator_check"
+            );
+        }
+    }
+
+    #[test]
+    fn behavioral_evaluator_rejects_presence_only_fanout() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/fanout_until_done.json");
+        let mut spec = read_spec(&path).expect("fanout spec");
+        let planner = spec
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "planner_fanout")
+            .expect("planner action");
+        planner.worker_result["child_requests"] = json!([]);
+        spec.fixtures.projection = projection_from_scenario_spec(&spec);
+
+        let verdict = evaluate(&spec, &spec.fixtures.projection);
+        assert_eq!(verdict.status, "failed");
+        assert!(
+            verdict.checks.iter().any(|check| check.name
+                == "scenario_check:bounded_child_materialization"
+                && !check.passed),
+            "fanout should fail when child requests are absent: {:?}",
+            verdict.findings
+        );
+    }
+
+    #[test]
+    fn cancellation_scenario_projects_drained_queue_without_stale_blocker() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/bootstrap_cancelled_queue_history.json");
+        let spec = read_spec(&path).expect("cancelled queue spec");
+        let projection = &spec.fixtures.projection;
+        let statuses = projection
+            .tasks
+            .iter()
+            .map(|task| text_field(task, "status"))
+            .collect::<Vec<_>>();
+        assert!(statuses.iter().any(|status| status == "cancelled"));
+        assert!(
+            !statuses.iter().any(|status| status == "blocked"),
+            "cancelled queue projection must not leave stale blocked tasks: {statuses:?}"
+        );
+        let verdict = evaluate(&spec, projection);
+        assert_eq!(verdict.status, "passed", "{:?}", verdict.findings);
+        assert!(verdict.checks.iter().any(|check| {
+            check.name == "scenario_check:cancelled_queue_history" && check.passed
+        }));
     }
 
     #[test]

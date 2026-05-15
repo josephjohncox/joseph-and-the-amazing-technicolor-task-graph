@@ -32,11 +32,9 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  UIE2E owns full Compose browser E2E and token-broker smoke timing; the
-  backend-first operator API, current-goal model, SSE projection stream, and
-  shadcn-backed SPA cleanup now roll up through that plan.
+None currently. UIE2E follow-ups and backend-first operator cleanup are
+superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

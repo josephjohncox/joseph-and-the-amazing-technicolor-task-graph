@@ -23,10 +23,8 @@ Create a bounded research worker that can collect current facts without owning t
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  ResearchMemory owns live research adapters, citation/source capture, replay
-  fixtures, and promotion from raw-capture refs to object-store snapshots.
+None currently. ResearchMemory follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

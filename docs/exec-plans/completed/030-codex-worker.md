@@ -28,10 +28,8 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  CodexWorker owns live Codex App Server and MCP fallback smoke, approved auth
-  gates, sandbox/workspace gates, and replay fixture capture.
+None currently. CodexWorker follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

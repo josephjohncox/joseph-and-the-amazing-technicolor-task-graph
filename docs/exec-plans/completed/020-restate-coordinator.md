@@ -28,11 +28,8 @@ Make Restate the durable outer loop for goals and task-tree state.
 
 ## Follow-Ups
 
-- Superseded by the active master plan:
-  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-  RuntimeVerifier owns the remaining Docker Testcontainers restart/resume proof,
-  transition/projection observation assertions, and future OpenTelemetry sink
-  checks.
+None currently. RuntimeVerifier follow-ups are superseded by
+`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

@@ -31,8 +31,9 @@ Implement tester, reviewer, validator, and patch-merger workers around evidence,
 
 ## Follow-Ups
 
-- Add more real-world reviewer fixtures as live worker outputs become available.
-- Add live git-worktree integration coverage for checkpoint branches once CI can provision isolated worktrees.
+None currently. Reviewer fixture growth and live git-worktree coverage are
+tracked through the active master plan as live worker and provisioning evidence
+appears.
 
 ## Acceptance
 

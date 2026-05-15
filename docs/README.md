@@ -70,7 +70,11 @@ buf lint
 
 Update docs when behavior, service boundaries, public contracts, deployment knobs, or safety posture change.
 
-Active execution plans must include a `## Follow-Ups` section for developer doc gardening. Treat those bullets as repo-maintenance notes, not product workflow truth.
+Active execution plans must include a `## Follow-Ups` section for developer doc
+gardening. Treat those bullets as repo-maintenance notes, not product workflow
+truth. The current authoritative active plan is
+`exec-plans/active/160-live-durable-runtime-and-execution.md`; completed plans
+are evidence records and should not keep their own competing follow-up queues.
 
 Use `exec-plans/completed/170-usability-coherence-evaluation.md` as the scenario
 usability rubric for operator comprehension and cross-surface coherence.

@@ -1154,7 +1154,7 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
   const eventSince = url.searchParams.get("event_since");
   const started = Date.now();
   let sequence = Number(req.headers["last-event-id"] ?? url.searchParams.get("since") ?? 0) || 0;
-  let lastPayload = "";
+  let lastFingerprint = "";
   while (!closed && Date.now() - started < 5 * 60 * 1000) {
     try {
       const workspace = await operatorWorkspace(goalId, {
@@ -1162,13 +1162,14 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
         since: eventSince,
       });
       const payload = JSON.stringify(workspace);
-      if (payload !== lastPayload) {
+      const fingerprint = operatorStreamFingerprint(workspace);
+      if (fingerprint !== lastFingerprint) {
         const eventName = operatorStreamEventName(workspace, eventTypeFilter);
         res.write(`event: ${eventName}\n`);
         res.write(`id: ${sequence}\n`);
         res.write(`retry: 1500\n`);
         res.write(`data: ${payload}\n\n`);
-        lastPayload = payload;
+        lastFingerprint = fingerprint;
       } else {
         res.write(`event: stream.heartbeat\n`);
         res.write(`id: ${sequence}\n`);
@@ -1190,6 +1191,28 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
   }
 }
 
+function operatorStreamFingerprint(workspace: JsonMap): string {
+  return JSON.stringify(stripVolatileProjectionFields(workspace));
+}
+
+function stripVolatileProjectionFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripVolatileProjectionFields);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as JsonMap;
+  const stable: JsonMap = {};
+  for (const [key, nestedValue] of Object.entries(record)) {
+    if (key === "generated_at") {
+      continue;
+    }
+    stable[key] = stripVolatileProjectionFields(nestedValue);
+  }
+  return stable;
+}
+
 function operatorStreamEventName(workspace: JsonMap, explicitEventType?: string | null): string {
   if (explicitEventType) {
     return explicitEventType;
@@ -1207,7 +1230,7 @@ function operatorStreamEventName(workspace: JsonMap, explicitEventType?: string 
 
   const selectedGoal = asRecord(workspace.selected_goal);
   const summary = asRecord(selectedGoal.summary);
-  const status = String(summary.status ?? "");
+  const status = statusToken(summary.status);
   if (summary.satisfied === true || status === "done" || status === "satisfied") {
     return "goal.satisfied";
   }
@@ -1216,13 +1239,17 @@ function operatorStreamEventName(workspace: JsonMap, explicitEventType?: string 
   }
 
   const workerRuns = arrayField(workspace, "worker_runs").map(asRecord);
-  if (workerRuns.some((run) => ["running", "runnable", "waiting_input", "waiting-approval"].includes(String(run.status ?? "")))) {
+  if (workerRuns.some((run) => ["running", "runnable", "waiting-input", "waiting-approval"].includes(statusToken(run.status)))) {
     return "task.updated";
   }
-  if (workerRuns.some((run) => ["done", "failed", "blocked"].includes(String(run.status ?? "")))) {
+  if (workerRuns.some((run) => ["done", "failed", "blocked"].includes(statusToken(run.status)))) {
     return "worker.completed";
   }
   return goalIdFromWorkspace(workspace) ? "goal.updated" : "workspace.updated";
+}
+
+function statusToken(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replaceAll("_", "-");
 }
 
 function goalIdFromWorkspace(workspace: JsonMap): string {

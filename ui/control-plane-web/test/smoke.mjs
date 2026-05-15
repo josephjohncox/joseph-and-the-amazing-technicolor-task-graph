@@ -2359,13 +2359,14 @@ async function assertBackendBackedControlSurfaces() {
     assert(streamReader, "operator stream exposes a readable body");
     let streamText = "";
     const streamDecoder = new TextDecoder();
-    for (let readCount = 0; readCount < 5 && !streamText.includes("\n\n"); readCount += 1) {
+    for (let readCount = 0; readCount < 10 && streamText.split("\n\n").filter(Boolean).length < 2; readCount += 1) {
       const chunk = await streamReader.read();
       if (chunk.done) break;
       streamText += streamDecoder.decode(chunk.value, { stream: true });
     }
     streamController.abort();
     assert(/event: (action\.required|approval\.requested)/.test(streamText), "operator stream emits product-level action events");
+    assert(streamText.includes("event: stream.heartbeat"), "operator stream emits heartbeats when projection state is unchanged");
     assert(streamText.includes(`"selected_goal_id":"${goalId}"`), "operator stream carries the selected goal workspace projection");
     const approvalQueue = await callMcpAt(backendBaseUrl, "coat_operator_actions", { goal_id: goalId });
     const projectedApprovalAction = approvalQueue.actions.find((action) => action.approval?.approval_id === approvalId);

@@ -24,6 +24,8 @@ Make Restate Cloud a supported durable substrate for personal COAT usage and cor
 
 ## Follow-Ups
 
-- Coordinate cloud overlay timing and Restate runtime proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Add provider-specific overlays after a concrete target such as EKS, GKE, AKS, k0s, k3s, or OpenShift is selected.
-- Add service-level journal encryption guidance when the deployed SDK path supports it for Rust services.
+- Superseded by the active master plan:
+  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+  ReleaseHardening owns cloud overlay timing, selected provider overlays, and
+  service-level journal-encryption guidance when the deployed Rust SDK path
+  supports it.

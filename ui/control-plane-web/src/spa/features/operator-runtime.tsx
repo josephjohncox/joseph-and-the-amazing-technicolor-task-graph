@@ -82,6 +82,7 @@ export type DraftDockViewModel = {
 
 export function DraftReviewDock(props: {
   view: DraftDockViewModel;
+  onEditGoalDraft: () => void;
   onSubmitGoalDraft: () => void;
   onDiscardGoalDraft: () => void;
 }) {
@@ -100,6 +101,12 @@ export function DraftReviewDock(props: {
         {props.view.submittedGoalLabel && <span className="status-pill status-done">Accepted {props.view.submittedGoalLabel}</span>}
       </div>
       <div className="button-row">
+        {props.view.hasGoalDraft && (
+          <Button type="button" variant="outline" disabled={props.view.busy} onClick={props.onEditGoalDraft}>
+            <Bell size={15} />
+            Edit draft
+          </Button>
+        )}
         <Button type="button" variant="outline" disabled={props.view.busy || accepted} onClick={props.onDiscardGoalDraft}>
           <XCircle size={15} />
           Discard

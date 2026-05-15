@@ -6,6 +6,8 @@ Coordinate the remaining live-runtime work across Restate durability, live worke
 
 This is the cross-cutting execution plan for the high-value follow-ups preserved from the completed subsystem plans. It does not reopen those plans; it sequences their residual proof work so the system moves from scaffold to proven durable runtime without duplicating subsystem ownership.
 
+Backend-first simplification work also rolls up here. The product model is a durable actor-style task graph: Restate owns orchestration, coordinator handlers own state transitions, Postgres or the local JSONL goal-store backend owns the operator-facing read model, `/api/operator/*` is the compact mutation/read surface, `/api/operator/stream` is the projection stream, and SPA/TUI clients render the same current-goal, action queue, evidence, worker-run, event, and graph projections.
+
 ## Defaults
 
 - Restate harness: Docker Testcontainers with a pinned Restate image.
@@ -59,6 +61,7 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Scaffold the ignored `coat-coordinator` RuntimeVerifier entrypoint at `crates/coordinator/tests/restate_restart_resume.rs`; normal CI only compiles gate/default tests, while the live proof requires `COAT_RESTATE_RESTART_RESUME_TEST=1`, Docker availability, and a pinned `COAT_RESTATE_TESTCONTAINERS_IMAGE`.
 - Evidence 2026-05-11: `crates/coordinator/tests/restate_restart_resume.rs` now has deterministic config, harness-step ordering, projection idempotency, and transition-counter assertions around the live proof gate.
 - Evidence 2026-05-11: coordinator transition observations now include waiting-input counts, pending delayed thunks, mechanism-round counts, compute-graph node/edge counts, and a `coordinator.transition` tracing span; RuntimeVerifier projection counters now assert persisted compute-graph nodes, edges, open thunks, and waiting tasks.
+- Evidence 2026-05-14: coordinator control handlers now route through a shared serialized transition path for cancel, feedback, steer, approve, restart, branch, select-branch, vote, delayed thunk, and mechanism actions. Tests prove blocked, waiting, and failed goals can recover through restart or resume while done and cancelled goals stay closed.
 - Start Restate with persistent data, start coordinator on a dynamic local port, register the deployment, and drive workflow calls through Restate ingress.
 - Prove coordinator restart against existing workflow state.
 - Prove Restate process restart with persisted journal data.
@@ -154,8 +157,10 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   `goal.satisfied`, `goal.cancelled`, and `stream.heartbeat`; the SPA applies
   each streamed workspace projection to the global goal list, selected-goal
   detail, workspace, and action queue caches so visible state does not wait for
-  the next poll. The control-web smoke test reads a real SSE block and asserts
-  event name plus selected-goal projection.
+  the next poll. Projection fallback IDs are now derived from stable row content
+  instead of random UUIDs, allowing unchanged stream reads to emit heartbeats.
+  The control-web smoke test reads real SSE blocks and asserts event name,
+  heartbeat behavior, and selected-goal projection.
 - Evidence 2026-05-14: the old browser/operator helper routes for overview,
   runner lists, human threads, and plan follow-up queues were removed from the
   SPA/gateway public surface. SPA, TUI, scenario, and smoke coverage now use
@@ -179,6 +184,14 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   from `App.tsx` into typed React feature/component modules. The extracted
   components remain presentation-only over the `/api/operator/*` projection and
   do not own durable state.
+- Evidence 2026-05-14: the SPA cleanup continued by simplifying chat starter copy,
+  hiding raw session IDs behind workspace or selected-goal labels, adding active
+  draft edit/discard/submit controls, and exposing direct approval rejection from
+  approval prompts while keeping draft submission routed through the operator API.
+- Evidence 2026-05-14: the TUI now has operator tabs for Overview, Goals, Graph,
+  Actions, Approvals, Events, Workers, Evidence, Adversarial, and Debug. Actions,
+  approvals, graph, worker runs, and evidence all render from operator projections,
+  and the old command-coverage wording was removed from the TUI debug surface.
 - Evidence 2026-05-14: reset and bootstrap helpers now use the same bootstrap
   evidence root as the Makefile (`target/coat-scenarios/bootstrap`), bootstrap
   cleanup removes checked-in scenario IDs from generated evidence roots instead
@@ -244,6 +257,10 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   worker-run, review, approval, and append-only event transitions with recovery
   hints, preserving recoverable blocked/waiting/failed states while rejecting
   invalid transition attempts before they become UI no-ops.
+- Evidence 2026-05-14: actor contracts now classify actor states as active,
+  waiting, recoverable, terminal, or immutable; transitions declare the actor
+  kinds they target, and invalid actor-kind transitions are rejected with
+  recovery guidance before they can corrupt projections.
 - Evidence 2026-05-11: `crates/domain` now models goal ranking votes as an opt-in extension with upvote/downvote promotion or demotion decisions, plus first-class delayed compute thunks for human input, approvals, timers, callbacks, resource waits, model availability, delimited continuation refs, worker `waiting` results, and derived compute graph snapshots; `coat-coordinator` exposes `vote`, `create_thunk`, `resume_thunk`, and `compute_graph`, and the CLI exposes `coat goal vote`, `coat goal thunk create`, `coat goal compute-graph`, and `coat human resume-thunk`.
 - Evidence 2026-05-11: `crates/domain` now includes opt-in `mechanism_policy` and `MechanismRound` state for distributed consensus, voting, Delphi-style rounds, sealed-bid/Vickrey auctions, and contract-net allocation; `coat-coordinator` exposes `mechanism_start` and `mechanism_ballot`, and the CLI exposes `coat goal mechanism start|ballot`.
 - Before moving any linked plan to completed, preserve every remaining follow-up here, record direct evidence, or write an explicit supersession note.
@@ -282,7 +299,8 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
 - `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
 - `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events.
-- `UIE2E`: continue replacing monolithic SPA sections with shadcn-backed feature modules over the compact `/api/operator/*` API without making the frontend the durable state owner.
+- `UIE2E`: continue replacing monolithic SPA sections with shadcn-backed feature modules over the compact `/api/operator/*` API without making the frontend the durable state owner; keep explicit draft and human-action controls visible in the panels where operators already inspect the selected goal.
+- `UIE2E`: keep the TUI and SPA aligned on the same selected-goal model, action queue, approvals, worker-run, evidence, and event projections as the backend-first state machine stabilizes.
 - `UIE2E`: add persisted SPA screenshots and TUI transcripts to scenario artifacts when the scenario runner grows first-class terminal and browser capture paths.
 - `UIE2E`: consider a gated LLM usability evaluator later; PR CI should keep using deterministic coherence checks.
 - `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.

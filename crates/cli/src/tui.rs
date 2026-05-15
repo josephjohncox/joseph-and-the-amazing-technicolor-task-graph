@@ -92,20 +92,28 @@ impl TuiFocus {
 enum DashboardView {
     Overview,
     Goals,
+    Graph,
+    Actions,
     Approvals,
     Events,
+    Workers,
+    Evidence,
     Adversarial,
-    Commands,
+    Debug,
 }
 
 impl DashboardView {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 10] = [
         Self::Overview,
         Self::Goals,
+        Self::Graph,
+        Self::Actions,
         Self::Approvals,
         Self::Events,
+        Self::Workers,
+        Self::Evidence,
         Self::Adversarial,
-        Self::Commands,
+        Self::Debug,
     ];
 
     fn next(self) -> Self {
@@ -122,10 +130,14 @@ impl DashboardView {
         match self {
             Self::Overview => 0,
             Self::Goals => 1,
-            Self::Approvals => 2,
-            Self::Events => 3,
-            Self::Adversarial => 4,
-            Self::Commands => 5,
+            Self::Graph => 2,
+            Self::Actions => 3,
+            Self::Approvals => 4,
+            Self::Events => 5,
+            Self::Workers => 6,
+            Self::Evidence => 7,
+            Self::Adversarial => 8,
+            Self::Debug => 9,
         }
     }
 
@@ -133,10 +145,14 @@ impl DashboardView {
         match self {
             Self::Overview => "Overview",
             Self::Goals => "Goals",
-            Self::Approvals => "Actions",
+            Self::Graph => "Graph",
+            Self::Actions => "Actions",
+            Self::Approvals => "Approvals",
             Self::Events => "Events",
+            Self::Workers => "Workers",
+            Self::Evidence => "Evidence",
             Self::Adversarial => "Adversarial",
-            Self::Commands => "Debug",
+            Self::Debug => "Debug",
         }
     }
 
@@ -144,16 +160,24 @@ impl DashboardView {
         match self {
             Self::Overview => "1",
             Self::Goals => "2",
-            Self::Approvals => "3",
-            Self::Events => "4",
-            Self::Adversarial => "5",
-            Self::Commands => "6",
+            Self::Graph => "3",
+            Self::Actions => "4",
+            Self::Approvals => "5",
+            Self::Events => "6",
+            Self::Workers => "7",
+            Self::Evidence => "8",
+            Self::Adversarial => "9",
+            Self::Debug => "0",
         }
     }
 
     fn title(self) -> String {
         format!("{} ({})", self.label(), self.key_hint())
     }
+}
+
+fn dashboard_view_uses_action_queue(view: DashboardView) -> bool {
+    matches!(view, DashboardView::Actions | DashboardView::Approvals)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,6 +301,37 @@ struct EventSourceSummary {
     approval: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GraphNodeSummary {
+    id: String,
+    kind: String,
+    status: String,
+    label: String,
+    goal_id: Option<String>,
+    task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct WorkerRunSummary {
+    id: String,
+    runner: String,
+    status: String,
+    task: Option<String>,
+    endpoint: Option<String>,
+    node: Option<String>,
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EvidenceSummary {
+    id: String,
+    kind: String,
+    summary: String,
+    source: Option<String>,
+    goal_id: Option<String>,
+    task_id: Option<String>,
+}
+
 impl GoalDraftSummary {
     fn chat_preview(&self) -> String {
         format!(
@@ -301,8 +356,14 @@ struct App {
     approvals: Vec<ApprovalSummary>,
     events: Vec<EventSummary>,
     event_sources: Vec<EventSourceSummary>,
+    graph_nodes: Vec<GraphNodeSummary>,
+    worker_runs: Vec<WorkerRunSummary>,
+    evidence: Vec<EvidenceSummary>,
     selected_goal_approvals: Vec<ApprovalSummary>,
     selected_goal_events: Vec<EventSummary>,
+    selected_goal_graph_nodes: Vec<GraphNodeSummary>,
+    selected_goal_worker_runs: Vec<WorkerRunSummary>,
+    selected_goal_evidence: Vec<EvidenceSummary>,
     selected_goal_id: Option<String>,
     selected_goal_snapshot: Option<Value>,
     selected_goal_outline: Vec<String>,
@@ -341,8 +402,14 @@ impl App {
             approvals: Vec::new(),
             events: Vec::new(),
             event_sources: Vec::new(),
+            graph_nodes: Vec::new(),
+            worker_runs: Vec::new(),
+            evidence: Vec::new(),
             selected_goal_approvals: Vec::new(),
             selected_goal_events: Vec::new(),
+            selected_goal_graph_nodes: Vec::new(),
+            selected_goal_worker_runs: Vec::new(),
+            selected_goal_evidence: Vec::new(),
             selected_goal_id,
             selected_goal_snapshot: None,
             selected_goal_outline: Vec::new(),
@@ -393,6 +460,9 @@ impl App {
         self.approvals = operator_action_summaries_from_value(&operator_workspace);
         self.events = event_summaries_from_value(&operator_workspace);
         self.event_sources = event_source_summaries_from_value(&operator_workspace);
+        self.graph_nodes = graph_node_summaries_from_value(&operator_workspace);
+        self.worker_runs = worker_run_summaries_from_value(&operator_workspace);
+        self.evidence = evidence_summaries_from_value(&operator_workspace);
         let mut status = "dashboard refreshed".to_string();
         if let Some(selected_goal) = operator_workspace.get("selected_goal")
             && !selected_goal.is_null()
@@ -402,6 +472,9 @@ impl App {
                 self.selected_goal_approvals =
                     operator_action_summaries_from_value(&operator_workspace);
                 self.selected_goal_events = event_summaries_from_value(&operator_workspace);
+                self.selected_goal_graph_nodes = graph_node_summaries_from_value(&snapshot);
+                self.selected_goal_worker_runs = worker_run_summaries_from_value(&snapshot);
+                self.selected_goal_evidence = evidence_summaries_from_value(&snapshot);
                 if let Some(goal_id) = self.selected_goal_id.clone()
                     && let Some(summary) = goal_summary_from_snapshot(&snapshot, &goal_id)
                 {
@@ -438,6 +511,9 @@ impl App {
         self.selected_goal_outline = goal_outline_from_snapshot(&snapshot);
         self.selected_goal_approvals = action_needed_summaries_from_value(&snapshot);
         self.selected_goal_events = event_summaries_from_value(&snapshot);
+        self.selected_goal_graph_nodes = graph_node_summaries_from_value(&snapshot);
+        self.selected_goal_worker_runs = worker_run_summaries_from_value(&snapshot);
+        self.selected_goal_evidence = evidence_summaries_from_value(&snapshot);
         if let Some(summary) = goal_summary_from_snapshot(&snapshot, &goal_id) {
             upsert_goal_summary(&mut self.goals, summary);
         }
@@ -479,9 +555,8 @@ impl App {
             content: content.clone(),
         });
         self.chat_scroll_from_bottom = 0;
-        self.status =
-            "generating response via control gateway; input cleared for the next message"
-                .to_string();
+        self.status = "generating response via control gateway; input cleared for the next message"
+            .to_string();
         self.busy = true;
 
         let durable_messages = durable_chat_lines(&self.messages);
@@ -684,11 +759,20 @@ impl App {
         }
     }
 
-    fn current_action_items(&self) -> Vec<ApprovalSummary> {
+    fn scoped_action_items(&self) -> Vec<ApprovalSummary> {
         if self.selected_goal_id.is_some() && !self.selected_goal_approvals.is_empty() {
             self.selected_goal_approvals.clone()
         } else {
             self.approvals.clone()
+        }
+    }
+
+    fn current_action_items(&self) -> Vec<ApprovalSummary> {
+        let items = self.scoped_action_items();
+        if self.dashboard_view == DashboardView::Approvals {
+            items.into_iter().filter(is_approval_gate_action).collect()
+        } else {
+            items
         }
     }
 
@@ -955,6 +1039,9 @@ impl App {
         self.selected_goal_outline.clear();
         self.selected_goal_approvals.clear();
         self.selected_goal_events.clear();
+        self.selected_goal_graph_nodes.clear();
+        self.selected_goal_worker_runs.clear();
+        self.selected_goal_evidence.clear();
         self.active_goal_draft = None;
         self.cancel_goal_confirmation = None;
         self.dashboard_scroll = 0;
@@ -1047,19 +1134,35 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Char('3') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Approvals);
+            app.select_dashboard_view(DashboardView::Graph);
             Ok(false)
         }
         KeyCode::Char('4') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Events);
+            app.select_dashboard_view(DashboardView::Actions);
             Ok(false)
         }
         KeyCode::Char('5') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Adversarial);
+            app.select_dashboard_view(DashboardView::Approvals);
             Ok(false)
         }
         KeyCode::Char('6') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Commands);
+            app.select_dashboard_view(DashboardView::Events);
+            Ok(false)
+        }
+        KeyCode::Char('7') if app.focus == TuiFocus::Dashboard => {
+            app.select_dashboard_view(DashboardView::Workers);
+            Ok(false)
+        }
+        KeyCode::Char('8') if app.focus == TuiFocus::Dashboard => {
+            app.select_dashboard_view(DashboardView::Evidence);
+            Ok(false)
+        }
+        KeyCode::Char('9') if app.focus == TuiFocus::Dashboard => {
+            app.select_dashboard_view(DashboardView::Adversarial);
+            Ok(false)
+        }
+        KeyCode::Char('0') if app.focus == TuiFocus::Dashboard => {
+            app.select_dashboard_view(DashboardView::Debug);
             Ok(false)
         }
         KeyCode::Left if app.focus == TuiFocus::Dashboard => {
@@ -1071,7 +1174,9 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Enter => {
-            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Approvals {
+            if app.focus == TuiFocus::Dashboard
+                && dashboard_view_uses_action_queue(app.dashboard_view)
+            {
                 app.begin_apply_selected_action()?;
             } else if app.focus == TuiFocus::Input {
                 app.begin_send_chat()?;
@@ -1149,13 +1254,15 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         }
         KeyCode::Char('a')
             if app.focus == TuiFocus::Dashboard
-                && app.dashboard_view == DashboardView::Approvals =>
+                && dashboard_view_uses_action_queue(app.dashboard_view) =>
         {
             app.begin_apply_selected_action()?;
             Ok(false)
         }
         KeyCode::Up => {
-            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Approvals {
+            if app.focus == TuiFocus::Dashboard
+                && dashboard_view_uses_action_queue(app.dashboard_view)
+            {
                 app.move_action_selection(-1);
             } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals
             {
@@ -1173,7 +1280,9 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Down => {
-            if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Approvals {
+            if app.focus == TuiFocus::Dashboard
+                && dashboard_view_uses_action_queue(app.dashboard_view)
+            {
                 app.move_action_selection(1);
             } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals
             {
@@ -1359,10 +1468,14 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let lines = match app.dashboard_view {
         DashboardView::Overview => overview_dashboard_lines(app, chunks[1].width),
         DashboardView::Goals => goals_dashboard_lines(app, chunks[1].width),
-        DashboardView::Approvals => approvals_dashboard_lines(app, chunks[1].width),
+        DashboardView::Graph => graph_dashboard_lines(app, chunks[1].width),
+        DashboardView::Actions => actions_dashboard_lines(app, chunks[1].width),
+        DashboardView::Approvals => approval_gates_dashboard_lines(app, chunks[1].width),
         DashboardView::Events => events_dashboard_lines(app, chunks[1].width),
+        DashboardView::Workers => workers_dashboard_lines(app, chunks[1].width),
+        DashboardView::Evidence => evidence_dashboard_lines(app, chunks[1].width),
         DashboardView::Adversarial => adversarial_dashboard_lines(app, chunks[1].width),
-        DashboardView::Commands => command_coverage_dashboard_lines(chunks[1].width),
+        DashboardView::Debug => debug_dashboard_lines(chunks[1].width),
     };
     render_scrollable_lines(
         frame,
@@ -1479,12 +1592,65 @@ fn goals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let approvals = if app.selected_goal_id.is_some() && !app.selected_goal_approvals.is_empty() {
-        &app.selected_goal_approvals
+fn graph_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let nodes = if app.selected_goal_id.is_some() && !app.selected_goal_graph_nodes.is_empty() {
+        &app.selected_goal_graph_nodes
     } else {
-        &app.approvals
+        &app.graph_nodes
     };
+    let value_width = width.saturating_sub(14).max(20) as usize;
+    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_graph_nodes.is_empty() {
+        "selected goal"
+    } else {
+        "workspace"
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "task graph",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("nodes {} scope {}", nodes.len(), scope)),
+        Line::from("Ctrl-N/Ctrl-P changes current goal. Tab focuses chat or input."),
+        Line::from(""),
+    ];
+    if nodes.is_empty() {
+        lines.push(Line::from("No task graph nodes are projected yet."));
+        return lines;
+    }
+    for node in nodes.iter().take(40) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                node.status.clone(),
+                Style::default().fg(status_color(&node.status)),
+            ),
+            Span::raw(" "),
+            Span::styled(node.kind.clone(), Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
+            Span::raw(truncate_text(&node.label, value_width)),
+        ]));
+        lines.push(Line::from(format!(
+            "  id:{} goal:{} task:{}",
+            short_id(&node.id),
+            node.goal_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string()),
+            node.task_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string())
+        )));
+    }
+    if nodes.len() > 40 {
+        lines.push(Line::from(format!("+{} more nodes", nodes.len() - 40)));
+    }
+    lines
+}
+
+fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let approvals = app.scoped_action_items();
     let value_width = width.saturating_sub(15).max(20) as usize;
     let scope = if app.selected_goal_id.is_some() && !app.selected_goal_approvals.is_empty() {
         "selected goal"
@@ -1501,7 +1667,7 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::from(format!(
             "queue {} ({}) scope {}",
             approvals.len(),
-            action_queue_breakdown(approvals),
+            action_queue_breakdown(&approvals),
             scope
         )),
         Line::from(
@@ -1571,6 +1737,72 @@ fn approvals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+fn approval_gates_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let approvals = current_approval_gate_items(app);
+    let value_width = width.saturating_sub(15).max(20) as usize;
+    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_approvals.is_empty() {
+        "selected goal"
+    } else {
+        "all goals"
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "approval gates",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("pending {} scope {}", approvals.len(), scope)),
+        Line::from("Enter/a approves the selected gate. Use Actions for prompts and recovery."),
+        Line::from(""),
+    ];
+    if approvals.is_empty() {
+        lines.push(Line::from("No approval gates are waiting."));
+        return lines;
+    }
+    for (index, approval) in approvals.iter().enumerate() {
+        let selected = action_id_is_selected(app, &approval.id, index);
+        let marker = if selected { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                marker,
+                Style::default().fg(if selected {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+            Span::raw(" "),
+            Span::styled(approval.status.clone(), action_status_style(approval)),
+            Span::raw(" "),
+            Span::styled(
+                truncate_text(&approval.action, value_width),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(format!(
+            "  id:{} risk:{} goal:{} task:{}",
+            short_id(&approval.id),
+            action_risk_label(approval),
+            approval
+                .goal_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string()),
+            approval
+                .task_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string())
+        )));
+        if let Some(created_at) = approval.created_at.as_deref() {
+            lines.push(dashboard_value_line("  created", created_at, value_width));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
 fn action_queue_breakdown(approvals: &[ApprovalSummary]) -> String {
     let approval_count = approvals
         .iter()
@@ -1585,6 +1817,24 @@ fn action_queue_breakdown(approvals: &[ApprovalSummary]) -> String {
         .filter(|action| action.id.starts_with("thunk:"))
         .count();
     format!("approval gates:{approval_count} recovery:{task_count} prompts:{thunk_count}")
+}
+
+fn current_approval_gate_items(app: &App) -> Vec<ApprovalSummary> {
+    app.scoped_action_items()
+        .into_iter()
+        .filter(is_approval_gate_action)
+        .collect()
+}
+
+fn is_approval_gate_action(action: &ApprovalSummary) -> bool {
+    !action.id.starts_with("task:") && !action.id.starts_with("thunk:")
+}
+
+fn action_id_is_selected(app: &App, action_id: &str, fallback_index: usize) -> bool {
+    app.selected_action_item()
+        .as_ref()
+        .map(|selected| selected.id == action_id)
+        .unwrap_or_else(|| fallback_index == app.action_index)
 }
 
 fn action_kind_label(action: &ApprovalSummary) -> &'static str {
@@ -1693,7 +1943,125 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn command_coverage_dashboard_lines(width: u16) -> Vec<Line<'static>> {
+fn workers_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let workers = if app.selected_goal_id.is_some() && !app.selected_goal_worker_runs.is_empty() {
+        &app.selected_goal_worker_runs
+    } else {
+        &app.worker_runs
+    };
+    let value_width = width.saturating_sub(15).max(20) as usize;
+    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_worker_runs.is_empty() {
+        "selected goal"
+    } else {
+        "workspace"
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "workers",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("runs {} scope {}", workers.len(), scope)),
+        Line::from("Registered runners and worker runs are read-only here."),
+        Line::from(""),
+    ];
+    if workers.is_empty() {
+        lines.push(Line::from("No worker or runner activity is projected yet."));
+        return lines;
+    }
+    for worker in workers.iter().take(40) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                worker.status.clone(),
+                Style::default().fg(status_color(&worker.status)),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                truncate_text(&worker.runner, value_width),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(format!(
+            "  id:{} task:{} endpoint:{} node:{}",
+            short_id(&worker.id),
+            worker
+                .task
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string()),
+            worker.endpoint.as_deref().unwrap_or("-"),
+            worker.node.as_deref().unwrap_or("-")
+        )));
+        if let Some(updated_at) = worker.updated_at.as_deref() {
+            lines.push(dashboard_value_line("  updated", updated_at, value_width));
+        }
+        lines.push(Line::from(""));
+    }
+    if workers.len() > 40 {
+        lines.push(Line::from(format!("+{} more workers", workers.len() - 40)));
+    }
+    lines
+}
+
+fn evidence_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let evidence = if app.selected_goal_id.is_some() && !app.selected_goal_evidence.is_empty() {
+        &app.selected_goal_evidence
+    } else {
+        &app.evidence
+    };
+    let value_width = width.saturating_sub(14).max(20) as usize;
+    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_evidence.is_empty() {
+        "selected goal"
+    } else {
+        "workspace"
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "evidence",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("items {} scope {}", evidence.len(), scope)),
+        Line::from("Evidence explains why a task or goal can move forward."),
+        Line::from(""),
+    ];
+    if evidence.is_empty() {
+        lines.push(Line::from("No evidence artifacts are projected yet."));
+        return lines;
+    }
+    for item in evidence.iter().take(40) {
+        lines.push(Line::from(vec![
+            Span::styled(item.kind.clone(), Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
+            Span::raw(truncate_text(&item.summary, value_width)),
+        ]));
+        lines.push(Line::from(format!(
+            "  id:{} source:{} goal:{} task:{}",
+            short_id(&item.id),
+            item.source.as_deref().unwrap_or("-"),
+            item.goal_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string()),
+            item.task_id
+                .as_deref()
+                .map(short_id)
+                .unwrap_or_else(|| "-".to_string())
+        )));
+        lines.push(Line::from(""));
+    }
+    if evidence.len() > 40 {
+        lines.push(Line::from(format!(
+            "+{} more evidence items",
+            evidence.len() - 40
+        )));
+    }
+    lines
+}
+
+fn debug_dashboard_lines(width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(16).max(24) as usize;
     let mut lines = vec![
         Line::from(Span::styled(
@@ -1702,10 +2070,10 @@ fn command_coverage_dashboard_lines(width: u16) -> Vec<Line<'static>> {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Use this panel only when inspecting endpoints and advanced operator paths."),
+        Line::from("Inspect advanced endpoints and explicit CLI escape hatches."),
         Line::from(""),
     ];
-    for item in operator_command_catalog() {
+    for item in operator_debug_catalog() {
         lines.push(Line::from(vec![
             Span::styled(item.command, Style::default().fg(Color::Cyan)),
             Span::raw(" -> "),
@@ -1719,86 +2087,86 @@ fn command_coverage_dashboard_lines(width: u16) -> Vec<Line<'static>> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct OperatorCommandCatalogItem {
+struct OperatorDebugCatalogItem {
     command: &'static str,
     surface: &'static str,
     action: &'static str,
     summary: &'static str,
 }
 
-fn operator_command_catalog() -> &'static [OperatorCommandCatalogItem] {
+fn operator_debug_catalog() -> &'static [OperatorDebugCatalogItem] {
     &[
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat plan",
             surface: "Plans / Debug",
             action: "Open Plans in SPA, Debug in TUI",
             summary: "Draft, list, show, revise, compile, and continue durable plans.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat goal",
-            surface: "Goals / Work Graph / Operator Actions / Adversarial",
-            action: "Open Goals, Graph, Actions, or Adversarial",
+            surface: "Goals / Graph / Actions / Adversarial",
+            action: "Open Goals, Graph, Actions, Approvals, or Adversarial",
             summary: "Submit, inspect, steer, vote, branch, restart, and evaluate goals.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat human",
             surface: "Actions / Human Prompts",
             action: "Enter or a runs the selected queue action",
             summary: "Approve gates, continue human prompts, and inspect feedback threads.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat deploy",
             surface: "Debug",
             action: "Run explicit CLI deploy command",
             summary: "Local, cluster, chart, and Restate Cloud deployment remains operator-run.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat runner",
-            surface: "Runners / Debug",
+            surface: "Workers / Debug",
             action: "Open runner status",
             summary: "Inspect runner registration, capacity, endpoints, and routing pressure.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat tool",
             surface: "Debug",
             action: "Run CLI tool command",
             summary: "List tools, call MCP tools, and route web-search through backend tooling.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat memory",
             surface: "Memory / Debug",
             action: "Open Memory",
             summary: "Search, write, context, join, edit, repair, and inspect memory events.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat event",
             surface: "Events / Actions / Debug",
             action: "Open Events or Actions",
             summary: "Register, ingest, emit, poll, trigger, and route durable event sources.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat store",
-            surface: "Dashboard / Goals / Plans / Actions",
+            surface: "Overview / Goals / Graph / Actions",
             action: "Open projection views",
             summary: "Read goal-store projections for goals, tasks, plans, events, artifacts, checkpoints, and approvals.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat scenario",
             surface: "Debug",
             action: "Run explicit CLI scenario command",
             summary: "List, run, and report deterministic scenario evidence.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat setup",
             surface: "Debug",
             action: "Run explicit CLI setup command",
             summary: "Login, SSO, model index, config, local auth, and chat-client setup.",
         },
-        OperatorCommandCatalogItem {
+        OperatorDebugCatalogItem {
             command: "coat tui",
             surface: "Terminal UI",
             action: "Already here",
-            summary: "Terminal dashboard mirrors SPA goal, action queue, runner, event, and command coverage.",
+            summary: "Terminal dashboard mirrors SPA goal, graph, action, worker, event, and evidence projections.",
         },
     ]
 }
@@ -1974,10 +2342,11 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let viewport_height = area.height.saturating_sub(2);
     let scroll_y = chat_scroll_y(total_rows, viewport_height, app.chat_scroll_from_bottom);
     let max_scroll = total_rows.saturating_sub(viewport_height as usize);
+    let context = chat_context_label(app);
     let title = if app.focus == TuiFocus::Chat {
-        format!("Gateway Chat * row {}/{}", scroll_y, max_scroll)
+        format!("Chat {} * row {}/{}", context, scroll_y, max_scroll)
     } else {
-        format!("Gateway Chat row {}/{}", scroll_y, max_scroll)
+        format!("Chat {} row {}/{}", context, scroll_y, max_scroll)
     };
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -2071,10 +2440,12 @@ fn render_scrollable_lines(
 }
 
 fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let context = chat_context_label(app);
+    let pending = if app.busy { " pending" } else { "" };
     let title = if app.focus == TuiFocus::Input {
-        format!("Input [{}] *", app.mode.label())
+        format!("Input [{} {}{}] *", app.mode.label(), context, pending)
     } else {
-        format!("Input [{}]", app.mode.label())
+        format!("Input [{} {}{}]", app.mode.label(), context, pending)
     };
     frame.render_widget(
         Paragraph::new(app.input.as_str())
@@ -2091,10 +2462,21 @@ fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
+fn chat_context_label(app: &App) -> String {
+    app.selected_goal()
+        .map(|goal| format!("goal {}", truncate_text(&goal.title, 28)))
+        .or_else(|| {
+            app.selected_goal_id
+                .as_deref()
+                .map(|goal_id| format!("goal {}", short_id(goal_id)))
+        })
+        .unwrap_or_else(|| "workspace".to_string())
+}
+
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Tab focus  1-6 views  ↑/↓ scroll/select  Enter/a run action  Ctrl-X cancel goal  Ctrl-L clear local  F5/Ctrl-G accept draft  Ctrl-R refresh  Esc quit",
+            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter/a run action  Ctrl-X cancel goal  Ctrl-L clear local  F5/Ctrl-G accept draft  Ctrl-R refresh  Esc quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -2689,6 +3071,306 @@ fn event_source_summary_from_value(value: &Value) -> Option<EventSourceSummary> 
             ],
         ),
     })
+}
+
+fn graph_node_summaries_from_value(value: &Value) -> Vec<GraphNodeSummary> {
+    let mut nodes = Vec::new();
+    for array in arrays_at_paths(
+        value,
+        &[
+            &["workflow_compute_graph", "data", "nodes"],
+            &["workflow_compute_graph", "nodes"],
+            &["compute_graph", "nodes"],
+        ],
+    ) {
+        nodes.extend(
+            array
+                .iter()
+                .filter_map(graph_node_summary_from_compute_node),
+        );
+    }
+    if nodes.is_empty() {
+        for array in arrays_at_paths(
+            value,
+            &[
+                &["agent_activity"],
+                &["agents", "data", "tasks"],
+                &["agents", "tasks"],
+                &["tasks", "data", "tasks"],
+                &["tasks", "tasks"],
+                &["data", "tasks"],
+            ],
+        ) {
+            nodes.extend(array.iter().filter_map(graph_node_summary_from_task));
+        }
+    }
+    dedupe_graph_nodes(nodes)
+}
+
+fn graph_node_summary_from_compute_node(value: &Value) -> Option<GraphNodeSummary> {
+    let id = compact_string_at_paths(value, &[&["id"], &["node_id"], &["thunk_id"], &["task_id"]])?;
+    let kind = compact_string_at_paths(value, &[&["kind"], &["type"]])
+        .map(|kind| status_token(&kind))
+        .unwrap_or_else(|| "node".to_string());
+    let status = compact_string_at_paths(value, &[&["status"]])
+        .map(|status| status_token(&status))
+        .unwrap_or_else(|| "unknown".to_string());
+    let label = compact_string_at_paths(
+        value,
+        &[
+            &["label"],
+            &["title"],
+            &["requested_input"],
+            &["reason"],
+            &["wait_ref", "requested_input"],
+            &["task_id"],
+            &["id"],
+        ],
+    )
+    .unwrap_or_else(|| id.clone());
+    Some(GraphNodeSummary {
+        id,
+        kind,
+        status,
+        label,
+        goal_id: compact_string_at_paths(value, &[&["goal_id"]]),
+        task_id: compact_string_at_paths(value, &[&["task_id"]]),
+    })
+}
+
+fn graph_node_summary_from_task(value: &Value) -> Option<GraphNodeSummary> {
+    let id = task_id(value)?;
+    Some(GraphNodeSummary {
+        kind: "task".to_string(),
+        status: task_status(value),
+        label: task_summary_line(value).unwrap_or_else(|| id.clone()),
+        goal_id: compact_string_at_paths(
+            value,
+            &[
+                &["goal_id"],
+                &["payload_json", "goal_id"],
+                &["raw_task", "goal_id"],
+            ],
+        ),
+        task_id: Some(id.clone()),
+        id,
+    })
+}
+
+fn worker_run_summaries_from_value(value: &Value) -> Vec<WorkerRunSummary> {
+    let mut workers = Vec::new();
+    for array in arrays_at_paths(
+        value,
+        &[
+            &["worker_runs"],
+            &["runs"],
+            &["workers"],
+            &["runners", "data"],
+            &["runners"],
+            &["runner_registry", "data", "runners"],
+        ],
+    ) {
+        workers.extend(array.iter().filter_map(worker_run_summary_from_value));
+    }
+    dedupe_worker_runs(workers)
+}
+
+fn worker_run_summary_from_value(value: &Value) -> Option<WorkerRunSummary> {
+    let id = compact_string_at_paths(
+        value,
+        &[
+            &["worker_run_id"],
+            &["run_id"],
+            &["runner_id"],
+            &["id"],
+            &["name"],
+        ],
+    )?;
+    let runner = compact_string_at_paths(
+        value,
+        &[
+            &["runner"],
+            &["runner_id"],
+            &["worker"],
+            &["role"],
+            &["kind"],
+            &["name"],
+        ],
+    )
+    .unwrap_or_else(|| id.clone());
+    let status = compact_string_at_paths(value, &[&["status"], &["health"], &["mode"]])
+        .map(|status| status_token(&status))
+        .unwrap_or_else(|| "unknown".to_string());
+    Some(WorkerRunSummary {
+        id,
+        runner,
+        status,
+        task: compact_string_at_paths(
+            value,
+            &[
+                &["task_id"],
+                &["current_task_id"],
+                &["labels", "task_id"],
+                &["labels", "jattg.dev/task-id"],
+            ],
+        ),
+        endpoint: compact_string_at_paths(
+            value,
+            &[
+                &["endpoint"],
+                &["url"],
+                &["base_url"],
+                &["capabilities_url"],
+                &["address"],
+            ],
+        ),
+        node: compact_string_at_paths(
+            value,
+            &[
+                &["node"],
+                &["node_name"],
+                &["hostname"],
+                &["labels", "node"],
+                &["labels", "kubernetes.io/hostname"],
+            ],
+        ),
+        updated_at: compact_string_at_paths(
+            value,
+            &[&["updated_at"], &["last_seen_at"], &["heartbeat_at"]],
+        ),
+    })
+}
+
+fn evidence_summaries_from_value(value: &Value) -> Vec<EvidenceSummary> {
+    let mut evidence = Vec::new();
+    for array in arrays_at_paths(
+        value,
+        &[
+            &["evidence"],
+            &["evidence", "data"],
+            &["artifacts", "data", "artifacts"],
+            &["artifacts", "artifacts"],
+            &["artifacts"],
+            &["checkpoints", "data", "checkpoints"],
+            &["checkpoints", "checkpoints"],
+            &["checkpoints"],
+        ],
+    ) {
+        evidence.extend(array.iter().filter_map(evidence_summary_from_value));
+    }
+    dedupe_evidence(evidence)
+}
+
+fn evidence_summary_from_value(value: &Value) -> Option<EvidenceSummary> {
+    let summary = compact_string_at_paths(
+        value,
+        &[
+            &["summary"],
+            &["description"],
+            &["label"],
+            &["artifact", "description"],
+            &["artifact", "summary"],
+            &["artifact", "uri"],
+            &["checkpoint", "summary"],
+            &["checkpoint", "label"],
+            &["object_artifact", "description"],
+            &["git_result", "branch"],
+            &["uri"],
+            &["result_uri"],
+        ],
+    )?;
+    let id = compact_string_at_paths(
+        value,
+        &[
+            &["evidence_id"],
+            &["artifact_id"],
+            &["checkpoint_id"],
+            &["id"],
+            &["artifact", "id"],
+            &["checkpoint", "id"],
+            &["uri"],
+            &["artifact", "uri"],
+        ],
+    )
+    .unwrap_or_else(|| summary.clone());
+    let kind = compact_string_at_paths(
+        value,
+        &[
+            &["kind"],
+            &["type"],
+            &["artifact", "kind"],
+            &["checkpoint", "kind"],
+        ],
+    )
+    .unwrap_or_else(|| "evidence".to_string());
+    Some(EvidenceSummary {
+        id,
+        kind,
+        summary,
+        source: compact_string_at_paths(
+            value,
+            &[
+                &["source"],
+                &["uri"],
+                &["artifact", "uri"],
+                &["checkpoint", "uri"],
+                &["object_artifact", "uri"],
+                &["git_result", "branch"],
+            ],
+        ),
+        goal_id: compact_string_at_paths(value, &[&["goal_id"], &["payload_json", "goal_id"]]),
+        task_id: compact_string_at_paths(value, &[&["task_id"], &["payload_json", "task_id"]]),
+    })
+}
+
+fn arrays_at_paths<'a>(value: &'a Value, paths: &[&[&str]]) -> Vec<&'a [Value]> {
+    paths
+        .iter()
+        .filter_map(|path| value_at_path(value, path).and_then(Value::as_array))
+        .map(Vec::as_slice)
+        .collect()
+}
+
+fn dedupe_graph_nodes(nodes: Vec<GraphNodeSummary>) -> Vec<GraphNodeSummary> {
+    let mut deduped = Vec::new();
+    for node in nodes {
+        if deduped
+            .iter()
+            .any(|existing: &GraphNodeSummary| existing.id == node.id)
+        {
+            continue;
+        }
+        deduped.push(node);
+    }
+    deduped
+}
+
+fn dedupe_worker_runs(workers: Vec<WorkerRunSummary>) -> Vec<WorkerRunSummary> {
+    let mut deduped = Vec::new();
+    for worker in workers {
+        if deduped
+            .iter()
+            .any(|existing: &WorkerRunSummary| existing.id == worker.id)
+        {
+            continue;
+        }
+        deduped.push(worker);
+    }
+    deduped
+}
+
+fn dedupe_evidence(evidence: Vec<EvidenceSummary>) -> Vec<EvidenceSummary> {
+    let mut deduped = Vec::new();
+    for item in evidence {
+        if deduped
+            .iter()
+            .any(|existing: &EvidenceSummary| existing.id == item.id)
+        {
+            continue;
+        }
+        deduped.push(item);
+    }
+    deduped
 }
 
 fn chat_backend_label(config: &Value) -> String {
@@ -3668,6 +4350,17 @@ fn status_token(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
+fn status_color(status: &str) -> Color {
+    match status_token(status).as_str() {
+        "done" | "satisfied" | "healthy" | "ready" | "completed" => Color::Green,
+        "running" | "runnable" | "in-progress" | "active" => Color::Cyan,
+        "blocked" | "failed" | "error" | "unhealthy" => Color::Red,
+        "waiting-input" | "waiting-approval" | "pending" | "queued" => Color::Yellow,
+        "cancelled" | "canceled" => Color::DarkGray,
+        _ => Color::White,
+    }
+}
+
 fn task_is_open(task: &Value) -> bool {
     !matches!(task_status(task).as_str(), "done" | "failed" | "cancelled")
 }
@@ -4593,22 +5286,28 @@ mod tests {
     #[test]
     fn dashboard_views_cycle_and_label_shortcuts() {
         assert_eq!(DashboardView::Overview.next(), DashboardView::Goals);
-        assert_eq!(DashboardView::Goals.next(), DashboardView::Approvals);
+        assert_eq!(DashboardView::Goals.next(), DashboardView::Graph);
+        assert_eq!(DashboardView::Graph.next(), DashboardView::Actions);
+        assert_eq!(DashboardView::Actions.next(), DashboardView::Approvals);
         assert_eq!(DashboardView::Approvals.next(), DashboardView::Events);
-        assert_eq!(DashboardView::Events.next(), DashboardView::Adversarial);
-        assert_eq!(DashboardView::Adversarial.next(), DashboardView::Commands);
-        assert_eq!(DashboardView::Commands.next(), DashboardView::Overview);
-        assert_eq!(DashboardView::Overview.previous(), DashboardView::Commands);
-        assert_eq!(DashboardView::Approvals.key_hint(), "3");
-        assert_eq!(DashboardView::Approvals.title(), "Actions (3)");
-        assert_eq!(DashboardView::Events.title(), "Events (4)");
-        assert_eq!(DashboardView::Adversarial.title(), "Adversarial (5)");
-        assert_eq!(DashboardView::Commands.title(), "Debug (6)");
+        assert_eq!(DashboardView::Events.next(), DashboardView::Workers);
+        assert_eq!(DashboardView::Workers.next(), DashboardView::Evidence);
+        assert_eq!(DashboardView::Evidence.next(), DashboardView::Adversarial);
+        assert_eq!(DashboardView::Adversarial.next(), DashboardView::Debug);
+        assert_eq!(DashboardView::Debug.next(), DashboardView::Overview);
+        assert_eq!(DashboardView::Overview.previous(), DashboardView::Debug);
+        assert_eq!(DashboardView::Graph.key_hint(), "3");
+        assert_eq!(DashboardView::Actions.title(), "Actions (4)");
+        assert_eq!(DashboardView::Approvals.title(), "Approvals (5)");
+        assert_eq!(DashboardView::Workers.title(), "Workers (7)");
+        assert_eq!(DashboardView::Evidence.title(), "Evidence (8)");
+        assert_eq!(DashboardView::Adversarial.title(), "Adversarial (9)");
+        assert_eq!(DashboardView::Debug.title(), "Debug (0)");
     }
 
     #[test]
-    fn command_coverage_catalog_includes_canonical_cli_groups() {
-        let rendered = command_coverage_dashboard_lines(100)
+    fn debug_catalog_includes_canonical_cli_groups() {
+        let rendered = debug_dashboard_lines(100)
             .into_iter()
             .map(|line| {
                 line.spans
@@ -4635,9 +5334,10 @@ mod tests {
         ] {
             assert!(
                 rendered.contains(command),
-                "missing command coverage for {command}"
+                "missing debug command entry for {command}"
             );
         }
+        assert!(!rendered.contains("coverage"));
     }
 
     #[test]
@@ -4662,8 +5362,9 @@ mod tests {
             created_at: None,
         }];
 
-        let approvals = lines_to_plain_text(&approvals_dashboard_lines(&app, 96));
+        let approvals = lines_to_plain_text(&actions_dashboard_lines(&app, 96));
         let events = lines_to_plain_text(&events_dashboard_lines(&app, 96));
+        let approval_gates = lines_to_plain_text(&approval_gates_dashboard_lines(&app, 96));
 
         assert!(
             approvals.contains("queue 1 (approval gates:1 recovery:0 prompts:0) scope all goals")
@@ -4674,12 +5375,88 @@ mod tests {
         assert!(approvals.contains("approve network-open research task"));
         assert!(approvals.contains("critical"));
         assert!(approvals.contains("018f8f2f"));
+        assert!(approval_gates.contains("approval gates"));
+        assert!(approval_gates.contains("pending 1 scope all goals"));
+        assert!(approval_gates.contains("approve network-open research task"));
         assert!(events.contains("recent 1 sources 0 scope all goals"));
         assert!(events.contains("Ctrl-R refreshes projections"));
         assert!(events.contains("Ctrl-L clears local action/chat results"));
         assert!(events.contains("pull_request_check_failed"));
         assert!(events.contains("CI build failed on ubuntu-24.04-arm"));
         assert!(events.contains("github-actions"));
+    }
+
+    #[test]
+    fn graph_workers_and_evidence_views_render_operator_state() {
+        let value = json!({
+            "workflow_compute_graph": {
+                "data": {
+                    "nodes": [
+                        {
+                            "id": "task-node-1",
+                            "kind": "task",
+                            "status": "running",
+                            "label": "Implement TUI graph panel",
+                            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+                            "task_id": "118f8f2f-1fd8-7688-bb12-8bfb6b756602"
+                        },
+                        {
+                            "id": "thunk-node-1",
+                            "kind": "delayed_compute_thunk",
+                            "status": "waiting_input",
+                            "requested_input": "Pick the recovery action",
+                            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601"
+                        }
+                    ]
+                }
+            },
+            "worker_runs": [
+                {
+                    "worker_run_id": "run-1",
+                    "runner": "codex-runner",
+                    "status": "running",
+                    "task_id": "118f8f2f-1fd8-7688-bb12-8bfb6b756602",
+                    "endpoint": "http://codex-runner:9091",
+                    "node": "worker-a",
+                    "updated_at": "2026-05-14T10:00:00Z"
+                }
+            ],
+            "artifacts": {
+                "data": {
+                    "artifacts": [
+                        {
+                            "artifact_id": "artifact-1",
+                            "kind": "test_result",
+                            "summary": "cargo test -p coat-cli tui passed",
+                            "uri": "s3://jattg/evidence/tui.json",
+                            "goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756601",
+                            "task_id": "118f8f2f-1fd8-7688-bb12-8bfb6b756602"
+                        }
+                    ]
+                }
+            }
+        });
+        let mut app = test_app();
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string());
+        app.selected_goal_graph_nodes = graph_node_summaries_from_value(&value);
+        app.selected_goal_worker_runs = worker_run_summaries_from_value(&value);
+        app.selected_goal_evidence = evidence_summaries_from_value(&value);
+
+        let graph = lines_to_plain_text(&graph_dashboard_lines(&app, 110));
+        let workers = lines_to_plain_text(&workers_dashboard_lines(&app, 110));
+        let evidence = lines_to_plain_text(&evidence_dashboard_lines(&app, 110));
+
+        assert!(graph.contains("task graph"));
+        assert!(graph.contains("nodes 2 scope selected goal"));
+        assert!(graph.contains("Implement TUI graph panel"));
+        assert!(graph.contains("Pick the recovery action"));
+        assert!(workers.contains("workers"));
+        assert!(workers.contains("codex-runner"));
+        assert!(workers.contains("http://codex-runner:9091"));
+        assert!(workers.contains("worker-a"));
+        assert!(evidence.contains("evidence"));
+        assert!(evidence.contains("cargo test -p coat-cli tui passed"));
+        assert!(evidence.contains("s3://jattg/evidence/tui.json"));
     }
 
     #[test]

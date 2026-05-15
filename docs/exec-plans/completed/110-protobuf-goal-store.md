@@ -37,5 +37,9 @@ CI now calls the same `make proto-check` target so protobuf linting, protobuf fo
 
 ## Follow-Ups
 
-- Coordinate remaining Restate restart proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`; SDK generation is scaffolded as an internal validation target and publishing is deferred by the active-plan SDK decision.
-- Run the real Docker Testcontainers Restate restart/resume proof through the active `RuntimeVerifier` follow-up; keep it env-gated until Docker availability and the pinned Restate test image are in place.
+- Superseded by the active master plan:
+  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+  RuntimeVerifier owns the Docker Testcontainers Restate restart/resume proof.
+  ProtocolSDK owns generated SDK target selection; SDK generation remains an
+  internal validation target until the active plan chooses a publishing
+  milestone.

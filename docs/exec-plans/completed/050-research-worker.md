@@ -23,9 +23,10 @@ Create a bounded research worker that can collect current facts without owning t
 
 ## Follow-Ups
 
-- Coordinate live research, replay fixtures, and object snapshots through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Add live research adapters behind explicit network and citation gates, with source capture that can be replayed by reviewers.
-- Replace planned raw-capture object refs with real uploaded snapshots once the live adapter and object-store uploader are available.
+- Superseded by the active master plan:
+  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+  ResearchMemory owns live research adapters, citation/source capture, replay
+  fixtures, and promotion from raw-capture refs to object-store snapshots.
 
 ## Acceptance
 

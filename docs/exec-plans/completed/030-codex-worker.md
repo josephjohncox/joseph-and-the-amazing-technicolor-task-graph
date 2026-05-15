@@ -28,7 +28,10 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 
 ## Follow-Ups
 
-- Run env-gated live Codex App Server and MCP fallback smoke with approved auth, sandbox, and workspace gates, then archive thread/turn IDs, checkpoint refs, git refs, and artifact manifests as replay fixtures.
+- Superseded by the active master plan:
+  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+  CodexWorker owns live Codex App Server and MCP fallback smoke, approved auth
+  gates, sandbox/workspace gates, and replay fixture capture.
 
 ## Acceptance
 

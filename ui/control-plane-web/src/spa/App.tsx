@@ -123,6 +123,7 @@ type HumanPromptSpec = {
   detail: string;
   primaryLabel: string;
   contextLabel: string;
+  rejectLabel?: string;
   inputLabel: string;
   placeholder: string;
   showInput: boolean;
@@ -135,7 +136,7 @@ type ActionMutationInput = {
   responseSummary?: string;
   intent?: ActionIntent;
 };
-type ActionIntent = "primary" | "context" | "create-human-prompt" | "cancel-goal";
+type ActionIntent = "primary" | "context" | "reject" | "create-human-prompt" | "cancel-goal";
 type ActiveDraftState = {
   kind: DraftKind;
   mode: string;
@@ -297,7 +298,7 @@ const starterMessages: ChatMessage[] = [
   {
     role: "assistant",
     content:
-      "Tell me the outcome you want. I will draft it first; durable state changes only when you accept a draft or use an action button.",
+      "Describe the outcome. I will draft a goal you can edit, discard, or submit.",
   },
 ];
 
@@ -447,6 +448,13 @@ export function App() {
   const sendChatFromPanel = (content?: string) => {
     submitGoalDraft.reset();
     sendChat.mutate(content);
+  };
+  const focusActiveDraftEditor = () => {
+    setActiveView("dashboard");
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".goal-draft-editor input, .goal-draft-editor textarea")?.focus();
+      document.querySelector<HTMLElement>(".goal-draft-editor")?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
   };
   const discardActiveGoalDraft = () => {
     setActiveDraft(null);
@@ -682,6 +690,7 @@ export function App() {
         {activeDraftView && (
           <DraftReviewDock
             view={activeDraftView}
+            onEditGoalDraft={focusActiveDraftEditor}
             onSubmitGoalDraft={() => submitGoalDraft.mutate()}
             onDiscardGoalDraft={discardActiveGoalDraft}
           />
@@ -1669,14 +1678,14 @@ function CommandPanel(props: {
   }, [props.busy, props.sessionId, props.messages.length, latestMessage?.role, latestMessage?.content]);
 
   return (
-    <section className="command-panel">
+    <section className="command-panel" aria-label="Ask or draft">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Assistant</p>
-          <h2>Ask or draft</h2>
+          <h2>Goal composer</h2>
         </div>
         <div className="draft-mode-group">
-          <span>Output</span>
+          <span>Mode</span>
           <div className="mode-toggle" role="group" aria-label="Draft type">
           <button
             type="button"
@@ -1703,7 +1712,7 @@ function CommandPanel(props: {
             onClick={() => props.onDraftKindChange("search")}
           >
             <Search size={15} />
-            Search
+            Research
           </button>
           </div>
         </div>
@@ -1733,7 +1742,12 @@ function CommandPanel(props: {
           draft={props.goalDraft}
           summary={draftSummary}
           disabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)}
+          submitDisabled={props.busy || props.goalSubmitBusy || Boolean(submittedGoalId)}
+          submitBusy={props.goalSubmitBusy}
+          submittedGoalLabel={submittedGoalId ? friendlyRef(submittedGoalId) : ""}
           onUpdate={props.onUpdateGoalDraftField}
+          onSubmit={props.onSubmitGoalDraft}
+          onDiscard={props.onDiscardGoalDraft}
         />
       )}
       {props.activeDraft && !props.goalDraft && (
@@ -1799,7 +1813,17 @@ function CommandPanel(props: {
   );
 }
 
-function GoalDraftEditor(props: { draft: JsonRecord; summary: DraftReviewSummary; disabled: boolean; onUpdate: (field: GoalDraftEditField, value: string) => void }) {
+function GoalDraftEditor(props: {
+  draft: JsonRecord;
+  summary: DraftReviewSummary;
+  disabled: boolean;
+  submitDisabled: boolean;
+  submitBusy: boolean;
+  submittedGoalLabel: string;
+  onUpdate: (field: GoalDraftEditField, value: string) => void;
+  onSubmit: () => void;
+  onDiscard: () => void;
+}) {
   return (
     <section className="goal-draft-editor" aria-label="Goal draft review">
       <DraftSummaryCard summary={props.summary} />
@@ -1836,6 +1860,20 @@ function GoalDraftEditor(props: { draft: JsonRecord; summary: DraftReviewSummary
             onChange={(event) => props.onUpdate("constraints", event.target.value)}
           />
         </label>
+      </div>
+      <div className="draft-action-row" aria-label="Draft actions">
+        <div>
+          <strong>{props.submittedGoalLabel ? "Draft submitted" : "Ready to submit"}</strong>
+          <span>{props.submittedGoalLabel ? `Selected ${props.submittedGoalLabel}` : "Review the fields above, then submit this as coordinator-owned work."}</span>
+        </div>
+        <div className="button-row">
+          <button type="button" className="secondary-button" disabled={props.submitBusy} onClick={props.onDiscard}>
+            Discard
+          </button>
+          <button type="button" className="primary-button" disabled={props.submitDisabled} onClick={props.onSubmit}>
+            {props.submittedGoalLabel ? "Submitted" : props.submitBusy ? "Submitting" : "Submit goal"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -1904,13 +1942,19 @@ function draftModeHeadline(kind: DraftKind): string {
 }
 
 function draftModeDetail(kind: DraftKind): string {
-  if (kind === "goal") return "Create new work. Existing goals move through the graph and action queue above.";
-  if (kind === "search") return "Prepare a sourced research request for backend tools or coordinator work.";
-  return "Shape a plan before compiling it into a goal.";
+  if (kind === "goal") return "Draft a goal, edit it, then submit it to the coordinator.";
+  if (kind === "search") return "Draft a sourced research request for a goal or the workspace.";
+  return "Draft a plan before turning it into a goal.";
 }
 
 function sessionDisplayLabel(sessionId: string): string {
-  return sessionId;
+  if (sessionId.startsWith("goal:")) {
+    return "Selected goal chat";
+  }
+  if (sessionId === "operator:default") {
+    return "Workspace chat";
+  }
+  return "Chat history";
 }
 
 function commandPlaceholder(kind: DraftKind): string {
@@ -2621,7 +2665,7 @@ function BlockerInsightPanel({ items, onOpenControls }: { items: ActionNeededIte
         </div>
         <button type="button" className="secondary-button" onClick={onOpenControls}>
           <ShieldCheck size={15} />
-          Controls
+          Open actions
         </button>
       </div>
       <div className="blocker-list">
@@ -4623,7 +4667,7 @@ function ActionResultCard({ item, response, onClear }: { item: ActionNeededItem;
         <strong>{summary.label}</strong>
         <span>{item.label}</span>
         <small>{summary.detail}</small>
-        <small>Clearing this notice only updates this browser view; it does not cancel or change the goal.</small>
+        <small>Projection will refresh from the stream.</small>
       </div>
       <div className="action-result-controls">
         <AdvancedInspect summaryLabel="Details" title="Action result and active state" payload={response} buttonLabel="Inspect JSON" />
@@ -4682,6 +4726,7 @@ function HumanPromptCard(props: {
   const missingTarget = !props.item.goalId || (affordance === "approve" && !props.item.approvalId) || (affordance === "resume" && !props.item.thunkId);
   const primaryDisabled = props.pending || missingTarget;
   const contextDisabled = primaryDisabled || !context;
+  const rejectDisabled = primaryDisabled || !prompt.rejectLabel;
   const createPromptDisabled = props.pending || !props.item.goalId || !prompt.createPromptLabel;
   const cancelDisabled = props.pending || !props.item.goalId || !prompt.cancelLabel;
   return (
@@ -4715,6 +4760,11 @@ function HumanPromptCard(props: {
         {prompt.showInput && (
           <button type="button" className="secondary-button" disabled={contextDisabled} onClick={() => props.onAction(props.item, context, "context")}>
             {prompt.contextLabel}
+          </button>
+        )}
+        {prompt.rejectLabel && (
+          <button type="button" className="secondary-button" disabled={rejectDisabled} onClick={() => props.onAction(props.item, context, "reject")}>
+            {prompt.rejectLabel}
           </button>
         )}
         {prompt.createPromptLabel && (
@@ -4751,6 +4801,7 @@ function humanPromptForItem(item: ActionNeededItem): HumanPromptSpec {
       detail: item.detail || blockerReason(item),
       primaryLabel: "Approve and continue",
       contextLabel: "Approve with note",
+      rejectLabel: "Reject",
       inputLabel: "Approval note",
       placeholder: "Add context for the approval record.",
       showInput: true,
@@ -4828,6 +4879,13 @@ function runOperatorAction(item: ActionNeededItem, responseSummary = "", intent:
   const affordance = actionAffordanceForItem(item);
   if (affordance === "approve") {
     if (!item.approvalId) throw new Error("This approval is missing an approval id.");
+    if (intent === "reject") {
+      return resolveOperatorAction(actionId, {
+        ...baseResolutionPayload,
+        resolution: "reject",
+        response_summary: responseSummary.trim() || "Rejected from Task Graph Manager",
+      });
+    }
     return resolveOperatorAction(actionId, {
       ...baseResolutionPayload,
       resolution: "approve",

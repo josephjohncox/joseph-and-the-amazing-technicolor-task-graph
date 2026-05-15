@@ -53,7 +53,8 @@ The coordinator should group demand by execution profile:
   event processor, or SRE/data-engineering task;
 - required capabilities and local tools;
 - model route, sandbox backend, network profile, and locality;
-- labels such as `pool`, `lane`, `tenant`, `hardware`, or `auth` locality.
+- labels such as `pool`, `tenant`, `hardware`, `auth` locality, or an internal
+  compatibility label such as `labels.lane`.
 
 For each group, compute:
 

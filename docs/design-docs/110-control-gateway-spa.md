@@ -101,6 +101,10 @@ projection; `event_since` filters the append-only operator event log by
 timestamp, while SSE `Last-Event-ID`/`since` remain stream sequence cursors.
 Clients must use the actor-style `/api/operator/*` state-machine surface for
 goal, graph, action, and stream state.
+Projection row identifiers used by the stream must be stable across reads.
+Gateway fallbacks derive IDs from event, actor, task, evidence, and row content;
+they must not use random IDs for unchanged projection rows, otherwise the SPA
+and TUI cannot distinguish real state changes from polling noise.
 
 The SPA is a direct task-graph management surface, not a CLI coverage matrix.
 It should expose the current goal's Work Graph, Human Queue, next action,

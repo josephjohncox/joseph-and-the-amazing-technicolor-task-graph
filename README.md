@@ -58,7 +58,7 @@ coat deploy local preflight --allow-stub-runners
 coat deploy local up --allow-stub-runners
 ```
 
-The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model lanes. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, model route, and typed model params instead of assuming one local agent.
+The default Compose stack starts multiple stub runners: Codex coding, Codex review/test, Claude Code, staff-engineer, generic model-provider, research, and host-local model runners. They all register with `coat-runner-registry` so the coordinator can route tasks by role, capability, label, model route, and typed model params instead of assuming one local agent.
 
 Set up local provider credentials and model endpoints when you want live hosted or local models. The no-flag command starts an interactive wizard; explicit flags keep setup scriptable:
 
@@ -92,9 +92,9 @@ needs those Claude Code auth options.
 
 The interactive setup flow includes indexed fast, speed-tier, fast-completions,
 balanced, deep-review, xhigh reasoning, deterministic JSON/tool-output, and
-custom runtime parameter choices for local and hosted model lanes. Codex setup is separate from OpenAI hosted model-provider
+custom runtime parameter choices for local and hosted model routes. Codex setup is separate from OpenAI hosted model-provider
 setup: selecting the OpenAI hosted surface writes the generic model-provider
-lane and can also write the research lane. It can also run selected
+runner config and can also write the research runner config. It can also run selected
 device/browser login, AWS SSO, Ollama pull, and preflight steps directly after
 writing the env file.
 
@@ -113,7 +113,7 @@ that invalidates local service-image cache when source files change, while
 keeping cargo and npm dependency caches warm.
 Before startup it validates the resolved Compose stack and removes orphan
 containers from older local topologies.
-The interactive auth wizard flips selected runner lanes from `stub` to `live`;
+The interactive auth wizard flips selected runner profiles from `stub` to `live`;
 the non-interactive template stays stubbed until you edit it.
 See `docs/operations/configuration.md` for config layering and secret rules.
 

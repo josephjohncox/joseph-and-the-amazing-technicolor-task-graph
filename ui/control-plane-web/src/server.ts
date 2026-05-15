@@ -11,6 +11,7 @@
  * - docs/design-docs/120-durable-planning-mode.md
  */
 import http from "node:http";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -104,8 +105,11 @@ type StoredDraft = {
   kind: string;
   session_id: string;
   run_id: string;
+  status: "active" | "accepted" | "discarded";
   created_at: string;
+  updated_at: string;
   expires_at: string;
+  accepted_goal_id?: string | null;
   payload: JsonMap;
 };
 
@@ -650,20 +654,30 @@ async function operatorGoalGraph(goalId: string): Promise<JsonMap> {
 }
 
 async function submitOperatorGoalSpec(input: unknown, causationId = "operator_goal_submit"): Promise<JsonMap> {
-  const { goalId, spec } = goalSpecWithId(input);
+  const resolved = goalSpecWithId(input);
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const { goalId, spec, draftId } = resolved;
   const specRecord = asRecord(spec);
   const result = await workflowMutationEnvelope(goalId, "run", spec);
+  if (draftId && Boolean((result as JsonMap).ok)) {
+    markChatDraftAccepted(draftId, goalId);
+  }
   const operatorEvent = await appendOperatorEvent({
-    transition: "submit_goal",
+    transition: draftId ? "draft_accepted" : "submit_goal",
     actor: goalActor(goalId),
     payload: {
       goal_id: goalId,
+      draft_id: draftId ?? null,
       title: specRecord.title ?? "Untitled goal",
       objective: specRecord.objective ?? "",
       accepted: Boolean((result as JsonMap).ok),
       result,
     },
-    idempotencyKey: `operator:goal:${goalId}:submit`,
+    idempotencyKey: draftId
+      ? `operator:goal:${goalId}:draft:${draftId}:accept`
+      : `operator:goal:${goalId}:submit:${stableValueDigest(spec)}`,
     causationId,
     correlationId: goalId,
   });
@@ -697,7 +711,7 @@ async function operatorGoalActionEnvelope(
       accepted: Boolean((result as JsonMap).ok),
       result,
     },
-    idempotencyKey: `operator:goal:${goalId}:${action}:${String(asRecord(body).request_id ?? Date.now())}`,
+    idempotencyKey: `operator:goal:${goalId}:${handler}:${operatorRequestId(body)}`,
     causationId,
     correlationId: goalId,
   });
@@ -756,7 +770,7 @@ async function appendOperatorEvent(input: {
   correlationId?: string | null;
 }): Promise<JsonMap> {
   const event = {
-    event_id: crypto.randomUUID(),
+    event_id: stableProjectionId("operator-event", [stableValueDigest(input.idempotencyKey)]),
     event_type: operatorEventTypeForTransition(input.transition),
     actor: input.actor,
     transition: input.transition,
@@ -784,10 +798,18 @@ async function appendOperatorEvent(input: {
 }
 
 function transitionForResolvedAction(kind: string, resolution: string): string {
-  if (kind === "approval" || resolution === "approve" || resolution === "reject") return "approval_resolved";
-  if (kind === "thunk" || ["continue", "answer", "add_context"].includes(resolution)) return "thunk_resumed";
+  if (resolution === "approve" || resolution === "reject") return "approval_resolved";
+  if (kind === "thunk" && ["continue", "answer", "add_context"].includes(resolution)) return "thunk_resumed";
   if (resolution === "cancel_goal" || kind === "cancel") return "goal_cancelled";
   return "goal_steered";
+}
+
+function defaultResolutionForActionKind(kind: string): string {
+  if (kind === "approval") return "approve";
+  if (kind === "thunk") return "continue";
+  if (kind === "task") return "retry";
+  if (kind === "cancel") return "cancel_goal";
+  return "continue";
 }
 
 function transitionForGoalAction(action: string): string {
@@ -857,10 +879,10 @@ async function resolveOperatorAction(actionId: string, body: unknown): Promise<J
   if (!goalId) {
     return { ok: false, error: "goal_id is required to resolve an operator action", action_id: actionId };
   }
-  const resolution = String(record.resolution ?? record.intent ?? parsed.kind ?? "continue").trim().toLowerCase();
+  const resolution = String(record.resolution ?? record.intent ?? defaultResolutionForActionKind(parsed.kind)).trim().toLowerCase();
   const responseSummary = String(record.response_summary ?? record.answer ?? record.context ?? "Operator resolved the action.").trim();
   let result: JsonMap;
-  if (parsed.kind === "approval" || resolution === "approve" || resolution === "reject") {
+  if (resolution === "approve" || resolution === "reject") {
     const approvalId = String(record.approval_id ?? parsed.targetId ?? "");
     if (!approvalId) {
       return { ok: false, error: "approval_id is required for approval resolution", action_id: actionId, goal_id: goalId };
@@ -870,7 +892,7 @@ async function resolveOperatorAction(actionId: string, body: unknown): Promise<J
       approved: resolution !== "reject",
       note: responseSummary,
     });
-  } else if (parsed.kind === "thunk" || resolution === "continue" || resolution === "answer" || resolution === "add_context") {
+  } else if (parsed.kind === "thunk" && ["continue", "answer", "add_context"].includes(resolution)) {
     const thunkId = String(record.thunk_id ?? parsed.targetId ?? "");
     if (!thunkId) {
       return { ok: false, error: "thunk_id is required for continuation resume", action_id: actionId, goal_id: goalId };
@@ -883,6 +905,23 @@ async function resolveOperatorAction(actionId: string, body: unknown): Promise<J
     });
   } else if (resolution === "cancel_goal" || parsed.kind === "cancel") {
     result = await workflowMutationEnvelope(goalId, "cancel", responseSummary || "Operator cancelled the goal.");
+  } else if (resolution === "add_context") {
+    result = await workflowMutationEnvelope(goalId, "steer", {
+      id: String(record.directive_id ?? crypto.randomUUID()),
+      goal_id: goalId,
+      task_id: record.task_id ?? (parsed.kind === "task" ? parsed.targetId : null),
+      operator: record.operator ?? "operator",
+      message: responseSummary || "Operator added context.",
+      kind: {
+        add_context: {
+          target_kind: parsed.kind || "goal",
+          target_id: parsed.targetId || null,
+          approval_id: parsed.kind === "approval" ? parsed.targetId : record.approval_id ?? null,
+          context: responseSummary || null,
+          artifact_refs: Array.isArray(record.artifact_refs) ? record.artifact_refs : [],
+        },
+      },
+    });
   } else if (resolution === "replan") {
     result = await workflowMutationEnvelope(goalId, "steer", {
       id: crypto.randomUUID(),
@@ -918,15 +957,19 @@ async function resolveOperatorAction(actionId: string, body: unknown): Promise<J
       request: record,
       result,
     },
-    idempotencyKey: `operator:action:${actionId}:${resolution}:${String(record.request_id ?? record.idempotency_key ?? Date.now())}`,
+    idempotencyKey: `operator:action:${actionId}:${resolution}:${operatorRequestId(record)}`,
     causationId: actionId,
     correlationId: goalId,
   });
   return {
+    ok: Boolean(result.ok),
+    status: result.status ?? 0,
     action_id: actionId,
     goal_id: goalId,
     resolution,
     result,
+    accepted: Boolean(result.ok),
+    recovery: operatorActionRecovery(result, parsed, resolution),
     operator_event: operatorEvent,
     active_state: activeStateFromActionEnvelope(result),
   };
@@ -1050,8 +1093,16 @@ function operatorActionsFromRows(approvals: JsonMap[], tasks: JsonMap[], snapsho
 function operatorEventsFromBackendProjection(value: JsonMap): JsonMap[] {
   return arrayField(asRecord(asRecord(value.recent_events).data ?? value.recent_events), "events")
     .map(asRecord)
-    .map((event) => ({
-      event_id: String(event.event_id ?? event.id ?? event.sequence ?? crypto.randomUUID()),
+    .map((event, index) => ({
+      event_id: String(event.event_id ?? event.id ?? event.sequence ?? stableProjectionId("backend-event", [
+        event.kind,
+        event.event_type,
+        event.goal_id,
+        event.task_id,
+        event.created_at,
+        event.message,
+        index,
+      ])),
       event_type: String(event.kind ?? event.event_type ?? "event"),
       goal_id: event.goal_id ?? null,
       task_id: event.task_id ?? null,
@@ -1065,10 +1116,17 @@ function operatorEventsFromBackendProjection(value: JsonMap): JsonMap[] {
 function operatorEventsFromDurableEvents(value: unknown): JsonMap[] {
   return arrayField(asRecord(value), "events")
     .map(asRecord)
-    .map((event) => {
+    .map((event, index) => {
       const actor = asRecord(event.actor);
       return {
-        event_id: String(event.event_id ?? crypto.randomUUID()),
+        event_id: String(event.event_id ?? stableProjectionId("operator-event", [
+          event.event_type,
+          event.transition,
+          actor.goal_id,
+          actor.task_id,
+          event.created_at,
+          index,
+        ])),
         event_type: String(event.event_type ?? "event"),
         goal_id: actor.goal_id ?? null,
         task_id: actor.task_id ?? null,
@@ -1101,11 +1159,18 @@ function detailForOperatorEvent(event: JsonMap): string {
 function operatorEvidenceFromSnapshot(snapshot: JsonMap): JsonMap[] {
   return arrayField(asRecord(asRecord(snapshot.artifacts).data ?? snapshot.artifacts), "artifacts")
     .map(asRecord)
-    .map((artifact) => {
+    .map((artifact, index) => {
       const ref = asRecord(artifact.artifact);
       const checkpoint = asRecord(artifact.checkpoint);
       return {
-        evidence_id: String(ref.uri ?? checkpoint.id ?? crypto.randomUUID()),
+        evidence_id: String(ref.uri ?? checkpoint.id ?? stableProjectionId("evidence", [
+          artifact.goal_id ?? snapshot.goal_id,
+          artifact.task_id,
+          artifact.created_at,
+          ref.description,
+          checkpoint.label,
+          index,
+        ])),
         goal_id: artifact.goal_id ?? snapshot.goal_id ?? null,
         task_id: artifact.task_id ?? null,
         title: String(ref.description ?? checkpoint.label ?? "Evidence"),
@@ -1118,8 +1183,14 @@ function operatorEvidenceFromSnapshot(snapshot: JsonMap): JsonMap[] {
 }
 
 function operatorWorkerRuns(tasks: JsonMap[]): JsonMap[] {
-  return tasks.map((task) => ({
-    run_id: String(task.run_id ?? task.task_id ?? task.id ?? crypto.randomUUID()),
+  return tasks.map((task, index) => ({
+    run_id: String(task.run_id ?? task.task_id ?? task.id ?? stableProjectionId("worker-run", [
+      task.goal_id,
+      task.role,
+      task.status,
+      task.title,
+      index,
+    ])),
     goal_id: task.goal_id ?? null,
     task_id: task.task_id ?? task.id ?? null,
     worker: task.role ?? "planner",
@@ -1129,6 +1200,60 @@ function operatorWorkerRuns(tasks: JsonMap[]): JsonMap[] {
     finished_at: task.finished_at ?? null,
     payload_json: task,
   }));
+}
+
+function stableProjectionId(prefix: string, parts: unknown[]): string {
+  const body = parts
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join(":")
+    .replace(/[^A-Za-z0-9_.:-]+/g, "-")
+    .slice(0, 160);
+  return `${prefix}:${body || "unknown"}`;
+}
+
+function stableValueDigest(value: unknown): string {
+  return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 24);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (!value || typeof value !== "object") {
+    return JSON.stringify(value ?? null) ?? "null";
+  }
+  const record = value as JsonMap;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+}
+
+function operatorRequestId(value: unknown): string {
+  const record = asRecord(value);
+  return String(record.request_id ?? record.idempotency_key ?? stableValueDigest(value));
+}
+
+function operatorActionRecovery(result: JsonMap, parsed: { kind: string; goalId: string; targetId: string }, resolution: string): JsonMap | null {
+  const status = Number(result.status ?? 0);
+  if (status !== 409) {
+    return null;
+  }
+  return compactRecord({
+    reason: "coordinator_rejected_current_action_state",
+    message: "The coordinator did not accept this action in the current state. Refresh the goal projection, then retry a concrete recovery action.",
+    target_kind: parsed.kind || null,
+    target_id: parsed.targetId || null,
+    attempted_resolution: resolution,
+    suggested_resolutions: recoveryResolutionsFor(parsed.kind, resolution),
+  });
+}
+
+function recoveryResolutionsFor(kind: string, attemptedResolution: string): string[] {
+  const candidates = kind === "thunk"
+    ? ["continue", "answer", "add_context", "replan", "cancel_goal"]
+    : kind === "approval"
+      ? ["approve", "reject", "add_context", "cancel_goal"]
+      : ["retry", "replan", "add_context", "cancel_goal"];
+  return candidates.filter((candidate) => candidate !== attemptedResolution);
 }
 
 function activeStateFromActionEnvelope(result: unknown): JsonMap | null {
@@ -1161,19 +1286,29 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
         eventType: eventTypeFilter,
         since: eventSince,
       });
-      const payload = JSON.stringify(workspace);
       const fingerprint = operatorStreamFingerprint(workspace);
       if (fingerprint !== lastFingerprint) {
         const eventName = operatorStreamEventName(workspace, eventTypeFilter);
+        const eventId = stableProjectionId("operator-stream", [eventName, fingerprint]);
+        const eventPayload = {
+          ...workspace,
+          stream: {
+            event_id: eventId,
+            projection_id: stableProjectionId("operator-projection", [fingerprint]),
+            event_type: eventName,
+            emitted_at: new Date().toISOString(),
+          },
+        };
         res.write(`event: ${eventName}\n`);
-        res.write(`id: ${sequence}\n`);
+        res.write(`id: ${eventId}\n`);
         res.write(`retry: 1500\n`);
-        res.write(`data: ${payload}\n\n`);
+        res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
         lastFingerprint = fingerprint;
       } else {
+        const heartbeatId = stableProjectionId("operator-stream-heartbeat", [goalId, sequence]);
         res.write(`event: stream.heartbeat\n`);
-        res.write(`id: ${sequence}\n`);
-        res.write(`data: ${JSON.stringify({ goal_id: goalId, generated_at: new Date().toISOString() })}\n\n`);
+        res.write(`id: ${heartbeatId}\n`);
+        res.write(`data: ${JSON.stringify({ goal_id: goalId, projection_id: stableProjectionId("operator-projection", [fingerprint]), generated_at: new Date().toISOString() })}\n\n`);
       }
     } catch (error) {
       res.write(`event: stream.error\n`);
@@ -2084,6 +2219,7 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
       draftRefs[kind] = {
         draft_id: stored.draft_id,
         kind,
+        status: stored.status,
         expires_at: stored.expires_at,
       };
       draftSummary[kind] = goalDraftSummary(compact);
@@ -2107,17 +2243,56 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
 
 function storeChatDraft(kind: string, sessionId: string, runId: string, payload: JsonMap): StoredDraft {
   const now = Date.now();
+  const timestamp = new Date(now).toISOString();
   const stored: StoredDraft = {
     draft_id: crypto.randomUUID(),
     kind,
     session_id: sessionId,
     run_id: runId,
-    created_at: new Date(now).toISOString(),
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp,
     expires_at: new Date(now + chatDraftTtlMs).toISOString(),
+    accepted_goal_id: null,
     payload: JSON.parse(JSON.stringify(payload)) as JsonMap,
   };
   chatDrafts.set(stored.draft_id, stored);
   return stored;
+}
+
+function markChatDraftAccepted(draftId: string, goalId: string): void {
+  const draft = chatDrafts.get(draftId);
+  if (!draft) {
+    return;
+  }
+  draft.status = "accepted";
+  draft.accepted_goal_id = goalId;
+  draft.updated_at = new Date().toISOString();
+}
+
+function chatDraftSummariesForSession(sessionId: string): JsonMap[] {
+  return [...chatDrafts.values()]
+    .filter((draft) => draft.session_id === sessionId)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+    .map(chatDraftSummary);
+}
+
+function chatDraftSummary(draft: StoredDraft): JsonMap {
+  const compact = draft.kind === "goal_spec"
+    ? compactGoalSpecDraft(draft.payload, draft.draft_id)
+    : compactGenericDraft(draft.payload, draft.kind);
+  return compactRecord({
+    draft_id: draft.draft_id,
+    kind: draft.kind,
+    status: draft.status,
+    session_id: draft.session_id,
+    run_id: draft.run_id,
+    created_at: draft.created_at,
+    updated_at: draft.updated_at,
+    expires_at: draft.expires_at,
+    accepted_goal_id: draft.accepted_goal_id ?? null,
+    summary: draft.kind === "goal_spec" ? goalDraftSummary(compact) : genericDraftSummary(compact, draft.kind),
+  });
 }
 
 function cleanupChatDrafts(): void {
@@ -2238,6 +2413,7 @@ function chatRole(value: string): ChatMessage["role"] {
 
 async function chatSession(sessionId: string, includeEntries = false): Promise<JsonMap> {
   const { entries, chatLog } = await readChatSessionEntries(sessionId);
+  cleanupChatDrafts();
   return compactRecord({
     session_id: sessionId,
     durable: Boolean(chatLog.durable),
@@ -2247,6 +2423,7 @@ async function chatSession(sessionId: string, includeEntries = false): Promise<J
       content: entry.content,
       created_at: entry.created_at,
     })),
+    drafts: chatDraftSummariesForSession(sessionId),
     entries: includeEntries ? entries : undefined,
   });
 }
@@ -3465,23 +3642,77 @@ function goalIdFromSpec(body: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function goalSpecWithId(body: unknown): { goalId: string; spec: unknown } {
+type GoalSpecResolveResult =
+  | { ok: true; goalId: string; spec: JsonMap; draftId: string | null }
+  | { ok: false; status: number; error: string; detail?: string; draft_id?: string; recovery?: JsonMap };
+
+function goalSpecWithId(body: unknown): GoalSpecResolveResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new Error("goal spec must be a JSON object");
+    return {
+      ok: false,
+      status: 400,
+      error: "goal spec must be a JSON object",
+    };
   }
+  const draftId = draftIdFromSubmitRecord(body as JsonMap);
   const record = resolveGoalDraftForSubmit(body as JsonMap);
+  if (isGoalSpecResolveError(record)) {
+    return record;
+  }
   const goalId = goalIdFromSpec(record) ?? crypto.randomUUID();
-  return { goalId, spec: normalizeGoalSpecForSubmit(record, goalId) };
+  return { ok: true, goalId, spec: normalizeGoalSpecForSubmit(record, goalId), draftId };
 }
 
-function resolveGoalDraftForSubmit(record: JsonMap): JsonMap {
+function isGoalSpecResolveError(value: JsonMap | { ok: false; status: number; error: string }): value is { ok: false; status: number; error: string } {
+  return asRecord(value).ok === false && typeof asRecord(value).error === "string";
+}
+
+function draftIdFromSubmitRecord(record: JsonMap): string | null {
   const draftId = String(record.draft_id ?? asRecord(record.draft_ref).draft_id ?? "").trim();
+  return draftId || null;
+}
+
+function resolveGoalDraftForSubmit(record: JsonMap): JsonMap | { ok: false; status: number; error: string; detail?: string; draft_id?: string; recovery?: JsonMap } {
+  const draftId = draftIdFromSubmitRecord(record);
   const stored = draftId ? chatDrafts.get(draftId) : undefined;
-  if (stored?.kind === "goal_spec") {
+  if (stored?.kind === "goal_spec" && stored.status === "accepted") {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side draft was already accepted",
+      detail: "Select the accepted goal or create a new draft before submitting again.",
+      draft_id: draftId ?? undefined,
+      recovery: {
+        accepted_goal_id: stored.accepted_goal_id ?? null,
+        actions: ["select_accepted_goal", "draft_goal_again"],
+      },
+    };
+  }
+  if (stored?.kind === "goal_spec" && stored.status === "active") {
     return mergeGoalDraftEdits(stored.payload, record);
   }
-  if (record.compact === true || (draftId && !record.root_budget)) {
-    return expandCompactGoalDraft(record);
+  if (draftId) {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side draft is not available",
+      detail: "Refresh chat history or ask the assistant to create a new goal draft. The gateway will not submit a compact UI-owned draft when the server-owned draft payload is missing.",
+      draft_id: draftId,
+      recovery: {
+        actions: ["refresh_chat_session", "draft_goal_again", "submit_full_goal_spec"],
+      },
+    };
+  }
+  if (record.compact === true) {
+    return {
+      ok: false,
+      status: 400,
+      error: "compact goal drafts require a server-side draft_id",
+      detail: "Submit the full GoalSpec or use the draft_id returned by /api/chat. Compact draft payloads are review summaries, not durable source-of-truth state.",
+      recovery: {
+        actions: ["draft_goal_again", "submit_full_goal_spec"],
+      },
+    };
   }
   return record;
 }

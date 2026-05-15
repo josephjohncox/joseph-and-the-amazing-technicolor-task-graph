@@ -54,10 +54,12 @@ Create safe workspace lifecycle and deterministic Rust tool surfaces for workers
 
 ## Follow-Ups
 
-- Coordinate Kubernetes executor proof and object upload promotion through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Promote content-addressed snapshot archives from local manifests into object storage when the external object-store upload adapter is live.
-- Connect `SandboxProfile.isolation.backend = kubernetes_job` to coordinator-approved capacity provisioning and write enforcement attestations after live Kubernetes Job completion.
-- Add provider-backed sandbox adapters where managed sandbox APIs can return attestations.
+- Superseded by the active master plan:
+  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+  Provisioner owns Kubernetes executor proof, object upload promotion,
+  coordinator-approved capacity provisioning, enforcement attestations, and any
+  provider-backed sandbox adapter that can return validator-reviewable
+  attestations.
 
 ## Acceptance
 

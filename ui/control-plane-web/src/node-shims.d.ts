@@ -19,6 +19,14 @@ declare module "node:fs/promises" {
   export function readdir(path: any, options: { withFileTypes: true }): Promise<Dirent[]>;
 }
 
+declare module "node:crypto" {
+  export function createHash(algorithm: string): {
+    update(data: string | Uint8Array): {
+      digest(encoding: "hex" | "base64" | "base64url"): string;
+    };
+  };
+}
+
 declare module "node:path" {
   export function dirname(path: string): string;
 }

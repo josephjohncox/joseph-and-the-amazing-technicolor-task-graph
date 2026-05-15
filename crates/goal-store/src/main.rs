@@ -28,8 +28,9 @@ use coat_domain::{
     GoalStoreArtifactRecordResponse, GoalStoreCheckpointListResponse, GoalStoreEventAppendRequest,
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
     GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
-    GoalStoreTaskListResponse, OperatorEventAppendRequest, OperatorEventAppendResponse,
-    OperatorEventListResponse, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
+    GoalStoreTaskListResponse, OperatorAction, OperatorActionKind, OperatorActionResolutionKind,
+    OperatorEventAppendRequest, OperatorEventAppendResponse, OperatorEventListResponse,
+    OperatorTransition, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
     PlanCandidateVoteRequest, PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult,
     PlanDraftRequest, PlanId, PlanRevisionRequest, PlanStatus, TaskId, TaskRecord, TaskStatus,
     WorkerKind,
@@ -121,10 +122,12 @@ struct GoalStore {
     events: BTreeMap<GoalId, Vec<GoalEventRecord>>,
     artifacts: BTreeMap<GoalId, Vec<GoalArtifactRecord>>,
     operator_events: Vec<DurableEventEnvelope>,
+    actions: BTreeMap<String, OperatorAction>,
     approvals: BTreeMap<GoalId, Vec<ApprovalRecord>>,
     event_source_approvals: BTreeMap<Uuid, EventSourceApprovalRecord>,
     snapshots: BTreeMap<GoalId, GoalStoreSnapshot>,
     plans: BTreeMap<PlanId, DurablePlan>,
+    drafts: BTreeMap<Uuid, GoalDraftRecord>,
     chat_turns: BTreeMap<String, Vec<ChatTurnRecord>>,
 }
 
@@ -136,6 +139,7 @@ enum JournalEntry {
     OperatorEvent(OperatorEventAppendRequest),
     Artifact(GoalStoreArtifactRecordRequest),
     Plan(DurablePlan),
+    Draft(GoalDraftRecord),
     EventSourceApproval(EventSourceApprovalRecord),
     ChatTurn(ChatTurnRecord),
 }
@@ -143,6 +147,10 @@ enum JournalEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct ChatTurnRecord {
     id: Uuid,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    draft_id: Option<Uuid>,
     session_id: String,
     goal_id: Option<GoalId>,
     mode: String,
@@ -157,6 +165,8 @@ struct ChatTurnRecord {
 #[derive(Debug, Clone, Deserialize)]
 struct ChatTurnAppendRequest {
     id: Option<Uuid>,
+    idempotency_key: Option<String>,
+    draft_id: Option<Uuid>,
     session_id: String,
     goal_id: Option<GoalId>,
     mode: Option<String>,
@@ -178,6 +188,52 @@ struct ChatTurnAppendResponse {
 struct ChatSessionResponse {
     session_id: String,
     turns: Vec<ChatTurnRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct GoalDraftRecord {
+    draft_id: Uuid,
+    idempotency_key: Option<String>,
+    session_id: Option<String>,
+    plan_id: Option<PlanId>,
+    goal_id: Option<GoalId>,
+    title: String,
+    objective: String,
+    status: String,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    payload_json: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GoalDraftRecordRequest {
+    draft_id: Option<Uuid>,
+    idempotency_key: Option<String>,
+    session_id: Option<String>,
+    plan_id: Option<PlanId>,
+    goal_id: Option<GoalId>,
+    title: String,
+    objective: String,
+    status: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    payload_json: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct GoalDraftRecordResponse {
+    accepted: bool,
+    draft: GoalDraftRecord,
+}
+
+#[derive(Debug, Serialize)]
+struct GoalDraftListResponse {
+    drafts: Vec<GoalDraftRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct OperatorActionListResponse {
+    actions: Vec<OperatorAction>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,6 +272,22 @@ struct OperatorEventFilter {
     goal_id: Option<GoalId>,
     event_type: Option<String>,
     since: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorActionFilter {
+    goal_id: Option<GoalId>,
+    kind: Option<Vec<OperatorActionKind>>,
+    status: Option<Vec<String>>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DraftFilter {
+    session_id: Option<String>,
+    goal_id: Option<GoalId>,
+    status: Option<Vec<String>>,
     limit: Option<usize>,
 }
 
@@ -291,7 +363,10 @@ async fn main() -> anyhow::Result<()> {
             "/goal-store/operator-events",
             get(list_operator_events).post(append_operator_event),
         )
+        .route("/goal-store/actions", get(list_actions))
         .route("/goal-store/artifacts", post(record_artifacts))
+        .route("/goal-store/drafts", get(list_drafts).post(record_draft))
+        .route("/goal-store/drafts/{draft_id}", get(get_draft))
         .route("/goal-store/plans", get(list_plans).post(create_plan))
         .route("/goal-store/plans/{plan_id}", get(get_plan))
         .route("/goal-store/plans/{plan_id}/revisions", post(revise_plan))
@@ -875,6 +950,71 @@ async fn list_goal_operator_events(
     list_operator_events(State(state), Query(filter)).await
 }
 
+async fn list_actions(
+    State(state): State<AppState>,
+    Query(filter): Query<OperatorActionFilter>,
+) -> Result<Json<OperatorActionListResponse>, ApiError> {
+    let actions = if let Some(pool) = &state.postgres {
+        list_actions_postgres(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.actions.values().cloned().collect()
+    };
+    Ok(Json(OperatorActionListResponse {
+        actions: filter_actions(actions, &filter),
+    }))
+}
+
+async fn record_draft(
+    State(state): State<AppState>,
+    Json(request): Json<GoalDraftRecordRequest>,
+) -> Result<Json<GoalDraftRecordResponse>, ApiError> {
+    let draft = draft_record_from_request(request)?;
+    upsert_draft_record(&state, &draft)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(GoalDraftRecordResponse {
+        accepted: true,
+        draft,
+    }))
+}
+
+async fn list_drafts(
+    State(state): State<AppState>,
+    Query(filter): Query<DraftFilter>,
+) -> Result<Json<GoalDraftListResponse>, ApiError> {
+    let drafts = if let Some(pool) = &state.postgres {
+        list_drafts_postgres(pool)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.drafts.values().cloned().collect()
+    };
+    Ok(Json(GoalDraftListResponse {
+        drafts: filter_drafts(drafts, &filter),
+    }))
+}
+
+async fn get_draft(
+    State(state): State<AppState>,
+    Path(draft_id): Path<Uuid>,
+) -> Result<Json<GoalDraftRecordResponse>, ApiError> {
+    let draft = if let Some(pool) = &state.postgres {
+        get_draft_postgres(pool, draft_id)
+            .await
+            .map_err(ApiError::internal)?
+    } else {
+        state.store.read().await.drafts.get(&draft_id).cloned()
+    }
+    .ok_or_else(|| ApiError::not_found(anyhow::anyhow!("draft {draft_id} not found")))?;
+
+    Ok(Json(GoalDraftRecordResponse {
+        accepted: true,
+        draft,
+    }))
+}
+
 async fn list_artifacts(
     State(state): State<AppState>,
     Path(goal_id): Path<Uuid>,
@@ -1114,6 +1254,74 @@ fn filter_operator_events(
     events
 }
 
+fn filter_actions(
+    mut actions: Vec<OperatorAction>,
+    filter: &OperatorActionFilter,
+) -> Vec<OperatorAction> {
+    actions.retain(|action| {
+        filter
+            .goal_id
+            .is_none_or(|goal_id| action.goal_id == goal_id)
+            && filter
+                .kind
+                .as_ref()
+                .is_none_or(|kinds| kinds.contains(&action.kind))
+            && filter.status.as_ref().is_none_or(|statuses| {
+                statuses
+                    .iter()
+                    .any(|status| status.eq_ignore_ascii_case(&action.status))
+            })
+    });
+    actions.sort_by(|left, right| {
+        action_status_rank(&left.status)
+            .cmp(&action_status_rank(&right.status))
+            .then_with(|| left.goal_id.cmp(&right.goal_id))
+            .then_with(|| left.action_id.cmp(&right.action_id))
+    });
+    if let Some(limit) = filter.limit {
+        actions.truncate(limit);
+    }
+    actions
+}
+
+fn action_status_rank(status: &str) -> u8 {
+    match status {
+        "pending" | "open" => 0,
+        "resolved" | "completed" => 1,
+        "cancelled" => 2,
+        _ => 3,
+    }
+}
+
+fn filter_drafts(mut drafts: Vec<GoalDraftRecord>, filter: &DraftFilter) -> Vec<GoalDraftRecord> {
+    drafts.retain(|draft| {
+        filter
+            .session_id
+            .as_ref()
+            .is_none_or(|session_id| draft.session_id.as_ref() == Some(session_id))
+            && filter
+                .goal_id
+                .is_none_or(|goal_id| draft.goal_id == Some(goal_id))
+            && filter.status.as_ref().is_none_or(|statuses| {
+                statuses
+                    .iter()
+                    .any(|status| status.eq_ignore_ascii_case(&draft.status))
+            })
+    });
+    drafts.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.draft_id.cmp(&right.draft_id))
+    });
+    if let Some(limit) = filter.limit {
+        drafts.truncate(limit);
+    }
+    drafts
+}
+
 fn chat_turn_from_request(request: ChatTurnAppendRequest) -> Result<ChatTurnRecord, ApiError> {
     let session_id = request.session_id.trim().to_string();
     if session_id.is_empty() {
@@ -1136,6 +1344,8 @@ fn chat_turn_from_request(request: ChatTurnAppendRequest) -> Result<ChatTurnReco
 
     Ok(ChatTurnRecord {
         id: request.id.unwrap_or_else(Uuid::new_v4),
+        idempotency_key: normalize_optional_string(request.idempotency_key),
+        draft_id: request.draft_id,
         session_id,
         goal_id: request.goal_id,
         mode: request
@@ -1161,6 +1371,47 @@ fn chat_turn_from_request(request: ChatTurnAppendRequest) -> Result<ChatTurnReco
             .payload_json
             .unwrap_or_else(|| serde_json::json!({})),
     })
+}
+
+fn draft_record_from_request(request: GoalDraftRecordRequest) -> Result<GoalDraftRecord, ApiError> {
+    let title = request.title.trim().to_string();
+    if title.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "draft title is required"
+        )));
+    }
+    let objective = request.objective.trim().to_string();
+    if objective.is_empty() {
+        return Err(ApiError::bad_request(anyhow::anyhow!(
+            "draft objective is required"
+        )));
+    }
+
+    Ok(GoalDraftRecord {
+        draft_id: request.draft_id.unwrap_or_else(Uuid::new_v4),
+        idempotency_key: normalize_optional_string(request.idempotency_key),
+        session_id: normalize_optional_string(request.session_id),
+        plan_id: request.plan_id,
+        goal_id: request.goal_id,
+        title,
+        objective,
+        status: request
+            .status
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "draft".to_string()),
+        created_at: normalize_optional_string(request.created_at),
+        updated_at: normalize_optional_string(request.updated_at),
+        payload_json: request
+            .payload_json
+            .unwrap_or_else(|| serde_json::json!({})),
+    })
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 async fn verify_postgres_schema(pool: &PgPool) -> anyhow::Result<()> {
@@ -1200,6 +1451,23 @@ async fn verify_postgres_schema(pool: &PgPool) -> anyhow::Result<()> {
         bail!(
             "coat.operator_events table missing; run infra/db/migrations before starting goal-store"
         );
+    }
+    let action_queue: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('coat.operator_action_queue')::text")
+            .fetch_one(pool)
+            .await
+            .context("check coat.operator_action_queue table")?;
+    if action_queue.is_none() {
+        bail!(
+            "coat.operator_action_queue table missing; run infra/db/migrations before starting goal-store"
+        );
+    }
+    let drafts: Option<String> = sqlx::query_scalar("SELECT to_regclass('coat.goal_drafts')::text")
+        .fetch_one(pool)
+        .await
+        .context("check coat.goal_drafts table")?;
+    if drafts.is_none() {
+        bail!("coat.goal_drafts table missing; run infra/db/migrations before starting goal-store");
     }
     Ok(())
 }
@@ -1273,11 +1541,6 @@ async fn upsert_snapshot_postgres(
     .await
     .context("upsert goal record")?;
 
-    sqlx::query("DELETE FROM coat.goal_events WHERE goal_id = $1")
-        .bind(goal.goal_id)
-        .execute(&mut *tx)
-        .await
-        .context("delete goal events before snapshot projection")?;
     sqlx::query("DELETE FROM coat.artifacts WHERE goal_id = $1")
         .bind(goal.goal_id)
         .execute(&mut *tx)
@@ -1288,6 +1551,11 @@ async fn upsert_snapshot_postgres(
         .execute(&mut *tx)
         .await
         .context("delete approvals before snapshot projection")?;
+    sqlx::query("DELETE FROM coat.operator_action_queue WHERE goal_id = $1")
+        .bind(goal.goal_id)
+        .execute(&mut *tx)
+        .await
+        .context("delete actions before snapshot projection")?;
     sqlx::query("DELETE FROM coat.tasks WHERE goal_id = $1")
         .bind(goal.goal_id)
         .execute(&mut *tx)
@@ -1424,6 +1692,10 @@ async fn upsert_snapshot_postgres(
         insert_event_postgres(&mut tx, event).await?;
     }
 
+    for action in actions_from_snapshot(snapshot) {
+        insert_action_postgres(&mut tx, &action).await?;
+    }
+
     tx.commit()
         .await
         .context("commit goal snapshot transaction")?;
@@ -1441,6 +1713,10 @@ async fn append_operator_event_postgres(
     pool: &PgPool,
     event: &DurableEventEnvelope,
 ) -> anyhow::Result<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("begin operator event transaction")?;
     sqlx::query(
         r#"
         INSERT INTO coat.operator_events (
@@ -1449,19 +1725,7 @@ async fn append_operator_event_postgres(
             payload_json, record_json, created_at_text
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-        ON CONFLICT (idempotency_key) DO UPDATE SET
-            event_type = EXCLUDED.event_type,
-            actor_kind = EXCLUDED.actor_kind,
-            actor_id = EXCLUDED.actor_id,
-            goal_id = EXCLUDED.goal_id,
-            task_id = EXCLUDED.task_id,
-            transition = EXCLUDED.transition,
-            causation_id = EXCLUDED.causation_id,
-            correlation_id = EXCLUDED.correlation_id,
-            restate_invocation_id = EXCLUDED.restate_invocation_id,
-            payload_json = EXCLUDED.payload_json,
-            record_json = EXCLUDED.record_json,
-            created_at_text = EXCLUDED.created_at_text
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(event.event_id)
@@ -1478,9 +1742,13 @@ async fn append_operator_event_postgres(
     .bind(event.payload_json.clone())
     .bind(serde_json::to_value(event)?)
     .bind(&event.created_at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .with_context(|| format!("append operator event {}", event.event_id))?;
+    update_actions_for_operator_event_postgres(&mut tx, event).await?;
+    tx.commit()
+        .await
+        .context("commit operator event transaction")?;
     Ok(())
 }
 
@@ -1598,6 +1866,19 @@ async fn upsert_plan_record(state: &AppState, plan: &DurablePlan) -> anyhow::Res
         tracing::warn!(%error, "append plan journal failed");
     }
     state.store.write().await.apply_plan(plan.clone());
+    if let Some(draft) = draft_from_plan(plan)? {
+        upsert_draft_record(state, &draft).await?;
+    }
+    Ok(())
+}
+
+async fn upsert_draft_record(state: &AppState, draft: &GoalDraftRecord) -> anyhow::Result<()> {
+    if let Some(pool) = &state.postgres {
+        upsert_draft_postgres(pool, draft).await?;
+    } else if let Err(error) = append_journal(state, JournalEntry::Draft(draft.clone())).await {
+        tracing::warn!(%error, "append draft journal failed");
+    }
+    state.store.write().await.apply_draft(draft.clone());
     Ok(())
 }
 
@@ -1631,16 +1912,7 @@ async fn insert_event_postgres(
             created_at_text, payload_json, record_json
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        ON CONFLICT (goal_id, sequence) DO UPDATE SET
-            id = EXCLUDED.id,
-            task_id = EXCLUDED.task_id,
-            kind = EXCLUDED.kind,
-            message = EXCLUDED.message,
-            actor = EXCLUDED.actor,
-            idempotency_key = EXCLUDED.idempotency_key,
-            created_at_text = EXCLUDED.created_at_text,
-            payload_json = EXCLUDED.payload_json,
-            record_json = EXCLUDED.record_json
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(event.event_id)
@@ -1657,6 +1929,105 @@ async fn insert_event_postgres(
     .execute(&mut **tx)
     .await
     .with_context(|| format!("insert event {}", event.event_id))?;
+    Ok(())
+}
+
+async fn insert_action_postgres(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    action: &OperatorAction,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO coat.operator_action_queue (
+            action_id, kind, goal_id, task_id, title, question, status,
+            allowed_resolutions, payload_json, record_json, projected_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+        ON CONFLICT (action_id) DO UPDATE SET
+            kind = EXCLUDED.kind,
+            goal_id = EXCLUDED.goal_id,
+            task_id = EXCLUDED.task_id,
+            title = EXCLUDED.title,
+            question = EXCLUDED.question,
+            status = EXCLUDED.status,
+            allowed_resolutions = EXCLUDED.allowed_resolutions,
+            payload_json = EXCLUDED.payload_json,
+            record_json = EXCLUDED.record_json,
+            projected_at = now()
+        "#,
+    )
+    .bind(&action.action_id)
+    .bind(json_string(&action.kind)?)
+    .bind(action.goal_id)
+    .bind(action.task_id)
+    .bind(&action.title)
+    .bind(&action.question)
+    .bind(&action.status)
+    .bind(
+        action
+            .allowed_resolutions
+            .iter()
+            .map(json_string)
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    )
+    .bind(action.payload_json.clone())
+    .bind(serde_json::to_value(action)?)
+    .execute(&mut **tx)
+    .await
+    .with_context(|| format!("upsert action {}", action.action_id))?;
+    Ok(())
+}
+
+async fn update_actions_for_operator_event_postgres(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event: &DurableEventEnvelope,
+) -> anyhow::Result<()> {
+    let Some(goal_id) = event.actor.goal_id else {
+        return Ok(());
+    };
+    let Some(status) = status_for_operator_transition(&event.transition) else {
+        return Ok(());
+    };
+
+    let kind = action_kind_for_operator_transition(&event.transition)
+        .map(|kind| json_string(&kind))
+        .transpose()?;
+    sqlx::query(
+        r#"
+        UPDATE coat.operator_action_queue
+        SET status = $1,
+            payload_json = jsonb_set(
+                payload_json,
+                '{resolution_event_id}',
+                to_jsonb($2::text),
+                true
+            ),
+            record_json = jsonb_set(
+                jsonb_set(
+                    record_json,
+                    '{status}',
+                    to_jsonb($1::text),
+                    true
+                ),
+                '{payload_json,resolution_event_id}',
+                to_jsonb($2::text),
+                true
+            ),
+            projected_at = now()
+        WHERE goal_id = $3
+          AND ($4::uuid IS NULL OR task_id = $4)
+          AND ($5::text IS NULL OR kind = $5)
+          AND status IN ('pending', 'open')
+        "#,
+    )
+    .bind(status)
+    .bind(event.event_id.to_string())
+    .bind(goal_id)
+    .bind(event.actor.task_id)
+    .bind(kind)
+    .execute(&mut **tx)
+    .await
+    .with_context(|| format!("update actions for operator event {}", event.event_id))?;
     Ok(())
 }
 
@@ -1900,6 +2271,22 @@ async fn list_operator_events_postgres(
         .collect()
 }
 
+async fn list_actions_postgres(pool: &PgPool) -> anyhow::Result<Vec<OperatorAction>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT record_json
+        FROM coat.operator_action_queue
+        ORDER BY projected_at DESC, action_id ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("query operator action queue")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "operator action"))
+        .collect()
+}
+
 async fn list_artifacts_postgres(
     pool: &PgPool,
     goal_id: GoalId,
@@ -1916,28 +2303,95 @@ async fn list_artifacts_postgres(
         .collect()
 }
 
+async fn upsert_draft_postgres(pool: &PgPool, draft: &GoalDraftRecord) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await.context("begin draft transaction")?;
+    sqlx::query(
+        r#"
+        INSERT INTO coat.goal_drafts (
+            id, idempotency_key, session_id, plan_id, goal_id, title, objective,
+            status, created_at_text, updated_at_text, payload_json, record_json, projected_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+        ON CONFLICT (id) DO UPDATE SET
+            idempotency_key = EXCLUDED.idempotency_key,
+            session_id = EXCLUDED.session_id,
+            plan_id = EXCLUDED.plan_id,
+            goal_id = EXCLUDED.goal_id,
+            title = EXCLUDED.title,
+            objective = EXCLUDED.objective,
+            status = EXCLUDED.status,
+            created_at_text = EXCLUDED.created_at_text,
+            updated_at_text = EXCLUDED.updated_at_text,
+            payload_json = EXCLUDED.payload_json,
+            record_json = EXCLUDED.record_json,
+            projected_at = now()
+        "#,
+    )
+    .bind(draft.draft_id)
+    .bind(&draft.idempotency_key)
+    .bind(&draft.session_id)
+    .bind(draft.plan_id)
+    .bind(draft.goal_id)
+    .bind(&draft.title)
+    .bind(&draft.objective)
+    .bind(&draft.status)
+    .bind(&draft.created_at)
+    .bind(&draft.updated_at)
+    .bind(draft.payload_json.clone())
+    .bind(serde_json::to_value(draft)?)
+    .execute(&mut *tx)
+    .await
+    .with_context(|| format!("upsert draft {}", draft.draft_id))?;
+    if let Some(action) = draft_action(draft) {
+        insert_action_postgres(&mut tx, &action).await?;
+    }
+    tx.commit().await.context("commit draft transaction")?;
+    Ok(())
+}
+
+async fn list_drafts_postgres(pool: &PgPool) -> anyhow::Result<Vec<GoalDraftRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT record_json
+        FROM coat.goal_drafts
+        ORDER BY projected_at DESC, id ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("query goal drafts")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "draft"))
+        .collect()
+}
+
+async fn get_draft_postgres(
+    pool: &PgPool,
+    draft_id: Uuid,
+) -> anyhow::Result<Option<GoalDraftRecord>> {
+    let row = sqlx::query("SELECT record_json FROM coat.goal_drafts WHERE id = $1")
+        .bind(draft_id)
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("query draft {draft_id}"))?;
+    row.map(|row| decode_record(row.try_get("record_json")?, "draft"))
+        .transpose()
+}
+
 async fn append_chat_turn_postgres(pool: &PgPool, turn: &ChatTurnRecord) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         INSERT INTO coat.control_chat_turns (
-            id, session_id, goal_id, mode, role, content, provider, model,
+            id, idempotency_key, draft_id, session_id, goal_id, mode, role, content, provider, model,
             created_at_text, payload_json, record_json
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        ON CONFLICT (id) DO UPDATE SET
-            session_id = EXCLUDED.session_id,
-            goal_id = EXCLUDED.goal_id,
-            mode = EXCLUDED.mode,
-            role = EXCLUDED.role,
-            content = EXCLUDED.content,
-            provider = EXCLUDED.provider,
-            model = EXCLUDED.model,
-            created_at_text = EXCLUDED.created_at_text,
-            payload_json = EXCLUDED.payload_json,
-            record_json = EXCLUDED.record_json
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(turn.id)
+    .bind(&turn.idempotency_key)
+    .bind(turn.draft_id)
     .bind(&turn.session_id)
     .bind(turn.goal_id)
     .bind(&turn.mode)
@@ -2010,6 +2464,198 @@ fn artifact_record_id(record: &GoalArtifactRecord) -> Uuid {
     )
 }
 
+fn actions_from_snapshot(snapshot: &GoalStoreSnapshot) -> Vec<OperatorAction> {
+    let mut actions = Vec::new();
+    for approval in &snapshot.approvals {
+        if approval.status == ApprovalStatus::Pending {
+            actions.push(action_from_approval(approval));
+        }
+    }
+    for task in &snapshot.tasks {
+        if action_needed_task_status(&task.status) {
+            let has_pending_approval = snapshot.approvals.iter().any(|approval| {
+                approval.task_id == Some(task.task_id) && approval.status == ApprovalStatus::Pending
+            });
+            if !has_pending_approval {
+                actions.push(action_from_task(task));
+            }
+        }
+    }
+    actions
+}
+
+fn action_from_approval(approval: &ApprovalRecord) -> OperatorAction {
+    OperatorAction {
+        action_id: format!("approval:{}", approval.approval_id),
+        kind: OperatorActionKind::ResolveApproval,
+        goal_id: approval.goal_id,
+        task_id: approval.task_id,
+        title: "Resolve approval".to_string(),
+        question: format!("Approve or reject: {}", approval.requested_action),
+        status: "pending".to_string(),
+        allowed_resolutions: vec![
+            OperatorActionResolutionKind::Approve,
+            OperatorActionResolutionKind::Reject,
+            OperatorActionResolutionKind::CancelGoal,
+        ],
+        approval: Some(approval.clone()),
+        thunk: None,
+        payload_json: serde_json::json!({
+            "reason": approval.reason,
+            "risk": json_string(&approval.risk).unwrap_or_else(|_| "unknown".to_string()),
+        }),
+    }
+}
+
+fn action_from_task(task: &TaskRecord) -> OperatorAction {
+    let (kind, title, question, allowed_resolutions) = match task.status {
+        TaskStatus::WaitingInput => (
+            OperatorActionKind::ResumeThunk,
+            "Continue waiting task",
+            "Provide the missing input or continue this task.",
+            vec![
+                OperatorActionResolutionKind::Continue,
+                OperatorActionResolutionKind::Answer,
+                OperatorActionResolutionKind::AddContext,
+                OperatorActionResolutionKind::Replan,
+                OperatorActionResolutionKind::CancelGoal,
+            ],
+        ),
+        TaskStatus::WaitingApproval => (
+            OperatorActionKind::ResolveApproval,
+            "Resolve approval",
+            "Resolve the approval needed for this task.",
+            vec![
+                OperatorActionResolutionKind::Approve,
+                OperatorActionResolutionKind::Reject,
+                OperatorActionResolutionKind::CancelGoal,
+            ],
+        ),
+        TaskStatus::Failed => (
+            OperatorActionKind::RestartTask,
+            "Recover failed task",
+            "Retry, replan, or cancel this failed task.",
+            vec![
+                OperatorActionResolutionKind::Retry,
+                OperatorActionResolutionKind::Replan,
+                OperatorActionResolutionKind::CancelGoal,
+            ],
+        ),
+        _ => (
+            OperatorActionKind::ReplanTask,
+            "Recover blocked task",
+            "Retry, replan, or cancel this blocked task.",
+            vec![
+                OperatorActionResolutionKind::Retry,
+                OperatorActionResolutionKind::Replan,
+                OperatorActionResolutionKind::CancelGoal,
+            ],
+        ),
+    };
+
+    OperatorAction {
+        action_id: format!(
+            "task:{}:{}",
+            task.task_id,
+            json_string(&task.status).unwrap_or_default()
+        ),
+        kind,
+        goal_id: task.goal_id,
+        task_id: Some(task.task_id),
+        title: title.to_string(),
+        question: format!("{question} Task: {}", task.title),
+        status: "pending".to_string(),
+        allowed_resolutions,
+        approval: None,
+        thunk: None,
+        payload_json: serde_json::json!({
+            "task_status": json_string(&task.status).unwrap_or_else(|_| "unknown".to_string()),
+            "task_title": task.title.clone(),
+            "subgoal_id": task.subgoal_id.clone(),
+            "recovery": "coordinator_action_required",
+        }),
+    }
+}
+
+fn action_needed_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Blocked
+            | TaskStatus::Failed
+            | TaskStatus::WaitingApproval
+            | TaskStatus::WaitingInput
+    )
+}
+
+fn draft_action(draft: &GoalDraftRecord) -> Option<OperatorAction> {
+    let goal_id = draft.goal_id?;
+    if matches!(draft.status.as_str(), "accepted" | "discarded" | "compiled") {
+        return None;
+    }
+    Some(OperatorAction {
+        action_id: format!("draft:{}:accept", draft.draft_id),
+        kind: OperatorActionKind::AcceptDraft,
+        goal_id,
+        task_id: None,
+        title: "Accept draft".to_string(),
+        question: format!("Submit draft goal: {}", draft.title),
+        status: "pending".to_string(),
+        allowed_resolutions: vec![
+            OperatorActionResolutionKind::AcceptDraft,
+            OperatorActionResolutionKind::DiscardDraft,
+        ],
+        approval: None,
+        thunk: None,
+        payload_json: serde_json::json!({
+            "draft_id": draft.draft_id,
+            "plan_id": draft.plan_id,
+            "objective": draft.objective,
+        }),
+    })
+}
+
+fn draft_from_plan(plan: &DurablePlan) -> anyhow::Result<Option<GoalDraftRecord>> {
+    if matches!(plan.status, PlanStatus::Archived | PlanStatus::Superseded) {
+        return Ok(None);
+    }
+    Ok(Some(GoalDraftRecord {
+        draft_id: plan.id,
+        idempotency_key: Some(format!("plan:{}:draft", plan.id)),
+        session_id: None,
+        plan_id: Some(plan.id),
+        goal_id: plan.compiled_goal_id,
+        title: plan.title.clone(),
+        objective: plan.objective.clone(),
+        status: json_string(&plan.status)?,
+        created_at: plan.created_at.clone(),
+        updated_at: plan.updated_at.clone(),
+        payload_json: serde_json::to_value(plan)?,
+    }))
+}
+
+fn status_for_operator_transition(transition: &OperatorTransition) -> Option<&'static str> {
+    match transition {
+        OperatorTransition::DraftAccepted
+        | OperatorTransition::ThunkResumed
+        | OperatorTransition::ApprovalResolved
+        | OperatorTransition::GoalSatisfied => Some("resolved"),
+        OperatorTransition::GoalCancelled => Some("cancelled"),
+        _ => None,
+    }
+}
+
+fn action_kind_for_operator_transition(
+    transition: &OperatorTransition,
+) -> Option<OperatorActionKind> {
+    match transition {
+        OperatorTransition::DraftAccepted => Some(OperatorActionKind::AcceptDraft),
+        OperatorTransition::ThunkResumed => Some(OperatorActionKind::ResumeThunk),
+        OperatorTransition::ApprovalResolved => Some(OperatorActionKind::ResolveApproval),
+        OperatorTransition::GoalCancelled | OperatorTransition::GoalSatisfied => None,
+        _ => None,
+    }
+}
+
 impl GoalStore {
     fn apply_snapshot(&mut self, snapshot: GoalStoreSnapshot) {
         let goal_id = snapshot.goal.goal_id;
@@ -2019,29 +2665,31 @@ impl GoalStore {
         }
         self.artifacts.insert(goal_id, snapshot.artifacts.clone());
         self.approvals.insert(goal_id, snapshot.approvals.clone());
-        self.events.insert(goal_id, snapshot.events.clone());
+        for event in &snapshot.events {
+            self.apply_event(event.clone());
+        }
         self.snapshots.insert(goal_id, snapshot);
+        self.rebuild_goal_actions(goal_id);
     }
 
     fn apply_event(&mut self, event: GoalEventRecord) {
         let events = self.events.entry(event.goal_id).or_default();
-        if let Some(existing) = events.iter_mut().find(|existing| {
+        if events.iter().any(|existing| {
             existing.sequence == event.sequence || existing.idempotency_key == event.idempotency_key
         }) {
-            *existing = event;
-        } else {
-            events.push(event);
+            return;
         }
+        events.push(event);
     }
 
     fn apply_operator_event(&mut self, event: DurableEventEnvelope) {
-        if let Some(existing) = self.operator_events.iter_mut().find(|existing| {
+        if self.operator_events.iter().any(|existing| {
             existing.event_id == event.event_id || existing.idempotency_key == event.idempotency_key
         }) {
-            *existing = event;
-        } else {
-            self.operator_events.push(event);
+            return;
         }
+        self.resolve_actions_for_event(&event);
+        self.operator_events.push(event);
     }
 
     fn apply_artifacts(&mut self, records: Vec<GoalArtifactRecord>) {
@@ -2057,16 +2705,93 @@ impl GoalStore {
         self.plans.insert(plan.id, plan);
     }
 
+    fn apply_draft(&mut self, draft: GoalDraftRecord) {
+        if self.drafts.values().any(|existing| {
+            existing.draft_id != draft.draft_id
+                && existing.idempotency_key.is_some()
+                && existing.idempotency_key == draft.idempotency_key
+        }) {
+            return;
+        }
+        if let Some(previous) = self.drafts.get(&draft.draft_id) {
+            if let Some(previous_action) = draft_action(previous) {
+                self.actions.remove(&previous_action.action_id);
+            }
+        }
+        if let Some(action) = draft_action(&draft) {
+            self.actions.insert(action.action_id.clone(), action);
+        }
+        self.drafts.insert(draft.draft_id, draft);
+    }
+
     fn apply_event_source_approval(&mut self, record: EventSourceApprovalRecord) {
         self.event_source_approvals.insert(record.record_id, record);
     }
 
     fn apply_chat_turn(&mut self, turn: ChatTurnRecord) {
         let turns = self.chat_turns.entry(turn.session_id.clone()).or_default();
-        if let Some(existing) = turns.iter_mut().find(|existing| existing.id == turn.id) {
-            *existing = turn;
-        } else {
-            turns.push(turn);
+        if turns.iter().any(|existing| {
+            existing.id == turn.id
+                || existing.idempotency_key.is_some()
+                    && existing.idempotency_key == turn.idempotency_key
+        }) {
+            return;
+        }
+        turns.push(turn);
+    }
+
+    fn rebuild_goal_actions(&mut self, goal_id: GoalId) {
+        self.actions.retain(|_, action| action.goal_id != goal_id);
+        if let Some(snapshot) = self.snapshots.get(&goal_id) {
+            for action in actions_from_snapshot(snapshot) {
+                self.actions.insert(action.action_id.clone(), action);
+            }
+        }
+        for draft in self.drafts.values() {
+            if draft.goal_id == Some(goal_id) {
+                if let Some(action) = draft_action(draft) {
+                    self.actions.insert(action.action_id.clone(), action);
+                }
+            }
+        }
+    }
+
+    fn rebuild_action_queue(&mut self) {
+        self.actions.clear();
+        let goal_ids: Vec<_> = self.snapshots.keys().copied().collect();
+        for goal_id in goal_ids {
+            self.rebuild_goal_actions(goal_id);
+        }
+        for draft in self.drafts.values() {
+            if let Some(action) = draft_action(draft) {
+                self.actions
+                    .entry(action.action_id.clone())
+                    .or_insert(action);
+            }
+        }
+    }
+
+    fn resolve_actions_for_event(&mut self, event: &DurableEventEnvelope) {
+        let Some(goal_id) = event.actor.goal_id else {
+            return;
+        };
+        let Some(status) = status_for_operator_transition(&event.transition) else {
+            return;
+        };
+        let kind = action_kind_for_operator_transition(&event.transition);
+        for action in self.actions.values_mut() {
+            if action.goal_id == goal_id
+                && event
+                    .actor
+                    .task_id
+                    .is_none_or(|task_id| action.task_id == Some(task_id))
+                && kind.as_ref().is_none_or(|kind| &action.kind == kind)
+                && matches!(action.status.as_str(), "pending" | "open")
+            {
+                action.status = status.to_string();
+                action.payload_json["resolution_event_id"] =
+                    serde_json::Value::String(event.event_id.to_string());
+            }
         }
     }
 }
@@ -2093,6 +2818,7 @@ fn replay_journal(path: Option<&PathBuf>) -> anyhow::Result<GoalStore> {
             JournalEntry::OperatorEvent(request) => store.apply_operator_event(request.event),
             JournalEntry::Artifact(request) => store.apply_artifacts(request.into_records()),
             JournalEntry::Plan(plan) => store.apply_plan(plan),
+            JournalEntry::Draft(draft) => store.apply_draft(draft),
             JournalEntry::EventSourceApproval(record) => {
                 store.apply_event_source_approval(record);
             }
@@ -2132,20 +2858,21 @@ mod tests {
         extract::{Path, State},
     };
     use coat_domain::{
-        ArtifactKind, ArtifactRef, BranchSelector, CheckpointRef, DurableEventEnvelope,
-        EventSourceApprovalRecord, EventSourceApprovalStatus, EventSourceKind, GoalEventKind,
-        GoalEventRecord, GoalSpec, GoalState, GoalStoreArtifactRecordRequest,
-        GoalStoreSnapshotUpsertRequest, OperatorActorRef, OperatorEventAppendRequest,
-        OperatorTransition, PlanCandidateSelectionRequest, PlanCandidateVoteRequest,
-        PlanCompileRequest, PlanDraftRequest, ProtocolMetadata,
+        ApprovalRecord, ApprovalRisk, ArtifactKind, ArtifactRef, BranchSelector, CheckpointRef,
+        DurableEventEnvelope, EventSourceApprovalRecord, EventSourceApprovalStatus,
+        EventSourceKind, GoalEventKind, GoalEventRecord, GoalSpec, GoalState,
+        GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest, OperatorActionKind,
+        OperatorActorRef, OperatorEventAppendRequest, OperatorTransition,
+        PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest,
+        PlanDraftRequest, ProtocolMetadata, TaskStatus,
     };
     use tokio::sync::RwLock;
 
     use super::{
-        AppState, ChatTurnAppendRequest, GoalStore, GoalStoreBackend, OperatorEventFilter,
-        append_chat_turn, append_operator_event, checkpoints_from_artifacts,
-        filter_operator_events, get_chat_session, select_plan_candidate, upsert_plan_record,
-        vote_plan_candidate,
+        AppState, ChatTurnAppendRequest, GoalStore, GoalStoreBackend, OperatorActionFilter,
+        OperatorEventFilter, append_chat_turn, append_operator_event, checkpoints_from_artifacts,
+        filter_actions, filter_operator_events, get_chat_session, select_plan_candidate,
+        upsert_plan_record, vote_plan_candidate,
     };
 
     #[test]
@@ -2164,6 +2891,49 @@ mod tests {
         assert!(store.goals.contains_key(&goal_id));
         assert!(store.tasks.contains_key(&task_id));
         assert!(!store.events[&goal_id].is_empty());
+    }
+
+    #[test]
+    fn snapshot_rebuilds_action_queue_for_approvals_and_blocked_tasks() {
+        let state = GoalState::new(GoalSpec::new(
+            "Actionable goal",
+            "Project blocked work into the operator action queue",
+        ));
+        let mut request = GoalStoreSnapshotUpsertRequest::from_state(&state, "action_projection");
+        let goal_id = request.snapshot.goal.goal_id;
+        let task_id = request.snapshot.tasks[0].task_id;
+        request.snapshot.tasks[0].status = TaskStatus::Blocked;
+        request.snapshot.approvals.push(ApprovalRecord {
+            approval_id: uuid::Uuid::new_v4(),
+            goal_id,
+            task_id: Some(task_id),
+            status: coat_domain::ApprovalStatus::Pending,
+            risk: ApprovalRisk::Medium,
+            reason: "dangerous operation needs confirmation".to_string(),
+            requested_action: "continue sandbox command".to_string(),
+            updated_at: Some("2026-05-14T12:00:00Z".to_string()),
+            payload_json: serde_json::json!({"source": "test"}),
+        });
+        let mut store = GoalStore::default();
+
+        store.apply_snapshot(request.snapshot.clone());
+        store.apply_snapshot(request.snapshot);
+        store.rebuild_action_queue();
+
+        let actions = filter_actions(
+            store.actions.values().cloned().collect(),
+            &OperatorActionFilter {
+                goal_id: Some(goal_id),
+                kind: None,
+                status: Some(vec!["pending".to_string()]),
+                limit: None,
+            },
+        );
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].kind, OperatorActionKind::ResolveApproval);
+        assert_eq!(actions[0].task_id, Some(task_id));
+        assert!(actions[0].question.contains("continue sandbox command"));
     }
 
     #[test]
@@ -2195,6 +2965,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_projection_persists_draft_hook() {
+        let state = AppState {
+            store: Arc::new(RwLock::new(GoalStore::default())),
+            journal_path: None,
+            backend: GoalStoreBackend::Memory,
+            postgres: None,
+        };
+        let plan = coat_domain::DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: None,
+            title: "Draft hook".to_string(),
+            objective: "Keep the chat-created draft queryable.".to_string(),
+            repo: None,
+            prompt: "Draft this goal.".to_string(),
+            mode: Default::default(),
+            status: None,
+            author: None,
+            summary: None,
+            authoring: Default::default(),
+            plan: Default::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        let plan_id = plan.id;
+
+        upsert_plan_record(&state, &plan).await.unwrap();
+
+        let store = state.store.read().await;
+        assert!(store.plans.contains_key(&plan_id));
+        assert!(store.drafts.contains_key(&plan_id));
+        assert_eq!(store.drafts[&plan_id].status, "draft");
+    }
+
+    #[test]
+    fn chat_turn_projection_is_idempotent_by_key() {
+        let mut store = GoalStore::default();
+        let mut turn = super::ChatTurnRecord {
+            id: uuid::Uuid::new_v4(),
+            idempotency_key: Some("chat:dedupe".to_string()),
+            draft_id: Some(uuid::Uuid::new_v4()),
+            session_id: "operator:dedupe".to_string(),
+            goal_id: None,
+            mode: "draft_plan".to_string(),
+            role: "user".to_string(),
+            content: "first".to_string(),
+            created_at: Some("2026-05-14T12:00:00Z".to_string()),
+            provider: None,
+            model: None,
+            payload_json: serde_json::json!({}),
+        };
+        store.apply_chat_turn(turn.clone());
+        turn.id = uuid::Uuid::new_v4();
+        turn.content = "duplicate".to_string();
+        store.apply_chat_turn(turn);
+
+        let turns = &store.chat_turns["operator:dedupe"];
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].content, "first");
+    }
+
+    #[tokio::test]
     async fn chat_turn_handlers_persist_session_history() {
         let state = AppState {
             store: Arc::new(RwLock::new(GoalStore::default())),
@@ -2208,6 +3040,8 @@ mod tests {
             State(state.clone()),
             Json(ChatTurnAppendRequest {
                 id: None,
+                idempotency_key: Some("chat:operator:smoke:1".to_string()),
+                draft_id: None,
                 session_id: session_id.clone(),
                 goal_id: None,
                 mode: Some("draft_plan".to_string()),
@@ -2227,6 +3061,8 @@ mod tests {
             State(state.clone()),
             Json(ChatTurnAppendRequest {
                 id: None,
+                idempotency_key: Some("chat:operator:smoke:2".to_string()),
+                draft_id: None,
                 session_id: session_id.clone(),
                 goal_id: None,
                 mode: Some("draft_plan".to_string()),
@@ -2418,8 +3254,8 @@ mod tests {
         store.apply_event(replayed);
 
         assert_eq!(store.events[&goal_id].len(), 1);
-        assert_eq!(store.events[&goal_id][0].message, "replayed projection");
-        assert_eq!(store.events[&goal_id][0].payload_json["attempt"], 2);
+        assert_eq!(store.events[&goal_id][0].message, "first projection");
+        assert_eq!(store.events[&goal_id][0].payload_json["attempt"], 1);
     }
 
     #[test]
@@ -2446,7 +3282,38 @@ mod tests {
         store.apply_operator_event(replayed);
 
         assert_eq!(store.operator_events.len(), 1);
-        assert_eq!(store.operator_events[0].payload_json["message"], "replayed");
+        assert_eq!(store.operator_events[0].payload_json["message"], "first");
+    }
+
+    #[test]
+    fn operator_events_resolve_projected_actions() {
+        let state = GoalState::new(GoalSpec::new(
+            "Resolve action",
+            "Close action queue entries when durable events arrive",
+        ));
+        let mut request = GoalStoreSnapshotUpsertRequest::from_state(&state, "blocked_projection");
+        let goal_id = request.snapshot.goal.goal_id;
+        request.snapshot.tasks[0].status = TaskStatus::Blocked;
+        let mut store = GoalStore::default();
+        store.apply_snapshot(request.snapshot);
+        assert_eq!(store.actions.len(), 1);
+
+        store.apply_operator_event(DurableEventEnvelope {
+            event_id: uuid::Uuid::new_v4(),
+            event_type: "goal.cancelled".to_string(),
+            actor: OperatorActorRef::goal(goal_id),
+            transition: OperatorTransition::GoalCancelled,
+            idempotency_key: "operator:goal:cancel:resolve-actions".to_string(),
+            causation_id: None,
+            correlation_id: None,
+            restate_invocation_id: None,
+            created_at: "2026-05-14T12:00:00Z".to_string(),
+            payload_json: serde_json::json!({}),
+        });
+
+        let action = store.actions.values().next().expect("projected action");
+        assert_eq!(action.status, "cancelled");
+        assert!(action.payload_json["resolution_event_id"].is_string());
     }
 
     #[test]

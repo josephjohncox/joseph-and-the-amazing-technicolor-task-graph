@@ -20,9 +20,12 @@ Use `@ctxr/agent-staff-engineer` as a specialized issue-to-PR worker after depen
 
 ## Follow-Ups
 
-- Coordinate staff-engineer live adapter timing through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`; Codex App Server is the first live worker reference.
-- Verify the current `@ctxr/kit` and `@ctxr/agent-staff-engineer` package behavior before making the adapter a hard dependency.
-- Add a live issue-to-PR smoke test in an isolated repository once tracker and Claude Code auth distribution are approved.
+- Superseded by the active master plan:
+  `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+  Codex App Server remains the first live worker reference; staff-engineer live
+  package verification and issue-to-PR smoke remain gated until package behavior,
+  isolated repo install, tracker auth, and Claude Code auth distribution are
+  approved.
 
 ## Acceptance
 

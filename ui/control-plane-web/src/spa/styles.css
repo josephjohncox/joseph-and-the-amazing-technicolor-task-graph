@@ -943,6 +943,31 @@ label {
   resize: vertical;
 }
 
+.draft-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.draft-action-row > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.draft-action-row strong,
+.draft-action-row span {
+  overflow-wrap: anywhere;
+}
+
+.draft-action-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .chat-shell {
   height: clamp(360px, 44vh, 560px);
   min-height: 0;
@@ -1697,9 +1722,14 @@ label {
   }
 
   .draft-review-dock,
+  .draft-action-row,
   .graph-control-redirect {
     align-items: stretch;
     grid-template-columns: 1fr;
+  }
+
+  .draft-action-row {
+    flex-direction: column;
   }
 
   .draft-summary-meta,

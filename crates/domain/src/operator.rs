@@ -12,10 +12,13 @@ use uuid::Uuid;
 use crate::{
     AgentRunResult, ApprovalRecord, ApprovalStatus, ArtifactRef, CheckpointRef,
     ComputeGraphSnapshot, DelayedComputeThunk, DelayedComputeThunkStatus, GoalId, GoalProgress,
-    GoalRecord, GoalStatus, ReviewOutput, TaskId, TaskRecord, TaskStatus, WorkerKind,
+    GoalRecord, GoalStatus, ReviewOutput, TaskId, TaskPurposeKind, TaskRecord, TaskStatus,
+    WorkerKind,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorActorKind {
     Goal,
@@ -25,6 +28,27 @@ pub enum OperatorActorKind {
     Review,
     Approval,
     Event,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorActorStateClass {
+    Active,
+    Waiting,
+    Recoverable,
+    TerminalOk,
+    TerminalStopped,
+    Immutable,
+}
+
+impl OperatorActorStateClass {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::TerminalOk | Self::TerminalStopped)
+    }
+
+    pub fn is_recoverable(self) -> bool {
+        matches!(self, Self::Waiting | Self::Recoverable)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -56,7 +80,7 @@ impl OperatorActorRef {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorTransition {
     SubmitGoal,
@@ -90,6 +114,34 @@ impl OperatorTransition {
             Self::GoalCancelled => "goal.cancelled",
             Self::GoalSatisfied => "goal.satisfied",
         }
+    }
+
+    pub fn actor_kinds(&self) -> &'static [OperatorActorKind] {
+        match self {
+            Self::SubmitGoal | Self::DraftAccepted | Self::GoalSteered | Self::GoalSatisfied => {
+                &[OperatorActorKind::Goal]
+            }
+            Self::TaskDispatched | Self::TaskBlocked => &[OperatorActorKind::Task],
+            Self::WorkerResultReceived => &[OperatorActorKind::Task, OperatorActorKind::WorkerRun],
+            Self::ThunkCreated | Self::ThunkResumed => {
+                &[OperatorActorKind::Task, OperatorActorKind::Thunk]
+            }
+            Self::ApprovalRequested | Self::ApprovalResolved => {
+                &[OperatorActorKind::Task, OperatorActorKind::Approval]
+            }
+            Self::ReviewCompleted => &[OperatorActorKind::Task, OperatorActorKind::Review],
+            Self::BranchSelected => &[OperatorActorKind::Goal],
+            Self::GoalCancelled => &[
+                OperatorActorKind::Goal,
+                OperatorActorKind::Task,
+                OperatorActorKind::Thunk,
+                OperatorActorKind::Approval,
+            ],
+        }
+    }
+
+    pub fn targets_actor_kind(&self, kind: OperatorActorKind) -> bool {
+        self.actor_kinds().contains(&kind)
     }
 }
 
@@ -324,8 +376,68 @@ pub struct OperatorEventListResponse {
 pub trait OperatorActor {
     fn actor_ref(&self) -> OperatorActorRef;
     fn status_label(&self) -> String;
+    fn state_class(&self) -> OperatorActorStateClass;
     fn can_apply(&self, transition: &OperatorTransition)
     -> Result<(), OperatorTransitionRejection>;
+}
+
+fn reject_actor_scope(
+    actor: OperatorActorRef,
+    transition: OperatorTransition,
+    current_status: String,
+) -> OperatorTransitionRejection {
+    OperatorTransitionRejection {
+        actor,
+        transition,
+        current_status,
+        message: "transition does not target this actor kind".to_string(),
+        recovery_hints: vec![OperatorRecoveryHint {
+            action: "inspect_actor".to_string(),
+            label: "Inspect the matching actor".to_string(),
+            reason: "route the command to the actor kind listed by the typed transition"
+                .to_string(),
+        }],
+    }
+}
+
+fn reject_actor_state(
+    actor: OperatorActorRef,
+    transition: OperatorTransition,
+    current_status: String,
+    message: impl Into<String>,
+    recovery_hints: Vec<OperatorRecoveryHint>,
+) -> OperatorTransitionRejection {
+    OperatorTransitionRejection {
+        actor,
+        transition,
+        current_status,
+        message: message.into(),
+        recovery_hints,
+    }
+}
+
+fn refresh_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
+    OperatorRecoveryHint {
+        action: "refresh_actions".to_string(),
+        label: "Refresh action queue".to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn restart_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
+    OperatorRecoveryHint {
+        action: "restart".to_string(),
+        label: "Restart recoverable work".to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn cancel_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
+    OperatorRecoveryHint {
+        action: "cancel_goal".to_string(),
+        label: "Cancel goal".to_string(),
+        reason: reason.into(),
+    }
 }
 
 pub struct GoalActor<'a>(pub &'a GoalRecord);
@@ -339,33 +451,62 @@ impl OperatorActor for GoalActor<'_> {
         format!("{:?}", self.0.status).to_ascii_lowercase()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        match self.0.status {
+            GoalStatus::Running => OperatorActorStateClass::Active,
+            GoalStatus::WaitingApproval | GoalStatus::Paused => OperatorActorStateClass::Waiting,
+            GoalStatus::Blocked | GoalStatus::Failed => OperatorActorStateClass::Recoverable,
+            GoalStatus::Done => OperatorActorStateClass::TerminalOk,
+            GoalStatus::Cancelled => OperatorActorStateClass::TerminalStopped,
+        }
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
+        if !transition.targets_actor_kind(OperatorActorKind::Goal) {
+            return Err(reject_actor_scope(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+            ));
+        }
         let allowed = match self.0.status {
-            GoalStatus::Done | GoalStatus::Cancelled => {
-                matches!(transition, OperatorTransition::SubmitGoal)
+            GoalStatus::Done => {
+                matches!(
+                    transition,
+                    OperatorTransition::SubmitGoal | OperatorTransition::GoalSatisfied
+                )
             }
+            GoalStatus::Cancelled => matches!(transition, OperatorTransition::SubmitGoal),
             GoalStatus::Running
             | GoalStatus::WaitingApproval
             | GoalStatus::Blocked
             | GoalStatus::Failed
-            | GoalStatus::Paused => true,
+            | GoalStatus::Paused => matches!(
+                transition,
+                OperatorTransition::SubmitGoal
+                    | OperatorTransition::DraftAccepted
+                    | OperatorTransition::BranchSelected
+                    | OperatorTransition::GoalSteered
+                    | OperatorTransition::GoalCancelled
+                    | OperatorTransition::GoalSatisfied
+            ),
         };
-        allowed
-            .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message: "terminal goals only accept idempotent reads or a new submit".to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
+        allowed.then_some(()).ok_or_else(|| {
+            reject_actor_state(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+                "goal transition is not valid for the current goal state",
+                vec![OperatorRecoveryHint {
                     action: "select_active_goal".to_string(),
                     label: "Select an active goal".to_string(),
                     reason: "completed or cancelled goals cannot be restarted in place".to_string(),
                 }],
-            })
+            )
+        })
     }
 }
 
@@ -380,44 +521,97 @@ impl OperatorActor for TaskActor<'_> {
         format!("{:?}", self.0.status).to_ascii_lowercase()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        match self.0.status {
+            TaskStatus::Pending
+            | TaskStatus::Runnable
+            | TaskStatus::Running
+            | TaskStatus::NeedsValidation => OperatorActorStateClass::Active,
+            TaskStatus::WaitingApproval | TaskStatus::WaitingInput => {
+                OperatorActorStateClass::Waiting
+            }
+            TaskStatus::Blocked | TaskStatus::Failed => OperatorActorStateClass::Recoverable,
+            TaskStatus::Done => OperatorActorStateClass::TerminalOk,
+            TaskStatus::Cancelled => OperatorActorStateClass::TerminalStopped,
+        }
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
+        if !transition.targets_actor_kind(OperatorActorKind::Task) {
+            return Err(reject_actor_scope(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+            ));
+        }
         let allowed = match transition {
             OperatorTransition::TaskDispatched => self.0.status == TaskStatus::Runnable,
-            OperatorTransition::WorkerResultReceived
-            | OperatorTransition::TaskBlocked
-            | OperatorTransition::ThunkCreated
-            | OperatorTransition::ApprovalRequested => matches!(
+            OperatorTransition::WorkerResultReceived => self.0.status == TaskStatus::Running,
+            OperatorTransition::TaskBlocked => matches!(
                 self.0.status,
-                TaskStatus::Running
-                    | TaskStatus::Runnable
+                TaskStatus::Runnable
+                    | TaskStatus::Running
+                    | TaskStatus::WaitingApproval
+                    | TaskStatus::WaitingInput
                     | TaskStatus::Blocked
                     | TaskStatus::Failed
+            ),
+            OperatorTransition::ThunkCreated => matches!(
+                self.0.status,
+                TaskStatus::Runnable
+                    | TaskStatus::Running
                     | TaskStatus::WaitingInput
                     | TaskStatus::WaitingApproval
+                    | TaskStatus::Blocked
+                    | TaskStatus::Failed
+            ),
+            OperatorTransition::ApprovalRequested => matches!(
+                self.0.status,
+                TaskStatus::Runnable
+                    | TaskStatus::Running
+                    | TaskStatus::WaitingApproval
+                    | TaskStatus::Blocked
+                    | TaskStatus::Failed
             ),
             OperatorTransition::ThunkResumed | OperatorTransition::ApprovalResolved => matches!(
                 self.0.status,
                 TaskStatus::WaitingInput | TaskStatus::WaitingApproval | TaskStatus::Blocked
             ),
+            OperatorTransition::ReviewCompleted => {
+                self.0.purpose_kind == TaskPurposeKind::Review
+                    && matches!(
+                        self.0.status,
+                        TaskStatus::Running | TaskStatus::NeedsValidation
+                    )
+            }
             OperatorTransition::GoalCancelled => true,
-            _ => !self.0.status.is_terminal(),
+            _ => false,
         };
         allowed
             .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message: "task transition is not valid for the current task state".to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
+            .ok_or_else(|| {
+                let mut hints = vec![OperatorRecoveryHint {
                     action: "inspect_task".to_string(),
                     label: "Inspect task state".to_string(),
-                    reason: "choose a recovery action that matches the projected task status"
+                    reason: "choose a recovery action matching the projected task status"
                         .to_string(),
-                }],
+                }];
+                if self.state_class().is_recoverable() {
+                    hints.push(restart_hint(
+                        "blocked, failed, and waiting tasks should remain restartable, resumable, replan-able, or cancellable",
+                    ));
+                    hints.push(cancel_hint("cancel remains the explicit terminal stop path"));
+                }
+                reject_actor_state(
+                    self.actor_ref(),
+                    *transition,
+                    self.status_label(),
+                    "task transition is not valid for the current task state",
+                    hints,
+                )
             })
     }
 }
@@ -438,26 +632,46 @@ impl OperatorActor for ApprovalActor<'_> {
         format!("{:?}", self.0.status).to_ascii_lowercase()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        match self.0.status {
+            ApprovalStatus::Pending => OperatorActorStateClass::Waiting,
+            ApprovalStatus::Approved => OperatorActorStateClass::TerminalOk,
+            ApprovalStatus::Rejected | ApprovalStatus::Cancelled => {
+                OperatorActorStateClass::TerminalStopped
+            }
+        }
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
-        let allowed = transition == &OperatorTransition::ApprovalResolved
-            && self.0.status == ApprovalStatus::Pending;
-        allowed
-            .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message: "approval resolution requires a pending approval".to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
-                    action: "refresh_actions".to_string(),
-                    label: "Refresh action queue".to_string(),
-                    reason: "the approval may already have been resolved by another operator"
-                        .to_string(),
-                }],
-            })
+        if !transition.targets_actor_kind(OperatorActorKind::Approval) {
+            return Err(reject_actor_scope(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+            ));
+        }
+        let allowed = match transition {
+            OperatorTransition::ApprovalResolved => self.0.status == ApprovalStatus::Pending,
+            OperatorTransition::GoalCancelled => matches!(
+                self.0.status,
+                ApprovalStatus::Pending | ApprovalStatus::Cancelled
+            ),
+            _ => false,
+        };
+        allowed.then_some(()).ok_or_else(|| {
+            reject_actor_state(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+                "approval transition requires a pending approval or idempotent cancellation",
+                vec![refresh_hint(
+                    "the approval may already have been resolved by another operator",
+                )],
+            )
+        })
     }
 }
 
@@ -477,10 +691,27 @@ impl OperatorActor for ThunkActor<'_> {
         format!("{:?}", self.0.status).to_ascii_lowercase()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        match self.0.status {
+            DelayedComputeThunkStatus::Pending => OperatorActorStateClass::Waiting,
+            DelayedComputeThunkStatus::Resumed => OperatorActorStateClass::TerminalOk,
+            DelayedComputeThunkStatus::Cancelled | DelayedComputeThunkStatus::Expired => {
+                OperatorActorStateClass::TerminalStopped
+            }
+        }
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
+        if !transition.targets_actor_kind(OperatorActorKind::Thunk) {
+            return Err(reject_actor_scope(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+            ));
+        }
         let allowed = match transition {
             OperatorTransition::ThunkResumed => self.0.status == DelayedComputeThunkStatus::Pending,
             OperatorTransition::GoalCancelled => {
@@ -491,20 +722,17 @@ impl OperatorActor for ThunkActor<'_> {
             }
             _ => false,
         };
-        allowed
-            .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message: "thunk transition requires a pending delayed-compute prompt".to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
-                    action: "refresh_actions".to_string(),
-                    label: "Refresh action queue".to_string(),
-                    reason: "the thunk may already have been resumed, cancelled, or expired"
-                        .to_string(),
-                }],
-            })
+        allowed.then_some(()).ok_or_else(|| {
+            reject_actor_state(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+                "thunk transition requires a pending delayed-compute prompt",
+                vec![refresh_hint(
+                    "the thunk may already have been resumed, cancelled, or expired",
+                )],
+            )
+        })
     }
 }
 
@@ -527,27 +755,37 @@ impl OperatorActor for WorkerRunActor<'_> {
         format!("{:?}", self.result.status).to_ascii_lowercase()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        OperatorActorStateClass::Immutable
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
+        if !transition.targets_actor_kind(OperatorActorKind::WorkerRun) {
+            return Err(reject_actor_scope(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+            ));
+        }
         let allowed = matches!(transition, OperatorTransition::WorkerResultReceived);
-        allowed
-            .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message:
-                    "worker runs are immutable results; ingest them with worker_result_received"
-                        .to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
+        allowed.then_some(()).ok_or_else(|| {
+            reject_actor_state(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+                "worker runs are immutable results; ingest them with worker_result_received"
+                    .to_string(),
+                vec![OperatorRecoveryHint {
                     action: "inspect_worker_run".to_string(),
                     label: "Inspect worker result".to_string(),
                     reason: "follow-up work should be a coordinator-owned task or recovery action"
                         .to_string(),
                 }],
-            })
+            )
+        })
     }
 }
 
@@ -574,25 +812,36 @@ impl OperatorActor for ReviewActor<'_> {
         format!("{:?}", self.review.decision).to_ascii_lowercase()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        OperatorActorStateClass::Immutable
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
+        if !transition.targets_actor_kind(OperatorActorKind::Review) {
+            return Err(reject_actor_scope(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+            ));
+        }
         let allowed = matches!(transition, OperatorTransition::ReviewCompleted);
-        allowed
-            .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message: "review actors only accept review_completed events".to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
+        allowed.then_some(()).ok_or_else(|| {
+            reject_actor_state(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+                "review actors only accept review_completed events",
+                vec![OperatorRecoveryHint {
                     action: "create_follow_up_task".to_string(),
                     label: "Create follow-up task".to_string(),
                     reason: "changes requested by a review must become coordinator-owned work"
                         .to_string(),
                 }],
-            })
+            )
+        })
     }
 }
 
@@ -607,26 +856,29 @@ impl OperatorActor for EventActor<'_> {
         self.0.event_type.clone()
     }
 
+    fn state_class(&self) -> OperatorActorStateClass {
+        OperatorActorStateClass::Immutable
+    }
+
     fn can_apply(
         &self,
         transition: &OperatorTransition,
     ) -> Result<(), OperatorTransitionRejection> {
         let allowed = transition == &self.0.transition;
-        allowed
-            .then_some(())
-            .ok_or_else(|| OperatorTransitionRejection {
-                actor: self.actor_ref(),
-                transition: transition.clone(),
-                current_status: self.status_label(),
-                message: "operator events are immutable; append a new event for another transition"
-                    .to_string(),
-                recovery_hints: vec![OperatorRecoveryHint {
+        allowed.then_some(()).ok_or_else(|| {
+            reject_actor_state(
+                self.actor_ref(),
+                *transition,
+                self.status_label(),
+                "operator events are immutable; append a new event for another transition",
+                vec![OperatorRecoveryHint {
                     action: "append_new_event".to_string(),
                     label: "Append a new event".to_string(),
                     reason: "event history is append-only and cannot be rewritten in place"
                         .to_string(),
                 }],
-            })
+            )
+        })
     }
 }
 
@@ -681,6 +933,60 @@ mod tests {
     }
 
     #[test]
+    fn transitions_declare_their_actor_scope() {
+        assert!(OperatorTransition::GoalSteered.targets_actor_kind(OperatorActorKind::Goal));
+        assert!(!OperatorTransition::GoalSteered.targets_actor_kind(OperatorActorKind::Task));
+        assert!(
+            OperatorTransition::WorkerResultReceived.targets_actor_kind(OperatorActorKind::Task)
+        );
+        assert!(
+            OperatorTransition::WorkerResultReceived
+                .targets_actor_kind(OperatorActorKind::WorkerRun)
+        );
+        assert!(OperatorTransition::GoalCancelled.targets_actor_kind(OperatorActorKind::Approval));
+        assert!(OperatorTransition::GoalCancelled.targets_actor_kind(OperatorActorKind::Thunk));
+    }
+
+    #[test]
+    fn actor_state_classes_distinguish_recoverable_terminal_and_immutable() {
+        assert_eq!(
+            GoalActor(&goal(GoalStatus::Blocked)).state_class(),
+            OperatorActorStateClass::Recoverable
+        );
+        assert_eq!(
+            GoalActor(&goal(GoalStatus::Done)).state_class(),
+            OperatorActorStateClass::TerminalOk
+        );
+        assert_eq!(
+            TaskActor(&task(TaskStatus::WaitingInput)).state_class(),
+            OperatorActorStateClass::Waiting
+        );
+
+        let state = GoalState::new(GoalSpec::new("worker", "classify worker run"));
+        let task = state.tasks.values().next().expect("root task");
+        let result = AgentRunResult::stub_done(task);
+        assert_eq!(
+            WorkerRunActor {
+                result: &result,
+                goal_id: Some(task.goal_id),
+            }
+            .state_class(),
+            OperatorActorStateClass::Immutable
+        );
+    }
+
+    #[test]
+    fn goal_actor_rejects_task_transition_with_scope_guidance() {
+        let record = goal(GoalStatus::Running);
+        let rejection = GoalActor(&record)
+            .can_apply(&OperatorTransition::TaskDispatched)
+            .expect_err("goal actor should reject task-only transition");
+        assert_eq!(rejection.actor.kind, OperatorActorKind::Goal);
+        assert!(rejection.message.contains("does not target"));
+        assert_eq!(rejection.recovery_hints[0].action, "inspect_actor");
+    }
+
+    #[test]
     fn terminal_goal_rejects_mutating_transition() {
         let record = goal(GoalStatus::Done);
         let rejection = GoalActor(&record)
@@ -704,6 +1010,46 @@ mod tests {
         TaskActor(&record)
             .can_apply(&OperatorTransition::TaskDispatched)
             .expect("runnable task can dispatch");
+    }
+
+    #[test]
+    fn worker_result_requires_running_task() {
+        let running = task(TaskStatus::Running);
+        TaskActor(&running)
+            .can_apply(&OperatorTransition::WorkerResultReceived)
+            .expect("running task can ingest worker result");
+
+        let runnable = task(TaskStatus::Runnable);
+        let rejection = TaskActor(&runnable)
+            .can_apply(&OperatorTransition::WorkerResultReceived)
+            .expect_err("runnable task has not been dispatched yet");
+        assert_eq!(rejection.actor.kind, OperatorActorKind::Task);
+        assert_eq!(rejection.current_status, "runnable");
+    }
+
+    #[test]
+    fn recoverable_task_rejection_names_recovery_actions() {
+        let record = task(TaskStatus::Blocked);
+        let rejection = TaskActor(&record)
+            .can_apply(&OperatorTransition::TaskDispatched)
+            .expect_err("blocked task should not dispatch directly");
+        let actions: Vec<_> = rejection
+            .recovery_hints
+            .iter()
+            .map(|hint| hint.action.as_str())
+            .collect();
+        assert!(actions.contains(&"restart"));
+        assert!(actions.contains(&"cancel_goal"));
+    }
+
+    #[test]
+    fn task_actor_rejects_goal_only_transition_with_scope_guidance() {
+        let record = task(TaskStatus::Running);
+        let rejection = TaskActor(&record)
+            .can_apply(&OperatorTransition::GoalSatisfied)
+            .expect_err("task actor should reject goal-only satisfaction");
+        assert_eq!(rejection.actor.kind, OperatorActorKind::Task);
+        assert_eq!(rejection.recovery_hints[0].action, "inspect_actor");
     }
 
     #[test]
@@ -731,6 +1077,24 @@ mod tests {
         ApprovalActor(&record)
             .can_apply(&OperatorTransition::ApprovalResolved)
             .expect("pending approval can resolve");
+    }
+
+    #[test]
+    fn pending_approval_can_be_cancelled_with_goal() {
+        let record = ApprovalRecord {
+            approval_id: Uuid::new_v4(),
+            goal_id: Uuid::new_v4(),
+            task_id: None,
+            status: ApprovalStatus::Pending,
+            risk: ApprovalRisk::Low,
+            reason: "need decision".to_string(),
+            requested_action: "continue".to_string(),
+            updated_at: None,
+            payload_json: serde_json::json!({}),
+        };
+        ApprovalActor(&record)
+            .can_apply(&OperatorTransition::GoalCancelled)
+            .expect("pending approval can be closed by goal cancellation");
     }
 
     fn pending_thunk() -> DelayedComputeThunk {
@@ -762,6 +1126,14 @@ mod tests {
         ThunkActor(&thunk)
             .can_apply(&OperatorTransition::ThunkResumed)
             .expect("pending thunk can resume");
+    }
+
+    #[test]
+    fn pending_thunk_can_be_cancelled_with_goal() {
+        let thunk = pending_thunk();
+        ThunkActor(&thunk)
+            .can_apply(&OperatorTransition::GoalCancelled)
+            .expect("pending thunk can be closed by goal cancellation");
     }
 
     #[test]

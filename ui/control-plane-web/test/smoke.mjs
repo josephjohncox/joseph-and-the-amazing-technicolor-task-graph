@@ -576,7 +576,7 @@ async function assertOperatorWorkflowRender() {
         onClear: () => {},
       }),
     );
-    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: operator:default", "Draft review", "Evidence requirements"]) {
+    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: Workspace chat", "Draft review", "Evidence requirements"]) {
       assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
     }
     assert(!commandMarkup.includes("Accept draft"), "command panel leaves submit controls to the active draft dock");
@@ -835,7 +835,7 @@ async function assertOperatorWorkflowRender() {
       "Need operator answer",
       "Operator must choose the next validation path.",
       "Provide the missing input and resume the continuation.",
-      "Controls",
+      "Open actions",
     ]) {
       assert(blockerMarkup.includes(expected), `blocker insight markup includes ${expected}`);
     }
@@ -1236,7 +1236,7 @@ async function assertOperatorWorkflowRender() {
     }));
     assert(actionResultMarkup.includes("Restart accepted"), "action result renders accepted action name");
     assert(actionResultMarkup.includes("Clear notice"), "action result exposes local-only clear control");
-    assert(actionResultMarkup.includes("Clearing this notice only updates this browser view; it does not cancel or change the goal."), "action result explains clear is local-only");
+    assert(actionResultMarkup.includes("Projection will refresh from the stream."), "action result explains projection refresh behavior");
 
     const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { workspace }));
     for (const expected of [
@@ -1787,6 +1787,8 @@ async function assertBackendBackedControlSurfaces() {
       latest_message: "Approve before execution",
     },
   ];
+  const operatorEvents = [];
+  const chatTurns = [];
 
   const goalStoreServer = http.createServer(async (req, res) => {
     const request = await captureRequest(req);
@@ -1855,8 +1857,9 @@ async function assertBackendBackedControlSurfaces() {
     }
     if (request.method === "GET" && request.path.startsWith("/goal-store/chat/sessions/")) {
       const sessionId = decodeURIComponent(request.path.slice("/goal-store/chat/sessions/".length));
+      const storedTurns = chatTurns.filter((turn) => turn.session_id === sessionId);
       if (sessionId !== `goal:${goalId}`) {
-        respondJson(res, 200, { session_id: sessionId, turns: [] });
+        respondJson(res, 200, { session_id: sessionId, turns: storedTurns });
         return;
       }
       respondJson(res, 200, {
@@ -1880,8 +1883,23 @@ async function assertBackendBackedControlSurfaces() {
             model: "stub-control-chat",
             created_at: "2026-05-09T12:03:02Z",
           },
+          ...storedTurns,
         ],
       });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/goal-store/chat/turns") {
+      chatTurns.push(request.body);
+      respondJson(res, 200, { accepted: true, turn: request.body });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-events") {
+      respondJson(res, 200, { events: operatorEvents });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/goal-store/operator-events") {
+      operatorEvents.push(request.body?.event ?? request.body);
+      respondJson(res, 200, { accepted: true, event: request.body?.event ?? request.body });
       return;
     }
     if (request.method === "GET" && request.path === "/goal-store/approvals") {
@@ -2227,6 +2245,12 @@ async function assertBackendBackedControlSurfaces() {
     assertCompactDraftPayload(compactDraft, "backend-backed goal draft");
     assert(compactDraft.draft_id, "backend-backed goal draft includes server-side draft id");
     assert(!("root_budget" in compactDraft), "compact goal draft omits default budget payload");
+    const activeDraftSessionResponse = await fetch(`${backendBaseUrl}/api/chat/session?session_id=operator%3Adefault`);
+    assert(activeDraftSessionResponse.ok, "chat session reads server-owned draft state");
+    const activeDraftSession = await activeDraftSessionResponse.json();
+    assertEqual(activeDraftSession.durable, true, "chat session is backed by the goal-store chat log when available");
+    assertEqual(activeDraftSession.drafts[0].draft_id, compactDraft.draft_id, "chat session lists the server-owned draft id");
+    assertEqual(activeDraftSession.drafts[0].status, "active", "chat session exposes active draft state before submission");
 
     const compactSubmitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
@@ -2250,6 +2274,40 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(compactReceived.initial_tasks[0].role, "planner", "compact submit preserves stored initial task frontier");
     assertEqual(compactReceived.plan.subgoals[0].id, "plan-next-frontier", "compact submit preserves stored subgoal payload");
     assertEqual(compactReceived.authoring.constraints[0], "Preserve the stored full draft when submitting compact review edits.", "compact submit applies edited authoring fields");
+    const acceptedDraftSessionResponse = await fetch(`${backendBaseUrl}/api/chat/session?session_id=operator%3Adefault`);
+    assert(acceptedDraftSessionResponse.ok, "chat session remains readable after draft acceptance");
+    const acceptedDraftSession = await acceptedDraftSessionResponse.json();
+    assertEqual(acceptedDraftSession.drafts[0].status, "accepted", "accepted draft state is server-owned");
+    assertEqual(acceptedDraftSession.drafts[0].accepted_goal_id, compactSubmitBody.goal_id, "accepted draft records the durable goal id");
+    const draftAcceptedEvent = operatorEvents.find((event) => event.transition === "draft_accepted" && event.payload_json?.draft_id === compactDraft.draft_id);
+    assert(draftAcceptedEvent, "accepting a chat draft appends a durable operator event");
+    assert(
+      String(draftAcceptedEvent.event_id).startsWith("operator-event:"),
+      "draft accepted operator event id is stable and projection-shaped",
+    );
+
+    const replayAcceptedDraftResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(compactDraft),
+    });
+    assertEqual(replayAcceptedDraftResponse.status, 409, "accepted server-owned draft cannot be submitted again as a new goal");
+    const replayAcceptedDraftBody = await replayAcceptedDraftResponse.json();
+    assertEqual(replayAcceptedDraftBody.recovery.accepted_goal_id, compactSubmitBody.goal_id, "accepted draft rejection points back to the selected goal");
+
+    const missingDraftResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        compact: true,
+        draft_id: "missing-draft-id",
+        title: "Missing server draft",
+        objective: "This compact payload must not become source-of-truth state.",
+      }),
+    });
+    assertEqual(missingDraftResponse.status, 409, "missing server-owned draft id rejects compact UI-owned payloads");
+    const missingDraftBody = await missingDraftResponse.json();
+    assertEqual(missingDraftBody.recovery.actions[0], "refresh_chat_session", "missing draft response gives an operator recovery action");
 
     const badSubmitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
@@ -2375,6 +2433,36 @@ async function assertBackendBackedControlSurfaces() {
       calls.goalStore.some((call) => call.url === `/goal-store/approvals?limit=100&goal_id=${encodeURIComponent(goalId)}`),
       "mcp operator actions forwards selected goal filter to goal-store",
     );
+    const approvalContextResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`approval:${goalId}:${approvalId}`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        resolution: "add_context",
+        response_summary: "Operator attached context without approving yet.",
+      }),
+    });
+    assert(approvalContextResponse.ok, "approval add-context action resolution returns ok");
+    const approvalContextBody = await approvalContextResponse.json();
+    assertEqual(approvalContextBody.resolution, "add_context", "approval add-context keeps the requested resolution");
+    assertEqual(approvalContextBody.result.data.handler, "steer", "approval add-context routes through steering, not approval");
+    const approvalContextCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer` && call.body?.kind?.add_context?.approval_id === approvalId);
+    assert(approvalContextCall, "approval add-context forwards target approval id to the coordinator");
+
+    const thunkActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`thunk:${goalId}:${thunkId}`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        resolution: "continue",
+        response_summary: "Resume from the action queue.",
+      }),
+    });
+    assert(thunkActionResponse.ok, "thunk action resolution returns ok");
+    const thunkActionBody = await thunkActionResponse.json();
+    assertEqual(thunkActionBody.result.data.handler, "resume_thunk", "thunk action resolution resumes the delayed compute thunk");
+    assertEqual(thunkActionBody.accepted, true, "thunk action resolution reports accepted workflow mutation");
+
     const approvalResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/approve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -2415,7 +2503,7 @@ async function assertBackendBackedControlSurfaces() {
     const steerBody = await steerResponse.json();
     assertEqual(steerBody.data.handler, "steer", "goal steering routes through workflow steer handler");
     assertEqual(steerBody.data.directive.kind.kind, "add_constraint", "goal steering forwards directive kind");
-    const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer`);
+    const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer` && call.body?.id === "directive-smoke");
     assertEqual(steerCall?.body?.message, "Pin behavioral smoke coverage.", "goal steering forwards operator message");
 
     const staleSteerResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${staleGoalId}/steer`, {
@@ -2600,7 +2688,7 @@ async function assertBackendBackedControlSurfaces() {
     assert(resumeResponse.ok, "goal thunk resume api returns ok");
     const resumeBody = await resumeResponse.json();
     assertEqual(resumeBody.data.handler, "resume_thunk", "goal thunk resume routes through workflow resume handler");
-    const resumeCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/resume_thunk`);
+    const resumeCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/resume_thunk` && call.body?.response_summary === "Smoke continuation can resume.");
     assertEqual(resumeCall?.body?.thunk_id, thunkId, "goal thunk resume forwards thunk id");
     assertEqual(resumeCall?.body?.responder, "operator", "goal thunk resume forwards responder");
 

@@ -29,7 +29,7 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `GET /api/operator/goals/{goal_id}/graph`: selected-goal compute graph, tasks, and action projection.
 - `GET /api/operator/actions`: product-shaped action queue across goals or filtered by `goal_id`.
 - `POST /api/operator/actions/{action_id}/resolve`: resolve an approval, resume a delayed compute thunk, retry/replan blocked work, or cancel a goal through typed coordinator handlers.
-- `GET /api/operator/stream`: SSE stream for operator projections. It emits product-level projection events such as `goal.updated`, `task.updated`, `worker.completed`, `approval.requested`, `review.completed`, `goal.satisfied`, `goal.cancelled`, and `stream.error`.
+- `GET /api/operator/stream`: SSE stream for operator projections. It emits product-level projection events such as `workspace.updated`, `goal.updated`, `task.updated`, `worker.completed`, `action.required`, `approval.requested`, `goal.satisfied`, `goal.cancelled`, `stream.heartbeat`, and `stream.error`.
 - `GET /api/plans`: durable planning-mode list.
 - `POST /api/plans`: create a durable plan.
 - `GET /api/plans/{plan_id}`: inspect a durable plan.
@@ -94,12 +94,13 @@ must not ask for raw UUID entry in each panel. After `/api/operator/goals`
 returns, the SPA selects the returned `goal_id` immediately and shows the
 submitted-draft overlay until goal-store projects the durable task graph.
 When a current goal is selected, the SPA opens `/api/operator/stream` with the
-selected `goal_id`. The stream updates the operator workspace cache and, when
-present, the selected-operator goal detail. `event_type` filters both the SSE event
-name and the operator-event projection; `event_since` filters the append-only
-operator event log by timestamp, while SSE `Last-Event-ID`/`since` remain stream
-sequence cursors. Clients must use the actor-style `/api/operator/*`
-state-machine surface for goal, graph, action, and stream state.
+selected `goal_id`. The stream updates the operator workspace cache, global goal
+list cache, selected-goal detail, and action queue cache from the same projection
+payload. `event_type` filters both the SSE event name and the operator-event
+projection; `event_since` filters the append-only operator event log by
+timestamp, while SSE `Last-Event-ID`/`since` remain stream sequence cursors.
+Clients must use the actor-style `/api/operator/*` state-machine surface for
+goal, graph, action, and stream state.
 
 The SPA is a direct task-graph management surface, not a CLI coverage matrix.
 It should expose the current goal's Work Graph, Human Queue, next action,

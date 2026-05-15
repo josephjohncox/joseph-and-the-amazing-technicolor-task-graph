@@ -77,7 +77,7 @@ if [ "$print_commands" = true ]; then
   printf '  vllm serve <model> --host 0.0.0.0 --port 8000\n'
   printf '  coat setup login --hf --preflight\n'
   printf 'auth modes accepted by preflight: runner_local_device, app_server, oauth_device_broker, external_broker, workload_identity, none\n'
-  printf 'run `coat setup local-auth` interactively to flip selected runner lanes live\n'
+  printf 'run `coat setup local-auth` interactively to flip selected runners live\n'
   printf 'then preflight Compose with:\n'
   printf '  coat deploy local preflight --env-file %s\n' "$output"
 fi

@@ -586,11 +586,16 @@ async function assertOperatorWorkflowRender() {
 
     const dockMarkup = renderToStaticMarkup(
       React.createElement(DraftReviewDock, {
-        activeDraft,
-        goalDraft,
-        goalSubmitBusy: false,
-        goalSubmitError: null,
-        goalSubmitResult: undefined,
+        view: {
+          title: "Goal draft",
+          detail: "Submit an operator-authored goal through the coordinator.",
+          kindLabel: "Goal draft",
+          sessionLabel: "operator:default",
+          hasGoalDraft: true,
+          submittedGoalLabel: "",
+          busy: false,
+          errorMessage: "",
+        },
         onSubmitGoalDraft: () => {},
         onDiscardGoalDraft: () => {},
       }),
@@ -2344,6 +2349,24 @@ async function assertBackendBackedControlSurfaces() {
     const workspace = await workspaceResponse.json();
     assertEqual(workspace.human_threads.data.data[0].thread_key, `approval:${approvalId}`, "operator workspace preserves notifier thread key");
     assertEqual(workspace.human_threads.data.data[0].latest_status, "waiting_operator", "operator workspace preserves waiting status");
+    const streamController = new AbortController();
+    const streamResponse = await fetch(`${backendBaseUrl}/api/operator/stream?goal_id=${encodeURIComponent(goalId)}`, {
+      signal: streamController.signal,
+    });
+    assert(streamResponse.ok, "operator stream returns ok");
+    assert(streamResponse.headers.get("content-type")?.includes("text/event-stream"), "operator stream uses SSE content type");
+    const streamReader = streamResponse.body?.getReader();
+    assert(streamReader, "operator stream exposes a readable body");
+    let streamText = "";
+    const streamDecoder = new TextDecoder();
+    for (let readCount = 0; readCount < 5 && !streamText.includes("\n\n"); readCount += 1) {
+      const chunk = await streamReader.read();
+      if (chunk.done) break;
+      streamText += streamDecoder.decode(chunk.value, { stream: true });
+    }
+    streamController.abort();
+    assert(/event: (action\.required|approval\.requested)/.test(streamText), "operator stream emits product-level action events");
+    assert(streamText.includes(`"selected_goal_id":"${goalId}"`), "operator stream carries the selected goal workspace projection");
     const approvalQueue = await callMcpAt(backendBaseUrl, "coat_operator_actions", { goal_id: goalId });
     const projectedApprovalAction = approvalQueue.actions.find((action) => action.approval?.approval_id === approvalId);
     assert(projectedApprovalAction, "operator actions read projected human gate");

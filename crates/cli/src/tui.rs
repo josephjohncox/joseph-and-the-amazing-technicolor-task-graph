@@ -479,7 +479,9 @@ impl App {
             content: content.clone(),
         });
         self.chat_scroll_from_bottom = 0;
-        self.status = "generating response via control gateway; input remains editable".to_string();
+        self.status =
+            "generating response via control gateway; input cleared for the next message"
+                .to_string();
         self.busy = true;
 
         let durable_messages = durable_chat_lines(&self.messages);

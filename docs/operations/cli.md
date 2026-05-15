@@ -33,8 +33,8 @@ coat runner <list|status|register|dispatch|capacity-plan>
 coat tool <list|call|web-search>
 coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>
 coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>
-coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>
-coat scenario <list|run|report>
+coat store <policy|goals|plans|tasks|events|operator-events|artifacts|checkpoints|approvals>
+coat scenario <list|run|seed|report>
 coat setup <login|sso|model-index|config|local-auth|chat-client>
 coat tui
 ```
@@ -138,6 +138,12 @@ Shortcut flows are named operator recipes over the canonical commands. They
 should create normal durable plans, goals, branch groups, reviews, votes,
 research tasks, approvals, or steering directives; they must not introduce a
 second orchestration path.
+
+`coat scenario run` is the deterministic evidence harness. `coat scenario seed`
+is only for local/operator fixture bootstrapping: it writes a scenario fixture
+projection to the goal-store read model so the SPA and TUI can show sample goals
+without live model credentials. Real work still goes through goal submission and
+Restate-owned coordinator state.
 
 Recommended shortcuts:
 

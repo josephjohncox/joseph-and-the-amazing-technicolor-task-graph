@@ -1,0 +1,46 @@
+{
+  "id": "00000000-0000-4000-8000-000000004002",
+  "title": "Demo approval pending task",
+  "objective": "Create a deterministic goal with a real coordinator-owned task that pauses at an approval gate so the operator UI can show a concrete pending action.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 200000,
+    "remaining_tokens": 200000,
+    "max_runtime_seconds": 600,
+    "remaining_runtime_seconds": 600,
+    "max_tool_calls": 50,
+    "remaining_tool_calls": 50,
+    "max_child_tasks": 8,
+    "remaining_child_tasks": 8,
+    "max_patch_size": 50000
+  },
+  "done_criteria": {
+    "tests_pass": false,
+    "artifact_exists": true,
+    "validator_score_min": 0.8
+  },
+  "initial_tasks": [
+    {
+      "role": "rust_tool",
+      "purpose": {
+        "kind": "work"
+      },
+      "title": "Run a guarded demo action",
+      "subgoal_id": "demo-approval-required",
+      "prompt": "Run the guarded demo action only after the coordinator approval gate is resolved by an operator.",
+      "reason": "The bootstrap should leave one actionable approval visible in the SPA and TUI without requiring the operator to paste UUIDs.",
+      "sandbox": {
+        "filesystem": "workspace_write",
+        "network": "restricted",
+        "approval_policy": "always",
+        "isolated_runner": true
+      },
+      "done_criteria": {
+        "tests_pass": false,
+        "artifact_exists": true,
+        "validator_score_min": 0.8
+      },
+      "tags": ["bootstrap", "approval", "pending-action"]
+    }
+  ]
+}

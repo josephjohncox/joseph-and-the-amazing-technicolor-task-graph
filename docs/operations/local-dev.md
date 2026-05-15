@@ -178,9 +178,8 @@ target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --
 target/debug/coat scenario report --run-dir target/coat-scenarios/goal_lifecycle_basic
 ```
 
-Use the bootstrap scenario shell script when reviewers need one command that
-prepares the deterministic local stub stack and runs the checked-in bootstrap
-scenario specs:
+Use the scenario E2E shell script when reviewers need one command that prepares
+the deterministic local stub stack and runs the checked-in scenario specs:
 
 ```sh
 sh scripts/coat-scenario-e2e.sh
@@ -195,6 +194,37 @@ output directories. Set `COAT_SCENARIO_E2E_STACK_ONLY=1` to bootstrap and
 health-check the stack without running specs, `COAT_SCENARIO_E2E_STACK=preflight`
 to stop after config/preflight validation, or `COAT_SCENARIO_E2E_KEEP_STACK=0`
 to tear the stack down after the run.
+
+Use the live bootstrap helper when you want real coordinator-created demo goals
+visible in the local operator UI. It submits fixed demo goals through
+`coat goal submit`, creates a durable human-input thunk with
+`coat goal thunk create`, and then records the resulting goal-store projections.
+This requires the local stack to be running:
+
+```sh
+coat deploy local up --allow-stub-runners
+make bootstrap-goals
+```
+
+The live bootstrap leaves three navigable goals in the SPA and TUI:
+
+- `00000000-0000-4000-8000-000000004004`: completed executor lifecycle.
+- `00000000-0000-4000-8000-000000004002`: pending approval action.
+- `00000000-0000-4000-8000-000000004003`: pending human prompt thunk.
+
+Use `make bootstrap-scenarios` for deterministic scenario evidence without
+touching the goal-store. Use fixture seeding only when a test needs direct
+read-model projections instead of real coordinator execution:
+
+```sh
+make bootstrap-scenarios
+make bootstrap-fixture-goals
+coat scenario seed --file scenarios/e2e/bootstrap_basic.json
+```
+
+Fixture scenario seeding is a test/read-model path. It is useful for local UI
+fixtures, but it does not replace Restate-owned workflow execution for real
+goals.
 
 The PR gate runs every checked-in spec under `scenarios/e2e` with
 `coat scenario run --output-dir target/coat-scenarios`. The deterministic E2E
@@ -228,6 +258,7 @@ first when changing paths or Compose options:
 
 ```sh
 make reset-help
+make reset-smoke
 sh scripts/coat-local-reset.sh --help
 ```
 
@@ -243,8 +274,8 @@ sh scripts/coat-local-reset.sh --mode scenario --dry-run
 
 Add bootstrap evidence cleanup only when those generated bootstrap runs should
 also be removed. This clears known run directories under
-`target/coat-scenarios/bootstrap` and the compatibility output directory
-`target/coat-bootstrap-scenarios` when present:
+`target/coat-scenarios/bootstrap` for checked-in scenario IDs, plus the optional
+extra output directory `target/coat-bootstrap-scenarios` when present:
 
 ```sh
 make bootstrap-reset-dry-run

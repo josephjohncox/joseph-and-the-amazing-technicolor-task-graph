@@ -15,6 +15,7 @@ use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use uuid::Uuid;
 
 #[derive(Debug, Args)]
 pub struct ScenarioCommand {
@@ -28,6 +29,8 @@ pub enum ScenarioSubcommand {
     List(ScenarioListArgs),
     #[command(about = "Run a deterministic E2E scenario and write evidence")]
     Run(ScenarioRunArgs),
+    #[command(about = "Seed a scenario fixture projection into the goal-store read model")]
+    Seed(ScenarioSeedArgs),
     #[command(about = "Print a scenario run report")]
     Report(ScenarioReportArgs),
 }
@@ -48,6 +51,20 @@ pub struct ScenarioRunArgs {
     pub timeout: Duration,
     #[arg(long, default_value = "target/coat-scenarios")]
     pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ScenarioSeedArgs {
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    pub goal_store_url: String,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]
@@ -346,6 +363,7 @@ pub async fn run(args: ScenarioCommand) -> anyhow::Result<()> {
     match args.command {
         ScenarioSubcommand::List(args) => list(args),
         ScenarioSubcommand::Run(args) => run_scenario(args).await,
+        ScenarioSubcommand::Seed(args) => seed_scenario(args).await,
         ScenarioSubcommand::Report(args) => report(args),
     }
 }
@@ -414,6 +432,38 @@ fn report(args: ScenarioReportArgs) -> anyhow::Result<()> {
     if status == "failed" {
         bail!("scenario report is failed");
     }
+    Ok(())
+}
+
+async fn seed_scenario(args: ScenarioSeedArgs) -> anyhow::Result<()> {
+    let spec = read_spec(&args.file)?;
+    let projection = fixture_projection(&spec);
+    let request = goal_store_seed_request(&spec, &projection)?;
+    if args.dry_run {
+        println!("{}", serde_json::to_string_pretty(&request)?);
+        return Ok(());
+    }
+
+    let base = args.goal_store_url.trim_end_matches('/');
+    let url = format!("{base}/goal-store/snapshots");
+    let response = reqwest::Client::new()
+        .post(&url)
+        .header("content-type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("seed scenario {} failed with {status}: {text}", spec.id);
+    }
+    println!(
+        "seeded scenario {} into goal-store {}; response {}",
+        spec.id,
+        base,
+        text
+    );
     Ok(())
 }
 
@@ -846,6 +896,537 @@ fn build_evidence(
         projection,
         evaluator: verdict,
     }
+}
+
+fn goal_store_seed_request(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+) -> anyhow::Result<Value> {
+    let goal_id = scenario_goal_ids(spec, projection)
+        .first()
+        .cloned()
+        .filter(|value| !value.is_empty())
+        .context("scenario seed requires a goal id")?;
+    let title = scenario_goal_title(spec, projection);
+    let objective = scenario_goal_objective(spec);
+    let task_records = seed_task_records(projection)?;
+    let total_tasks = task_records.len() as u32;
+    let open_tasks = task_records
+        .iter()
+        .filter(|task| {
+            let status = task
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            !matches!(status, "done" | "cancelled")
+        })
+        .count() as u32;
+    let blocked_tasks = task_records
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.get("status").and_then(Value::as_str).unwrap_or_default(),
+                "blocked" | "waiting_input" | "waiting_approval"
+            )
+        })
+        .count() as u32;
+    let failed_tasks = task_records
+        .iter()
+        .filter(|task| task.get("status").and_then(Value::as_str) == Some("failed"))
+        .count() as u32;
+    let done_tasks = task_records
+        .iter()
+        .filter(|task| task.get("status").and_then(Value::as_str) == Some("done"))
+        .count() as u32;
+    let percent_done = if total_tasks == 0 {
+        0.0
+    } else {
+        done_tasks as f32 / total_tasks as f32
+    };
+    let root_task_id = task_records
+        .first()
+        .and_then(|task| task.get("task_id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let satisfied = projection.goal_status == "done" || projection.terminal_state == "completed";
+    let payload_json = json!({
+        "source": "scenario_seed",
+        "scenario_id": spec.id,
+        "scenario_title": spec.title,
+        "terminal_state": projection.terminal_state,
+    });
+
+    Ok(json!({
+        "metadata": {
+            "protocol_version": "coat.v1",
+            "idempotency_key": format!("scenario:{}:seed:{}", spec.id, goal_id),
+            "trace_id": Value::Null,
+            "causation_id": format!("scenario:{}:seed", spec.id),
+            "correlation_id": goal_id,
+            "created_at": Value::Null
+        },
+        "projection_reason": format!("scenario_seed:{}", spec.id),
+        "snapshot": {
+            "goal": {
+                "goal_id": goal_id,
+                "title": title,
+                "objective": objective,
+                "repo": Value::Null,
+                "status": seed_goal_status(projection),
+                "total_tasks": total_tasks,
+                "open_tasks": open_tasks,
+                "blocked_tasks": blocked_tasks,
+                "failed_tasks": failed_tasks,
+                "percent_done": percent_done,
+                "root_task_id": root_task_id,
+                "satisfied": satisfied,
+                "satisfaction_score": if satisfied { json!(1.0) } else { Value::Null },
+                "updated_at": Value::Null,
+                "payload_json": payload_json
+            },
+            "compute_graph": seed_compute_graph(&goal_id, projection),
+            "tasks": task_records,
+            "artifacts": seed_artifact_records(&goal_id, projection),
+            "approvals": seed_approval_records(&goal_id, projection),
+            "events": seed_event_records(&goal_id, spec, projection),
+            "full_state_json": {
+                "source": "scenario_seed",
+                "scenario_id": spec.id,
+                "ui_projection": projection.ui_projection
+            }
+        }
+    }))
+}
+
+fn scenario_goal_title(spec: &ScenarioSpec, projection: &ScenarioProjection) -> String {
+    spec.goals
+        .first()
+        .and_then(|goal| {
+            goal.spec
+                .get("title")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    goal.payload
+                        .get("title")
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| {
+                    if goal.title.is_empty() {
+                        None
+                    } else {
+                        Some(goal.title.as_str())
+                    }
+                })
+        })
+        .or_else(|| {
+            projection
+                .ui_projection
+                .get("selected_goal")
+                .and_then(|value| value.get("title"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_else(|| if spec.title.is_empty() { &spec.id } else { &spec.title })
+        .to_string()
+}
+
+fn scenario_goal_objective(spec: &ScenarioSpec) -> String {
+    spec.goals
+        .first()
+        .and_then(|goal| {
+            goal.spec
+                .get("objective")
+                .and_then(Value::as_str)
+                .or_else(|| goal.payload.get("objective").and_then(Value::as_str))
+                .or_else(|| {
+                    if goal.objective.is_empty() {
+                        None
+                    } else {
+                        Some(goal.objective.as_str())
+                    }
+                })
+        })
+        .unwrap_or_else(|| {
+            if spec.description.is_empty() {
+                "Seeded deterministic scenario projection."
+            } else {
+                &spec.description
+            }
+        })
+        .to_string()
+}
+
+fn seed_goal_status(projection: &ScenarioProjection) -> &'static str {
+    match projection.goal_status.as_str() {
+        "done" | "completed" => "done",
+        "blocked" => "blocked",
+        "failed" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        "waiting_approval" | "waiting-approval" => "waiting_approval",
+        "paused" => "paused",
+        _ => "running",
+    }
+}
+
+fn seed_task_records(projection: &ScenarioProjection) -> anyhow::Result<Vec<Value>> {
+    projection
+        .tasks
+        .iter()
+        .map(|task| {
+            let record = task.as_object().cloned().unwrap_or_default();
+            let goal_id = required_string(&record, "goal_id")?;
+            let task_id = required_string(&record, "task_id")?;
+            let status = seed_task_status(record.get("status").and_then(Value::as_str));
+            let purpose = seed_task_purpose(record.get("purpose").and_then(Value::as_str));
+            let result_uri = record
+                .get("worker_result")
+                .and_then(|value| value.get("artifacts"))
+                .and_then(Value::as_array)
+                .and_then(|artifacts| artifacts.first())
+                .and_then(|artifact| artifact.get("uri"))
+                .and_then(Value::as_str)
+                .map(Value::from)
+                .unwrap_or(Value::Null);
+            Ok(json!({
+                "goal_id": goal_id,
+                "task_id": task_id,
+                "parent_task_id": Value::Null,
+                "subgoal_id": Value::Null,
+                "title": record.get("title").and_then(Value::as_str).unwrap_or("Scenario task"),
+                "color": Value::Null,
+                "role": seed_worker_role(record.get("role").and_then(Value::as_str)),
+                "status": status,
+                "purpose_kind": purpose,
+                "depth": record.get("depth").and_then(Value::as_u64).unwrap_or(0),
+                "priority": "normal",
+                "priority_rank": 3,
+                "attempts": 1,
+                "runnable": matches!(status, "pending" | "runnable"),
+                "tags": record.get("tags").cloned().unwrap_or_else(|| json!(["scenario", "bootstrap"])),
+                "result_uri": result_uri,
+                "payload_json": task
+            }))
+        })
+        .collect()
+}
+
+fn seed_compute_graph(goal_id: &str, projection: &ScenarioProjection) -> Value {
+    let nodes: Vec<Value> = projection
+        .compute_graph_nodes
+        .iter()
+        .filter_map(|node| {
+            let record = node.as_object()?;
+            let kind = seed_compute_node_kind(record.get("kind").and_then(Value::as_str))?;
+            let id = record.get("id").and_then(Value::as_str).unwrap_or_default();
+            let status = if let Some(status) = record.get("status").and_then(Value::as_str) {
+                seed_compute_node_status(Some(status))
+            } else if kind == "goal" {
+                seed_compute_node_status(Some(seed_goal_status(projection)))
+            } else if kind == "task" {
+                seed_compute_node_status(task_status_for_projection_node(projection, id))
+            } else {
+                seed_compute_node_status(None)
+            };
+            Some(json!({
+                "id": id,
+                "kind": kind,
+                "label": record.get("label").and_then(Value::as_str).unwrap_or(id),
+                "status": status,
+                "task_id": if kind == "task" { json!(id) } else { Value::Null },
+                "thunk_id": if kind == "delayed_compute_thunk" { json!(id) } else { Value::Null },
+                "continuation_id": record
+                    .get("continuation_id")
+                    .or_else(|| record.get("continuation_ref"))
+                    .and_then(Value::as_str)
+                    .map(Value::from)
+                    .unwrap_or(Value::Null),
+                "requested_input": record
+                    .get("operator_action")
+                    .or_else(|| record.get("requested_input"))
+                    .and_then(Value::as_str)
+                    .map(Value::from)
+                    .unwrap_or(Value::Null),
+                "wait_ref": normalized_wait_ref(record.get("wait_ref"))
+            }))
+        })
+        .collect();
+    let open_thunks = nodes
+        .iter()
+        .filter(|node| {
+            node.get("kind").and_then(Value::as_str) == Some("delayed_compute_thunk")
+                && node.get("status").and_then(Value::as_str) == Some("pending")
+        })
+        .count() as u32;
+    let runnable_tasks = projection
+        .tasks
+        .iter()
+        .filter(|task| task.get("status").and_then(Value::as_str) == Some("runnable"))
+        .filter_map(|task| task.get("task_id").cloned())
+        .collect::<Vec<_>>();
+    let waiting_tasks = projection
+        .tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                seed_task_status(task.get("status").and_then(Value::as_str)),
+                "waiting_input" | "waiting_approval" | "blocked"
+            )
+        })
+        .filter_map(|task| task.get("task_id").cloned())
+        .collect::<Vec<_>>();
+    json!({
+        "goal_id": goal_id,
+        "nodes": nodes,
+        "edges": [],
+        "open_thunks": open_thunks,
+        "runnable_tasks": runnable_tasks,
+        "waiting_tasks": waiting_tasks
+    })
+}
+
+fn task_status_for_projection_node<'a>(
+    projection: &'a ScenarioProjection,
+    task_id: &str,
+) -> Option<&'a str> {
+    projection
+        .tasks
+        .iter()
+        .find(|task| task.get("task_id").and_then(Value::as_str) == Some(task_id))
+        .and_then(|task| task.get("status").and_then(Value::as_str))
+}
+
+fn seed_artifact_records(goal_id: &str, projection: &ScenarioProjection) -> Vec<Value> {
+    projection
+        .artifacts
+        .iter()
+        .filter_map(|artifact| {
+            let record = artifact.as_object()?;
+            let uri = record.get("uri").and_then(Value::as_str)?;
+            Some(json!({
+                "goal_id": goal_id,
+                "task_id": Value::Null,
+                "artifact": {
+                    "kind": seed_artifact_kind(record.get("kind").and_then(Value::as_str)),
+                    "uri": uri,
+                    "description": record
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Scenario artifact"),
+                    "sha256": Value::Null
+                },
+                "git_result": Value::Null,
+                "object_artifact": Value::Null,
+                "checkpoint": Value::Null,
+                "created_at": Value::Null,
+                "payload_json": artifact
+            }))
+        })
+        .collect()
+}
+
+fn seed_approval_records(goal_id: &str, projection: &ScenarioProjection) -> Vec<Value> {
+    projection
+        .tasks
+        .iter()
+        .flat_map(|task| {
+            let task_id = task.get("task_id").and_then(Value::as_str).unwrap_or_default();
+            task.get("worker_result")
+                .and_then(|result| result.get("delayed_compute_thunks"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(move |thunk| {
+                    let kind = thunk.get("kind").and_then(Value::as_str).unwrap_or_default();
+                    if kind != "approval" {
+                        return None;
+                    }
+                    let approval_ref = thunk
+                        .get("approval_ref")
+                        .and_then(Value::as_str)
+                        .unwrap_or("scenario-approval");
+                    let request = thunk.get("approval_request").cloned().unwrap_or(Value::Null);
+                    let status = if thunk.get("status").and_then(Value::as_str) == Some("pending") {
+                        "pending"
+                    } else {
+                        "approved"
+                    };
+                    Some(json!({
+                        "approval_id": deterministic_uuid(&format!("{goal_id}:{approval_ref}")),
+                        "goal_id": goal_id,
+                        "task_id": if task_id.is_empty() { Value::Null } else { json!(task_id) },
+                        "status": status,
+                        "risk": "low",
+                        "reason": thunk
+                            .get("summary")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Scenario approval fixture"),
+                        "requested_action": request
+                            .get("question")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Approve this scenario fixture."),
+                        "updated_at": Value::Null,
+                        "payload_json": thunk
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn seed_event_records(goal_id: &str, spec: &ScenarioSpec, projection: &ScenarioProjection) -> Vec<Value> {
+    projection
+        .events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let event_type = event
+                .get("event_type")
+                .and_then(Value::as_str)
+                .unwrap_or("scenario_event");
+            json!({
+                "event_id": deterministic_uuid(&format!("{}:{event_type}:{index}", spec.id)),
+                "goal_id": goal_id,
+                "task_id": event.get("task_id").cloned().unwrap_or(Value::Null),
+                "sequence": index as u64 + 1,
+                "kind": seed_event_kind(event_type),
+                "message": event_type.replace('_', " "),
+                "actor": "scenario-seed",
+                "idempotency_key": format!("scenario:{}:{}:{}", spec.id, goal_id, index + 1),
+                "created_at": Value::Null,
+                "payload_json": event
+            })
+        })
+        .collect()
+}
+
+fn required_string(record: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
+    record
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .with_context(|| format!("scenario seed task is missing {key}"))
+}
+
+fn seed_task_status(value: Option<&str>) -> &'static str {
+    match value.unwrap_or_default() {
+        "runnable" => "runnable",
+        "running" => "running",
+        "needs_validation" | "needs-validation" => "needs_validation",
+        "waiting_approval" | "waiting-approval" => "waiting_approval",
+        "waiting_input" | "waiting-input" | "waiting" => "waiting_input",
+        "done" | "completed" => "done",
+        "blocked" => "blocked",
+        "failed" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        _ => "pending",
+    }
+}
+
+fn seed_worker_role(value: Option<&str>) -> &'static str {
+    match value.unwrap_or_default() {
+        "planner" => "planner",
+        "codex" => "codex",
+        "claude_code" | "claude-code" => "claude_code",
+        "staff_engineer_claude" | "staff-engineer-claude" => "staff_engineer_claude",
+        "model_provider" | "model-provider" => "model_provider",
+        "research" => "research",
+        "reviewer" => "reviewer",
+        "tester" => "tester",
+        "formal_methods" | "formal-methods" => "formal_methods",
+        "validator" => "validator",
+        "patch_merger" | "patch-merger" => "patch_merger",
+        "rust_tool" | "rust-tool" => "rust_tool",
+        _ => "planner",
+    }
+}
+
+fn seed_task_purpose(value: Option<&str>) -> &'static str {
+    match value.unwrap_or_default() {
+        "review" => "review",
+        "unification" => "unification",
+        "actor_retry" | "actor-retry" => "actor_retry",
+        "candidate_branch" | "candidate-branch" => "candidate_branch",
+        "branch_vote" | "branch-vote" => "branch_vote",
+        "branch_unification" | "branch-unification" => "branch_unification",
+        "research" => "research",
+        _ => "work",
+    }
+}
+
+fn seed_compute_node_kind(value: Option<&str>) -> Option<&'static str> {
+    match value.unwrap_or_default() {
+        "goal" => Some("goal"),
+        "task" => Some("task"),
+        "delayed_compute_thunk" | "thunk" => Some("delayed_compute_thunk"),
+        "continuation" => Some("continuation"),
+        "wait_ref" | "wait" => Some("wait_ref"),
+        "mechanism_round" | "mechanism" => Some("mechanism_round"),
+        _ => None,
+    }
+}
+
+fn seed_compute_node_status(value: Option<&str>) -> &'static str {
+    match value.unwrap_or_default() {
+        "runnable" => "runnable",
+        "running" => "running",
+        "waiting" | "waiting_input" | "waiting_approval" => "waiting",
+        "needs_validation" | "needs-validation" => "needs_validation",
+        "done" | "completed" | "resumed" => "done",
+        "blocked" => "blocked",
+        "failed" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        "paused" => "paused",
+        "expired" => "expired",
+        _ => "pending",
+    }
+}
+
+fn normalized_wait_ref(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::Object(record)) if record.get("kind").is_some() && record.get("reference").is_some() => {
+            Value::Object(record.clone())
+        }
+        _ => Value::Null,
+    }
+}
+
+fn seed_artifact_kind(value: Option<&str>) -> &'static str {
+    match value.unwrap_or_default() {
+        "patch" => "patch",
+        "test_result" | "test-result" => "test_result",
+        "report" | "required_artifact" | "approval_record" => "report",
+        "pull_request" | "pull-request" => "pull_request",
+        "workspace_snapshot" | "workspace-snapshot" => "workspace_snapshot",
+        "checkpoint" | "scenario_checkpoint" => "checkpoint",
+        "git_branch" | "git-branch" => "git_branch",
+        "git_commit" | "git-commit" => "git_commit",
+        "git_worktree" | "git-worktree" => "git_worktree",
+        "object_storage_object" | "object-storage-object" => "object_storage_object",
+        "object_storage_prefix" | "object-storage-prefix" => "object_storage_prefix",
+        "artifact_manifest" | "artifact-manifest" => "artifact_manifest",
+        "schema" => "schema",
+        _ => "other",
+    }
+}
+
+fn seed_event_kind(event_type: &str) -> &'static str {
+    match event_type {
+        "goal_submitted" | "submit_goal" => "submitted",
+        "task_started" => "task_started",
+        "task_completed" | "complete_root_task" | "complete_approved_task" => "task_completed",
+        "task_blocked" | "request_human_input" | "request_approval" => "task_blocked",
+        "approval_requested" => "approval_requested",
+        "approval_granted" | "approve_request" => "approval_decided",
+        "validation_passed" | "validate_goal" => "validation_recorded",
+        "artifact_recorded" => "artifact_recorded",
+        "goal_cancelled" | "cancel_goal" => "cancelled",
+        "goal_failed" => "failed",
+        _ => "other",
+    }
+}
+
+fn deterministic_uuid(seed: &str) -> String {
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, seed.as_bytes()).to_string()
 }
 
 fn report_value(evidence: &ScenarioEvidence) -> Value {
@@ -3225,6 +3806,20 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn scenario_seed_request_matches_goal_store_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/bootstrap_basic.json");
+        let spec = read_spec(&path).expect("bootstrap spec");
+        let request = goal_store_seed_request(&spec, &fixture_projection(&spec))
+            .expect("seed request");
+        let parsed: coat_domain::GoalStoreSnapshotUpsertRequest =
+            serde_json::from_value(request).expect("goal-store snapshot request");
+        assert_eq!(parsed.snapshot.goal.title, "Bootstrap one task");
+        assert_eq!(parsed.snapshot.tasks.len(), 1);
+        assert_eq!(parsed.snapshot.artifacts.len(), 2);
     }
 
     #[test]

@@ -149,6 +149,13 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   `/api/operator/actions/{action_id}/resolve`, and treats product-level SSE
   events such as `goal.updated`, `task.updated`, `approval.requested`, and
   `goal.cancelled` as workspace projection updates.
+- Evidence 2026-05-15: `/api/operator/stream` now emits state-derived
+  product-level events including `action.required`, `approval.requested`,
+  `goal.satisfied`, `goal.cancelled`, and `stream.heartbeat`; the SPA applies
+  each streamed workspace projection to the global goal list, selected-goal
+  detail, workspace, and action queue caches so visible state does not wait for
+  the next poll. The control-web smoke test reads a real SSE block and asserts
+  event name plus selected-goal projection.
 - Evidence 2026-05-14: the old browser/operator helper routes for overview,
   runner lists, human threads, and plan follow-up queues were removed from the
   SPA/gateway public surface. SPA, TUI, scenario, and smoke coverage now use
@@ -167,6 +174,25 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   `/api/operator/workspace`, the standalone config route was removed, and the
   remaining gateway composition helper is named as a backend projection instead
   of the old overview surface.
+- Evidence 2026-05-14: the SPA module cleanup continued by extracting the
+  selected-goal runtime bar, active-draft dock, and generic operator primitives
+  from `App.tsx` into typed React feature/component modules. The extracted
+  components remain presentation-only over the `/api/operator/*` projection and
+  do not own durable state.
+- Evidence 2026-05-14: reset and bootstrap helpers now use the same bootstrap
+  evidence root as the Makefile (`target/coat-scenarios/bootstrap`), bootstrap
+  cleanup removes checked-in scenario IDs from generated evidence roots instead
+  of broad directories, and `scripts/coat-bootstrap-scenarios.sh`,
+  `make bootstrap-scenarios`, `make bootstrap-reset`, `make scenario-reset`,
+  and `make compose-reset-dry-run` were validated. CI now also runs
+  `make reset-smoke` so reset help, shell syntax, scenario cleanup, bootstrap
+  cleanup, and Compose dry-run cleanup remain covered.
+- Evidence 2026-05-15: `make bootstrap-goals` now submits fixed demo goals
+  through `coat goal submit` and creates a durable human-input thunk through
+  `coat goal thunk create`, leaving one satisfied executor lifecycle goal, one
+  pending approval goal, and one pending human prompt goal visible in the
+  SPA/TUI. Direct read-model fixture projection remains explicit as
+  `make bootstrap-fixture-goals` or `coat scenario seed`.
 - Evidence 2026-05-12: CI and docs now define the deterministic PR-gated
   scenario workstream as a loop over `scenarios/e2e/*.json` with
   `target/debug/coat scenario run --file <scenario> --output-dir

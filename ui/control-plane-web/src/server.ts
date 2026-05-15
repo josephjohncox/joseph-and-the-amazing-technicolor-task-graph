@@ -1154,16 +1154,26 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
   const eventSince = url.searchParams.get("event_since");
   const started = Date.now();
   let sequence = Number(req.headers["last-event-id"] ?? url.searchParams.get("since") ?? 0) || 0;
+  let lastPayload = "";
   while (!closed && Date.now() - started < 5 * 60 * 1000) {
     try {
       const workspace = await operatorWorkspace(goalId, {
         eventType: eventTypeFilter,
         since: eventSince,
       });
-      const eventName = eventTypeFilter || "goal.updated";
-      res.write(`event: ${eventName}\n`);
-      res.write(`id: ${sequence}\n`);
-      res.write(`data: ${JSON.stringify(workspace)}\n\n`);
+      const payload = JSON.stringify(workspace);
+      if (payload !== lastPayload) {
+        const eventName = operatorStreamEventName(workspace, eventTypeFilter);
+        res.write(`event: ${eventName}\n`);
+        res.write(`id: ${sequence}\n`);
+        res.write(`retry: 1500\n`);
+        res.write(`data: ${payload}\n\n`);
+        lastPayload = payload;
+      } else {
+        res.write(`event: stream.heartbeat\n`);
+        res.write(`id: ${sequence}\n`);
+        res.write(`data: ${JSON.stringify({ goal_id: goalId, generated_at: new Date().toISOString() })}\n\n`);
+      }
     } catch (error) {
       res.write(`event: stream.error\n`);
       res.write(`id: ${sequence}\n`);
@@ -1174,9 +1184,49 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
   }
   if (!closed) {
     res.write(`event: stream.done\n`);
+    res.write(`id: ${sequence}\n`);
     res.write(`data: ${JSON.stringify({ reason: "stream_ttl_elapsed", goal_id: goalId })}\n\n`);
     res.end();
   }
+}
+
+function operatorStreamEventName(workspace: JsonMap, explicitEventType?: string | null): string {
+  if (explicitEventType) {
+    return explicitEventType;
+  }
+  const actions = arrayField(workspace, "actions").map(asRecord);
+  if (actions.some((action) => String(action.kind ?? "") === "resume_thunk")) {
+    return "action.required";
+  }
+  if (actions.some((action) => String(action.kind ?? "") === "resolve_approval")) {
+    return "approval.requested";
+  }
+  if (actions.length > 0) {
+    return "action.required";
+  }
+
+  const selectedGoal = asRecord(workspace.selected_goal);
+  const summary = asRecord(selectedGoal.summary);
+  const status = String(summary.status ?? "");
+  if (summary.satisfied === true || status === "done" || status === "satisfied") {
+    return "goal.satisfied";
+  }
+  if (status === "cancelled") {
+    return "goal.cancelled";
+  }
+
+  const workerRuns = arrayField(workspace, "worker_runs").map(asRecord);
+  if (workerRuns.some((run) => ["running", "runnable", "waiting_input", "waiting-approval"].includes(String(run.status ?? "")))) {
+    return "task.updated";
+  }
+  if (workerRuns.some((run) => ["done", "failed", "blocked"].includes(String(run.status ?? "")))) {
+    return "worker.completed";
+  }
+  return goalIdFromWorkspace(workspace) ? "goal.updated" : "workspace.updated";
+}
+
+function goalIdFromWorkspace(workspace: JsonMap): string {
+  return String(workspace.selected_goal_id ?? asRecord(asRecord(workspace.selected_goal).summary).goal_id ?? "").trim();
 }
 
 async function goalAgentContext(goalId: string, taskId: string | null): Promise<JsonMap> {

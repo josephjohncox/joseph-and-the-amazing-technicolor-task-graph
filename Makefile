@@ -75,7 +75,8 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 	event-gateway-smoke event-gateway-compose-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
 	scenario-e2e scenario-e2e-stack scenario-e2e-ui scenario-e2e-ui-live \
 	bootstrap-scenarios task-graph-validation validate-task-graph-bootstraps \
-	reset-help scenario-reset scenario-reset-dry-run bootstrap-reset bootstrap-reset-dry-run compose-reset compose-reset-dry-run \
+	bootstrap-goals bootstrap-fixture-goals \
+	reset-help reset-smoke scenario-reset scenario-reset-dry-run bootstrap-reset bootstrap-reset-dry-run compose-reset compose-reset-dry-run \
 	release-binary-smoke release-helm-smoke \
 	ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
@@ -136,11 +137,24 @@ scenario-e2e-ui-live: control-web-build
 	exit $$status
 
 bootstrap-scenarios: coat-cli
-	$(MAKE) scenario-e2e \
-		SCENARIO_E2E_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
-		SCENARIO_E2E_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
-		SCENARIO_E2E_STACK=never \
-		SCENARIO_E2E_KEEP_STACK=0
+	COAT="$(COAT)" \
+	COAT_BOOTSTRAP_SCENARIO_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_BOOTSTRAP_SCENARIO_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+	COAT_BOOTSTRAP_SCENARIO_GATEWAY_URL="http://127.0.0.1:0" \
+	COAT_BOOTSTRAP_SEED_GOALS=false \
+	sh scripts/coat-bootstrap-scenarios.sh
+
+bootstrap-goals: coat-cli
+	COAT="$(COAT)" \
+	sh scripts/coat-bootstrap-live-scenarios.sh
+
+bootstrap-fixture-goals: coat-cli
+	COAT="$(COAT)" \
+	COAT_BOOTSTRAP_SCENARIO_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_BOOTSTRAP_SCENARIO_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+	COAT_BOOTSTRAP_SCENARIO_GATEWAY_URL="http://127.0.0.1:0" \
+	COAT_BOOTSTRAP_SEED_GOALS=true \
+	sh scripts/coat-bootstrap-scenarios.sh
 
 task-graph-validation: coat-cli
 	@set -eu; \
@@ -159,6 +173,13 @@ validate-task-graph-bootstraps: bootstrap-scenarios task-graph-validation
 reset-help:
 	sh scripts/coat-local-reset.sh --help
 
+reset-smoke:
+	sh -n scripts/coat-local-reset.sh scripts/coat-bootstrap-scenarios.sh scripts/coat-bootstrap-live-scenarios.sh scripts/coat-scenario-e2e.sh scripts/coat-local-provider-setup.sh
+	$(MAKE) reset-help
+	$(MAKE) scenario-reset-dry-run
+	$(MAKE) bootstrap-reset-dry-run
+	$(MAKE) compose-reset-dry-run
+
 scenario-reset:
 	@set -eu; \
 	args="--mode scenario"; \
@@ -167,7 +188,7 @@ scenario-reset:
 	COAT_RESET_SCENARIO_OUT="$(SCENARIO_E2E_OUT)" \
 	COAT_RESET_BOOTSTRAP_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
 	COAT_RESET_SCENARIO_SPECS="$(SCENARIO_E2E_SPECS)" \
-	COAT_RESET_BOOTSTRAP_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_RESET_BOOTSTRAP_SPECS="$(SCENARIO_E2E_SPECS)" \
 	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
 
 scenario-reset-dry-run:
@@ -178,7 +199,7 @@ bootstrap-reset:
 	args="--mode bootstrap"; \
 	if [ "$(RESET_DRY_RUN)" = "1" ]; then args="$$args --dry-run"; fi; \
 	COAT_RESET_BOOTSTRAP_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
-	COAT_RESET_BOOTSTRAP_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_RESET_BOOTSTRAP_SPECS="$(SCENARIO_E2E_SPECS)" \
 	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
 
 bootstrap-reset-dry-run:

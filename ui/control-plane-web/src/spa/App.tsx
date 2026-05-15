@@ -7,7 +7,6 @@
  *
  * Architecture reference: docs/design-docs/110-control-gateway-spa.md
  */
-import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
 import {
   ChatContainer,
@@ -86,9 +85,10 @@ import {
 } from "./api";
 import type { ChatMessage, ChatResponse, ChatRunTrace, ColorRef, ComputeGraphNode, GoalRow, ComposedGoalSnapshot, JsonRecord, OperatorGoalDetail, OperatorWorkspaceSnapshot, ServiceHealth, TaskRow } from "./types";
 import { Badge } from "./components/ui/badge";
-import { Button } from "./components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { ScrollArea } from "./components/ui/scroll-area";
+import { AdvancedInspect, EmptyState, InspectButton, ResultList, SimpleTable } from "./components/operator-primitives";
+import { ActiveGoalRuntimeBar, DraftReviewDock, type ActiveRuntimeViewModel, type DraftDockViewModel } from "./features/operator-runtime";
 
 type ViewKey = "dashboard" | "goals" | "graph" | "control" | "memory" | "plans" | "human" | "runners";
 type ThemePreference = "system" | "light" | "dark";
@@ -560,6 +560,43 @@ export function App() {
   const selectedGoal = useMemo(() => selectedGoalSummary(selectedGoalId, goalRows, currentGoal, selectedSubmittedDraft), [currentGoal, goalRows, selectedGoalId, selectedSubmittedDraft]);
   const selectableGoals = useMemo(() => goalRowsWithSelected(goalRows, selectedGoal), [goalRows, selectedGoal]);
   const serviceRows = operatorWorkspaceData?.services ?? [];
+  const activeRuntimeView = useMemo<ActiveRuntimeViewModel | null>(() => {
+    if (!selectedGoal) {
+      return null;
+    }
+    const snapshot = currentGoal ?? { goal_id: selectedGoal.id };
+    const tasks = taskRowsFromComposedSnapshot(snapshot);
+    const counts = taskStatusCounts(tasks);
+    const actions = actionNeededItemsFromComposedSnapshot(currentGoal, selectedGoal.id);
+    const state = nextActionSummary(counts, tasks.length, snapshot);
+    return {
+      stateLabel: state.stateLabel,
+      title: state.title,
+      streamStatus: goalStream.status,
+      streamUpdatedLabel: goalStream.lastEventAt ? `Updated ${timeLabel(goalStream.lastEventAt)}` : "Projection pending",
+      streamError: goalStream.error,
+      taskCount: tasks.length,
+      actionCount: actions.length,
+      actionBusy: submitGoalDraft.isPending,
+    };
+  }, [currentGoal, goalStream.error, goalStream.lastEventAt, goalStream.status, selectedGoal, submitGoalDraft.isPending]);
+  const activeDraftView = useMemo<DraftDockViewModel | null>(() => {
+    if (!visibleActiveDraft) {
+      return null;
+    }
+    const summary = draftReviewSummary(visibleActiveDraft.response, latestGoalDraft);
+    const submittedGoalId = goalIdFromSubmitResponse(submitGoalDraft.data?.response);
+    return {
+      title: summary.title,
+      detail: summary.objective || summary.summary,
+      kindLabel: draftKindLabel(visibleActiveDraft.kind),
+      sessionLabel: visibleActiveDraft.sessionId ? sessionDisplayLabel(visibleActiveDraft.sessionId) : "",
+      hasGoalDraft: Boolean(latestGoalDraft),
+      submittedGoalLabel: submittedGoalId ? friendlyRef(submittedGoalId) : "",
+      busy: submitGoalDraft.isPending,
+      errorMessage: (submitGoalDraft.error as Error | null)?.message ?? "",
+    };
+  }, [latestGoalDraft, submitGoalDraft.data?.response, submitGoalDraft.error, submitGoalDraft.isPending, visibleActiveDraft]);
 
   return (
     <div className="app-shell">
@@ -637,21 +674,14 @@ export function App() {
           <ServiceStrip services={serviceRows} />
         </header>
         <ActiveGoalRuntimeBar
-          selectedGoal={selectedGoal}
-          snapshot={currentGoal}
-          stream={goalStream}
-          actionBusy={submitGoalDraft.isPending}
+          view={activeRuntimeView}
           onOpenGraph={() => setActiveView("graph")}
           onOpenQueue={() => setActiveView("human")}
           onOpenControls={() => setActiveView("control")}
         />
-        {visibleActiveDraft && (
+        {activeDraftView && (
           <DraftReviewDock
-            activeDraft={visibleActiveDraft}
-            goalDraft={latestGoalDraft}
-            goalSubmitBusy={submitGoalDraft.isPending}
-            goalSubmitError={submitGoalDraft.error as Error | null}
-            goalSubmitResult={submitGoalDraft.data?.response}
+            view={activeDraftView}
             onSubmitGoalDraft={() => submitGoalDraft.mutate()}
             onDiscardGoalDraft={discardActiveGoalDraft}
           />
@@ -734,100 +764,6 @@ function modeForDraftKind(kind: DraftKind): string {
   if (kind === "goal") return "draft_goal";
   if (kind === "search") return "draft_search";
   return "draft_plan";
-}
-
-function ActiveGoalRuntimeBar(props: {
-  selectedGoal: GoalSummary | null;
-  snapshot?: ComposedGoalSnapshot;
-  stream: GoalStreamState;
-  actionBusy: boolean;
-  onOpenGraph: () => void;
-  onOpenQueue: () => void;
-  onOpenControls: () => void;
-}) {
-  if (!props.selectedGoal) {
-    return null;
-  }
-  const snapshot = props.snapshot ?? { goal_id: props.selectedGoal.id };
-  const tasks = taskRowsFromComposedSnapshot(snapshot);
-  const counts = taskStatusCounts(tasks);
-  const actions = actionNeededItemsFromComposedSnapshot(props.snapshot, props.selectedGoal.id);
-  const state = nextActionSummary(counts, tasks.length, snapshot);
-  const streamTone = props.stream.status === "live" ? "status-running" : props.stream.status === "error" ? "status-failed" : "status-pending";
-  return (
-    <section className="active-runtime-bar" aria-label="Selected goal active state">
-      <div className="runtime-state">
-        <span className="goal-context-kicker">Live state</span>
-        <strong>{state.stateLabel}</strong>
-        <small>{state.title}</small>
-      </div>
-      <div className="runtime-metrics">
-        <span className={clsx("status-pill", streamTone)}>
-          {props.stream.status === "live" ? "Streaming" : props.stream.status === "connecting" ? "Connecting" : props.stream.status === "error" ? "Stream error" : "Idle"}
-        </span>
-        <span className="status-pill muted">{tasks.length} tasks</span>
-        <span className={clsx("status-pill", actions.length ? "status-waiting-approval" : "status-done")}>{actions.length} actions</span>
-        <span className="status-pill muted">{props.stream.lastEventAt ? `Updated ${timeLabel(props.stream.lastEventAt)}` : "Projection pending"}</span>
-        {props.actionBusy && <span className="status-pill status-running">Accepting draft</span>}
-      </div>
-      <div className="button-row">
-        <button type="button" className="secondary-button" onClick={props.onOpenGraph}>
-          <Network size={15} />
-          Graph
-        </button>
-        <button type="button" className={actions.length ? "primary-button" : "secondary-button"} onClick={props.onOpenQueue}>
-          <Bell size={15} />
-          Actions
-        </button>
-        <button type="button" className="secondary-button" onClick={props.onOpenControls}>
-          <ShieldCheck size={15} />
-          Operator actions
-        </button>
-      </div>
-  {props.stream.error && <span className="error-text">{props.stream.error}</span>}
-    </section>
-  );
-}
-
-function DraftReviewDock(props: {
-  activeDraft: ActiveDraftState;
-  goalDraft: JsonRecord | null;
-  goalSubmitBusy: boolean;
-  goalSubmitError: Error | null;
-  goalSubmitResult?: unknown;
-  onSubmitGoalDraft: () => void;
-  onDiscardGoalDraft: () => void;
-}) {
-  const summary = draftReviewSummary(props.activeDraft.response, props.goalDraft);
-  const submittedGoalId = goalIdFromSubmitResponse(props.goalSubmitResult);
-  return (
-    <section className="draft-review-dock" aria-label="Active draft">
-      <div>
-        <span className="goal-context-kicker">Active draft</span>
-        <strong>{summary.title}</strong>
-        <small>{summary.objective || summary.summary}</small>
-      </div>
-      <div className="draft-summary-meta">
-        <span className="status-pill status-runnable">{draftKindLabel(props.activeDraft.kind)}</span>
-        {props.goalDraft && <span className="status-pill status-runnable">Goal draft ready</span>}
-        {props.activeDraft.sessionId && <span className="status-pill muted">{sessionDisplayLabel(props.activeDraft.sessionId)}</span>}
-        {submittedGoalId && <span className="status-pill status-done">Accepted {friendlyRef(submittedGoalId)}</span>}
-      </div>
-      <div className="button-row">
-        <Button type="button" variant="outline" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onDiscardGoalDraft}>
-          <XCircle size={15} />
-          Discard
-        </Button>
-        {props.goalDraft && (
-          <Button type="button" disabled={props.goalSubmitBusy || Boolean(submittedGoalId)} onClick={props.onSubmitGoalDraft}>
-            <ListChecks size={15} />
-            {submittedGoalId ? "Accepted" : props.goalSubmitBusy ? "Accepting" : "Accept draft"}
-          </Button>
-        )}
-      </div>
-      {props.goalSubmitError && <span className="error-text">{props.goalSubmitError.message}</span>}
-    </section>
-  );
 }
 
 function timeLabel(iso: string): string {
@@ -1167,12 +1103,10 @@ function useGoalStateStream(goalId: string, token: string, enabled: boolean): Go
         for (const block of blocks) {
           const event = sseEventFromBlock(block);
           if (operatorStreamCarriesWorkspace(event.name) && isRecord(event.data)) {
-            queryClient.setQueryData(["operator-workspace", goalId], event.data);
-            const selectedGoal = at(event.data, ["selected_goal"]);
-            if (isRecord(selectedGoal)) {
-              queryClient.setQueryData(["operator-goal", goalId], selectedGoal as OperatorGoalDetail);
-            }
+            applyOperatorWorkspaceToCache(queryClient, event.data, goalId);
             setState({ status: "live", lastEventAt: new Date().toISOString(), error: "" });
+          } else if (event.name === "stream.heartbeat") {
+            setState((current) => ({ ...current, status: "live", lastEventAt: current.lastEventAt || new Date().toISOString(), error: "" }));
           } else if (event.name === "stream.error" || event.name === "error") {
             setState({ status: "error", lastEventAt: new Date().toISOString(), error: stringValue(at(event.data, ["error"])) || "state stream error" });
           } else if (event.name === "stream.done" || event.name === "done") {
@@ -1229,6 +1163,41 @@ function operatorStreamCarriesWorkspace(eventName: string): boolean {
     "goal.satisfied",
     "goal.cancelled",
   ].includes(eventName);
+}
+
+function applyOperatorWorkspaceToCache(queryClient: ReturnType<typeof useQueryClient>, workspace: JsonRecord, fallbackGoalId = ""): void {
+  const goalId = stringValue(workspace.selected_goal_id) || fallbackGoalId;
+  queryClient.setQueryData(["operator-workspace", goalId], workspace);
+
+  if (Array.isArray(workspace.goals)) {
+    queryClient.setQueryData(["goals"], (current: unknown) => ({
+      ...(isRecord(current) ? current : {}),
+      generated_at: stringValue(workspace.generated_at) || new Date().toISOString(),
+      goals: workspace.goals,
+      source: {
+        stream: true,
+        event: "operator_projection",
+      },
+    }));
+  }
+
+  const selectedGoal = at(workspace, ["selected_goal"]);
+  if (goalId && isRecord(selectedGoal)) {
+    queryClient.setQueryData(["operator-goal", goalId], selectedGoal as OperatorGoalDetail);
+  }
+
+  if (Array.isArray(workspace.actions)) {
+    const actionsEnvelope = {
+      generated_at: stringValue(workspace.generated_at) || new Date().toISOString(),
+      actions: workspace.actions,
+      source: {
+        stream: true,
+        event: "operator_projection",
+      },
+    };
+    queryClient.setQueryData(["operator-actions", goalId], actionsEnvelope);
+    queryClient.setQueryData(["operator-actions"], actionsEnvelope);
+  }
 }
 
 function sseEventFromBlock(block: string): { name: string; data: unknown } {
@@ -4982,102 +4951,6 @@ function stringValue(value: unknown): string {
 function numberValue(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function ResultList({ value }: { value: unknown }) {
-  const rows = rowsFrom(at(value, ["data"]) ?? value);
-  if (!value) {
-    return <EmptyState title="Memory results pending" detail="Search, build context, or save a note." />;
-  }
-  if (rows.length) {
-    return (
-      <ul className="result-list">
-        {rows.slice(0, 20).map((row, index) => (
-          <li key={String(row.key ?? row.id ?? index)}>
-            <strong>{String(row.title ?? row.key ?? row.id ?? "Memory item")}</strong>
-            <p>{String(row.content ?? row.text ?? row.summary ?? row.excerpt ?? "")}</p>
-          </li>
-        ))}
-      </ul>
-    );
-  }
-  return <AdvancedInspect summaryLabel="Details" title="Memory response" payload={value} buttonLabel="Inspect JSON" />;
-}
-
-function SimpleTable({ headers, rows, empty }: { headers: string[]; rows: string[][]; empty: string }) {
-  if (!rows.length) {
-    return <EmptyState title={empty} detail="Refresh or connect the backing service." />;
-  }
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function EmptyState({ title, detail, actionLabel, onAction }: { title: string; detail: string; actionLabel?: string; onAction?: () => void }) {
-  return (
-    <div className="empty-state">
-      <CircleAlert size={18} />
-      <strong>{title}</strong>
-      <span>{detail}</span>
-      {actionLabel && onAction && (
-        <button type="button" className="secondary-button" onClick={onAction}>
-          {actionLabel}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function AdvancedInspect({
-  title,
-  payload,
-  buttonLabel = "Inspect",
-  summaryLabel = "Advanced details",
-}: {
-  title: string;
-  payload: unknown;
-  buttonLabel?: string;
-  summaryLabel?: string;
-}) {
-  return (
-    <details className="advanced-inline-details">
-      <summary>{summaryLabel}</summary>
-      <div className="button-row">
-        <InspectButton title={title} payload={payload} buttonLabel={buttonLabel} />
-      </div>
-    </details>
-  );
-}
-
-function InspectButton({ title, payload, buttonLabel = "Inspect" }: { title: string; payload: unknown; buttonLabel?: string }) {
-  return (
-    <Dialog.Root>
-      <Dialog.Trigger asChild>
-        <button type="button" className="secondary-button">{buttonLabel}</button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="dialog-content">
-          <Dialog.Title>{title}</Dialog.Title>
-          <pre>{JSON.stringify(payload, null, 2)}</pre>
-          <Dialog.Close asChild>
-            <button type="button" className="primary-button">Close</button>
-          </Dialog.Close>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
 }
 
 function taskId(task: TaskRow): string {

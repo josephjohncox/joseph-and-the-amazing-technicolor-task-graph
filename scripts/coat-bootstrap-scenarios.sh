@@ -30,7 +30,7 @@ target_debug_coat_selected() {
 source_newer_than_binary() {
   binary=$1
   stale_source=
-  for path in Cargo.toml Cargo.lock crates/cli/src crates/domain/src scenarios/e2e scripts/coat-bootstrap-scenarios.sh; do
+  for path in Cargo.toml Cargo.lock crates/cli/src crates/domain/src; do
     [ -e "$path" ] || continue
     newer=$(find "$path" -type f -newer "$binary" -print -quit 2>/dev/null || true)
     if [ -n "$newer" ]; then
@@ -87,21 +87,52 @@ elif [ "$coat" = "coat" ] && ! command -v coat >/dev/null 2>&1; then
 fi
 ensure_selected_coat_fresh "$coat"
 
-out_root=${COAT_BOOTSTRAP_SCENARIO_OUT:-target/coat-bootstrap-scenarios}
+out_root=${COAT_BOOTSTRAP_SCENARIO_OUT:-target/coat-scenarios/bootstrap}
 gateway_url=${COAT_BOOTSTRAP_SCENARIO_GATEWAY_URL:-http://127.0.0.1:0}
+goal_store_url=${COAT_BOOTSTRAP_GOAL_STORE_URL:-${COAT_GOAL_STORE_URL:-http://127.0.0.1:9088}}
+seed_goals=${COAT_BOOTSTRAP_SEED_GOALS:-false}
 scenario_args=${COAT_BOOTSTRAP_SCENARIO_ARGS:-}
-specs=${COAT_BOOTSTRAP_SCENARIO_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/bootstrap_blocked_retry_recovery.json scenarios/e2e/bootstrap_cancelled_queue_history.json scenarios/e2e/bootstrap_memory_research_evidence.json scenarios/e2e/blocked_and_resumed.json"}
+specs=${COAT_BOOTSTRAP_SCENARIO_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/bootstrap_blocked_retry_recovery.json scenarios/e2e/bootstrap_cancelled_queue_history.json scenarios/e2e/bootstrap_memory_research_evidence.json scenarios/e2e/blocked_and_resumed.json scenarios/e2e/goal_lifecycle_basic.json"}
 
 mkdir -p "$out_root"
 
+goal_store_reachable() {
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fsS "$goal_store_url/healthz" >/dev/null 2>&1
+}
+
 log "using $coat"
 log "writing evidence under $out_root"
+case "$seed_goals" in
+  true|1|yes)
+    log "seeding scenario projections into $goal_store_url"
+    ;;
+  auto)
+    if goal_store_reachable; then
+      seed_goals=true
+      log "goal-store is reachable; seeding scenario projections into $goal_store_url"
+    else
+      seed_goals=false
+      log "goal-store is not reachable; running evidence-only bootstrap"
+    fi
+    ;;
+  false|0|no)
+    seed_goals=false
+    log "goal-store seeding disabled"
+    ;;
+  *)
+    fail "COAT_BOOTSTRAP_SEED_GOALS must be auto, true, or false"
+    ;;
+esac
 
 for spec in $specs; do
   [ -f "$spec" ] || fail "missing scenario spec: $spec"
   log "running $spec"
   # shellcheck disable=SC2086
   "$coat" scenario run --file "$spec" --gateway-url "$gateway_url" --output-dir "$out_root" $scenario_args
+  if [ "$seed_goals" = true ]; then
+    "$coat" scenario seed --file "$spec" --goal-store-url "$goal_store_url"
+  fi
 done
 
 log "complete"

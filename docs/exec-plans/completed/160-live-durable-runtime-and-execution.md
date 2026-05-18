@@ -752,7 +752,17 @@ Recorded 2026-05-15:
 - Capture replay fixtures with thread IDs, checkpoint refs, git refs, artifact manifests, structured results, and diagnostics.
 - Verify live provider profiles after auth setup is exercised on real nodes, including Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face, and OpenAI-compatible gateways.
 - Evidence 2026-05-11: `/verify` now returns provider-profile entries with explicit `verified`, `skipped`, or `failed` state so unavailable live provider routes produce reviewable skipped evidence instead of silent absence.
-- Evidence 2026-05-15: the runtime live scaffold adds a separate `COAT_CODEX_APP_SERVER_LIVE_PROOF` readiness gate that requires live mode, App Server auth, endpoint URL, and an existing isolated workspace before a Codex App Server smoke can be attempted. It performs no network probe and records readiness separately from live proof evidence.
+- Evidence 2026-05-15: the runtime live scaffold added a separate
+  `COAT_CODEX_APP_SERVER_LIVE_PROOF` gate that requires live mode, App Server
+  auth, endpoint URL, and an existing isolated workspace before a Codex App
+  Server smoke can be attempted.
+- Evidence 2026-05-18: the runtime live scaffold now runs the Codex App Server
+  proof when `COAT_CODEX_APP_SERVER_LIVE_PROOF=1` is enabled. It builds
+  `sidecars/codex-runner-ts`, calls `/verify`, runs the typed `/run-task`
+  contract through `sidecars/codex-runner-ts/scripts/codex-app-server-live-proof.mjs`,
+  records `verify.json`, `run-task-result.json`, `summary.json`, and
+  `live-proof.log`, and marks the proof as failed if the runner returns
+  anything other than a structured `status=done` result.
 - Evidence 2026-05-18: live Codex App Server `/run-task` passed against
   `codex-cli 0.130.0` with `codex app-server --listen
   ws://127.0.0.1:17890`, `CODEX_RUNNER_MODE=live`,

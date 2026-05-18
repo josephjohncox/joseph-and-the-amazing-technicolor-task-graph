@@ -24,7 +24,9 @@ This is a readiness scaffold plus gated proof runner. With the default
 environment it records skipped proof families and exits successfully. When an
 explicit live gate is enabled, unsafe or incomplete configuration is reported as
 failed. Proof families only start live infrastructure when their dedicated gate
-is enabled; currently the Restate restart/resume proof can run Docker/Restate.
+is enabled; currently the Restate restart/resume proof can run Docker/Restate,
+and the Codex App Server proof can run /verify plus a typed /run-task smoke
+against an already-started App Server.
 EOF
 }
 
@@ -269,9 +271,48 @@ check_codex_app_server() {
     return
   fi
 
-  record_proof codex_app_server ready "$gate" true \
-    "static gates are ready; this scaffold did not contact the App Server or run a model task" \
-    "run the codex-runner /verify and /run-task smoke with CODEX_VERIFY_APP_SERVER=1, then capture replay fixtures"
+  if ! command_exists npm; then
+    record_proof codex_app_server failed "$gate" true \
+      "npm is unavailable; the TypeScript Codex runner proof cannot build" \
+      "install Node/npm before running the live Codex App Server proof"
+    return
+  fi
+
+  if ! command_exists node; then
+    record_proof codex_app_server failed "$gate" true \
+      "node is unavailable; the TypeScript Codex runner proof cannot run" \
+      "install Node before running the live Codex App Server proof"
+    return
+  fi
+
+  proof_dir="$run_dir/codex_app_server"
+  mkdir -p "$proof_dir"
+  request_path=${COAT_CODEX_APP_SERVER_PROOF_REQUEST:-examples/agent-run-smoke.json}
+  log "codex_app_server: running live proof against $app_server_url"
+
+  if ! npm run --prefix sidecars/codex-runner-ts build >"$proof_dir/build.log" 2>&1; then
+    record_proof codex_app_server failed "$gate" true \
+      "codex-runner-ts build failed; see $proof_dir/build.log" \
+      "fix the TypeScript runner build before running live Codex execution" \
+      true
+    return
+  fi
+
+  if CODEX_VERIFY_APP_SERVER=1 \
+    COAT_CODEX_APP_SERVER_PROOF_DIR="$proof_dir" \
+    COAT_CODEX_APP_SERVER_PROOF_REQUEST="$request_path" \
+    node sidecars/codex-runner-ts/scripts/codex-app-server-live-proof.mjs \
+    >"$proof_dir/live-proof.log" 2>&1; then
+    record_proof codex_app_server passed "$gate" true \
+      "live Codex App Server /verify and /run-task proof passed" \
+      "capture or update sanitized replay fixtures when the protocol shape changes" \
+      true
+  else
+    record_proof codex_app_server failed "$gate" true \
+      "live Codex App Server proof failed; see $proof_dir/live-proof.log" \
+      "inspect verify.json, run-task-result.json, App Server auth, and isolated workspace configuration" \
+      true
+  fi
 }
 
 check_kubernetes_executor() {

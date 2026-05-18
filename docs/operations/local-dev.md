@@ -242,13 +242,17 @@ Live readiness gates:
 
 - `COAT_RESTATE_RESTART_RESUME_TEST=1`: checks the pinned
   `COAT_RESTATE_TESTCONTAINERS_IMAGE`, Docker CLI presence, and coordinator
-  binary path. The ignored Rust RuntimeVerifier test still fails deliberately
-  once all gates are ready until the Docker/Testcontainers harness is
-  implemented.
+  binary path. When the gates are ready, the ignored Rust RuntimeVerifier test
+  starts Restate, registers the coordinator, restarts both services, and proves
+  the durable workflow state survives.
 - `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`: requires
   `CODEX_RUNNER_MODE=live`, `CODEX_AUTH_MODE=app_server`,
   `CODEX_APP_SERVER_URL`, and an existing isolated
-  `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`.
+  `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`. When the gates are ready,
+  the scaffold builds `sidecars/codex-runner-ts`, calls `/verify`, runs the
+  typed `/run-task` contract against the App Server, and writes `verify.json`,
+  `run-task-result.json`, and `summary.json` under the scaffold proof
+  directory.
 - `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`: requires
   `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d, a
   `server_dry_run` or `apply` proof mode, and coordinator evidence refs for the

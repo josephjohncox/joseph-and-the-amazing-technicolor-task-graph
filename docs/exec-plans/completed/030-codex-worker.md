@@ -29,7 +29,7 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 ## Follow-Ups
 
 None currently. CodexWorker follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

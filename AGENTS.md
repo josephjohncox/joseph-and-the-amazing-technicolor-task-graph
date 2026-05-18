@@ -39,7 +39,7 @@ recoverable action-needed states, not terminal workflow failures.
 - Strong sandbox and guardrails guide: `docs/design-docs/100-strong-sandboxing-guardrails.md`
 - Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
-- Active master execution plan: `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`
+- Completed master execution plan: `docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`
 - Chat client MCP/skill integration: `docs/operations/chat-client-integration.md`
 - Local observability guide: `docs/operations/local-observability.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`

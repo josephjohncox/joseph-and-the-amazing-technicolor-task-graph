@@ -35,5 +35,5 @@ Add an event-ingress surface so external webhooks, calendar changes, scheduled t
 ## Follow-Ups
 
 None currently. EventOps follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`. SQS/LocalStack
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`. SQS/LocalStack
 proof is closed by the active plan's EventOps evidence.

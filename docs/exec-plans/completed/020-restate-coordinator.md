@@ -29,7 +29,7 @@ Make Restate the durable outer loop for goals and task-tree state.
 ## Follow-Ups
 
 None currently. RuntimeVerifier follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

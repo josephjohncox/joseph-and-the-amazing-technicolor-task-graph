@@ -202,22 +202,14 @@ if [ -f "$root/.envrc" ] && grep -nE '^export COAT_(RESTATE|COORDINATOR|SANDBOX|
 fi
 
 plan_count="$(find "$root/docs/exec-plans/active" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
-if [ "$plan_count" -lt 1 ]; then
-  printf 'expected at least one active execution plan, found %s\n' "$plan_count" >&2
-  exit 1
+if [ "$plan_count" -gt 0 ]; then
+  for plan in "$root"/docs/exec-plans/active/*.md; do
+    if ! grep -q '^## Follow-Ups$' "$plan"; then
+      printf 'active execution plan missing ## Follow-Ups: %s\n' "$plan" >&2
+      exit 1
+    fi
+  done
 fi
-
-if [ ! -f "$root/docs/exec-plans/active/160-live-durable-runtime-and-execution.md" ]; then
-  printf 'missing live durable runtime master plan in docs/exec-plans/active\n' >&2
-  exit 1
-fi
-
-for plan in "$root"/docs/exec-plans/active/*.md; do
-  if ! grep -q '^## Follow-Ups$' "$plan"; then
-    printf 'active execution plan missing ## Follow-Ups: %s\n' "$plan" >&2
-    exit 1
-  fi
-done
 
 documented_entrypoints="
 crates/cli/src/main.rs

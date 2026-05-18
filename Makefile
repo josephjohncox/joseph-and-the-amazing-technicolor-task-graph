@@ -4,6 +4,7 @@ CARGO ?= cargo
 NPM ?= npm
 NODE ?= node
 BUF ?= buf
+HELM ?= helm
 COAT ?= $(COAT_BIN_DIR)/coat
 BUF_GENERATE_HOME ?= $(CURDIR)/target/buf-home
 NODE_MIN_VERSION ?= 22.12.0
@@ -418,7 +419,9 @@ release-binary-smoke:
 
 release-helm-smoke: coat-cli
 	@test -n "$(CHART_VERSION)" || { echo "CHART_VERSION is required, for example: make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0"; exit 2; }
-	@app_version="$(APP_VERSION)"; \
+	@set -eu; \
+	app_version="$(APP_VERSION)"; \
+	helm_bin="$(HELM)"; \
 	release="$(RELEASE)"; \
 	if [ -z "$$release" ]; then release="jattg-smoke"; fi; \
 	namespace="$(NAMESPACE)"; \
@@ -438,16 +441,20 @@ release-helm-smoke: coat-cli
 	fi; \
 	expected_sha="$$(cut -d ' ' -f 1 "$$chart.sha256")"; \
 	printf '%s  %s\n' "$$expected_sha" "$$chart" | shasum -a 256 -c -; \
-	if [ -z "$$app_version" ] && command -v helm >/dev/null 2>&1; then \
-		app_version="$$(helm show chart "$$chart" | awk -F': *' '$$1 == "appVersion" { gsub(/^"|"$$/, "", $$2); print $$2; exit }')"; \
+	if [ -z "$$app_version" ] && command -v "$$helm_bin" >/dev/null 2>&1; then \
+		app_version="$$("$$helm_bin" show chart "$$chart" | awk -F': *' '$$1 == "appVersion" { gsub(/^"|"$$/, "", $$2); print $$2; exit }')"; \
 	fi; \
 	if [ -z "$$app_version" ]; then app_version="$(CHART_VERSION)"; fi; \
-	$(COAT_BIN_DIR)/coat deploy chart lint --chart "$$chart"; \
-	$(COAT_BIN_DIR)/coat deploy chart template --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --output "$$tmp_dir/rendered.yaml"; \
+	$(COAT_BIN_DIR)/coat deploy chart lint --helm "$$helm_bin" --chart "$$chart"; \
+	$(COAT_BIN_DIR)/coat deploy chart template --helm "$$helm_bin" --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --output "$$tmp_dir/rendered.yaml"; \
 	test -s "$$tmp_dir/rendered.yaml"; \
-	$(COAT_BIN_DIR)/coat deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --dry-run; \
+	if [ "$${HELM_SMOKE_UPGRADE_DRY_RUN:-false}" = "true" ]; then \
+		$(COAT_BIN_DIR)/coat deploy chart upgrade --helm "$$helm_bin" --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --dry-run; \
+	else \
+		echo "skipped Helm upgrade dry-run; set HELM_SMOKE_UPGRADE_DRY_RUN=true on a cluster-capable runner"; \
+	fi; \
 	if [ "$${HELM_SMOKE_APPLY:-false}" = "true" ]; then \
-		$(COAT_BIN_DIR)/coat deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --wait --timeout "$${HELM_SMOKE_TIMEOUT:-5m}"; \
+		$(COAT_BIN_DIR)/coat deploy chart upgrade --helm "$$helm_bin" --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --wait --timeout "$${HELM_SMOKE_TIMEOUT:-5m}"; \
 		$(COAT_BIN_DIR)/coat deploy cluster status --namespace "$$namespace" --timeout "$${CLUSTER_SMOKE_TIMEOUT:-180s}"; \
 	fi; \
 	echo "smoked published Helm chart $(CHART_VERSION) with image tag $$app_version"

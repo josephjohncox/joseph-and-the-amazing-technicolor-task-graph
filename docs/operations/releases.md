@@ -251,15 +251,18 @@ verifies its checksum, runs `coat deploy chart lint`, and renders a smoke
 manifest. If no `APP_VERSION` override is supplied, the workflow and local smoke
 read `appVersion` from the packaged chart before falling back to the chart
 version. Operators can repeat the local no-cluster smoke with one command; the
-target builds `target/debug/coat` first and uses that binary for chart lint,
-template, and dry-run upgrade checks:
+target builds `target/debug/coat` first and uses that binary for checksum,
+chart lint, and template checks:
 
 ```sh
 make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0
 ```
 
-Set `HELM_SMOKE_APPLY=true` only when the active Kubernetes context points at a
-disposable namespace or a cluster explicitly reserved for release validation.
+Set `HELM=/path/to/helm` when using a pinned Helm binary that is not on `PATH`.
+Set `HELM_SMOKE_UPGRADE_DRY_RUN=true` or `HELM_SMOKE_APPLY=true` only when the
+active Kubernetes context points at a disposable namespace or a cluster
+explicitly reserved for release validation. The default local smoke does not
+contact a Kubernetes API.
 
 ```sh
 CHART_VERSION=0.2.0
@@ -275,6 +278,8 @@ coat deploy chart template \
   --set "global.imageTag=${APP_VERSION}" \
   --output /tmp/jattg-chart-release-smoke.yaml
 
+# Optional cluster-capable dry-run. Skip this on machines without a configured
+# disposable Kubernetes context.
 coat deploy chart upgrade \
   --release "${RELEASE}" \
   --namespace "${NAMESPACE}" \
@@ -330,6 +335,26 @@ notes before marking the `ReleaseHardening` follow-up done. Include:
   a prior revision existed;
 - any skipped proof with the exact reason, such as no published release yet, no
   disposable cluster, or no rollback revision.
+
+### v0.0.3 Published Smoke
+
+- Binary asset: `jattg-binaries-0.0.3-aarch64-unknown-linux-gnu.tar.gz`
+  from
+  `https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v0.0.3`.
+  Command:
+  `VERSION=0.0.3 RELEASE_URL=https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v0.0.3 make release-binary-smoke`.
+  Result: checksum verified, archive extracted, manifest parsed, released
+  binaries were executable, and the released `coat` CLI printed help, guide,
+  and the matching release plan.
+- Helm chart asset: `jattg-0.0.3.tgz` from
+  `https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.0.3/jattg-0.0.3.tgz`.
+  Command:
+  `CHART_VERSION=0.0.3 APP_VERSION=0.0.3 HELM=target/tools/helm-v3.19.5/linux-arm64/helm CHART_URL=https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.0.3/jattg-0.0.3.tgz make release-helm-smoke`.
+  Result: checksum verified, chart lint passed with only the optional icon
+  recommendation, and template rendering produced a non-empty manifest.
+- Cluster apply status: not run. The default smoke intentionally avoids
+  Kubernetes API contact; use `HELM_SMOKE_UPGRADE_DRY_RUN=true` or
+  `HELM_SMOKE_APPLY=true` only with a disposable cluster context.
 
 ## Guardrails
 

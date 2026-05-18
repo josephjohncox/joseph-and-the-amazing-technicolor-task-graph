@@ -22,7 +22,7 @@ Use `@ctxr/agent-staff-engineer` as a specialized issue-to-PR worker after depen
 
 None currently. Staff-engineer live package verification and issue-to-PR smoke
 are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

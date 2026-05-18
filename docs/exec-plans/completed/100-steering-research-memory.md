@@ -43,7 +43,7 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 ## Follow-Ups
 
 None currently. ResearchMemory and UIE2E follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

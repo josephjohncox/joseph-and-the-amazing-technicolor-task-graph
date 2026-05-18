@@ -34,7 +34,7 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 
 None currently. UIE2E follow-ups and backend-first operator cleanup are
 superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

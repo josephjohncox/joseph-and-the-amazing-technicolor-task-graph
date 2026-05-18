@@ -364,8 +364,8 @@ reviewer to distinguish a real workflow failure from a harness or fixture
 failure. Use
 `docs/exec-plans/completed/170-usability-coherence-evaluation.md` as the
 scenario usability rubric for operator comprehension and SPA/TUI coherence.
-Residual UIE2E runtime proof belongs in
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+Deferred external proof gates are recorded in
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 For a single operator-facing exercise command, use the wrapper targets:
 

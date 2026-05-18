@@ -19,7 +19,7 @@ accessibility checks, SPA evidence and next-action panels, and TUI selected-goal
 runtime context.
 
 Residual screenshot/transcript capture and optional LLM usability evaluation
-work is preserved in `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`
+work is preserved in `docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`
 under the `UIE2E` follow-ups.
 
 ## Evaluation Scope

@@ -22,7 +22,7 @@ Create the repo harness that lets agents and engineers navigate the project with
 
 None currently. Ongoing doc gardening is normal maintenance, and active
 cross-cutting work is tracked in
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

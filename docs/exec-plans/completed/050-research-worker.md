@@ -24,7 +24,7 @@ Create a bounded research worker that can collect current facts without owning t
 ## Follow-Ups
 
 None currently. ResearchMemory follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

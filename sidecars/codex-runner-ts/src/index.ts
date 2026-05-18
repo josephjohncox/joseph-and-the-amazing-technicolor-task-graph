@@ -1301,7 +1301,7 @@ function requestedCodexThreadId(request: AgentRunRequest): string | null {
 
 function selectedModelName(request: AgentRunRequest): string | null {
   const candidate = request.task.execution?.model?.candidates?.[0];
-  if (isRecord(candidate) && typeof candidate.model === "string") return candidate.model;
+  if (isRecord(candidate) && typeof candidate.model === "string" && candidate.model !== "codex-default") return candidate.model;
   return process.env.CODEX_MODEL ?? null;
 }
 
@@ -1314,18 +1314,32 @@ function selectedReasoningEffort(request: AgentRunRequest): string | null {
 }
 
 function appServerApprovalPolicy(request: AgentRunRequest): string {
-  const policy = request.task.sandbox?.approval_policy;
-  if (policy === "never") return "never";
-  if (policy === "on_failure") return "onFailure";
-  if (policy === "on_request") return "unlessTrusted";
-  return process.env.CODEX_APP_SERVER_APPROVAL_POLICY ?? "unlessTrusted";
+  return normalizeAppServerApprovalPolicy(request.task.sandbox?.approval_policy ?? process.env.CODEX_APP_SERVER_APPROVAL_POLICY);
+}
+
+function normalizeAppServerApprovalPolicy(policy: string | null | undefined): string {
+  switch (policy) {
+    case "never":
+      return "never";
+    case "on_failure":
+    case "on-failure":
+    case "onFailure":
+      return "on-failure";
+    case "untrusted":
+      return "untrusted";
+    case "on_request":
+    case "on-request":
+    case "unlessTrusted":
+    default:
+      return "on-request";
+  }
 }
 
 function appServerSandbox(request: AgentRunRequest): string {
   const filesystem = request.task.sandbox?.filesystem;
-  if (filesystem === "read_only") return "readOnly";
-  if (filesystem === "full_access") return "dangerFullAccess";
-  return "workspaceWrite";
+  if (filesystem === "read_only") return "read-only";
+  if (filesystem === "full_access") return "danger-full-access";
+  return "workspace-write";
 }
 
 function appServerSandboxPolicy(request: AgentRunRequest): Record<string, unknown> {
@@ -1346,6 +1360,13 @@ function appServerApprovalResult(request: JsonRpcMessage): Record<string, unknow
   if (method === "mcpServer/elicitation/request") return { action: "decline", content: null };
   if (method === "item/permissions/requestApproval") return { scope: "turn", permissions: {} };
   return { decision };
+}
+
+export function appServerProtocolParamsForTest(request: AgentRunRequest): Record<string, unknown> {
+  return {
+    thread: appServerThreadParams(request),
+    turn: appServerTurnParams(request),
+  };
 }
 
 function codexAppServerPrompt(request: AgentRunRequest, memoryContext: MemoryContextResponse | null): string {
@@ -1383,22 +1404,101 @@ function codexAppServerPrompt(request: AgentRunRequest, memoryContext: MemoryCon
   ].join("\n");
 }
 
+export function agentRunResultOutputSchemaForTest(): Record<string, unknown> {
+  return agentRunResultOutputSchema();
+}
+
 function agentRunResultOutputSchema(): Record<string, unknown> {
+  const nullableString = { type: ["string", "null"] };
+  const nullableNumber = { type: ["number", "null"] };
+  const nullableInteger = { type: ["integer", "null"] };
   return {
     type: "object",
     properties: {
-      status: { type: "string", enum: ["done", "partial", "blocked", "failed", "timed_out"] },
+      status: { type: "string", enum: ["done", "partial", "waiting", "blocked", "failed", "timed_out"] },
       summary: { type: "string" },
       confidence: { type: "number", minimum: 0, maximum: 1 },
       next_actions: { type: "array", items: { type: "string" } },
-      child_requests: { type: "array", items: { type: "object" } },
-      test_evidence: { type: "array", items: { type: "object" } },
-      review: { type: ["object", "null"] },
-      research: { type: ["object", "null"] },
-      branch_vote: { type: ["object", "null"] },
+      child_requests: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            role: { type: "string" },
+            prompt: { type: "string" },
+            reason: { type: "string" },
+            title: nullableString,
+            subgoal_id: nullableString,
+          },
+          required: ["role", "prompt", "reason", "title", "subgoal_id"],
+        },
+      },
+      test_evidence: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            command: { type: "string" },
+            exit_code: nullableInteger,
+            passed: { type: "boolean" },
+            duration_ms: nullableInteger,
+            stdout_uri: nullableString,
+            stderr_uri: nullableString,
+            artifact_uri: nullableString,
+            notes: { type: "array", items: { type: "string" } },
+          },
+          required: ["command", "exit_code", "passed", "duration_ms", "stdout_uri", "stderr_uri", "artifact_uri", "notes"],
+        },
+      },
+      review: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          decision: nullableString,
+          reward: nullableNumber,
+          retry_recommended: { type: ["boolean", "null"] },
+          unification_summary: nullableString,
+          findings: { type: "array", items: { type: "string" } },
+        },
+        required: ["decision", "reward", "retry_recommended", "unification_summary", "findings"],
+      },
+      research: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          question: nullableString,
+          answer: nullableString,
+          confidence: nullableNumber,
+          sources: { type: "array", items: { type: "string" } },
+          open_questions: { type: "array", items: { type: "string" } },
+        },
+        required: ["question", "answer", "confidence", "sources", "open_questions"],
+      },
+      branch_vote: {
+        type: ["object", "null"],
+        additionalProperties: false,
+        properties: {
+          selected_candidate_id: nullableString,
+          rationale: nullableString,
+          confidence: nullableNumber,
+        },
+        required: ["selected_candidate_id", "rationale", "confidence"],
+      },
     },
-    required: ["status", "summary", "confidence", "next_actions", "child_requests"],
-    additionalProperties: true,
+    required: [
+      "status",
+      "summary",
+      "confidence",
+      "next_actions",
+      "child_requests",
+      "test_evidence",
+      "review",
+      "research",
+      "branch_vote",
+    ],
+    additionalProperties: false,
   };
 }
 

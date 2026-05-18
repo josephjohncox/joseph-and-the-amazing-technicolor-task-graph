@@ -44,7 +44,7 @@ Make the system operable through Compose, Kubernetes, and a CLI.
 ## Follow-Ups
 
 None currently. ReleaseHardening and Provisioner follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

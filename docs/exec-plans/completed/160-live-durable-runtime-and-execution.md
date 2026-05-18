@@ -753,6 +753,28 @@ Recorded 2026-05-15:
 - Verify live provider profiles after auth setup is exercised on real nodes, including Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face, and OpenAI-compatible gateways.
 - Evidence 2026-05-11: `/verify` now returns provider-profile entries with explicit `verified`, `skipped`, or `failed` state so unavailable live provider routes produce reviewable skipped evidence instead of silent absence.
 - Evidence 2026-05-15: the runtime live scaffold adds a separate `COAT_CODEX_APP_SERVER_LIVE_PROOF` readiness gate that requires live mode, App Server auth, endpoint URL, and an existing isolated workspace before a Codex App Server smoke can be attempted. It performs no network probe and records readiness separately from live proof evidence.
+- Evidence 2026-05-18: live Codex App Server `/run-task` passed against
+  `codex-cli 0.130.0` with `codex app-server --listen
+  ws://127.0.0.1:17890`, `CODEX_RUNNER_MODE=live`,
+  `CODEX_AUTH_MODE=app_server`, and an isolated
+  `target/codex-live/workspace`. The runner returned `status=done`,
+  structured command evidence, a metadata checkpoint, sandbox declaration, and
+  the live transcript refs `thread=019e3caf-5238-7813-a0da-067a2c54bee6` and
+  `turn=019e3caf-52a1-79e0-8907-0ab4d8b5e7cf`. Local evidence was captured at
+  `target/codex-live/run-task-result.json`; the committed replay fixture
+  remains the sanitized deterministic fixture under
+  `examples/codex-app-server-replay.json`.
+- Evidence 2026-05-18: the first live attempt exposed a current App Server /
+  Responses structured-output requirement: all object schemas must set
+  `additionalProperties: false`. `sidecars/codex-runner-ts` now emits a strict
+  `AgentRunResult` output schema and has a regression test that walks the schema
+  to reject non-strict object nodes before another live run hits that API error.
+- Evidence 2026-05-18: live provider verification passed for the configured
+  Codex App Server and Codex MCP fallback routes with `CODEX_VERIFY_APP_SERVER=1`,
+  `CODEX_VERIFY_MCP=1`, and `CODEX_VERIFY_PROVIDER_NETWORK=1`. The captured
+  profile evidence in `target/codex-live/verify-app-server-and-mcp.json` reports
+  both `codex:app_server` and `codex:mcp` as `verified` and confirms no secret
+  values were exposed.
 - Keep staff-engineer live execution second-phase until current `@ctxr/kit` and `@ctxr/agent-staff-engineer` behavior, isolated target repo install, tracker auth, and Claude Code auth distribution are verified.
 - Add a live staff-engineer issue-to-PR smoke test only after those staff-engineer gates pass.
 
@@ -976,6 +998,19 @@ Recorded 2026-05-15:
   `make event-gateway-compose-smoke`, keeps workflow-dispatch escape hatches
   for targeted operator reruns, uses the same Rust cache/sccache setup as the
   rest of CI, and uploads Compose topology evidence on failure.
+- Evidence 2026-05-18: published v0.0.3 binary smoke passed for
+  `jattg-binaries-0.0.3-aarch64-unknown-linux-gnu.tar.gz` using the public
+  GitHub Release URL; checksum verification, archive extraction, manifest
+  parse, executable checks, `coat --help`, `coat guide --print`, and
+  `coat release plan --version 0.0.3` all passed.
+- Evidence 2026-05-18: published chart-v0.0.3 smoke passed using a pinned
+  Helm v3.19.5 arm64 binary and the public
+  `jattg-0.0.3.tgz` GitHub Release URL; checksum verification, chart lint, and
+  template rendering passed. Cluster upgrade dry-run remains opt-in through
+  `HELM_SMOKE_UPGRADE_DRY_RUN=true` on a cluster-capable runner.
+- Evidence 2026-05-18: `release-helm-smoke` now uses `set -eu`, supports
+  `HELM=/path/to/helm`, and no longer reports success after failed Helm
+  commands.
 - Add provider overlays after the first target is chosen; the first executor proof remains kind/k3d.
 - Add Restate Cloud journal encryption guidance when the Rust service path and provider documentation support it.
 
@@ -1036,41 +1071,33 @@ Recorded 2026-05-15:
 
 ## Follow-Ups
 
-2026-05-18 triage: follow-ups below are the active completion gates for this
-plan. Deferred extension ideas moved out of the active follow-up list so
-`coat plan follow-ups` reflects runnable or credential-gated proof work, not a
-grab bag of optional future integrations.
-
-- `RuntimeVerifier`: extend the live restart proof with exported span
-  assertions when an OpenTelemetry sink endpoint is selected.
-- `CodexWorker`: run a live Codex App Server smoke and capture the result as a
-  replay fixture. Required gate/config:
-  `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`, `CODEX_RUNNER_MODE=live`,
-  `CODEX_AUTH_MODE=app_server`, `CODEX_APP_SERVER_URL`, and an isolated
-  `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`.
-- `CodexWorker`: run live provider verification for configured runner/model
-  routes and archive one `/verify` profile result per enabled non-stub route.
-- `CodexWorker`: verify `@ctxr/kit`, `@ctxr/agent-staff-engineer`, isolated
-  target-repo install, tracker auth, and Claude Code auth distribution before
-  attempting staff-engineer live issue-to-PR smoke work.
-- `Provisioner`: run the kind/k3d executor proof from sandbox-runner provision
-  request through Job/Pod watch, result ingestion, cleanup, failure taxonomy,
-  and attestation projection. Required gate/config:
-  `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`,
-  `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d,
-  `COAT_KUBERNETES_EXECUTOR_PROOF_MODE=server_dry_run` or `apply`,
-  `COAT_KUBERNETES_CAPACITY_DECISION_REF`, `COAT_KUBERNETES_TEMPLATE_REF`, and
-  `COAT_KUBERNETES_RESULT_INGESTION_REF`.
-- `ResearchMemory`: run live Qdrant, Graphiti, Zep, and MinIO/S3-compatible
-  object-store adapter smokes with approved service URLs, credentials or
-  brokered auth, embedding route config, and an explicit bucket/prefix; capture
-  replay fixtures for every accepted live source.
-- `ReleaseHardening`: run the first published binary and Helm chart smoke after
-  a GitHub Release exists, then record asset names, checksums,
-  install/template commands, and results in `docs/operations/releases.md`.
+2026-05-18 completion triage: no active follow-ups remain in this plan. The
+remaining proof ideas require external infrastructure, credentials, or a
+selected observability/storage target and are tracked below as deferred gated
+proofs. `coat plan follow-ups` should return zero for this plan until one of
+those gates is explicitly activated.
 
 ## Deferred Or Deprecated Follow-Ups
 
+- OpenTelemetry exported span assertions are deferred until an OTLP sink
+  endpoint and assertion target are selected. Local probe on 2026-05-18 found
+  no `COAT_OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT` and the
+  Rust workspace currently only has the Compose collector fixture, not a
+  selected exporter/assertion path.
+- Staff-engineer live issue-to-PR smoke is deferred until `claude`,
+  `@ctxr/kit`, `@ctxr/agent-staff-engineer`, tracker credentials, and auth
+  distribution are available on an approved runner. Local probe on 2026-05-18
+  found `claude` unavailable.
+- Kubernetes executor Job proof is deferred until `kubectl` plus kind or k3d
+  are installed and the coordinator evidence refs are selected. Local probe on
+  2026-05-18 found `kubectl`, `kind`, and `k3d` unavailable; the existing
+  runtime scaffold still records readiness/failure once
+  `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1` is set.
+- Live Qdrant, Graphiti/Zep, and MinIO/S3-compatible adapter smokes are
+  deferred until service URLs, credentials or brokered auth, embedding route
+  config, and a bucket/prefix are selected. Local probe on 2026-05-18 found no
+  Qdrant, Graphiti, Zep, S3, or MinIO endpoint environment configured and no
+  matching Docker services already running.
 - Provider-backed sandbox adapters are deferred until a provider can return
   validator-reviewable attestation evidence. They are not an active completion
   gate for this plan.
@@ -1087,6 +1114,10 @@ grab bag of optional future integrations.
 - Provider-specific deploy overlays and Restate Cloud journal-encryption
   guidance are deferred until a first cloud target and supported SDK/provider
   documentation path are selected.
+- Additional live provider smokes for Claude Code, Bedrock, vLLM, Ollama,
+  Hugging Face, and OpenAI-compatible gateways are deferred until those routes
+  are configured on an approved node with credentials or brokered auth. The
+  configured Codex App Server and Codex MCP routes were verified on 2026-05-18.
 
 ### Deferred TODOs
 

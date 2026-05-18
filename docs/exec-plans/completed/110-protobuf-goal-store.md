@@ -38,4 +38,4 @@ CI now calls the same `make proto-check` target so protobuf linting, protobuf fo
 ## Follow-Ups
 
 None currently. RuntimeVerifier and ProtocolSDK follow-ups are superseded by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.

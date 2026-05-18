@@ -10,7 +10,7 @@ tasks, not native hidden subagents inside Codex, Claude Code, or a model runner.
 ## Status
 
 Completed on 2026-05-12. Live provider execution remains governed by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`; this plan
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`; this plan
 adds the typed shortcut surface, operator visibility, and gateway drill-down.
 
 ## Product Questions

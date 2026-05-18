@@ -72,13 +72,13 @@ Update docs when behavior, service boundaries, public contracts, deployment knob
 
 Active execution plans must include a `## Follow-Ups` section for developer doc
 gardening. Treat those bullets as repo-maintenance notes, not product workflow
-truth. The current authoritative active plan is
-`exec-plans/active/160-live-durable-runtime-and-execution.md`; completed plans
-are evidence records and should not keep their own competing follow-up queues.
+truth. There is no active execution plan after the 2026-05-18 live-runtime
+completion pass; `exec-plans/completed/160-live-durable-runtime-and-execution.md`
+is now the completed master evidence record.
 
 Use `exec-plans/completed/170-usability-coherence-evaluation.md` as the scenario
 usability rubric for operator comprehension and cross-surface coherence.
-Residual UIE2E runtime work is tracked in
-`exec-plans/active/160-live-durable-runtime-and-execution.md`.
+Deferred external proof gates are recorded in
+`exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 User-facing continuation work belongs in durable plans, goal/task state, compute graph snapshots, delayed compute thunks, event projections, or human queue records. Use `coat plan follow-ups` when maintaining active execution-plan markdown; use the SPA, gateway APIs, or MCP tools for durable operator queues.

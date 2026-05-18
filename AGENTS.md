@@ -39,6 +39,7 @@ recoverable action-needed states, not terminal workflow failures.
 - Strong sandbox and guardrails guide: `docs/design-docs/100-strong-sandboxing-guardrails.md`
 - Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
+- Active master execution plan: `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`
 - Chat client MCP/skill integration: `docs/operations/chat-client-integration.md`
 - Local observability guide: `docs/operations/local-observability.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
@@ -106,6 +107,8 @@ Update docs when behavior or public contracts change.
 - Ephemeral Kubernetes Jobs may provide burst runner or Restate executor capacity, but Restate/coordinator state remains authoritative.
 - Backend Kubernetes provisioning should use Rust control-plane clients (`kube`/`k8s-openapi`) from coordinator/executor services; rendered manifests are operator fixtures and escape hatches.
 - The TypeScript control gateway and SPA are optional operator surfaces; they must use backend APIs and must not own durable workflow state.
+- The compact operator API is `/api/operator/*`, with `/api/operator/stream` as a projection-only SSE stream. Removed overview, snapshot, runner-list, human-thread, and follow-up helper routes are not compatibility targets once the operator replacement path exists.
+- The MCP operator surface mirrors the compact operator API. Prefer `coat_operator_workspace`, `coat_operator_goal`, `coat_operator_actions`, `coat_operator_action_resolve`, `coat_operator_agent_context`, `coat_operator_goal_submit`, and `coat_operator_goal_steer`; do not reintroduce old overview/snapshot/activity/helper MCP tool names.
 - Standard configuration is JSON: project profiles live in `.coat/project.json`, user or node defaults live in `~/.coat/config.json`, one-off profile selection uses `coat --config-profile ...`, and raw secrets stay in env vars, SecretRefs, secret stores, or auth brokers. Do not duplicate service endpoint defaults in direnv.
 
 ## Subagent Routing
@@ -268,6 +271,11 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run the bootstrap scenario shell script with `sh scripts/coat-scenario-e2e.sh`
   when you need deterministic stub-stack scenario evidence under
   `target/coat-scenarios`.
+- Run the system exercise wrapper with `sh scripts/coat-exercise-system.sh
+  --mode quick` for a no-Compose docs/script reset smoke, or use `make
+  exercise-demo`, `make exercise-e2e`, `make exercise-ui`, and `make
+  exercise-full` when you need navigable local scenario state and broader
+  operator evidence.
 - Inspect local Compose logs with `coat deploy local logs --follow coordinator runner-registry control-web`.
 - Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 
@@ -333,5 +341,11 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 
 ## Current Build State
 
-The first scaffold includes buildable contracts, service stubs, deployment manifests, and sidecar adapters.
-Live Codex, OpenAI Agents SDK, and staff-engineer integrations are intentionally gated by environment and verification.
+The scaffold includes buildable contracts, service stubs, deployment manifests,
+sidecar adapters, a compact operator API, first-wave actor state-machine tests,
+goal-store operator projections, simplified SPA/TUI operator surfaces, MCP
+operator tools, and scenario exercise wrappers.
+
+Live Restate restart/resume, Codex App Server, kind/k3d executor Jobs, OpenAI
+Agents SDK, and staff-engineer integrations remain gated by environment and
+verification until the active master plan records direct evidence.

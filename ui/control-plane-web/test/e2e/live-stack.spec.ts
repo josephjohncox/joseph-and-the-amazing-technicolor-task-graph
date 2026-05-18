@@ -12,7 +12,8 @@ test.describe("COAT live deterministic stack", () => {
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
 
-    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" })).toHaveClass(/active/);
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Ask" })).toHaveClass(/active/);
+    await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, objective);
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
@@ -69,7 +70,7 @@ test.describe("COAT live deterministic stack", () => {
     }).toBe(true);
     await expect(page.getByText(replacementKey).first()).toBeVisible();
 
-    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Human Queue", exact: true }).click();
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Action Queue", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Approvals" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Feedback threads" })).toBeVisible();
 
@@ -79,8 +80,8 @@ test.describe("COAT live deterministic stack", () => {
       intervals: [500, 1_000, 2_000],
     }).toBeGreaterThan(0);
     await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Runners", exact: true }).click();
-    await expect(page.getByRole("heading", { level: 2, name: "Runner fleet", exact: true })).toBeVisible();
-    await expect(page.getByLabel("Runner fleet state")).toContainText("registered");
+    await expect(page.getByRole("heading", { level: 2, name: "Runners", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Runner state")).toContainText("registered");
 
     const sourceId = `live-ui-ci-${Date.now()}`;
     await registerEventSource(page, sourceId);

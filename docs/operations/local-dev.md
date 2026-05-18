@@ -188,12 +188,71 @@ sh scripts/coat-scenario-e2e.sh
 The script writes a stub provider env file under
 `target/coat-scenarios/latest/stack`, runs local preflight and resolved Compose
 config checks, starts or reuses the local stack, waits for health endpoints,
-and runs `scripts/coat-scenarios/*.json` through `coat scenario run`. Evidence
+and runs `scenarios/e2e/*.json` through `coat scenario run`. Evidence
 is written under `target/coat-scenarios/latest` and the scenario-specific
 output directories. Set `COAT_SCENARIO_E2E_STACK_ONLY=1` to bootstrap and
 health-check the stack without running specs, `COAT_SCENARIO_E2E_STACK=preflight`
 to stop after config/preflight validation, or `COAT_SCENARIO_E2E_KEEP_STACK=0`
 to tear the stack down after the run.
+
+Use the system exercise wrapper when you want one top-level command for the
+common local proof paths. The wrapper composes the existing reset, bootstrap,
+scenario, event, runner, SQS, and UI helpers; it does not delete Docker volumes
+or mutate state outside those helpers. Every run writes a summary to
+`target/coat-scenarios/latest/system-exercise.json` and per-step stdout/stderr
+logs under `target/coat-scenarios/latest/system-exercise/<timestamp>/`.
+
+```sh
+make exercise-quick
+make exercise-demo
+make exercise-e2e
+make exercise-ui
+make exercise-full
+sh scripts/coat-exercise-system.sh --mode quick --dry-run
+```
+
+Modes:
+
+- `quick`: reset syntax/dry-run smoke, deterministic bootstrap fixtures,
+  runner-registry smoke, and event-gateway smoke.
+- `demo`: deterministic local stub stack plus live/demo goal bootstrapping for
+  SPA/TUI navigation.
+- `e2e`: backend scenario suite plus task-graph validation.
+- `ui`: browser E2E against the deterministic local stub stack.
+- `full`: quick, e2e, ui, demo, LocalStack SQS, and Compose runner smokes.
+
+Use the runtime live scaffold when you need CI-safe evidence that the first live
+proofs are still explicitly gated and do not silently run on a machine without
+credentials, Docker, or a cluster:
+
+```sh
+make runtime-live-scaffold
+cat target/coat-runtime-live-scaffold/runtime-live-scaffold.json
+```
+
+With no live gates set, the scaffold records skipped Restate restart/resume,
+Codex App Server, and kind/k3d executor proofs. It never starts Docker, Restate,
+Codex App Server, kind, k3d, kubectl, or a Kubernetes workload. If an operator
+sets a live gate, missing or unsafe configuration becomes a failed readiness
+record instead of an implicit skip. The scaffold also records
+`live_proof_executed=false` so its CI artifact cannot be mistaken for real live
+proof evidence.
+
+Live readiness gates:
+
+- `COAT_RESTATE_RESTART_RESUME_TEST=1`: checks the pinned
+  `COAT_RESTATE_TESTCONTAINERS_IMAGE`, Docker CLI presence, and coordinator
+  binary path. The ignored Rust RuntimeVerifier test still fails deliberately
+  once all gates are ready until the Docker/Testcontainers harness is
+  implemented.
+- `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`: requires
+  `CODEX_RUNNER_MODE=live`, `CODEX_AUTH_MODE=app_server`,
+  `CODEX_APP_SERVER_URL`, and an existing isolated
+  `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`.
+- `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`: requires
+  `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d, a
+  `server_dry_run` or `apply` proof mode, and coordinator evidence refs for the
+  capacity decision, template, and result ingestion target.
 
 Use the live bootstrap helper when you want real coordinator-created demo goals
 visible in the local operator UI. It submits fixed demo goals through

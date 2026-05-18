@@ -30,6 +30,7 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `GET /api/operator/actions`: product-shaped action queue across goals or filtered by `goal_id`.
 - `POST /api/operator/actions/{action_id}/resolve`: resolve an approval, resume a delayed compute thunk, retry/replan blocked work, or cancel a goal through typed coordinator handlers.
 - `GET /api/operator/stream`: SSE stream for operator projections. It emits product-level projection events such as `workspace.updated`, `goal.updated`, `task.updated`, `worker.completed`, `action.required`, `approval.requested`, `goal.satisfied`, `goal.cancelled`, `stream.heartbeat`, and `stream.error`.
+- Goal-store operator projections used by the gateway include `/goal-store/operator-timeline`, `/goal-store/operator-worker-runs`, and `/goal-store/operator-evidence`. These are read-model projections for operator state, not new orchestration surfaces.
 - `GET /api/plans`: durable planning-mode list.
 - `POST /api/plans`: create a durable plan.
 - `GET /api/plans/{plan_id}`: inspect a durable plan.
@@ -44,6 +45,12 @@ The gateway must never own durable orchestration state. Restate remains the dura
 - `POST /api/memory/{search,context,write,join,retract,edit,edit-preview,repair}`: memory gateway proxy.
 - `POST /api/research/apply`: converts `ResearchOutput.use_plan` or an `InformationUsePlan` into coordinator-owned `SteeringDirective` calls.
 - `POST /mcp`: MCP-compatible JSON-RPC surface for agent and chat clients.
+
+Removed browser helper routes are not compatibility targets. The public
+operator path is `/api/operator/*`, `/api/chat`, `/api/plans/*`, `/api/memory/*`,
+`/api/events/*`, and `/mcp`. When a simplified operator replacement exists,
+delete old overview, snapshot, runner-list, human-thread, plan-follow-up, and
+other helper routes immediately instead of hiding them behind a debug flag.
 
 ## Engine Boundary
 
@@ -213,8 +220,8 @@ before submission.
 
 The terminal TUI follows the same split at smaller scope: chat uses
 `/api/chat`, dashboard cards are derived from `/api/operator/workspace`, and durable
-mutations remain explicit operator actions. `Ctrl-N` and `Ctrl-P` cycle through
-projected goals, `Ctrl-O` clears the selected goal, and
+mutations remain explicit operator actions. Chat defaults to Ask. `Ctrl-N` and
+`Ctrl-P` cycle through projected goals, `Ctrl-O` clears the selected goal, and
 `Ctrl-R` refreshes projection state. With a selected goal, the TUI uses the
 `goal:<goal_id>` chat session and sends the goal id to `/api/chat`; after it
 submits a chat-authored `drafts.goal_spec`, it selects the returned goal id.
@@ -222,6 +229,9 @@ The TUI action queue mirrors the SPA task-graph workflow: the Approvals tab
 lets operators select an action with Up/Down and apply it with Enter or `a`;
 human prompts show the concrete question, allowed actions, and any required
 context field; active GoalSpec drafts are accepted with `F5` or `Ctrl-G`.
+Plain Enter activates focused rows and controls rather than sending chat. Chat
+submission uses `Ctrl-S` and, when the terminal reports it, modified Enter such
+as `Ctrl-Enter`; this keeps row navigation and text submission unambiguous.
 Advanced command help stays available as a secondary reference, but the
 terminal dashboard should lead with selected-goal state, graph navigation,
 human-queue actions, and intent-grouped recovery or review controls.
@@ -442,6 +452,11 @@ The gateway exposes MCP tools so agent/chat clients can inspect and steer the sy
 - `coat_memory_events`;
 - `coat_apply_research_output`;
 - `coat_event_sources`.
+
+The MCP surface follows the same deletion policy as the HTTP API. Keep the
+operator tools above aligned with `/api/operator/*`; do not keep old overview,
+snapshot, activity, approval-list, runner-list, or helper tool names as shims
+after the replacement tool exists.
 
 External dashboards should prefer the same gateway APIs or the lower-level backend APIs. The gateway is useful for composition and auth consolidation, while the lower-level services remain the stable engine contracts.
 

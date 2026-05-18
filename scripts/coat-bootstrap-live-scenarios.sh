@@ -131,7 +131,7 @@ dry_run=${COAT_BOOTSTRAP_LIVE_DRY_RUN:-0}
 submit_live_goals=${COAT_BOOTSTRAP_LIVE_SUBMIT_GOALS:-true}
 seed_fixtures=${COAT_BOOTSTRAP_LIVE_SEED_FIXTURES:-true}
 force_resubmit=${COAT_BOOTSTRAP_LIVE_FORCE_RESUBMIT:-false}
-fixture_specs=${COAT_BOOTSTRAP_LIVE_FIXTURE_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_pending_action.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/bootstrap_blocked_retry_recovery.json scenarios/e2e/bootstrap_cancelled_queue_history.json scenarios/e2e/bootstrap_memory_research_evidence.json"}
+fixture_specs=${COAT_BOOTSTRAP_LIVE_FIXTURE_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_running.json scenarios/e2e/bootstrap_pending_action.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/bootstrap_blocked_retry_recovery.json scenarios/e2e/bootstrap_cancelled_queue_history.json scenarios/e2e/bootstrap_memory_research_evidence.json scenarios/e2e/operator_usability_workbench.json"}
 last_goal_submit_status=
 
 while [ "$#" -gt 0 ]; do

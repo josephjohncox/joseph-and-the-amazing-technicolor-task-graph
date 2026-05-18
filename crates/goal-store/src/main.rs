@@ -29,11 +29,11 @@ use coat_domain::{
     GoalStoreEventAppendResponse, GoalStoreEventListResponse, GoalStoreGoalResponse,
     GoalStoreSnapshot, GoalStoreSnapshotUpsertRequest, GoalStoreSnapshotUpsertResponse,
     GoalStoreTaskListResponse, OperatorAction, OperatorActionKind, OperatorActionResolutionKind,
-    OperatorEventAppendRequest, OperatorEventAppendResponse, OperatorEventListResponse,
-    OperatorTransition, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
-    PlanCandidateVoteRequest, PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult,
-    PlanDraftRequest, PlanId, PlanRevisionRequest, PlanStatus, TaskId, TaskRecord, TaskStatus,
-    WorkerKind,
+    OperatorActorKind, OperatorEvent, OperatorEventAppendRequest, OperatorEventAppendResponse,
+    OperatorEventListResponse, OperatorEvidence, OperatorTransition, OperatorWorkerRun,
+    PlanCandidateSelectionRequest, PlanCandidateSelectionResponse, PlanCandidateVoteRequest,
+    PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult, PlanDraftRequest, PlanId,
+    PlanRevisionRequest, PlanStatus, TaskId, TaskRecord, TaskStatus, WorkerKind,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -236,6 +236,21 @@ struct OperatorActionListResponse {
     actions: Vec<OperatorAction>,
 }
 
+#[derive(Debug, Serialize)]
+struct OperatorTimelineResponse {
+    events: Vec<OperatorEvent>,
+}
+
+#[derive(Debug, Serialize)]
+struct OperatorWorkerRunListResponse {
+    worker_runs: Vec<OperatorWorkerRun>,
+}
+
+#[derive(Debug, Serialize)]
+struct OperatorEvidenceListResponse {
+    evidence: Vec<OperatorEvidence>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GoalFilter {
     status: Option<Vec<GoalStatus>>,
@@ -280,6 +295,21 @@ struct OperatorActionFilter {
     goal_id: Option<GoalId>,
     kind: Option<Vec<OperatorActionKind>>,
     status: Option<Vec<String>>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorWorkerRunFilter {
+    goal_id: Option<GoalId>,
+    task_id: Option<TaskId>,
+    status: Option<Vec<String>>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorEvidenceFilter {
+    goal_id: Option<GoalId>,
+    task_id: Option<TaskId>,
     limit: Option<usize>,
 }
 
@@ -363,6 +393,12 @@ async fn main() -> anyhow::Result<()> {
             "/goal-store/operator-events",
             get(list_operator_events).post(append_operator_event),
         )
+        .route("/goal-store/operator-timeline", get(list_operator_timeline))
+        .route(
+            "/goal-store/operator-worker-runs",
+            get(list_operator_worker_runs),
+        )
+        .route("/goal-store/operator-evidence", get(list_operator_evidence))
         .route("/goal-store/actions", get(list_actions))
         .route("/goal-store/artifacts", post(record_artifacts))
         .route("/goal-store/drafts", get(list_drafts).post(record_draft))
@@ -950,6 +986,100 @@ async fn list_goal_operator_events(
     list_operator_events(State(state), Query(filter)).await
 }
 
+async fn list_operator_timeline(
+    State(state): State<AppState>,
+    Query(filter): Query<OperatorEventFilter>,
+) -> Result<Json<OperatorTimelineResponse>, ApiError> {
+    let events = if let Some(pool) = &state.postgres {
+        list_operator_events_postgres(
+            pool,
+            filter.goal_id,
+            filter.event_type.as_deref(),
+            filter.since.as_deref(),
+            filter.limit,
+        )
+        .await
+        .map_err(ApiError::internal)?
+    } else {
+        let store = state.store.read().await;
+        filter_operator_events(store.operator_events.clone(), &filter)
+    };
+    Ok(Json(OperatorTimelineResponse {
+        events: operator_timeline_from_events(&events),
+    }))
+}
+
+async fn list_operator_worker_runs(
+    State(state): State<AppState>,
+    Query(filter): Query<OperatorWorkerRunFilter>,
+) -> Result<Json<OperatorWorkerRunListResponse>, ApiError> {
+    let (events, tasks) = if let Some(pool) = &state.postgres {
+        let events = list_operator_events_postgres(
+            pool,
+            filter.goal_id,
+            Some("worker.completed"),
+            None,
+            Some(filter.limit.unwrap_or(250).max(250)),
+        )
+        .await
+        .map_err(ApiError::internal)?;
+        let tasks = match filter.goal_id {
+            Some(goal_id) => list_tasks_postgres(pool, goal_id)
+                .await
+                .map_err(ApiError::internal)?,
+            None => list_tasks_postgres_all(pool)
+                .await
+                .map_err(ApiError::internal)?,
+        };
+        (events, tasks)
+    } else {
+        let store = state.store.read().await;
+        let events = filter_operator_events(
+            store.operator_events.clone(),
+            &OperatorEventFilter {
+                goal_id: filter.goal_id,
+                event_type: Some("worker.completed".to_string()),
+                since: None,
+                limit: Some(filter.limit.unwrap_or(250).max(250)),
+            },
+        );
+        let tasks = store.tasks.values().cloned().collect();
+        (events, tasks)
+    };
+    Ok(Json(OperatorWorkerRunListResponse {
+        worker_runs: filter_worker_runs(
+            operator_worker_runs_from_events_and_tasks(&events, &tasks),
+            &filter,
+        ),
+    }))
+}
+
+async fn list_operator_evidence(
+    State(state): State<AppState>,
+    Query(filter): Query<OperatorEvidenceFilter>,
+) -> Result<Json<OperatorEvidenceListResponse>, ApiError> {
+    let artifacts = if let Some(pool) = &state.postgres {
+        match filter.goal_id {
+            Some(goal_id) => list_artifacts_postgres(pool, goal_id)
+                .await
+                .map_err(ApiError::internal)?,
+            None => list_artifacts_postgres_all(pool)
+                .await
+                .map_err(ApiError::internal)?,
+        }
+    } else {
+        let store = state.store.read().await;
+        store
+            .artifacts
+            .values()
+            .flat_map(|records| records.iter().cloned())
+            .collect()
+    };
+    Ok(Json(OperatorEvidenceListResponse {
+        evidence: filter_operator_evidence(operator_evidence_from_artifacts(&artifacts), &filter),
+    }))
+}
+
 async fn list_actions(
     State(state): State<AppState>,
     Query(filter): Query<OperatorActionFilter>,
@@ -1320,6 +1450,287 @@ fn filter_drafts(mut drafts: Vec<GoalDraftRecord>, filter: &DraftFilter) -> Vec<
         drafts.truncate(limit);
     }
     drafts
+}
+
+fn operator_timeline_from_events(events: &[DurableEventEnvelope]) -> Vec<OperatorEvent> {
+    events
+        .iter()
+        .map(|event| OperatorEvent {
+            event_id: event.event_id.to_string(),
+            event_type: event.event_type.clone(),
+            goal_id: event.actor.goal_id,
+            task_id: event.actor.task_id,
+            title: title_for_operator_event(event),
+            detail: detail_for_operator_event(event),
+            created_at: Some(event.created_at.clone()),
+            payload_json: serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
+        })
+        .collect()
+}
+
+fn title_for_operator_event(event: &DurableEventEnvelope) -> String {
+    match event.transition {
+        OperatorTransition::SubmitGoal => "Goal submitted",
+        OperatorTransition::DraftAccepted => "Draft accepted",
+        OperatorTransition::TaskDispatched => "Task dispatched",
+        OperatorTransition::WorkerResultReceived => "Worker completed",
+        OperatorTransition::TaskBlocked => "Task blocked",
+        OperatorTransition::ThunkCreated => "Input requested",
+        OperatorTransition::ThunkResumed => "Input provided",
+        OperatorTransition::ApprovalRequested => "Approval requested",
+        OperatorTransition::ApprovalResolved => "Approval resolved",
+        OperatorTransition::ReviewCompleted => "Review completed",
+        OperatorTransition::BranchSelected => "Branch selected",
+        OperatorTransition::GoalSteered => "Goal steered",
+        OperatorTransition::GoalCancelled => "Goal cancelled",
+        OperatorTransition::GoalSatisfied => "Goal satisfied",
+    }
+    .to_string()
+}
+
+fn detail_for_operator_event(event: &DurableEventEnvelope) -> String {
+    json_string_at(&event.payload_json, &["summary"])
+        .or_else(|| json_string_at(&event.payload_json, &["message"]))
+        .or_else(|| json_string_at(&event.payload_json, &["request", "response_summary"]))
+        .or_else(|| json_string_at(&event.payload_json, &["request", "answer"]))
+        .or_else(|| json_string_at(&event.payload_json, &["reason"]))
+        .unwrap_or_default()
+}
+
+fn operator_worker_runs_from_events_and_tasks(
+    events: &[DurableEventEnvelope],
+    tasks: &[TaskRecord],
+) -> Vec<OperatorWorkerRun> {
+    let task_by_id: BTreeMap<TaskId, &TaskRecord> =
+        tasks.iter().map(|task| (task.task_id, task)).collect();
+    let mut runs = BTreeMap::new();
+
+    for event in events {
+        if event.transition != OperatorTransition::WorkerResultReceived
+            && event.event_type != "worker.completed"
+        {
+            continue;
+        }
+        let task_id = event
+            .actor
+            .task_id
+            .or_else(|| json_uuid_at(&event.payload_json, &["task_id"]))
+            .or_else(|| json_uuid_at(&event.payload_json, &["result", "task_id"]));
+        let task = task_id.and_then(|task_id| task_by_id.get(&task_id).copied());
+        let run_id = json_string_at(&event.payload_json, &["run_id"])
+            .or_else(|| json_string_at(&event.payload_json, &["worker_run_id"]))
+            .unwrap_or_else(|| {
+                if event.actor.kind == OperatorActorKind::WorkerRun {
+                    event.actor.id.clone()
+                } else {
+                    format!("worker-run:{}", event.event_id)
+                }
+            });
+        let worker = worker_kind_from_payload(&event.payload_json)
+            .or_else(|| task.map(|task| task.role.clone()))
+            .unwrap_or_default();
+        let status = json_string_at(&event.payload_json, &["status"])
+            .or_else(|| json_string_at(&event.payload_json, &["result", "status"]))
+            .or_else(|| task.and_then(|task| json_string(&task.status).ok()))
+            .unwrap_or_else(|| "completed".to_string());
+        let summary = json_string_at(&event.payload_json, &["summary"])
+            .or_else(|| json_string_at(&event.payload_json, &["result", "summary"]))
+            .or_else(|| task.map(|task| task.title.clone()))
+            .unwrap_or_else(|| "Worker completed".to_string());
+        let started_at = json_string_at(&event.payload_json, &["started_at"]);
+        let finished_at = json_string_at(&event.payload_json, &["finished_at"])
+            .or_else(|| Some(event.created_at.clone()));
+        runs.insert(
+            run_id.clone(),
+            OperatorWorkerRun {
+                run_id,
+                goal_id: event
+                    .actor
+                    .goal_id
+                    .or_else(|| task.map(|task| task.goal_id))
+                    .unwrap_or_default(),
+                task_id,
+                worker,
+                status,
+                summary,
+                started_at,
+                finished_at,
+                payload_json: serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({})),
+            },
+        );
+    }
+
+    for task in tasks {
+        let run_id = format!("task-run:{}", task.task_id);
+        runs.entry(run_id.clone())
+            .or_insert_with(|| OperatorWorkerRun {
+                run_id,
+                goal_id: task.goal_id,
+                task_id: Some(task.task_id),
+                worker: task.role.clone(),
+                status: json_string(&task.status).unwrap_or_else(|_| "unknown".to_string()),
+                summary: task.title.clone(),
+                started_at: None,
+                finished_at: None,
+                payload_json: serde_json::to_value(task).unwrap_or_else(|_| serde_json::json!({})),
+            });
+    }
+
+    let mut runs: Vec<_> = runs.into_values().collect();
+    runs.sort_by(|left, right| {
+        right
+            .finished_at
+            .cmp(&left.finished_at)
+            .then_with(|| right.started_at.cmp(&left.started_at))
+            .then_with(|| left.goal_id.cmp(&right.goal_id))
+            .then_with(|| left.run_id.cmp(&right.run_id))
+    });
+    runs
+}
+
+fn filter_worker_runs(
+    mut runs: Vec<OperatorWorkerRun>,
+    filter: &OperatorWorkerRunFilter,
+) -> Vec<OperatorWorkerRun> {
+    runs.retain(|run| {
+        filter.goal_id.is_none_or(|goal_id| run.goal_id == goal_id)
+            && filter
+                .task_id
+                .is_none_or(|task_id| run.task_id == Some(task_id))
+            && filter.status.as_ref().is_none_or(|statuses| {
+                statuses
+                    .iter()
+                    .any(|status| status.eq_ignore_ascii_case(&run.status))
+            })
+    });
+    if let Some(limit) = filter.limit {
+        runs.truncate(limit);
+    }
+    runs
+}
+
+fn operator_evidence_from_artifacts(artifacts: &[GoalArtifactRecord]) -> Vec<OperatorEvidence> {
+    let mut evidence: Vec<_> = artifacts
+        .iter()
+        .enumerate()
+        .map(|(index, artifact)| {
+            let evidence_id = if !artifact.artifact.uri.trim().is_empty() {
+                artifact.artifact.uri.clone()
+            } else if let Some(checkpoint) = &artifact.checkpoint {
+                checkpoint.id.to_string()
+            } else {
+                stable_projection_id(
+                    "evidence",
+                    &[
+                        artifact.goal_id.to_string(),
+                        artifact
+                            .task_id
+                            .map(|task_id| task_id.to_string())
+                            .unwrap_or_default(),
+                        artifact.created_at.clone().unwrap_or_default(),
+                        artifact.artifact.description.clone(),
+                        index.to_string(),
+                    ],
+                )
+            };
+            OperatorEvidence {
+                evidence_id,
+                goal_id: artifact.goal_id,
+                task_id: artifact.task_id,
+                title: artifact
+                    .checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.label.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| artifact.artifact.description.clone()),
+                uri: Some(artifact.artifact.uri.clone()).filter(|value| !value.trim().is_empty()),
+                checkpoint: artifact.checkpoint.clone(),
+                created_at: artifact.created_at.clone(),
+                payload_json: serde_json::to_value(artifact)
+                    .unwrap_or_else(|_| serde_json::json!({})),
+            }
+        })
+        .collect();
+    evidence.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| left.goal_id.cmp(&right.goal_id))
+            .then_with(|| left.evidence_id.cmp(&right.evidence_id))
+    });
+    evidence
+}
+
+fn filter_operator_evidence(
+    mut evidence: Vec<OperatorEvidence>,
+    filter: &OperatorEvidenceFilter,
+) -> Vec<OperatorEvidence> {
+    evidence.retain(|item| {
+        filter.goal_id.is_none_or(|goal_id| item.goal_id == goal_id)
+            && filter
+                .task_id
+                .is_none_or(|task_id| item.task_id == Some(task_id))
+    });
+    if let Some(limit) = filter.limit {
+        evidence.truncate(limit);
+    }
+    evidence
+}
+
+fn worker_kind_from_payload(payload: &serde_json::Value) -> Option<WorkerKind> {
+    [
+        &["worker"][..],
+        &["worker_kind"][..],
+        &["role"][..],
+        &["result", "worker"][..],
+        &["result", "role"][..],
+    ]
+    .into_iter()
+    .filter_map(|path| json_string_at(payload, path))
+    .find_map(|value| serde_json::from_value(serde_json::Value::String(value)).ok())
+}
+
+fn json_uuid_at(value: &serde_json::Value, path: &[&str]) -> Option<Uuid> {
+    json_string_at(value, path).and_then(|value| Uuid::parse_str(&value).ok())
+}
+
+fn json_string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    match current {
+        serde_json::Value::String(value) => {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn stable_projection_id(prefix: &str, parts: &[String]) -> String {
+    let body = parts
+        .iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(":")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '-') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .take(160)
+        .collect::<String>();
+    format!(
+        "{prefix}:{}",
+        if body.is_empty() { "unknown" } else { &body }
+    )
 }
 
 fn chat_turn_from_request(request: ChatTurnAppendRequest) -> Result<ChatTurnRecord, ApiError> {
@@ -2303,6 +2714,16 @@ async fn list_artifacts_postgres(
         .collect()
 }
 
+async fn list_artifacts_postgres_all(pool: &PgPool) -> anyhow::Result<Vec<GoalArtifactRecord>> {
+    let rows = sqlx::query("SELECT record_json FROM coat.artifacts ORDER BY recorded_at")
+        .fetch_all(pool)
+        .await
+        .context("query all artifacts")?;
+    rows.into_iter()
+        .map(|row| decode_record(row.try_get("record_json")?, "artifact"))
+        .collect()
+}
+
 async fn upsert_draft_postgres(pool: &PgPool, draft: &GoalDraftRecord) -> anyhow::Result<()> {
     let mut tx = pool.begin().await.context("begin draft transaction")?;
     sqlx::query(
@@ -2518,6 +2939,7 @@ fn action_from_task(task: &TaskRecord) -> OperatorAction {
                 OperatorActionResolutionKind::Answer,
                 OperatorActionResolutionKind::AddContext,
                 OperatorActionResolutionKind::Replan,
+                OperatorActionResolutionKind::CreateThunk,
                 OperatorActionResolutionKind::CancelGoal,
             ],
         ),
@@ -2538,6 +2960,7 @@ fn action_from_task(task: &TaskRecord) -> OperatorAction {
             vec![
                 OperatorActionResolutionKind::Retry,
                 OperatorActionResolutionKind::Replan,
+                OperatorActionResolutionKind::CreateThunk,
                 OperatorActionResolutionKind::CancelGoal,
             ],
         ),
@@ -2548,6 +2971,7 @@ fn action_from_task(task: &TaskRecord) -> OperatorAction {
             vec![
                 OperatorActionResolutionKind::Retry,
                 OperatorActionResolutionKind::Replan,
+                OperatorActionResolutionKind::CreateThunk,
                 OperatorActionResolutionKind::CancelGoal,
             ],
         ),
@@ -2656,6 +3080,33 @@ fn action_kind_for_operator_transition(
     }
 }
 
+fn action_matches_resolution_event(
+    action: &OperatorAction,
+    event: &DurableEventEnvelope,
+    kind: Option<&OperatorActionKind>,
+) -> bool {
+    if let Some(kind) = kind {
+        if &action.kind != kind {
+            return false;
+        }
+    }
+    match kind {
+        Some(OperatorActionKind::AcceptDraft) => json_uuid_at(&event.payload_json, &["draft_id"])
+            .is_none_or(|draft_id| {
+                json_uuid_at(&action.payload_json, &["draft_id"]) == Some(draft_id)
+            }),
+        Some(OperatorActionKind::ResolveApproval) => {
+            json_uuid_at(&event.payload_json, &["approval_id"]).is_none_or(|approval_id| {
+                action
+                    .approval
+                    .as_ref()
+                    .is_some_and(|approval| approval.approval_id == approval_id)
+            })
+        }
+        _ => true,
+    }
+}
+
 impl GoalStore {
     fn apply_snapshot(&mut self, snapshot: GoalStoreSnapshot) {
         let goal_id = snapshot.goal.goal_id;
@@ -2756,6 +3207,7 @@ impl GoalStore {
         }
     }
 
+    #[cfg(test)]
     fn rebuild_action_queue(&mut self) {
         self.actions.clear();
         let goal_ids: Vec<_> = self.snapshots.keys().copied().collect();
@@ -2785,7 +3237,7 @@ impl GoalStore {
                     .actor
                     .task_id
                     .is_none_or(|task_id| action.task_id == Some(task_id))
-                && kind.as_ref().is_none_or(|kind| &action.kind == kind)
+                && action_matches_resolution_event(action, event, kind.as_ref())
                 && matches!(action.status.as_str(), "pending" | "open")
             {
                 action.status = status.to_string();
@@ -2862,18 +3314,42 @@ mod tests {
         DurableEventEnvelope, EventSourceApprovalRecord, EventSourceApprovalStatus,
         EventSourceKind, GoalEventKind, GoalEventRecord, GoalSpec, GoalState,
         GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest, OperatorActionKind,
-        OperatorActorRef, OperatorEventAppendRequest, OperatorTransition,
+        OperatorActorKind, OperatorActorRef, OperatorEventAppendRequest, OperatorTransition,
         PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest,
-        PlanDraftRequest, ProtocolMetadata, TaskStatus,
+        PlanDraftRequest, ProtocolMetadata, TaskStatus, WorkerKind,
     };
     use tokio::sync::RwLock;
 
     use super::{
-        AppState, ChatTurnAppendRequest, GoalStore, GoalStoreBackend, OperatorActionFilter,
-        OperatorEventFilter, append_chat_turn, append_operator_event, checkpoints_from_artifacts,
-        filter_actions, filter_operator_events, get_chat_session, select_plan_candidate,
-        upsert_plan_record, vote_plan_candidate,
+        AppState, ChatTurnAppendRequest, GoalDraftRecord, GoalStore, GoalStoreBackend,
+        OperatorActionFilter, OperatorEventFilter, OperatorEvidenceFilter, OperatorWorkerRunFilter,
+        append_chat_turn, append_operator_event, checkpoints_from_artifacts, filter_actions,
+        filter_operator_events, filter_operator_evidence, filter_worker_runs, get_chat_session,
+        operator_evidence_from_artifacts, operator_timeline_from_events,
+        operator_worker_runs_from_events_and_tasks, select_plan_candidate, upsert_plan_record,
+        vote_plan_candidate,
     };
+
+    fn test_operator_event(
+        actor: OperatorActorRef,
+        transition: OperatorTransition,
+        key: &str,
+        created_at: &str,
+        payload_json: serde_json::Value,
+    ) -> DurableEventEnvelope {
+        DurableEventEnvelope {
+            event_id: uuid::Uuid::new_v4(),
+            event_type: transition.event_type().to_string(),
+            actor,
+            transition,
+            idempotency_key: key.to_string(),
+            causation_id: None,
+            correlation_id: None,
+            restate_invocation_id: None,
+            created_at: created_at.to_string(),
+            payload_json,
+        }
+    }
 
     #[test]
     fn snapshot_indexes_goal_tasks_and_events() {
@@ -2934,6 +3410,256 @@ mod tests {
         assert_eq!(actions[0].kind, OperatorActionKind::ResolveApproval);
         assert_eq!(actions[0].task_id, Some(task_id));
         assert!(actions[0].question.contains("continue sandbox command"));
+    }
+
+    #[test]
+    fn action_queue_keeps_drafts_and_waiting_tasks_independently_resolvable() {
+        let state = GoalState::new(GoalSpec::new(
+            "Independent action states",
+            "Keep drafts and waiting tasks visible until their own durable transition resolves them",
+        ));
+        let mut request = GoalStoreSnapshotUpsertRequest::from_state(&state, "waiting_projection");
+        let goal_id = request.snapshot.goal.goal_id;
+        let task_id = request.snapshot.tasks[0].task_id;
+        request.snapshot.tasks[0].status = TaskStatus::WaitingInput;
+        let draft_id = uuid::Uuid::new_v4();
+        let other_draft_id = uuid::Uuid::new_v4();
+        let mut store = GoalStore::default();
+
+        store.apply_snapshot(request.snapshot);
+        store.apply_draft(GoalDraftRecord {
+            draft_id,
+            idempotency_key: Some("draft:independent-action".to_string()),
+            session_id: Some("operator:goal".to_string()),
+            plan_id: None,
+            goal_id: Some(goal_id),
+            title: "Operator-authored draft".to_string(),
+            objective: "Exercise draft action projection.".to_string(),
+            status: "draft".to_string(),
+            created_at: Some("2026-05-14T12:00:00Z".to_string()),
+            updated_at: Some("2026-05-14T12:00:00Z".to_string()),
+            payload_json: serde_json::json!({"source": "test"}),
+        });
+        store.apply_draft(GoalDraftRecord {
+            draft_id: other_draft_id,
+            idempotency_key: Some("draft:independent-action:other".to_string()),
+            session_id: Some("operator:goal".to_string()),
+            plan_id: None,
+            goal_id: Some(goal_id),
+            title: "Second operator-authored draft".to_string(),
+            objective: "Keep unrelated draft actions pending.".to_string(),
+            status: "draft".to_string(),
+            created_at: Some("2026-05-14T12:00:30Z".to_string()),
+            updated_at: Some("2026-05-14T12:00:30Z".to_string()),
+            payload_json: serde_json::json!({"source": "test"}),
+        });
+
+        let pending = filter_actions(
+            store.actions.values().cloned().collect(),
+            &OperatorActionFilter {
+                goal_id: Some(goal_id),
+                kind: None,
+                status: Some(vec!["pending".to_string()]),
+                limit: None,
+            },
+        );
+        assert_eq!(pending.len(), 3);
+        assert!(
+            pending
+                .iter()
+                .any(|action| action.kind == OperatorActionKind::ResumeThunk)
+        );
+        assert!(
+            pending
+                .iter()
+                .any(|action| action.kind == OperatorActionKind::AcceptDraft)
+        );
+
+        store.apply_operator_event(test_operator_event(
+            OperatorActorRef::task(goal_id, task_id),
+            OperatorTransition::ThunkResumed,
+            "operator:task:resume:independent-action",
+            "2026-05-14T12:01:00Z",
+            serde_json::json!({"request": {"response_summary": "continue with supplied context"}}),
+        ));
+
+        let resume_action = store
+            .actions
+            .values()
+            .find(|action| action.kind == OperatorActionKind::ResumeThunk)
+            .expect("resume action remains in history");
+        let draft_action = store
+            .actions
+            .values()
+            .find(|action| {
+                action.kind == OperatorActionKind::AcceptDraft
+                    && action.payload_json["draft_id"] == serde_json::json!(draft_id)
+            })
+            .expect("draft action remains pending");
+        assert_eq!(resume_action.status, "resolved");
+        assert_eq!(draft_action.status, "pending");
+        assert!(resume_action.payload_json["resolution_event_id"].is_string());
+
+        store.apply_operator_event(test_operator_event(
+            OperatorActorRef::goal(goal_id),
+            OperatorTransition::DraftAccepted,
+            "operator:draft:accepted:independent-action",
+            "2026-05-14T12:02:00Z",
+            serde_json::json!({"draft_id": draft_id, "summary": "accepted draft"}),
+        ));
+
+        let draft_action = store
+            .actions
+            .values()
+            .find(|action| {
+                action.kind == OperatorActionKind::AcceptDraft
+                    && action.payload_json["draft_id"] == serde_json::json!(draft_id)
+            })
+            .expect("draft action remains in history");
+        assert_eq!(draft_action.status, "resolved");
+        let other_draft_action = store
+            .actions
+            .values()
+            .find(|action| {
+                action.kind == OperatorActionKind::AcceptDraft
+                    && action.payload_json["draft_id"] == serde_json::json!(other_draft_id)
+            })
+            .expect("unrelated draft action remains pending");
+        assert_eq!(other_draft_action.status, "pending");
+    }
+
+    #[test]
+    fn operator_timeline_projects_durable_events_into_readable_rows() {
+        let goal_id = uuid::Uuid::new_v4();
+        let task_id = uuid::Uuid::new_v4();
+        let events = vec![
+            test_operator_event(
+                OperatorActorRef::goal(goal_id),
+                OperatorTransition::DraftAccepted,
+                "operator:timeline:draft",
+                "2026-05-14T12:00:00Z",
+                serde_json::json!({"summary": "Operator accepted the goal draft."}),
+            ),
+            test_operator_event(
+                OperatorActorRef::task(goal_id, task_id),
+                OperatorTransition::ThunkResumed,
+                "operator:timeline:thunk",
+                "2026-05-14T12:01:00Z",
+                serde_json::json!({"request": {"answer": "Use the validated branch."}}),
+            ),
+        ];
+
+        let timeline = operator_timeline_from_events(&events);
+
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(timeline[0].title, "Draft accepted");
+        assert_eq!(timeline[0].detail, "Operator accepted the goal draft.");
+        assert_eq!(timeline[1].title, "Input provided");
+        assert_eq!(timeline[1].task_id, Some(task_id));
+        assert_eq!(timeline[1].detail, "Use the validated branch.");
+    }
+
+    #[test]
+    fn worker_run_projection_prefers_durable_run_events_and_filters_status() {
+        let state = GoalState::new(GoalSpec::new(
+            "Worker run projection",
+            "Project completed worker runs from durable operator events",
+        ));
+        let request = GoalStoreSnapshotUpsertRequest::from_state(&state, "worker_projection");
+        let task = request.snapshot.tasks[0].clone();
+        let event = test_operator_event(
+            OperatorActorRef {
+                kind: OperatorActorKind::WorkerRun,
+                id: "run-123".to_string(),
+                goal_id: Some(task.goal_id),
+                task_id: Some(task.task_id),
+            },
+            OperatorTransition::WorkerResultReceived,
+            "operator:worker:completed:run-123",
+            "2026-05-14T12:03:00Z",
+            serde_json::json!({
+                "run_id": "run-123",
+                "worker": "tester",
+                "status": "done",
+                "summary": "cargo test -p coat-goal-store passed",
+                "started_at": "2026-05-14T12:02:00Z",
+                "finished_at": "2026-05-14T12:03:00Z"
+            }),
+        );
+
+        let runs = operator_worker_runs_from_events_and_tasks(&[event], &[task.clone()]);
+        let done_runs = filter_worker_runs(
+            runs.clone(),
+            &OperatorWorkerRunFilter {
+                goal_id: Some(task.goal_id),
+                task_id: Some(task.task_id),
+                status: Some(vec!["done".to_string()]),
+                limit: None,
+            },
+        );
+
+        assert_eq!(done_runs.len(), 1);
+        assert_eq!(done_runs[0].run_id, "run-123");
+        assert_eq!(done_runs[0].worker, WorkerKind::Tester);
+        assert_eq!(done_runs[0].summary, "cargo test -p coat-goal-store passed");
+        assert!(
+            runs.iter()
+                .any(|run| run.run_id == format!("task-run:{}", task.task_id)),
+            "task fallback remains available for operator status views"
+        );
+    }
+
+    #[test]
+    fn evidence_projection_indexes_artifacts_and_checkpoints_by_task() {
+        let state = GoalState::new(GoalSpec::new(
+            "Evidence projection",
+            "Project artifacts and checkpoints into operator evidence",
+        ));
+        let task = state.tasks.values().next().expect("root task");
+        let checkpoint = CheckpointRef::metadata_for_task(
+            task,
+            "after-validation",
+            "checkpoint after validator accepted evidence",
+        );
+        let request = GoalStoreArtifactRecordRequest {
+            metadata: ProtocolMetadata::new(format!("goal:{}:evidence:test", task.goal_id)),
+            goal_id: task.goal_id,
+            task_id: Some(task.id),
+            artifacts: vec![ArtifactRef {
+                kind: ArtifactKind::Report,
+                uri: "s3://jattg/evidence/report.json".to_string(),
+                description: "validator evidence report".to_string(),
+                sha256: Some("def456".to_string()),
+            }],
+            git_results: Vec::new(),
+            object_artifacts: Vec::new(),
+            checkpoints: vec![checkpoint.clone()],
+        };
+        let mut records = request.into_records();
+        records[0].created_at = Some("2026-05-14T12:03:00Z".to_string());
+        records[1].created_at = Some("2026-05-14T12:04:00Z".to_string());
+
+        let evidence = operator_evidence_from_artifacts(&records);
+        let filtered = filter_operator_evidence(
+            evidence.clone(),
+            &OperatorEvidenceFilter {
+                goal_id: Some(task.goal_id),
+                task_id: Some(task.id),
+                limit: None,
+            },
+        );
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(
+            filtered[0].checkpoint.as_ref().map(|item| &item.id),
+            Some(&checkpoint.id)
+        );
+        assert_eq!(filtered[0].title, "after-validation");
+        assert_eq!(
+            filtered[1].uri.as_deref(),
+            Some("s3://jattg/evidence/report.json")
+        );
+        assert_eq!(filtered[1].title, "validator evidence report");
     }
 
     #[test]

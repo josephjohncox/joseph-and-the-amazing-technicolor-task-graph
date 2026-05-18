@@ -784,7 +784,7 @@ label {
 
 .mode-toggle {
   display: grid;
-  grid-template-columns: repeat(3, minmax(86px, 1fr));
+  grid-template-columns: repeat(4, minmax(72px, 1fr));
   gap: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -816,12 +816,13 @@ label {
   padding: 9px 10px;
 }
 
-.draft-mode-hint strong {
-  color: var(--text);
+.draft-mode-hint span {
+  flex: 1 1 220px;
+  color: var(--muted);
 }
 
-.draft-mode-hint span {
-  color: var(--muted);
+.draft-mode-hint strong {
+  color: var(--text);
 }
 
 .mode-option {
@@ -1322,6 +1323,7 @@ label {
 
 .goal-card-header,
 .approval-card,
+.queue-history-card,
 .action-result-card {
   display: flex;
   justify-content: space-between;
@@ -1329,12 +1331,14 @@ label {
 }
 
 .approval-card,
+.queue-history-card,
 .action-result-card {
   align-items: center;
   flex-wrap: wrap;
 }
 
 .approval-card > div:first-child,
+.queue-history-card > div:first-child,
 .action-result-card > div:first-child {
   display: grid;
   min-width: 0;
@@ -2210,6 +2214,7 @@ th {
 }
 
 .approval-card,
+.queue-history-card,
 .result-list li,
 .compact-list li {
   border: 1px solid var(--line);

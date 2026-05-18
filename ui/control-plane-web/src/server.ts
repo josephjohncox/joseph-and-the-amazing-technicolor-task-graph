@@ -549,7 +549,7 @@ function stringField(record: JsonMap, key: string): string {
 
 async function composedGoalSnapshot(goalId: string): Promise<JsonMap> {
   const encodedGoalId = encodeURIComponent(goalId);
-  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph, humanThreads, goalChatSession] = await Promise.all([
+  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph, humanThreads, goalChatSession, operatorActions, operatorTimeline, operatorWorkerRunsResult, operatorEvidenceResult] = await Promise.all([
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/tasks`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/events`, { method: "GET" }),
@@ -561,6 +561,10 @@ async function composedGoalSnapshot(goalId: string): Promise<JsonMap> {
     workflowReadPost(goalId, "compute_graph", {}),
     proxyJson(notifierUrl, "/threads", { method: "GET" }),
     chatSession(`goal:${goalId}`),
+    proxyJson(goalStoreUrl, goalStoreActionsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTimelinePath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreWorkerRunsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreEvidencePath(goalId), { method: "GET" }),
   ]);
   const agentActivity = buildAgentActivity(tasks.data, progress.data, events.data, artifacts.data);
   const agentContext = buildAgentContext(goalId, agentActivity, goalChatSession, humanThreads.data);
@@ -578,6 +582,10 @@ async function composedGoalSnapshot(goalId: string): Promise<JsonMap> {
     approvals,
     human_threads: humanThreads,
     chat_session: goalChatSession,
+    operator_actions: operatorActions,
+    operator_timeline: operatorTimeline,
+    operator_worker_runs: operatorWorkerRunsResult,
+    operator_evidence: operatorEvidenceResult,
     agent_activity: agentActivity,
     agent_context: agentContext,
   };
@@ -592,21 +600,32 @@ async function operatorWorkspace(
   if (eventFilter.eventType) operatorEventParams.set("event_type", eventFilter.eventType);
   if (eventFilter.since) operatorEventParams.set("since", eventFilter.since);
   const operatorEventPath = `/goal-store/operator-events?${operatorEventParams.toString()}`;
-  const [backendProjectionResult, goalsResult, approvalsResult, tasksResult, operatorEventsResult, runnersResult, selectedGoal] = await Promise.all([
+  const [backendProjectionResult, goalsResult, approvalsResult, tasksResult, actionQueueResult, operatorEventsResult, timelineResult, workerRunsResult, evidenceResult, runnersResult, selectedGoal] = await Promise.all([
     backendProjection(),
     proxyJson(goalStoreUrl, "/goal-store/goals?limit=100", { method: "GET" }),
-    proxyJson(goalStoreUrl, "/goal-store/approvals?limit=100", { method: "GET" }),
-    proxyJson(goalStoreUrl, "/goal-store/tasks?limit=200", { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreApprovalsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTasksPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreActionsPath(goalId), { method: "GET" }),
     proxyJson(goalStoreUrl, operatorEventPath, { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTimelinePath(goalId, 100, eventFilter.eventType, eventFilter.since), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreWorkerRunsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreEvidencePath(goalId), { method: "GET" }),
     runnerStatus(),
     goalId ? composedGoalSnapshot(goalId) : Promise.resolve(null),
   ]);
   const goalRows = rowsFromProxyResult(goalsResult, "goals");
-  const taskRows = rowsFromProxyResult(tasksResult, "tasks");
-  const approvalRows = rowsFromProxyResult(approvalsResult, "approvals");
-  const selectedGoalId = goalId ?? firstGoalId(goalRows);
-  const selectedSnapshot = selectedGoal ?? (selectedGoalId ? await composedGoalSnapshot(selectedGoalId) : null);
-  const actions = operatorActionsFromRows(approvalRows, taskRows, selectedSnapshot);
+  const taskRows = filterRowsByGoalId(rowsFromProxyResult(tasksResult, "tasks"), goalId);
+  const approvalRows = filterRowsByGoalId(rowsFromProxyResult(approvalsResult, "approvals"), goalId);
+  const selectedGoalId = goalId ?? null;
+  const selectedSnapshot = selectedGoal;
+  const actions = mergeOperatorRows(
+    filterRowsByGoalId(rowsFromProxyResult(actionQueueResult, "actions"), goalId).map(normalizeOperatorAction),
+    operatorActionsFromRows(approvalRows, taskRows, selectedSnapshot),
+    "action_id",
+  ).map(ensureOperatorActionRecovery);
+  const durableEvents = filterRowsByGoalId(rowsFromProxyResult(timelineResult, "events").map(normalizeOperatorEvent), goalId);
+  const projectedWorkerRuns = filterRowsByGoalId(rowsFromProxyResult(workerRunsResult, "worker_runs").map(normalizeOperatorWorkerRun), goalId);
+  const projectedEvidence = filterRowsByGoalId(rowsFromProxyResult(evidenceResult, "evidence").map(normalizeOperatorEvidence), goalId);
   return {
     generated_at: new Date().toISOString(),
     selected_goal_id: selectedGoalId,
@@ -614,13 +633,13 @@ async function operatorWorkspace(
     selected_goal: selectedSnapshot ? operatorGoalDetail(selectedSnapshot) : null,
     actions,
     events: [
-      ...operatorEventsFromDurableEvents(operatorEventsResult.data),
-      ...operatorEventsFromBackendProjection(backendProjectionResult),
+      ...(durableEvents.length ? durableEvents : filterRowsByGoalId(operatorEventsFromDurableEvents(operatorEventsResult.data), goalId)),
+      ...(goalId ? [] : operatorEventsFromBackendProjection(backendProjectionResult)),
     ],
     event_sources: backendProjectionResult.event_sources ?? null,
     human_threads: backendProjectionResult.human_threads ?? null,
-    worker_runs: operatorWorkerRuns(taskRows),
-    evidence: selectedSnapshot ? operatorEvidenceFromSnapshot(selectedSnapshot) : [],
+    worker_runs: projectedWorkerRuns.length ? projectedWorkerRuns : operatorWorkerRuns(taskRows),
+    evidence: projectedEvidence.length ? projectedEvidence : selectedSnapshot ? operatorEvidenceFromSnapshot(selectedSnapshot) : [],
     services: backendProjectionResult.services ?? [],
     runners: runnersResult,
     config: operatorGatewayConfig(),
@@ -649,8 +668,48 @@ async function operatorGoalGraph(goalId: string): Promise<JsonMap> {
     goal_id: goalId,
     graph,
     tasks: arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks"),
-    actions: operatorActionsFromRows([], [], snapshot),
+    actions: operatorActionsFromSnapshot(snapshot).map(ensureOperatorActionRecovery),
   };
+}
+
+function goalStoreQueryPath(path: string, params: Record<string, string | number | null | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && String(value).trim()) {
+      search.set(key, String(value));
+    }
+  }
+  const suffix = search.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
+function goalStoreActionsPath(goalId?: string | null, limit = 200): string {
+  return goalStoreQueryPath("/goal-store/actions", { limit, goal_id: goalId });
+}
+
+function goalStoreApprovalsPath(goalId?: string | null, limit = 100): string {
+  return goalStoreQueryPath("/goal-store/approvals", { limit, goal_id: goalId });
+}
+
+function goalStoreTasksPath(goalId?: string | null, limit = 200): string {
+  return goalStoreQueryPath("/goal-store/tasks", { limit, goal_id: goalId });
+}
+
+function goalStoreTimelinePath(goalId?: string | null, limit = 100, eventType?: string | null, since?: string | null): string {
+  return goalStoreQueryPath("/goal-store/operator-timeline", {
+    limit,
+    goal_id: goalId,
+    event_type: eventType,
+    since,
+  });
+}
+
+function goalStoreWorkerRunsPath(goalId?: string | null, limit = 100): string {
+  return goalStoreQueryPath("/goal-store/operator-worker-runs", { limit, goal_id: goalId });
+}
+
+function goalStoreEvidencePath(goalId?: string | null, limit = 100): string {
+  return goalStoreQueryPath("/goal-store/operator-evidence", { limit, goal_id: goalId });
 }
 
 async function submitOperatorGoalSpec(input: unknown, causationId = "operator_goal_submit"): Promise<JsonMap> {
@@ -798,17 +857,21 @@ async function appendOperatorEvent(input: {
 }
 
 function transitionForResolvedAction(kind: string, resolution: string): string {
+  if (resolution === "accept_draft") return "draft_accepted";
   if (resolution === "approve" || resolution === "reject") return "approval_resolved";
+  if (resolution === "create_thunk") return "thunk_created";
   if (kind === "thunk" && ["continue", "answer", "add_context"].includes(resolution)) return "thunk_resumed";
   if (resolution === "cancel_goal" || kind === "cancel") return "goal_cancelled";
   return "goal_steered";
 }
 
 function defaultResolutionForActionKind(kind: string): string {
-  if (kind === "approval") return "approve";
-  if (kind === "thunk") return "continue";
-  if (kind === "task") return "retry";
-  if (kind === "cancel") return "cancel_goal";
+  const actionKind = actionResolutionKind(kind);
+  if (actionKind === "approval") return "approve";
+  if (actionKind === "thunk") return "continue";
+  if (actionKind === "draft") return "accept_draft";
+  if (actionKind === "task") return "retry";
+  if (actionKind === "cancel") return "cancel_goal";
   return "continue";
 }
 
@@ -839,18 +902,34 @@ function actorForResolvedAction(parsed: { kind: string; goalId: string; targetId
 }
 
 async function operatorActionList(goalId?: string | null): Promise<JsonMap> {
-  const [approvalsResult, tasksResult, selectedGoal] = await Promise.all([
-    proxyJson(goalStoreUrl, `/goal-store/approvals?limit=100${goalId ? `&goal_id=${encodeURIComponent(goalId)}` : ""}`, { method: "GET" }),
-    proxyJson(goalStoreUrl, `/goal-store/tasks?limit=200${goalId ? `&goal_id=${encodeURIComponent(goalId)}` : ""}`, { method: "GET" }),
+  const [actionQueueResult, approvalsResult, tasksResult, selectedGoal] = await Promise.all([
+    proxyJson(goalStoreUrl, goalStoreActionsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreApprovalsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTasksPath(goalId), { method: "GET" }),
     goalId ? composedGoalSnapshot(goalId) : Promise.resolve(null),
   ]);
+  const projected = filterRowsByGoalId(rowsFromProxyResult(actionQueueResult, "actions"), goalId).map(normalizeOperatorAction);
+  const fallback = operatorActionsFromRows(
+    filterRowsByGoalId(rowsFromProxyResult(approvalsResult, "approvals"), goalId),
+    filterRowsByGoalId(rowsFromProxyResult(tasksResult, "tasks"), goalId),
+    selectedGoal,
+  );
   return {
     generated_at: new Date().toISOString(),
-    actions: operatorActionsFromRows(
-      rowsFromProxyResult(approvalsResult, "approvals"),
-      rowsFromProxyResult(tasksResult, "tasks"),
-      selectedGoal,
-    ),
+    actions: mergeOperatorRows(projected, fallback, "action_id").map(ensureOperatorActionRecovery),
+    source: {
+      action_queue: compactProxySource(actionQueueResult),
+      fallback_approvals: compactProxySource(approvalsResult),
+      fallback_tasks: compactProxySource(tasksResult),
+    },
+  };
+}
+
+function compactProxySource(result: ProxyResult): JsonMap {
+  return {
+    ok: result.ok,
+    status: result.status,
+    url: result.url,
   };
 }
 
@@ -872,30 +951,312 @@ function rowsFromProxyResult(result: ProxyResult, key: string): JsonMap[] {
   return nestedRows.map(asRecord);
 }
 
+function filterRowsByGoalId(rows: JsonMap[], goalId?: string | null): JsonMap[] {
+  const expectedGoalId = String(goalId ?? "").trim();
+  if (!expectedGoalId) {
+    return rows;
+  }
+  return rows.filter((row) => rowGoalId(row) === expectedGoalId);
+}
+
+function rowGoalId(row: JsonMap): string {
+  const payload = asRecord(row.payload_json);
+  const actor = asRecord(row.actor);
+  return String(row.goal_id ?? payload.goal_id ?? actor.goal_id ?? "").trim();
+}
+
+function mergeOperatorRows(primary: JsonMap[], fallback: JsonMap[], idKey: string): JsonMap[] {
+  const merged = new Map<string, JsonMap>();
+  for (const row of primary.concat(fallback)) {
+    const id = String(row[idKey] ?? stableValueDigest(row));
+    if (!merged.has(id)) {
+      merged.set(id, row);
+    }
+  }
+  return [...merged.values()];
+}
+
+function normalizeOperatorAction(row: JsonMap): JsonMap {
+  const kind = normalizeOperatorActionKind(row.kind);
+  const goalId = String(row.goal_id ?? "").trim();
+  const taskId = String(row.task_id ?? "").trim();
+  const approval = asRecord(row.approval);
+  const thunk = asRecord(row.thunk);
+  const payload = asRecord(row.payload_json);
+  const approvalId = String(row.approval_id ?? approval.approval_id ?? payload.approval_id ?? "").trim();
+  const thunkId = String(row.thunk_id ?? thunk.id ?? thunk.thunk_id ?? payload.thunk_id ?? "").trim();
+  const draftId = String(payload.draft_id ?? row.draft_id ?? "").trim();
+  const sourceActionId = String(row.action_id ?? "").trim();
+  const status = String(row.status ?? payload.task_status ?? "").trim();
+  const allowedResolutions = actionableOperatorResolutions(
+    kind,
+    status,
+    normalizeOperatorResolutions(arrayField(row, "allowed_resolutions")),
+  );
+  return {
+    ...row,
+    kind,
+    action_id: normalizedOperatorActionId(kind, goalId, taskId, approvalId, thunkId, draftId, sourceActionId),
+    source_action_id: sourceActionId || undefined,
+    goal_id: goalId || row.goal_id,
+    task_id: taskId || row.task_id || null,
+    status: row.status ?? "pending",
+    approval: approvalId && !Object.keys(approval).length ? { approval_id: approvalId, goal_id: goalId || row.goal_id, task_id: taskId || row.task_id || null } : row.approval,
+    thunk: thunkId && !Object.keys(thunk).length ? { thunk_id: thunkId, goal_id: goalId || row.goal_id, task_id: taskId || row.task_id || null } : row.thunk,
+    allowed_resolutions: allowedResolutions,
+    recovery: operatorActionRowRecovery(row, kind, status, allowedResolutions),
+    payload_json: row.payload_json ?? {},
+  };
+}
+
+function operatorActionRowRecovery(row: JsonMap, kind: string, status: string, allowedResolutions: string[]): JsonMap {
+  const existing = asRecord(row.recovery);
+  if (Object.keys(existing).length) {
+    return existing;
+  }
+  const targetKind = actionResolutionKind(kind);
+  const suggested = allowedResolutions.length ? allowedResolutions : recoveryResolutionsFor(targetKind, "");
+  return compactRecord({
+    reason: "operator_action_available",
+    message: "This action-needed row can move forward through one of the listed coordinator actions.",
+    target_kind: targetKind || kind || null,
+    target_id: row.task_id ?? row.approval_id ?? row.thunk_id ?? null,
+    status: status || String(row.status ?? "pending"),
+    suggested_resolutions: suggested,
+    actions: ["refresh_actions", "inspect_actor", ...suggested],
+  });
+}
+
+function ensureOperatorActionRecovery(row: JsonMap): JsonMap {
+  if (Object.keys(asRecord(row.recovery)).length) {
+    return row;
+  }
+  const kind = normalizeOperatorActionKind(row.kind);
+  const payload = asRecord(row.payload_json);
+  const status = String(row.status ?? payload.task_status ?? "").trim();
+  const allowedResolutions = actionableOperatorResolutions(
+    kind,
+    status,
+    normalizeOperatorResolutions(arrayField(row, "allowed_resolutions")),
+  );
+  return {
+    ...row,
+    allowed_resolutions: allowedResolutions,
+    recovery: operatorActionRowRecovery(row, kind, status, allowedResolutions),
+  };
+}
+
+function normalizeOperatorActionKind(value: unknown): string {
+  const token = statusToken(value);
+  if (token === "accept-draft") return "accept_draft";
+  if (token === "resume-thunk") return "resume_thunk";
+  if (token === "resolve-approval") return "resolve_approval";
+  if (token === "restart-task") return "restart_task";
+  if (token === "replan-task") return "replan_task";
+  if (token === "select-branch") return "select_branch";
+  if (token === "cancel-goal") return "cancel_goal";
+  return token.replaceAll("-", "_") || "continue";
+}
+
+function normalizeOperatorResolutions(values: unknown[]): string[] {
+  return values
+    .map((value) => statusToken(value).replaceAll("-", "_"))
+    .filter(Boolean);
+}
+
+function actionableOperatorResolutions(kind: string, status: string, resolutions: string[]): string[] {
+  const ordered = [...resolutions];
+  const statusKey = statusToken(status).replaceAll("-", "_");
+  const ensure = (value: string) => {
+    if (!ordered.includes(value)) ordered.push(value);
+  };
+  if (["restart_task", "replan_task", "task"].includes(kind) || ["blocked", "failed", "waiting_input", "waiting_approval"].includes(statusKey)) {
+    ensure("retry");
+    ensure("replan");
+    ensure("create_thunk");
+    ensure("cancel_goal");
+  }
+  if (kind === "resume_thunk" || kind === "thunk" || statusKey === "waiting_input") {
+    ensure("continue");
+    ensure("answer");
+    ensure("add_context");
+  }
+  if (kind === "resolve_approval" || kind === "approval" || statusKey === "waiting_approval") {
+    ensure("approve");
+    ensure("reject");
+    ensure("add_context");
+    ensure("cancel_goal");
+  }
+  return ordered;
+}
+
+function normalizedOperatorActionId(
+  kind: string,
+  goalId: string,
+  taskId: string,
+  approvalId: string,
+  thunkId: string,
+  draftId: string,
+  sourceActionId: string,
+): string {
+  if (goalId && approvalId && kind === "resolve_approval") {
+    return `approval:${goalId}:${approvalId}`;
+  }
+  if (goalId && thunkId && kind === "resume_thunk") {
+    return `thunk:${goalId}:${thunkId}`;
+  }
+  if (goalId && draftId && kind === "accept_draft") {
+    return `draft:${goalId}:${draftId}`;
+  }
+  if (goalId && taskId) {
+    return `task:${goalId}:${taskId}`;
+  }
+  return sourceActionId || stableProjectionId("action", [kind, goalId, taskId, approvalId, thunkId, draftId]);
+}
+
+function normalizeOperatorEvent(row: JsonMap): JsonMap {
+  return {
+    ...row,
+    event_id: String(row.event_id ?? stableProjectionId("operator-event", [
+      row.event_type,
+      row.goal_id,
+      row.task_id,
+      row.created_at,
+      row.title,
+    ])),
+    event_type: String(row.event_type ?? "event"),
+    goal_id: row.goal_id ?? null,
+    task_id: row.task_id ?? null,
+    title: String(row.title ?? row.event_type ?? "Event"),
+    detail: String(row.detail ?? ""),
+    created_at: row.created_at ?? null,
+    payload_json: row.payload_json ?? row,
+  };
+}
+
+function normalizeOperatorWorkerRun(row: JsonMap): JsonMap {
+  return {
+    ...row,
+    run_id: String(row.run_id ?? stableProjectionId("worker-run", [
+      row.goal_id,
+      row.task_id,
+      row.worker,
+      row.status,
+    ])),
+    goal_id: row.goal_id ?? null,
+    task_id: row.task_id ?? null,
+    worker: row.worker ?? "planner",
+    status: row.status ?? "unknown",
+    summary: row.summary ?? "",
+    payload_json: row.payload_json ?? row,
+  };
+}
+
+function normalizeOperatorEvidence(row: JsonMap): JsonMap {
+  return {
+    ...row,
+    evidence_id: String(row.evidence_id ?? row.uri ?? stableProjectionId("evidence", [
+      row.goal_id,
+      row.task_id,
+      row.created_at,
+      row.title,
+    ])),
+    goal_id: row.goal_id ?? null,
+    task_id: row.task_id ?? null,
+    title: String(row.title ?? "Evidence"),
+    uri: row.uri ?? null,
+    created_at: row.created_at ?? null,
+    payload_json: row.payload_json ?? row,
+  };
+}
+
 async function resolveOperatorAction(actionId: string, body: unknown): Promise<JsonMap> {
   const record = asRecord(body);
   const parsed = parseOperatorActionId(actionId);
   const goalId = String(record.goal_id ?? parsed.goalId ?? "");
   if (!goalId) {
-    return { ok: false, error: "goal_id is required to resolve an operator action", action_id: actionId };
+    return {
+      ok: false,
+      status: 400,
+      error: "goal_id is required to resolve an operator action",
+      action_id: actionId,
+      recovery: {
+        actions: ["select_goal", "refresh_actions"],
+      },
+    };
   }
-  const resolution = String(record.resolution ?? record.intent ?? defaultResolutionForActionKind(parsed.kind)).trim().toLowerCase();
+  const resolution = normalizeOperatorResolution(record.resolution ?? record.intent ?? defaultResolutionForActionKind(parsed.kind));
+  if (!isValidOperatorActionResolution(parsed.kind, resolution)) {
+    return invalidOperatorActionResolution(actionId, goalId, parsed, resolution);
+  }
   const responseSummary = String(record.response_summary ?? record.answer ?? record.context ?? "Operator resolved the action.").trim();
   let result: JsonMap;
   if (resolution === "approve" || resolution === "reject") {
     const approvalId = String(record.approval_id ?? parsed.targetId ?? "");
     if (!approvalId) {
-      return { ok: false, error: "approval_id is required for approval resolution", action_id: actionId, goal_id: goalId };
+      return {
+        ok: false,
+        status: 400,
+        error: "approval_id is required for approval resolution",
+        action_id: actionId,
+        goal_id: goalId,
+        recovery: {
+          actions: ["refresh_actions", "choose_approval"],
+        },
+      };
     }
     result = await workflowMutationEnvelope(goalId, "approve", {
       approval_id: approvalId,
       approved: resolution !== "reject",
       note: responseSummary,
     });
+  } else if (resolution === "accept_draft" || resolution === "discard_draft") {
+    const draftId = String(record.draft_id ?? asRecord(record.payload_json).draft_id ?? parsed.targetId ?? "").trim();
+    if (!draftId) {
+      return {
+        ok: false,
+        status: 400,
+        error: "draft_id is required for draft actions",
+        action_id: actionId,
+        goal_id: goalId,
+        recovery: {
+          actions: ["refresh_actions", "choose_draft"],
+        },
+      };
+    }
+    if (resolution === "discard_draft") {
+      markChatDraftDiscarded(draftId);
+      result = {
+        ok: true,
+        status: 200,
+        data: {
+          handler: "discard_draft",
+          draft_id: draftId,
+          discarded: true,
+        },
+      };
+    } else {
+      result = await submitOperatorGoalSpec(
+        {
+          ...record,
+          draft_id: draftId,
+        },
+        "operator_action_accept_draft",
+      );
+    }
   } else if (parsed.kind === "thunk" && ["continue", "answer", "add_context"].includes(resolution)) {
     const thunkId = String(record.thunk_id ?? parsed.targetId ?? "");
     if (!thunkId) {
-      return { ok: false, error: "thunk_id is required for continuation resume", action_id: actionId, goal_id: goalId };
+      return {
+        ok: false,
+        status: 400,
+        error: "thunk_id is required for continuation resume",
+        action_id: actionId,
+        goal_id: goalId,
+        recovery: {
+          actions: ["refresh_actions", "choose_continuation"],
+        },
+      };
     }
     result = await workflowMutationEnvelope(goalId, "resume_thunk", {
       thunk_id: thunkId,
@@ -935,6 +1296,9 @@ async function resolveOperatorAction(actionId: string, body: unknown): Promise<J
         },
       },
     });
+  } else if (resolution === "create_thunk") {
+    const taskId = String(record.task_id ?? parsed.targetId ?? "").trim();
+    result = await workflowMutationEnvelope(goalId, "create_thunk", createRecoveryThunkRequest(goalId, taskId, actionId, responseSummary));
   } else {
     result = await workflowMutationEnvelope(goalId, "restart", {
       goal_id: goalId,
@@ -975,9 +1339,90 @@ async function resolveOperatorAction(actionId: string, body: unknown): Promise<J
   };
 }
 
+function createRecoveryThunkRequest(goalId: string, taskId: string, actionId: string, responseSummary: string): JsonMap {
+  const normalizedActionId = actionId.replace(/[^A-Za-z0-9_.:-]+/g, "-");
+  return {
+    goal_id: goalId,
+    task_id: taskId || null,
+    kind: "human_input",
+    reason: responseSummary || "Operator requested a concrete recovery prompt for action-needed work.",
+    requested_input: "Choose the recovery path for this blocked, waiting, or failed work.",
+    wait_ref: {
+      kind: "human_thread",
+      reference: `thread://operator/action/${normalizedActionId}`,
+    },
+    continuation: {
+      continuation_id: `operator-action/${normalizedActionId}/create-thunk`,
+      boundary: "task_dispatch",
+      state_ref: taskId ? `goal/${goalId}/task/${taskId}` : `goal/${goalId}`,
+      resume_actions: ["apply_feedback", "mark_runnable", "replan", "cancel"],
+    },
+    timeout_seconds: 3600,
+  };
+}
+
 function parseOperatorActionId(actionId: string): { kind: string; goalId: string; targetId: string } {
-  const [kind = "", goalId = "", targetId = ""] = actionId.split(":");
-  return { kind, goalId, targetId };
+  const [kind = "", goalId = "", ...targetParts] = actionId.split(":");
+  return { kind, goalId, targetId: targetParts.join(":") };
+}
+
+function normalizeOperatorResolution(value: unknown): string {
+  const resolution = statusToken(value).replaceAll("-", "_");
+  if (resolution === "cancel") return "cancel_goal";
+  if (resolution === "restart") return "retry";
+  return resolution;
+}
+
+function isValidOperatorActionResolution(kind: string, resolution: string): boolean {
+  return validOperatorActionResolutions(kind).includes(resolution);
+}
+
+function validOperatorActionResolutions(kind: string): string[] {
+  const actionKind = actionResolutionKind(kind);
+  if (actionKind === "approval") return ["approve", "reject", "add_context", "cancel_goal"];
+  if (actionKind === "thunk") return ["continue", "answer", "add_context", "replan", "create_thunk", "cancel_goal"];
+  if (actionKind === "draft") return ["accept_draft", "discard_draft"];
+  if (actionKind === "task" || actionKind === "goal") return ["retry", "replan", "create_thunk", "add_context", "cancel_goal"];
+  if (actionKind === "cancel") return ["cancel_goal"];
+  return [];
+}
+
+function actionResolutionKind(kind: string): string {
+  const normalized = normalizeOperatorActionKind(kind);
+  if (normalized === "resolve_approval" || normalized === "approval") return "approval";
+  if (normalized === "resume_thunk" || normalized === "thunk") return "thunk";
+  if (normalized === "accept_draft" || normalized === "draft") return "draft";
+  if (["restart_task", "replan_task", "task"].includes(normalized)) return "task";
+  if (normalized === "cancel_goal" || normalized === "cancel") return "cancel";
+  if (normalized === "goal") return "goal";
+  return normalized;
+}
+
+function invalidOperatorActionResolution(
+  actionId: string,
+  goalId: string,
+  parsed: { kind: string; goalId: string; targetId: string },
+  resolution: string,
+): JsonMap {
+  const suggested = validOperatorActionResolutions(parsed.kind);
+  return {
+    ok: false,
+    status: 400,
+    accepted: false,
+    error: "invalid operator action resolution",
+    action_id: actionId,
+    goal_id: goalId,
+    resolution,
+    recovery: compactRecord({
+      reason: "invalid_operator_action_resolution",
+      message: "This operator action cannot use the requested resolution. Refresh the action queue, inspect the target actor, then choose one of the listed recovery actions.",
+      target_kind: parsed.kind || null,
+      target_id: parsed.targetId || null,
+      attempted_resolution: resolution || null,
+      suggested_resolutions: suggested,
+      actions: ["refresh_actions", "inspect_actor", ...suggested],
+    }),
+  };
 }
 
 function firstGoalId(rows: JsonMap[]): string {
@@ -1003,17 +1448,47 @@ function operatorGoalSummary(row: JsonMap): JsonMap {
 
 function operatorGoalDetail(snapshot: JsonMap): JsonMap {
   const goal = asRecord(asRecord(snapshot.goal_store_goal).data ?? snapshot.goal_store_goal);
-  const goalRecord = asRecord(goal.goal);
+  const goalRecord = Object.keys(asRecord(goal.goal)).length ? asRecord(goal.goal) : goal;
   const summary = operatorGoalSummary(goalRecord);
   return {
     summary,
     progress: asRecord(asRecord(snapshot.workflow_progress).data ?? snapshot.workflow_progress),
     graph: asRecord(asRecord(snapshot.workflow_compute_graph).data ?? snapshot.workflow_compute_graph),
     tasks: arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks"),
-    actions: operatorActionsFromRows([], [], snapshot),
-    evidence: operatorEvidenceFromSnapshot(snapshot),
+    actions: operatorActionsFromSnapshot(snapshot),
+    events: operatorTimelineFromSnapshot(snapshot),
+    worker_runs: operatorWorkerRunsFromSnapshot(snapshot),
+    evidence: operatorEvidenceRowsFromSnapshot(snapshot),
     snapshot,
   };
+}
+
+function operatorActionsFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_actions) as ProxyResult, "actions")
+    .map(normalizeOperatorAction);
+  return mergeOperatorRows(projected, operatorActionsFromRows([], [], snapshot), "action_id").map(ensureOperatorActionRecovery);
+}
+
+function operatorTimelineFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_timeline) as ProxyResult, "events")
+    .map(normalizeOperatorEvent);
+  return projected.length ? projected : operatorEventsFromDurableEvents(asRecord(snapshot.operator_events).data);
+}
+
+function operatorWorkerRunsFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_worker_runs) as ProxyResult, "worker_runs")
+    .map(normalizeOperatorWorkerRun);
+  if (projected.length) {
+    return projected;
+  }
+  const taskRows = arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks").map(asRecord);
+  return operatorWorkerRuns(taskRows);
+}
+
+function operatorEvidenceRowsFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_evidence) as ProxyResult, "evidence")
+    .map(normalizeOperatorEvidence);
+  return projected.length ? projected : operatorEvidenceFromSnapshot(snapshot);
 }
 
 function operatorActionsFromRows(approvals: JsonMap[], tasks: JsonMap[], snapshot: JsonMap | null): JsonMap[] {
@@ -1040,17 +1515,21 @@ function operatorActionsFromRows(approvals: JsonMap[], tasks: JsonMap[], snapsho
 
   const statusPayload = asRecord(asRecord(snapshot ?? {}).workflow_status);
   const progressPayload = asRecord(asRecord(snapshot ?? {}).workflow_progress);
+  const computeGraphPayload = asRecord(asRecord(snapshot ?? {}).workflow_compute_graph);
   const statusData = asRecord(statusPayload.data ?? statusPayload);
   const progressData = asRecord(progressPayload.data ?? progressPayload);
+  const computeGraphData = asRecord(computeGraphPayload.data ?? computeGraphPayload);
   const thunks = arrayField(statusData, "delayed_compute_thunks")
-    .concat(arrayField(progressData, "delayed_compute_thunks"));
+    .concat(arrayField(progressData, "delayed_compute_thunks"))
+    .concat(computeGraphThunkActions(computeGraphData, String(asRecord(snapshot ?? {}).goal_id ?? "")));
   const seenThunkIds = new Set<string>();
   for (const thunkValue of thunks) {
     const thunk = asRecord(thunkValue);
     const status = String(thunk.status ?? "");
+    const normalizedStatus = statusToken(status);
     const thunkId = String(thunk.id ?? thunk.thunk_id ?? "");
     const goalId = String(thunk.goal_id ?? asRecord(snapshot ?? {}).goal_id ?? "");
-    if (!thunkId || !goalId || seenThunkIds.has(thunkId) || (status && status !== "pending")) continue;
+    if (!thunkId || !goalId || seenThunkIds.has(thunkId) || ["done", "resolved", "cancelled"].includes(normalizedStatus)) continue;
     seenThunkIds.add(thunkId);
     actions.push({
       action_id: `thunk:${goalId}:${thunkId}`,
@@ -1083,11 +1562,34 @@ function operatorActionsFromRows(approvals: JsonMap[], tasks: JsonMap[], snapsho
       title: status.includes("waiting") ? "Task waiting" : "Recover task",
       question: task.title ?? task.current_prompt ?? "Restart, replan, or cancel this work.",
       status,
-      allowed_resolutions: ["retry", "replan", "add_context", "cancel_goal"],
+      allowed_resolutions: ["retry", "replan", "create_thunk", "add_context", "cancel_goal"],
       payload_json: task,
     });
   }
   return actions;
+}
+
+function computeGraphThunkActions(graph: JsonMap, fallbackGoalId: string): JsonMap[] {
+  return arrayField(graph, "nodes")
+    .map(asRecord)
+    .filter((node) => {
+      const kind = String(node.kind ?? "").toLowerCase();
+      const status = statusToken(node.status);
+      return (kind === "delayed_compute_thunk" || kind === "thunk") && !["done", "resolved", "cancelled"].includes(status);
+    })
+    .map((node) => ({
+      id: node.thunk_id ?? node.id,
+      thunk_id: node.thunk_id ?? node.id,
+      goal_id: node.goal_id ?? fallbackGoalId,
+      task_id: node.task_id ?? null,
+      status: node.status ?? "pending",
+      requested_input: node.requested_input ?? node.label ?? null,
+      reason: node.reason ?? node.label ?? null,
+      wait_ref: node.wait_ref ?? null,
+      continuation_id: node.continuation_id ?? null,
+      source: "compute_graph",
+      payload_json: node,
+    }));
 }
 
 function operatorEventsFromBackendProjection(value: JsonMap): JsonMap[] {
@@ -1234,25 +1736,32 @@ function operatorRequestId(value: unknown): string {
 
 function operatorActionRecovery(result: JsonMap, parsed: { kind: string; goalId: string; targetId: string }, resolution: string): JsonMap | null {
   const status = Number(result.status ?? 0);
-  if (status !== 409) {
+  if (Boolean(result.ok) || status < 400) {
     return null;
   }
+  const reason = status === 409
+    ? "coordinator_rejected_current_action_state"
+    : "coordinator_action_resolution_failed";
   return compactRecord({
-    reason: "coordinator_rejected_current_action_state",
-    message: "The coordinator did not accept this action in the current state. Refresh the goal projection, then retry a concrete recovery action.",
+    reason,
+    message: status === 409
+      ? "The coordinator did not accept this action in the current state. Refresh the goal projection, then retry a concrete recovery action."
+      : "The coordinator could not resolve this action. Refresh the projection, inspect the target state, then choose a concrete recovery action.",
+    status,
     target_kind: parsed.kind || null,
     target_id: parsed.targetId || null,
     attempted_resolution: resolution,
     suggested_resolutions: recoveryResolutionsFor(parsed.kind, resolution),
+    actions: ["refresh_actions", "inspect_actor", ...recoveryResolutionsFor(parsed.kind, resolution)],
   });
 }
 
 function recoveryResolutionsFor(kind: string, attemptedResolution: string): string[] {
   const candidates = kind === "thunk"
-    ? ["continue", "answer", "add_context", "replan", "cancel_goal"]
+    ? ["continue", "answer", "add_context", "replan", "create_thunk", "cancel_goal"]
     : kind === "approval"
       ? ["approve", "reject", "add_context", "cancel_goal"]
-      : ["retry", "replan", "add_context", "cancel_goal"];
+      : ["retry", "replan", "create_thunk", "add_context", "cancel_goal"];
   return candidates.filter((candidate) => candidate !== attemptedResolution);
 }
 
@@ -1276,9 +1785,10 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
   });
   const goalId = url.searchParams.get("goal_id");
   const eventTypeFilter = url.searchParams.get("event_type");
-  const eventSince = url.searchParams.get("event_since");
+  const eventSince = url.searchParams.get("since") ?? url.searchParams.get("event_since");
+  const lastEventId = String(req.headers["last-event-id"] ?? "").trim();
   const started = Date.now();
-  let sequence = Number(req.headers["last-event-id"] ?? url.searchParams.get("since") ?? 0) || 0;
+  let sequence = Number(url.searchParams.get("sequence") ?? 0) || 0;
   let lastFingerprint = "";
   while (!closed && Date.now() - started < 5 * 60 * 1000) {
     try {
@@ -1296,6 +1806,12 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
             event_id: eventId,
             projection_id: stableProjectionId("operator-projection", [fingerprint]),
             event_type: eventName,
+            filters: {
+              goal_id: goalId,
+              event_type: eventTypeFilter,
+              since: eventSince,
+              last_event_id: lastEventId || null,
+            },
             emitted_at: new Date().toISOString(),
           },
         };
@@ -1308,7 +1824,17 @@ async function streamOperatorState(req: any, res: any, url: URL): Promise<void> 
         const heartbeatId = stableProjectionId("operator-stream-heartbeat", [goalId, sequence]);
         res.write(`event: stream.heartbeat\n`);
         res.write(`id: ${heartbeatId}\n`);
-        res.write(`data: ${JSON.stringify({ goal_id: goalId, projection_id: stableProjectionId("operator-projection", [fingerprint]), generated_at: new Date().toISOString() })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          goal_id: goalId,
+          projection_id: stableProjectionId("operator-projection", [fingerprint]),
+          filters: {
+            goal_id: goalId,
+            event_type: eventTypeFilter,
+            since: eventSince,
+            last_event_id: lastEventId || null,
+          },
+          generated_at: new Date().toISOString(),
+        })}\n\n`);
       }
     } catch (error) {
       res.write(`event: stream.error\n`);
@@ -2267,6 +2793,15 @@ function markChatDraftAccepted(draftId: string, goalId: string): void {
   }
   draft.status = "accepted";
   draft.accepted_goal_id = goalId;
+  draft.updated_at = new Date().toISOString();
+}
+
+function markChatDraftDiscarded(draftId: string): void {
+  const draft = chatDrafts.get(draftId);
+  if (!draft) {
+    return;
+  }
+  draft.status = "discarded";
   draft.updated_at = new Date().toISOString();
 }
 
@@ -3435,7 +3970,8 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
       sendJson(res, 405, { error: "operator action resolution requires POST" });
       return;
     }
-    sendJson(res, 200, await resolveOperatorAction(decodeURIComponent(segments[3]), await readJson(req)));
+    const result = await resolveOperatorAction(decodeURIComponent(segments[3]), await readJson(req));
+    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
     return;
   }
 

@@ -256,6 +256,7 @@ pub enum OperatorActionKind {
     AcceptDraft,
     ResumeThunk,
     ResolveApproval,
+    CreateThunk,
     RestartTask,
     ReplanTask,
     SelectBranch,
@@ -290,6 +291,7 @@ pub enum OperatorActionResolutionKind {
     Reject,
     Retry,
     Replan,
+    CreateThunk,
     CancelGoal,
     AcceptDraft,
     DiscardDraft,
@@ -426,8 +428,32 @@ fn refresh_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
 
 fn restart_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
     OperatorRecoveryHint {
-        action: "restart".to_string(),
-        label: "Restart recoverable work".to_string(),
+        action: "retry".to_string(),
+        label: "Retry recoverable work".to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn replan_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
+    OperatorRecoveryHint {
+        action: "replan".to_string(),
+        label: "Replan work".to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn resume_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
+    OperatorRecoveryHint {
+        action: "resume_thunk".to_string(),
+        label: "Resume continuation".to_string(),
+        reason: reason.into(),
+    }
+}
+
+fn create_thunk_hint(reason: impl Into<String>) -> OperatorRecoveryHint {
+    OperatorRecoveryHint {
+        action: "create_thunk".to_string(),
+        label: "Create human prompt".to_string(),
         reason: reason.into(),
     }
 }
@@ -600,8 +626,27 @@ impl OperatorActor for TaskActor<'_> {
                         .to_string(),
                 }];
                 if self.state_class().is_recoverable() {
-                    hints.push(restart_hint(
-                        "blocked, failed, and waiting tasks should remain restartable, resumable, replan-able, or cancellable",
+                    match self.0.status {
+                        TaskStatus::WaitingInput | TaskStatus::WaitingApproval => {
+                            hints.push(resume_hint(
+                                "waiting tasks should resume through a pending thunk or approval when one is available",
+                            ));
+                            hints.push(create_thunk_hint(
+                                "if the wait has no concrete prompt, create a delayed-compute thunk with a continuation ref",
+                            ));
+                        }
+                        TaskStatus::Blocked | TaskStatus::Failed => {
+                            hints.push(restart_hint(
+                                "blocked and failed tasks should remain retryable through coordinator restart controls",
+                            ));
+                            hints.push(create_thunk_hint(
+                                "blocked work can be converted into an explicit human prompt when retry is not the right next step",
+                            ));
+                        }
+                        _ => {}
+                    }
+                    hints.push(replan_hint(
+                        "route unresolved recovery through a coordinator-owned replan action",
                     ));
                     hints.push(cancel_hint("cancel remains the explicit terminal stop path"));
                 }
@@ -976,6 +1021,176 @@ mod tests {
     }
 
     #[test]
+    fn actor_state_class_terminality_is_explicit_for_goal_task_waits_and_decisions() {
+        let goal_cases = [
+            (GoalStatus::Running, OperatorActorStateClass::Active),
+            (
+                GoalStatus::WaitingApproval,
+                OperatorActorStateClass::Waiting,
+            ),
+            (GoalStatus::Paused, OperatorActorStateClass::Waiting),
+            (GoalStatus::Blocked, OperatorActorStateClass::Recoverable),
+            (GoalStatus::Failed, OperatorActorStateClass::Recoverable),
+            (GoalStatus::Done, OperatorActorStateClass::TerminalOk),
+            (
+                GoalStatus::Cancelled,
+                OperatorActorStateClass::TerminalStopped,
+            ),
+        ];
+        for (status, class) in goal_cases {
+            assert_eq!(GoalActor(&goal(status)).state_class(), class);
+        }
+
+        let task_cases = [
+            (TaskStatus::Pending, OperatorActorStateClass::Active),
+            (TaskStatus::Runnable, OperatorActorStateClass::Active),
+            (TaskStatus::Running, OperatorActorStateClass::Active),
+            (TaskStatus::NeedsValidation, OperatorActorStateClass::Active),
+            (TaskStatus::WaitingInput, OperatorActorStateClass::Waiting),
+            (
+                TaskStatus::WaitingApproval,
+                OperatorActorStateClass::Waiting,
+            ),
+            (TaskStatus::Blocked, OperatorActorStateClass::Recoverable),
+            (TaskStatus::Failed, OperatorActorStateClass::Recoverable),
+            (TaskStatus::Done, OperatorActorStateClass::TerminalOk),
+            (
+                TaskStatus::Cancelled,
+                OperatorActorStateClass::TerminalStopped,
+            ),
+        ];
+        for (status, class) in task_cases {
+            assert_eq!(TaskActor(&task(status)).state_class(), class);
+        }
+
+        let mut approval = ApprovalRecord {
+            approval_id: Uuid::new_v4(),
+            goal_id: Uuid::new_v4(),
+            task_id: None,
+            status: ApprovalStatus::Pending,
+            risk: ApprovalRisk::Low,
+            reason: "need decision".to_string(),
+            requested_action: "continue".to_string(),
+            updated_at: None,
+            payload_json: serde_json::json!({}),
+        };
+        assert_eq!(
+            ApprovalActor(&approval).state_class(),
+            OperatorActorStateClass::Waiting
+        );
+        approval.status = ApprovalStatus::Approved;
+        assert_eq!(
+            ApprovalActor(&approval).state_class(),
+            OperatorActorStateClass::TerminalOk
+        );
+        approval.status = ApprovalStatus::Rejected;
+        assert_eq!(
+            ApprovalActor(&approval).state_class(),
+            OperatorActorStateClass::TerminalStopped
+        );
+        approval.status = ApprovalStatus::Cancelled;
+        assert_eq!(
+            ApprovalActor(&approval).state_class(),
+            OperatorActorStateClass::TerminalStopped
+        );
+
+        let mut thunk = pending_thunk();
+        assert_eq!(
+            ThunkActor(&thunk).state_class(),
+            OperatorActorStateClass::Waiting
+        );
+        thunk.status = DelayedComputeThunkStatus::Resumed;
+        assert_eq!(
+            ThunkActor(&thunk).state_class(),
+            OperatorActorStateClass::TerminalOk
+        );
+        thunk.status = DelayedComputeThunkStatus::Cancelled;
+        assert_eq!(
+            ThunkActor(&thunk).state_class(),
+            OperatorActorStateClass::TerminalStopped
+        );
+        thunk.status = DelayedComputeThunkStatus::Expired;
+        assert_eq!(
+            ThunkActor(&thunk).state_class(),
+            OperatorActorStateClass::TerminalStopped
+        );
+    }
+
+    #[test]
+    fn invalid_actor_kind_transitions_are_rejected_with_scope_recovery_guidance() {
+        let goal = goal(GoalStatus::Running);
+        let task = task(TaskStatus::Running);
+        let approval = ApprovalRecord {
+            approval_id: Uuid::new_v4(),
+            goal_id: Uuid::new_v4(),
+            task_id: None,
+            status: ApprovalStatus::Pending,
+            risk: ApprovalRisk::Low,
+            reason: "need decision".to_string(),
+            requested_action: "continue".to_string(),
+            updated_at: None,
+            payload_json: serde_json::json!({}),
+        };
+        let thunk = pending_thunk();
+        let state = GoalState::new(GoalSpec::new("worker", "reject wrong actor kind"));
+        let worker_task = state.tasks.values().next().expect("root task");
+        let result = AgentRunResult::stub_done(worker_task);
+        let review = ReviewOutput {
+            decision: ReviewDecision::ChangesRequested,
+            reward: 0.3,
+            findings: Vec::new(),
+            objective_results: Vec::new(),
+            gate_results: Vec::new(),
+            retry_recommended: true,
+            unification_summary: None,
+        };
+
+        let rejections = [
+            GoalActor(&goal)
+                .can_apply(&OperatorTransition::TaskDispatched)
+                .expect_err("goal rejects task transition"),
+            TaskActor(&task)
+                .can_apply(&OperatorTransition::GoalSatisfied)
+                .expect_err("task rejects goal transition"),
+            ApprovalActor(&approval)
+                .can_apply(&OperatorTransition::TaskDispatched)
+                .expect_err("approval rejects task transition"),
+            ThunkActor(&thunk)
+                .can_apply(&OperatorTransition::ApprovalResolved)
+                .expect_err("thunk rejects approval transition"),
+            WorkerRunActor {
+                result: &result,
+                goal_id: Some(worker_task.goal_id),
+            }
+            .can_apply(&OperatorTransition::GoalCancelled)
+            .expect_err("worker result rejects cancellation transition"),
+            ReviewActor {
+                review: &review,
+                goal_id: Some(Uuid::new_v4()),
+                task_id: Some(Uuid::new_v4()),
+            }
+            .can_apply(&OperatorTransition::GoalSatisfied)
+            .expect_err("review rejects goal transition"),
+        ];
+
+        for rejection in rejections {
+            assert!(
+                rejection.message.contains("does not target"),
+                "{rejection:?}"
+            );
+            assert!(
+                rejection
+                    .recovery_hints
+                    .iter()
+                    .any(|hint| hint.action == "inspect_actor"
+                        && !hint.label.trim().is_empty()
+                        && !hint.reason.trim().is_empty()),
+                "{rejection:?}"
+            );
+        }
+    }
+
+    #[test]
     fn goal_actor_rejects_task_transition_with_scope_guidance() {
         let record = goal(GoalStatus::Running);
         let rejection = GoalActor(&record)
@@ -1028,6 +1243,70 @@ mod tests {
     }
 
     #[test]
+    fn task_actor_transition_table_documents_lifecycle_edges() {
+        let cases = [
+            (
+                TaskStatus::Runnable,
+                OperatorTransition::TaskDispatched,
+                true,
+                "runnable tasks dispatch",
+            ),
+            (
+                TaskStatus::Running,
+                OperatorTransition::WorkerResultReceived,
+                true,
+                "running tasks accept worker results",
+            ),
+            (
+                TaskStatus::WaitingInput,
+                OperatorTransition::ThunkResumed,
+                true,
+                "waiting-input tasks resume through thunks",
+            ),
+            (
+                TaskStatus::WaitingApproval,
+                OperatorTransition::ApprovalResolved,
+                true,
+                "waiting-approval tasks resume through approvals",
+            ),
+            (
+                TaskStatus::Blocked,
+                OperatorTransition::ThunkCreated,
+                true,
+                "blocked tasks may be converted to explicit thunks",
+            ),
+            (
+                TaskStatus::Failed,
+                OperatorTransition::ApprovalRequested,
+                true,
+                "failed tasks remain recoverable through approval/retry paths",
+            ),
+            (
+                TaskStatus::Done,
+                OperatorTransition::WorkerResultReceived,
+                false,
+                "done tasks reject stale worker results",
+            ),
+            (
+                TaskStatus::Cancelled,
+                OperatorTransition::ThunkResumed,
+                false,
+                "cancelled tasks reject stale resumes",
+            ),
+        ];
+
+        for (status, transition, allowed, label) in cases {
+            let actor = TaskActor(&task(status));
+            let result = actor.can_apply(&transition);
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "{label}: transition {transition:?} result was {result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn recoverable_task_rejection_names_recovery_actions() {
         let record = task(TaskStatus::Blocked);
         let rejection = TaskActor(&record)
@@ -1038,7 +1317,97 @@ mod tests {
             .iter()
             .map(|hint| hint.action.as_str())
             .collect();
-        assert!(actions.contains(&"restart"));
+        assert!(actions.contains(&"retry"));
+        assert!(actions.contains(&"replan"));
+        assert!(actions.contains(&"create_thunk"));
+        assert!(actions.contains(&"cancel_goal"));
+    }
+
+    #[test]
+    fn every_waiting_or_recoverable_task_rejection_names_concrete_recovery_actions() {
+        let cases = [
+            (
+                TaskStatus::WaitingInput,
+                &[
+                    "inspect_task",
+                    "resume_thunk",
+                    "create_thunk",
+                    "replan",
+                    "cancel_goal",
+                ][..],
+            ),
+            (
+                TaskStatus::WaitingApproval,
+                &[
+                    "inspect_task",
+                    "resume_thunk",
+                    "create_thunk",
+                    "replan",
+                    "cancel_goal",
+                ][..],
+            ),
+            (
+                TaskStatus::Blocked,
+                &[
+                    "inspect_task",
+                    "retry",
+                    "create_thunk",
+                    "replan",
+                    "cancel_goal",
+                ][..],
+            ),
+            (
+                TaskStatus::Failed,
+                &[
+                    "inspect_task",
+                    "retry",
+                    "create_thunk",
+                    "replan",
+                    "cancel_goal",
+                ][..],
+            ),
+        ];
+
+        for (status, required_actions) in cases {
+            let record = task(status.clone());
+            let rejection = TaskActor(&record)
+                .can_apply(&OperatorTransition::TaskDispatched)
+                .expect_err("recoverable task should not dispatch directly");
+            let actions: Vec<_> = rejection
+                .recovery_hints
+                .iter()
+                .map(|hint| hint.action.as_str())
+                .collect();
+            for action in required_actions {
+                assert!(
+                    actions.contains(action),
+                    "{status:?} rejection did not include {action}: {actions:?}"
+                );
+            }
+            assert!(
+                rejection
+                    .recovery_hints
+                    .iter()
+                    .all(|hint| !hint.label.trim().is_empty() && !hint.reason.trim().is_empty()),
+                "{status:?} rejection included an empty recovery label or reason"
+            );
+        }
+    }
+
+    #[test]
+    fn waiting_task_rejection_names_resume_and_prompt_recovery_actions() {
+        let record = task(TaskStatus::WaitingInput);
+        let rejection = TaskActor(&record)
+            .can_apply(&OperatorTransition::TaskDispatched)
+            .expect_err("waiting task should not dispatch directly");
+        let actions: Vec<_> = rejection
+            .recovery_hints
+            .iter()
+            .map(|hint| hint.action.as_str())
+            .collect();
+        assert!(actions.contains(&"resume_thunk"));
+        assert!(actions.contains(&"create_thunk"));
+        assert!(actions.contains(&"replan"));
         assert!(actions.contains(&"cancel_goal"));
     }
 

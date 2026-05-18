@@ -49,9 +49,18 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - `SubgoalSpec.color` and `TaskNode.color` make the technicolor task graph visible without turning color into policy: colors are optional display hints for dashboards and operator readability, never routing, budget, validation, approval, or satisfaction inputs.
 - Operators can lint goals before submit, inspect `GoalProgress`, and query `TaskList` by subgoal, status, role, purpose, tag, or runnable frontier.
 - Operators can inspect a goal-store projection of goals, tasks, events, approvals, and artifact refs without treating the projection as coordinator authority.
+- Operator read models expose timeline, worker-run, evidence, and action-queue
+  projections that can be rebuilt deterministically from durable events and
+  snapshots.
 - Operators can use an optional web gateway and SPA to manage the task graph directly: inspect goal progress, act on human queues, recover blocked work, review evidence, steer or cancel goals, and manage events or memory while all edits flow through backend APIs.
 - Advanced SPA controls are grouped by operator intent and hidden until relevant; raw prompts, task contracts, debug traces, and exact payload inspection are secondary audit/debug surfaces.
-- Agent and chat clients can use an MCP dashboard surface for overview, goal snapshots, agent activity, steering, human threads, event sources, and memory search.
+- The SPA and TUI use the compact `/api/operator/*` surface plus
+  `/api/operator/stream` for projection updates; lower-level workflow,
+  goal-store, or helper routes stay behind debug/inspect paths.
+- Agent and chat clients can use the MCP operator surface for workspace
+  snapshots, selected-goal detail, action resolution, steering, event sources,
+  and memory search. The MCP surface mirrors `/api/operator/*`; removed
+  overview/snapshot/activity/helper names are not compatibility targets.
 - Webhooks, calendars, cron schedules, and event buses can create or steer goals through a gateway, dedupe policy, and optional human review.
 - Webhook auth policies can use shared-secret headers, bearer tokens, or HMAC-SHA256 without putting secret values into event payloads or goal state.
 - Event gateway channels are documented through AsyncAPI and cluster scheduled triggers have a Kubernetes CronJob example.
@@ -69,3 +78,6 @@ Provide a deployable control plane that can accept a goal, create durable tasks,
 - Local Compose and Kubernetes development manifests include an S3-compatible object-store path, while AWS/EKS can use S3 through the same object-store contract.
 - Production goal-store deployments use Postgres as the standard read model, with JSONB for exact payloads and optional pgvector for operational semantic search.
 - Recurring work is modeled as event sources, triggered goals, Restate timers, or Kubernetes CronJobs, not worker-owned sleep loops.
+- Actor state-machine tests cover valid transitions, invalid/stale recovery,
+  terminal immutability, projection determinism, and rejection of placeholder
+  satisfaction for non-stub goals.

@@ -99,7 +99,7 @@ The workflow builds release binaries for:
 - `aarch64-unknown-linux-gnu`;
 - `aarch64-apple-darwin`.
 
-Linux release binaries are built on native GitHub-hosted runners instead of cross-compiling ARM from x64: x64 Linux uses `ubuntu-22.04`, ARM Linux uses `ubuntu-22.04-arm`, and macOS ARM uses `macos-latest`. The main CI workflow also has a lightweight runner-target compatibility job across `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`; it checks hosted-runner OS/architecture shape plus the core Rust domain crate so runner-label regressions are caught before release without repeating the full workspace build on every label.
+Linux release binaries are built on native GitHub-hosted runners instead of cross-compiling ARM from x64: x64 Linux uses `ubuntu-22.04`, ARM Linux uses `ubuntu-22.04-arm`, and macOS ARM uses `macos-latest`. The main CI workflow also has a lightweight runner-target compatibility job across `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`; it checks hosted-runner OS/architecture shape only, so runner-label regressions are caught before release without multiplying product compile failures across every hosted label.
 
 It uploads tarballs plus SHA-256 files to the GitHub Release. After the binary build matrix passes, the same workflow publishes multi-arch service images to GHCR under `ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/...` with `vX.Y.Z`, `X.Y.Z`, and `latest` tags.
 Release binary jobs use Rust dependency caches plus `sccache` compiler-output caching. CI TypeScript builds pin Node `22.12.0`, the minimum version accepted by the Makefile validation guard for the Vite control surface and sidecars. GHCR image publishing uses GitHub Actions BuildKit caches and registry-backed cache images by default so the large Rust and sidecar layers can survive normal Actions cache churn. Rust service image tags are produced from one shared service image build, while the toolbox image remains a separate target in the same visible job; Node sidecar images fan out in parallel jobs so a slow or failed sidecar does not hide behind one opaque serial publish step. Set `BUILDX_CACHE=false` to disable GitHub Actions cache and `BUILDX_REGISTRY_CACHE=false` to disable GHCR-backed cache when manually debugging the image script without remote cache state.
@@ -215,7 +215,7 @@ local Rust builds.
 ## Helm Chart Release
 
 Helm chart releases are handled by `.github/workflows/release-helm.yml`.
-When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/jattg/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`.
+When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/jattg/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`. The workflow deliberately omits `--app-version` when that input is blank so the packaging helper keeps the chart metadata rather than replacing it with an empty value.
 
 Trigger it manually only when the release was already cut locally, and pass the exact chart tag or ref as the workflow `ref` input. Manual dispatches must package from the intended chart release tag, not from the selected branch tip.
 
@@ -248,7 +248,9 @@ selection, rollout behavior, and rollback mechanics.
 
 The chart release workflow downloads the just-published `jattg` chart asset,
 verifies its checksum, runs `coat deploy chart lint`, and renders a smoke
-manifest. Operators can repeat the local no-cluster smoke with one command; the
+manifest. If no `APP_VERSION` override is supplied, the workflow and local smoke
+read `appVersion` from the packaged chart before falling back to the chart
+version. Operators can repeat the local no-cluster smoke with one command; the
 target builds `target/debug/coat` first and uses that binary for chart lint,
 template, and dry-run upgrade checks:
 

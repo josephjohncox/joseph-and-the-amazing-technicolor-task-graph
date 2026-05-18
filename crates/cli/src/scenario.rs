@@ -350,6 +350,7 @@ pub struct ScenarioEvidence {
     pub ui_visible_summaries: BTreeMap<String, Value>,
     pub artifacts: Vec<Value>,
     pub projection: ScenarioProjection,
+    pub operator_artifacts: BTreeMap<String, Value>,
     pub evaluator: EvaluatorVerdict,
 }
 
@@ -413,6 +414,7 @@ async fn run_scenario(args: ScenarioRunArgs) -> anyhow::Result<()> {
     write_json(&run_dir.join("spec.json"), &spec)?;
     write_json(&run_dir.join("projection.json"), &evidence.projection)?;
     write_json(&run_dir.join("actions.json"), &evidence.action_results)?;
+    write_operator_artifacts(&run_dir.join("operator"), &evidence)?;
     write_json(&run_dir.join("evidence.json"), &evidence)?;
     write_json(&run_dir.join("report.json"), &report_value(&evidence))?;
 
@@ -886,6 +888,7 @@ fn build_evidence(
 ) -> ScenarioEvidence {
     let submitted_goal_ids = scenario_goal_ids(spec, &projection);
     let verdict = evaluate(spec, &projection);
+    let operator_artifacts = operator_artifacts_for(spec, &projection, &action_results);
     ScenarioEvidence {
         scenario_id: spec.id.clone(),
         title: spec.title.clone(),
@@ -904,6 +907,7 @@ fn build_evidence(
         ui_visible_summaries: projection.ui_projection.clone(),
         artifacts: projection.artifacts.clone(),
         projection,
+        operator_artifacts,
         evaluator: verdict,
     }
 }
@@ -1473,7 +1477,372 @@ fn report_value(evidence: &ScenarioEvidence) -> Value {
         "task_count": evidence.projected_tasks.len(),
         "subgoal_count": evidence.subgoals.len(),
         "usability_coherence": usability_coherence_report(&evidence.evaluator.checks),
+        "operator_artifacts": operator_artifact_report(evidence),
     })
+}
+
+fn write_operator_artifacts(run_dir: &Path, evidence: &ScenarioEvidence) -> anyhow::Result<()> {
+    fs::create_dir_all(run_dir).with_context(|| format!("create {}", run_dir.display()))?;
+    for (name, artifact) in &evidence.operator_artifacts {
+        write_json(&run_dir.join(format!("{name}.json")), artifact)?;
+    }
+    fs::write(
+        run_dir.join("transcript.md"),
+        operator_transcript_markdown(evidence),
+    )
+    .with_context(|| format!("write {}", run_dir.join("transcript.md").display()))?;
+    Ok(())
+}
+
+fn operator_artifact_report(evidence: &ScenarioEvidence) -> Value {
+    let base = evidence.run_dir.join("operator");
+    let artifacts = evidence
+        .operator_artifacts
+        .keys()
+        .map(|name| {
+            json!({
+                "name": name,
+                "path": base.join(format!("{name}.json")),
+            })
+        })
+        .chain(std::iter::once(json!({
+            "name": "transcript",
+            "path": base.join("transcript.md"),
+        })))
+        .collect::<Vec<_>>();
+    json!({
+        "directory": base,
+        "artifacts": artifacts,
+        "selected_goal": evidence.operator_artifacts.get("selected-goal"),
+        "pending_actions": evidence
+            .operator_artifacts
+            .get("action-queue")
+            .and_then(|value| value.get("pending_count"))
+            .cloned()
+            .unwrap_or(json!(0)),
+        "worker_runs": evidence
+            .operator_artifacts
+            .get("worker-runs")
+            .and_then(|value| value.get("runs"))
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0),
+    })
+}
+
+fn operator_artifacts_for(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    action_results: &[ScenarioActionResult],
+) -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        (
+            "selected-goal".to_string(),
+            operator_selected_goal_artifact(spec, projection),
+        ),
+        (
+            "action-queue".to_string(),
+            operator_action_queue_artifact(spec, projection),
+        ),
+        (
+            "graph-nodes".to_string(),
+            operator_graph_nodes_artifact(projection),
+        ),
+        (
+            "evidence".to_string(),
+            operator_evidence_artifact(spec, projection),
+        ),
+        (
+            "worker-runs".to_string(),
+            operator_worker_runs_artifact(spec, projection),
+        ),
+        (
+            "chat-draft-state".to_string(),
+            operator_chat_draft_artifact(spec, projection, action_results),
+        ),
+        (
+            "snapshot".to_string(),
+            operator_snapshot_artifact(spec, projection),
+        ),
+    ])
+}
+
+fn operator_selected_goal_artifact(spec: &ScenarioSpec, projection: &ScenarioProjection) -> Value {
+    projection
+        .ui_projection
+        .get("selected_goal")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "surface": "selected_goal",
+                "goal_id": projection.goal_id,
+                "title": scenario_goal_title(spec, projection),
+                "objective": scenario_goal_objective(spec),
+                "status": projection.goal_status,
+                "terminal_state": projection.terminal_state,
+            })
+        })
+}
+
+fn operator_action_queue_artifact(spec: &ScenarioSpec, projection: &ScenarioProjection) -> Value {
+    let ui_actions = projection
+        .ui_projection
+        .iter()
+        .filter(|(key, _)| {
+            key.contains("action") || key.contains("human") || key.contains("approval")
+        })
+        .map(|(key, value)| json!({ "source": key, "value": value }))
+        .collect::<Vec<_>>();
+    let graph_actions = projection
+        .compute_graph_nodes
+        .iter()
+        .filter(|node| {
+            node.get("kind").and_then(Value::as_str) == Some("delayed_compute_thunk")
+                || operator_action_from_value(node).is_some()
+        })
+        .map(|node| {
+            json!({
+                "source": "compute_graph",
+                "node_id": text_field(node, "id"),
+                "status": text_field(node, "status"),
+                "operator_action": operator_action_from_value(node),
+                "continuation_ref": continuation_ref_from_value(node),
+                "approval_ref": approval_ref_from_value(node),
+            })
+        })
+        .collect::<Vec<_>>();
+    let task_actions = projection
+        .tasks
+        .iter()
+        .filter(|task| is_recoverable_action_needed_status(&text_field(task, "status")))
+        .map(|task| {
+            json!({
+                "source": "task",
+                "task_id": text_field(task, "task_id"),
+                "status": text_field(task, "status"),
+                "operator_action": operator_action_from_value(task),
+                "recovery_action": plain_blocked_recovery_action_from_value(task),
+            })
+        })
+        .collect::<Vec<_>>();
+    let spec_actions = spec
+        .actions
+        .iter()
+        .flat_map(action_requirement_values)
+        .filter_map(|value| {
+            operator_action_from_value(value).map(|operator_action| {
+                json!({
+                    "source": "scenario_action",
+                    "operator_action": operator_action,
+                    "continuation_ref": continuation_ref_from_value(value),
+                    "approval_ref": approval_ref_from_value(value),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut actions = Vec::new();
+    actions.extend(ui_actions);
+    actions.extend(graph_actions);
+    actions.extend(task_actions);
+    actions.extend(spec_actions);
+    let pending_count = operator_action_pending_count(&actions);
+    let control_count = actions.len();
+    json!({
+        "surface": "action_queue",
+        "pending_count": pending_count,
+        "control_count": control_count,
+        "actions": actions,
+    })
+}
+
+fn operator_action_pending_count(actions: &[Value]) -> usize {
+    let ui_pending = actions
+        .iter()
+        .filter_map(|action| {
+            action
+                .get("value")
+                .and_then(|value| value.get("pending_count"))
+                .and_then(Value::as_u64)
+        })
+        .sum::<u64>() as usize;
+    let projected_pending = actions
+        .iter()
+        .filter(|action| {
+            matches!(
+                normalize_token(&text_field(action, "status")).as_str(),
+                "pending" | "waiting" | "blocked" | "waiting_input" | "waiting_approval"
+            )
+        })
+        .count();
+    ui_pending + projected_pending
+}
+
+fn operator_graph_nodes_artifact(projection: &ScenarioProjection) -> Value {
+    json!({
+        "surface": "compute_graph",
+        "nodes": projection.compute_graph_nodes,
+        "node_count": projection.compute_graph_nodes.len(),
+        "visible_terms": projection.compute_graph_nodes
+            .iter()
+            .filter_map(|node| first_string(node, &[&["kind"], &["label"], &["status"]]))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn operator_evidence_artifact(spec: &ScenarioSpec, projection: &ScenarioProjection) -> Value {
+    let task_evidence = projection
+        .tasks
+        .iter()
+        .filter(|task| value_has_evidence(task))
+        .cloned()
+        .collect::<Vec<_>>();
+    json!({
+        "surface": "evidence",
+        "artifacts": projection.artifacts,
+        "task_evidence": task_evidence,
+        "event_evidence": projection.events.iter().filter(|event| value_has_evidence(event)).cloned().collect::<Vec<_>>(),
+        "satisfaction_rationale": satisfaction_rationale(spec, projection),
+    })
+}
+
+fn operator_worker_runs_artifact(spec: &ScenarioSpec, projection: &ScenarioProjection) -> Value {
+    let task_runs = projection
+        .tasks
+        .iter()
+        .map(|task| {
+            json!({
+                "source": "task_projection",
+                "task_id": text_field(task, "task_id"),
+                "title": text_field(task, "title"),
+                "role": text_field(task, "role"),
+                "status": text_field(task, "status"),
+                "worker_result": task.get("worker_result").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let action_runs = spec
+        .actions
+        .iter()
+        .flat_map(|action| {
+            action_worker_results(action)
+                .into_iter()
+                .map(move |result| {
+                    json!({
+                        "source": "scenario_action",
+                        "action_id": action.id,
+                        "task_id": first_string(&result, &[&["task_id"]]).unwrap_or_else(|| action.task_id.clone()),
+                        "status": first_string(&result, &[&["status"]]).unwrap_or_default(),
+                        "worker_result": result,
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "surface": "worker_runs",
+        "runner_dispatches": projection.runner_dispatches,
+        "runs": task_runs.into_iter().chain(action_runs).collect::<Vec<_>>(),
+    })
+}
+
+fn operator_chat_draft_artifact(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    action_results: &[ScenarioActionResult],
+) -> Value {
+    let ui_state = projection
+        .ui_projection
+        .iter()
+        .filter(|(key, value)| {
+            key.contains("chat")
+                || key.contains("draft")
+                || value_contains(value, "operator.chat")
+                || value_contains(value, "operator.draft")
+        })
+        .map(|(key, value)| json!({ "source": key, "value": value }))
+        .collect::<Vec<_>>();
+    let scenario_events = spec
+        .actions
+        .iter()
+        .filter(|action| {
+            let text = serde_json::to_string(action).unwrap_or_default();
+            text.contains("operator.chat") || text.contains("operator.draft")
+        })
+        .map(|action| {
+            json!({
+                "action_id": action.id,
+                "kind": action_name(action),
+                "payload": action.payload,
+                "event": action.event,
+                "expect": action.expect,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "surface": "chat_draft_state",
+        "ui_state": ui_state,
+        "scenario_events": scenario_events,
+        "action_results": action_results
+            .iter()
+            .filter(|result| value_contains(&result.response, "operator.chat") || value_contains(&result.response, "operator.draft"))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn operator_snapshot_artifact(spec: &ScenarioSpec, projection: &ScenarioProjection) -> Value {
+    json!({
+        "surface": "operator_snapshot",
+        "selected_goal": operator_selected_goal_artifact(spec, projection),
+        "goal_list": projection.ui_projection.get("goal_list"),
+        "action_queue": operator_action_queue_artifact(spec, projection),
+        "graph_nodes": operator_graph_nodes_artifact(projection),
+        "worker_runs": operator_worker_runs_artifact(spec, projection),
+        "evidence": operator_evidence_artifact(spec, projection),
+        "chat_draft_state": projection.ui_projection.get("chat_draft_state")
+            .or_else(|| projection.ui_projection.get("chat"))
+            .or_else(|| projection.ui_projection.get("drafts")),
+    })
+}
+
+fn operator_transcript_markdown(evidence: &ScenarioEvidence) -> String {
+    let selected_goal = evidence
+        .operator_artifacts
+        .get("selected-goal")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let action_queue = evidence
+        .operator_artifacts
+        .get("action-queue")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let worker_runs = evidence
+        .operator_artifacts
+        .get("worker-runs")
+        .and_then(|value| value.get("runs"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let evidence_artifacts = evidence
+        .operator_artifacts
+        .get("evidence")
+        .and_then(|value| value.get("artifacts"))
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    format!(
+        "# Scenario Operator Transcript\n\n\
+         Scenario: `{}`\n\n\
+         Mode: `{}`\n\n\
+         Selected goal:\n\n```json\n{}\n```\n\n\
+         Pending action queue:\n\n```json\n{}\n```\n\n\
+         Worker runs visible: `{}`\n\n\
+         Evidence artifacts visible: `{}`\n",
+        evidence.scenario_id,
+        evidence.mode,
+        serde_json::to_string_pretty(&selected_goal).unwrap_or_else(|_| "null".to_string()),
+        serde_json::to_string_pretty(&action_queue).unwrap_or_else(|_| "null".to_string()),
+        worker_runs,
+        evidence_artifacts,
+    )
 }
 
 fn scenario_goal_ids(spec: &ScenarioSpec, projection: &ScenarioProjection) -> Vec<String> {
@@ -1870,6 +2239,7 @@ fn evaluate_custom_check(
         "research" => research_check(spec, projection, assertion, expected),
         "state_machine" => state_machine_custom_check(spec, projection, assertion, expected),
         "queue_history" => queue_history_check(spec, projection, assertion, expected),
+        "operator_flow" => operator_flow_check(spec, projection, assertion, expected),
         other => (
             false,
             json!({ "unsupported_kind": other, "assertion": assertion }),
@@ -2427,6 +2797,10 @@ fn task_count_check(
 ) -> (bool, Value, String) {
     let status = if normalize_token(assertion).contains("done") {
         "done"
+    } else if normalize_token(assertion).contains("running") {
+        "running"
+    } else if normalize_token(assertion).contains("pending") {
+        "pending"
     } else if normalize_token(assertion).contains("blocked") {
         "blocked"
     } else if normalize_token(assertion).contains("failed") {
@@ -2610,6 +2984,225 @@ fn queue_history_check(
         }),
         format!("queue history check {assertion:?} failed"),
     )
+}
+
+fn operator_flow_check(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+    assertion: &str,
+    expected: &Value,
+) -> (bool, Value, String) {
+    let key = normalize_action_key(assertion);
+    let pass = if key.contains("ask_default") || key.contains("ask_does_not_create_draft") {
+        operator_flow_has_ask_without_draft(spec)
+    } else if key.contains("draft_lifecycle") || key.contains("draft_accept_discard_submit") {
+        operator_flow_has_draft_lifecycle(spec)
+    } else if key.contains("selected_goal") {
+        operator_flow_has_selected_goal(projection)
+    } else if key.contains("action_cards")
+        || key.contains("human_action")
+        || key.contains("thunk")
+        || key.contains("approval")
+    {
+        operator_flow_has_action_controls(spec, projection)
+    } else if key.contains("worker") || key.contains("evidence") {
+        operator_flow_has_worker_run_and_evidence(projection)
+    } else if key.contains("without_raw_goal_ids") || key.contains("no_raw_goal_ids") {
+        operator_flow_without_raw_goal_id_handoff(spec, projection)
+    } else if key.contains("cancel") || key.contains("cleanup") {
+        operator_flow_has_cancellation_cleanup(projection)
+    } else {
+        false
+    };
+    (
+        pass == expected_bool(expected),
+        json!({
+            "assertion": assertion,
+            "ask_without_draft": operator_flow_has_ask_without_draft(spec),
+            "draft_lifecycle": operator_flow_has_draft_lifecycle(spec),
+            "selected_goal": operator_flow_has_selected_goal(projection),
+            "action_controls": operator_flow_has_action_controls(spec, projection),
+            "worker_run_and_evidence": operator_flow_has_worker_run_and_evidence(projection),
+            "without_raw_goal_id_handoff": operator_flow_without_raw_goal_id_handoff(spec, projection),
+            "cancellation_cleanup": operator_flow_has_cancellation_cleanup(projection),
+        }),
+        format!("operator flow check {assertion:?} failed"),
+    )
+}
+
+fn operator_flow_has_ask_without_draft(spec: &ScenarioSpec) -> bool {
+    spec.actions.iter().any(|action| {
+        let text = serde_json::to_string(&json!({
+            "id": action.id,
+            "payload": action.payload,
+            "body": action.body,
+            "event": action.event,
+            "expect": action.expect,
+        }))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+        text.contains("operator.chat.ask")
+            && (text.contains("\"mode\":\"ask\"") || text.contains("\"kind\":\"ask\""))
+            && text.contains("\"draft_created\":false")
+    })
+}
+
+fn operator_flow_has_draft_lifecycle(spec: &ScenarioSpec) -> bool {
+    let action_text = spec
+        .actions
+        .iter()
+        .map(|action| {
+            serde_json::to_string(&json!({
+                "id": action.id,
+                "payload": action.payload,
+                "body": action.body,
+                "event": action.event,
+                "expect": action.expect,
+                "kind": action_name(action),
+            }))
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let draft_created = action_text.contains("operator.draft.created")
+        || action_text.contains("draft_goal")
+        || action_text.contains("draft_created");
+    let draft_discarded =
+        action_text.contains("operator.draft.discarded") || action_text.contains("discard_draft");
+    let draft_accepted =
+        action_text.contains("operator.draft.accepted") || action_text.contains("accept_draft");
+    let goal_submitted = spec
+        .actions
+        .iter()
+        .any(|action| matches!(action.kind, ScenarioActionKind::SubmitGoal));
+    draft_created && draft_discarded && draft_accepted && goal_submitted
+}
+
+fn operator_flow_has_selected_goal(projection: &ScenarioProjection) -> bool {
+    projection
+        .ui_projection
+        .get("selected_goal")
+        .is_some_and(|value| {
+            first_string(value, &[&["goal_id"], &["id"]]).is_some()
+                && first_string(value, &[&["title"]]).is_some()
+                && first_string(value, &[&["status"]]).is_some()
+        })
+}
+
+fn operator_flow_has_action_controls(spec: &ScenarioSpec, projection: &ScenarioProjection) -> bool {
+    let text = serde_json::to_string(&json!({
+        "actions": spec.actions,
+        "ui_projection": projection.ui_projection,
+        "compute_graph_nodes": projection.compute_graph_nodes,
+        "tasks": projection.tasks,
+    }))
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+    let has_action_surface = text.contains("action_queue")
+        || text.contains("human_queue")
+        || text.contains("approval")
+        || text.contains("delayed_compute_thunk");
+    let has_resume_control = text.contains("continue")
+        || text.contains("add-context")
+        || text.contains("add_context")
+        || text.contains("answer");
+    let has_recovery_control = text.contains("replan")
+        || text.contains("retry")
+        || text.contains("restart")
+        || text.contains("cancel");
+    has_action_surface && has_resume_control && has_recovery_control
+}
+
+fn operator_flow_has_worker_run_and_evidence(projection: &ScenarioProjection) -> bool {
+    let text = serde_json::to_string(&projection.ui_projection)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let worker_visible = text.contains("worker_runs")
+        || text.contains("runner")
+        || !projection.runner_dispatches.is_empty();
+    let evidence_visible = text.contains("evidence")
+        || text.contains("artifact://")
+        || !projection.artifacts.is_empty()
+        || projection.tasks.iter().any(value_has_evidence);
+    worker_visible && evidence_visible
+}
+
+fn operator_flow_without_raw_goal_id_handoff(
+    spec: &ScenarioSpec,
+    projection: &ScenarioProjection,
+) -> bool {
+    let selected_goal = projection.ui_projection.get("selected_goal");
+    let selected_goal_named = selected_goal.is_some_and(|value| {
+        first_string(value, &[&["title"]]).is_some_and(|title| !looks_like_uuid(&title))
+            && first_string(value, &[&["status"]]).is_some()
+    });
+    let action_labels_visible = operator_flow_has_action_controls(spec, projection);
+    let chat_ask_without_draft = operator_flow_has_ask_without_draft(spec);
+    let operator_pasted_goal_id = spec.actions.iter().any(|action| {
+        [&action.event, &action.payload, &action.body, &action.expect]
+            .into_iter()
+            .any(value_has_operator_pasted_goal_id)
+    });
+    selected_goal_named
+        && action_labels_visible
+        && chat_ask_without_draft
+        && !operator_pasted_goal_id
+}
+
+fn value_has_operator_pasted_goal_id(value: &Value) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    if first_string(value, &[&["event_type"]]).is_some_and(|event| {
+        normalize_token(&event) == "goal_id_pasted_by_operator"
+            || normalize_token(&event) == "raw_json_required"
+    }) {
+        return true;
+    }
+    let text = serde_json::to_string(value)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    text.contains("goal_id_pasted_by_operator")
+        || text.contains("raw_json_required")
+        || text.contains("\"operator_entered_goal_id\":true")
+        || text.contains("\"hand_authored_goal_id\":true")
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let parts = value.split('-').collect::<Vec<_>>();
+    parts.len() == 5
+        && [8, 4, 4, 4, 12]
+            .into_iter()
+            .zip(parts)
+            .all(|(len, part)| part.len() == len && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+fn operator_flow_has_cancellation_cleanup(projection: &ScenarioProjection) -> bool {
+    if !is_cancelled_goal_status(&projection.goal_status)
+        && normalize_terminal(&projection.terminal_state) != "cancelled"
+    {
+        return false;
+    }
+    let stale_action_needed = projection
+        .tasks
+        .iter()
+        .any(|task| is_recoverable_action_needed_status(&text_field(task, "status")))
+        || projection.compute_graph_nodes.iter().any(|node| {
+            let status = normalize_token(&text_field(node, "status"));
+            matches!(
+                status.as_str(),
+                "pending" | "waiting" | "blocked" | "waiting_input" | "waiting_approval"
+            )
+        });
+    let ui_text = serde_json::to_string(&projection.ui_projection)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let action_queue_empty = ui_text.contains("\"pending_count\":0")
+        || ui_text.contains("\"actions\":[]")
+        || ui_text.contains("\"requests\":[]")
+        || !ui_text.contains("action_queue");
+    !stale_action_needed && action_queue_empty
 }
 
 fn assertion_contains_target(assertion: &str) -> Option<String> {
@@ -4790,11 +5383,17 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let scenarios = [
             "scenarios/e2e/goal_lifecycle_basic.json",
+            "scenarios/e2e/bootstrap_running.json",
+            "scenarios/e2e/bootstrap_pending_action.json",
+            "scenarios/e2e/bootstrap_approval.json",
+            "scenarios/e2e/bootstrap_blocked_retry_recovery.json",
+            "scenarios/e2e/bootstrap_memory_research_evidence.json",
             "scenarios/e2e/blocked_and_resumed.json",
             "scenarios/e2e/signal_driven_goal.json",
             "scenarios/e2e/fanout_until_done.json",
             "scenarios/e2e/fork_join_review.json",
             "scenarios/e2e/long_iterative_loop.json",
+            "scenarios/e2e/operator_usability_workbench.json",
             "scenarios/e2e/bootstrap_cancelled_queue_history.json",
         ];
         for scenario in scenarios {
@@ -4863,6 +5462,83 @@ mod tests {
         assert!(verdict.checks.iter().any(|check| {
             check.name == "scenario_check:cancelled_queue_history" && check.passed
         }));
+        assert!(verdict.checks.iter().any(|check| {
+            check.name == "scenario_check:cancelled_operator_cleanup_visible" && check.passed
+        }));
+    }
+
+    #[test]
+    fn operator_usability_scenario_proves_drafts_actions_runs_and_evidence() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/operator_usability_workbench.json");
+        let spec = read_spec(&path).expect("operator usability spec");
+        let verdict = evaluate(&spec, &spec.fixtures.projection);
+        assert_eq!(verdict.status, "passed", "{:?}", verdict.findings);
+        for check_name in [
+            "scenario_check:ask_default_no_draft",
+            "scenario_check:draft_accept_discard_submit",
+            "scenario_check:selected_goal_visible",
+            "scenario_check:action_cards_visible",
+            "scenario_check:worker_runs_and_evidence_visible",
+            "scenario_check:no_raw_goal_id_handoff",
+        ] {
+            assert!(
+                verdict
+                    .checks
+                    .iter()
+                    .any(|check| check.name == check_name && check.passed),
+                "missing passed check {check_name}: {:?}",
+                verdict.checks
+            );
+        }
+    }
+
+    #[test]
+    fn operator_flow_rejects_raw_goal_id_handoff() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/operator_usability_workbench.json");
+        let mut spec = read_spec(&path).expect("operator usability spec");
+        spec.actions.push(
+            serde_json::from_value(json!({
+                "id": "paste_raw_goal_id",
+                "type": "emit_external_event",
+                "event": {
+                    "event_type": "goal_id_pasted_by_operator",
+                    "operator_entered_goal_id": true,
+                    "goal_id": "00000000-0000-4000-8000-000000004201"
+                }
+            }))
+            .expect("raw goal id event"),
+        );
+        let verdict = evaluate(&spec, &spec.fixtures.projection);
+        assert_eq!(verdict.status, "failed");
+        assert!(
+            verdict.checks.iter().any(|check| {
+                check.name == "scenario_check:no_raw_goal_id_handoff" && !check.passed
+            }),
+            "raw goal ID handoff should fail the operator-flow check: {:?}",
+            verdict.checks
+        );
+    }
+
+    #[test]
+    fn operator_flow_rejects_ask_that_creates_a_draft() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/operator_usability_workbench.json");
+        let mut spec = read_spec(&path).expect("operator usability spec");
+        let ask = spec
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "ask_workspace_default")
+            .expect("ask action");
+        ask.expect["draft_created"] = json!(true);
+        let verdict = evaluate(&spec, &spec.fixtures.projection);
+        assert_eq!(verdict.status, "failed");
+        assert!(
+            verdict.checks.iter().any(|check| {
+                check.name == "scenario_check:ask_default_no_draft" && !check.passed
+            })
+        );
     }
 
     #[test]
@@ -5419,6 +6095,12 @@ mod tests {
         assert_eq!(evidence.timeout_seconds, 600);
         assert_eq!(evidence.submitted_goal_ids, vec!["goal-basic"]);
         assert_eq!(evidence.evaluator.status, "passed");
+        assert!(evidence.operator_artifacts.contains_key("selected-goal"));
+        assert!(evidence.operator_artifacts.contains_key("action-queue"));
+        assert!(evidence.operator_artifacts.contains_key("graph-nodes"));
+        assert!(evidence.operator_artifacts.contains_key("evidence"));
+        assert!(evidence.operator_artifacts.contains_key("worker-runs"));
+        assert!(evidence.operator_artifacts.contains_key("chat-draft-state"));
     }
 
     #[test]
@@ -5452,6 +6134,73 @@ mod tests {
                         == Some("coherence_completed_satisfaction_rationale")
                 })
         );
+    }
+
+    #[test]
+    fn scenario_report_points_to_operator_snapshot_artifacts() {
+        let spec = fixture_spec();
+        let evidence = build_evidence(
+            &spec,
+            "http://localhost:9090",
+            Duration::from_secs(600),
+            Path::new("target/test-run"),
+            spec.fixtures.projection.clone(),
+            Vec::new(),
+            "offline_fixture".to_string(),
+        );
+        let report = report_value(&evidence);
+        let operator = report
+            .get("operator_artifacts")
+            .expect("operator artifact report");
+        let artifacts = operator
+            .get("artifacts")
+            .and_then(Value::as_array)
+            .expect("operator artifacts");
+        for name in [
+            "selected-goal",
+            "action-queue",
+            "graph-nodes",
+            "evidence",
+            "worker-runs",
+            "chat-draft-state",
+            "snapshot",
+            "transcript",
+        ] {
+            assert!(
+                artifacts
+                    .iter()
+                    .any(|artifact| artifact.get("name").and_then(Value::as_str) == Some(name)),
+                "missing operator artifact {name}: {artifacts:?}"
+            );
+        }
+        assert_eq!(operator.get("worker_runs").and_then(Value::as_u64), Some(3));
+        assert!(
+            operator
+                .get("selected_goal")
+                .and_then(|value| value.get("goal_id"))
+                .and_then(Value::as_str)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn operator_transcript_summarizes_visible_debug_surfaces() {
+        let spec = fixture_spec();
+        let evidence = build_evidence(
+            &spec,
+            "http://localhost:9090",
+            Duration::from_secs(600),
+            Path::new("target/test-run"),
+            spec.fixtures.projection.clone(),
+            Vec::new(),
+            "offline_fixture".to_string(),
+        );
+        let transcript = operator_transcript_markdown(&evidence);
+        assert!(transcript.contains("Scenario: `goal_lifecycle_basic`"));
+        assert!(transcript.contains("Selected goal:"));
+        assert!(transcript.contains("Pending action queue:"));
+        assert!(transcript.contains("Worker runs visible: `3`"));
+        assert!(transcript.contains("Evidence artifacts visible: `1`"));
     }
 
     #[test]

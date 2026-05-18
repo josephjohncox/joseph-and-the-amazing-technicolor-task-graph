@@ -113,6 +113,12 @@ In Claude Code, run `/mcp` to inspect connection status.
 
 From any MCP-capable client, call `tools/list` and confirm that COAT exposes
 planning, goal, runner, approval, memory, checkpoint, and steering tools.
+The operator tools should include the compact surface:
+`coat_operator_workspace`, `coat_operator_goal`, `coat_operator_actions`,
+`coat_operator_action_resolve`, `coat_operator_agent_context`,
+`coat_operator_goal_submit`, and `coat_operator_goal_steer`.
+Old overview, snapshot, activity, approval-list, runner-list, and helper tool
+names are intentionally removed once the corresponding operator tool exists.
 
 ## Chat-Agent Rules
 
@@ -147,6 +153,10 @@ Use the MCP tools in this order for normal work:
 8. `coat_operator_goal`, `coat_operator_workspace`, and `coat_checkpoint_history`
 9. `coat_operator_actions` and `coat_operator_action_resolve` only after explicit user confirmation
 10. `coat_operator_goal_steer` for user-approved steering
+
+Do not use removed helper names as compatibility shims. When a chat client
+needs state, read the compact operator projection; when it needs to mutate
+state, submit the typed operator action and show the returned action result.
 
 ## Non-Local Runners
 

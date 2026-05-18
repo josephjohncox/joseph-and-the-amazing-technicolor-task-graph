@@ -20,7 +20,7 @@ export function ResultList({ value }: { value: unknown }) {
       </ul>
     );
   }
-  return <AdvancedInspect summaryLabel="Details" title="Memory response" payload={value} buttonLabel="Inspect JSON" />;
+  return <AdvancedInspect summaryLabel="Debug" title="Memory response" payload={value} buttonLabel="Debug" />;
 }
 
 export function SimpleTable({ headers, rows, empty }: { headers: string[]; rows: string[][]; empty: string }) {

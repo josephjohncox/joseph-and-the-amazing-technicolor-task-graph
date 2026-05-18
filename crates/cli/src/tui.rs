@@ -332,6 +332,13 @@ struct EvidenceSummary {
     task_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActionResultSummary {
+    label: String,
+    status: String,
+    message: String,
+}
+
 impl GoalDraftSummary {
     fn chat_preview(&self) -> String {
         format!(
@@ -369,6 +376,7 @@ struct App {
     selected_goal_outline: Vec<String>,
     messages: Vec<ChatLine>,
     last_chat_response: Option<Value>,
+    last_action_result: Option<ActionResultSummary>,
     active_goal_draft: Option<ActiveGoalDraft>,
     chat_scroll_from_bottom: u16,
     input: String,
@@ -415,6 +423,7 @@ impl App {
             selected_goal_outline: Vec::new(),
             messages: Vec::new(),
             last_chat_response: None,
+            last_action_result: None,
             active_goal_draft: None,
             chat_scroll_from_bottom: 0,
             input: String::new(),
@@ -760,11 +769,14 @@ impl App {
     }
 
     fn scoped_action_items(&self) -> Vec<ApprovalSummary> {
-        if self.selected_goal_id.is_some() && !self.selected_goal_approvals.is_empty() {
-            self.selected_goal_approvals.clone()
-        } else {
-            self.approvals.clone()
+        if let Some(goal_id) = self.selected_goal_id.as_deref() {
+            let selected = action_rows_for_goal(&self.selected_goal_approvals, goal_id, true);
+            if !selected.is_empty() || !self.selected_goal_approvals.is_empty() {
+                return selected;
+            }
+            return action_rows_for_goal(&self.approvals, goal_id, false);
         }
+        self.approvals.clone()
     }
 
     fn current_action_items(&self) -> Vec<ApprovalSummary> {
@@ -835,6 +847,47 @@ impl App {
         Ok(())
     }
 
+    fn begin_reject_selected_approval(&mut self) -> anyhow::Result<()> {
+        if self.pending_request.is_some() {
+            self.status = "gateway request is still running; approval reject deferred".to_string();
+            return Ok(());
+        }
+        let Some(action) = self.selected_action_item() else {
+            self.status = "operator action queue is clear".to_string();
+            return Ok(());
+        };
+        if !is_approval_gate_action(&action) {
+            self.status = "selected action is not an approval gate; use Enter/a to retry or replan"
+                .to_string();
+            return Ok(());
+        }
+        let Some(goal_id) = action
+            .goal_id
+            .clone()
+            .or_else(|| self.selected_goal_id.clone())
+            .filter(|goal_id| !goal_id.trim().is_empty())
+        else {
+            self.status = "selected approval is missing a goal id".to_string();
+            return Ok(());
+        };
+        let (path, payload, label) = operator_action_request_with_resolution(
+            &goal_id,
+            &action,
+            self.input.trim(),
+            "reject",
+        )?;
+        self.input.clear();
+        self.status = format!("rejecting approval gate: {label}");
+        self.busy = true;
+        self.pending_request = Some(PendingGatewayRequest {
+            kind: PendingRequestKind::OperatorAction {
+                label: label.clone(),
+            },
+            handle: self.spawn_post_json(&path, payload),
+        });
+        Ok(())
+    }
+
     fn begin_cancel_selected_goal(&mut self) -> anyhow::Result<()> {
         if self.pending_request.is_some() {
             self.status = "gateway request is still running; cancel deferred".to_string();
@@ -886,9 +939,59 @@ impl App {
         Ok(())
     }
 
+    fn begin_restart_selected_goal(&mut self) -> anyhow::Result<()> {
+        if self.pending_request.is_some() {
+            self.status = "gateway request is still running; restart deferred".to_string();
+            return Ok(());
+        }
+        let Some(goal_id) = self
+            .selected_goal_id
+            .clone()
+            .filter(|goal_id| !goal_id.trim().is_empty())
+        else {
+            self.status = "select a goal before restarting blocked work".to_string();
+            return Ok(());
+        };
+        let selected_task =
+            if self.focus == TuiFocus::Dashboard && self.dashboard_view == DashboardView::Actions {
+                self.selected_action_item().and_then(|action| {
+                    if action.id.starts_with("task:") {
+                        action.task_id
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+        let message = if self.input.trim().is_empty() {
+            match selected_task.as_deref() {
+                Some(task_id) => format!("Restart task {} from COAT TUI.", short_id(task_id)),
+                None => "Restart blocked work from COAT TUI.".to_string(),
+            }
+        } else {
+            self.input.trim().to_string()
+        };
+        let (path, payload, label) =
+            restart_goal_request(&goal_id, selected_task.as_deref(), &message);
+        self.input.clear();
+        self.cancel_goal_confirmation = None;
+        self.status = format!("requesting restart: {label}");
+        self.busy = true;
+        self.pending_request = Some(PendingGatewayRequest {
+            kind: PendingRequestKind::OperatorAction {
+                label: label.clone(),
+            },
+            handle: self.spawn_post_json(&path, payload),
+        });
+        Ok(())
+    }
+
     fn clear_local_messages_and_result(&mut self) {
         let message_count = self.messages.len();
-        let had_action_result = self.last_chat_response.take().is_some();
+        let had_action_result = self.last_action_result.is_some();
+        self.last_chat_response = None;
+        self.last_action_result = None;
         self.messages.clear();
         self.active_goal_draft = None;
         self.chat_scroll_from_bottom = 0;
@@ -910,6 +1013,7 @@ impl App {
                     role: "assistant".to_string(),
                     content: format!("Action applied: {label}"),
                 });
+                self.last_action_result = Some(action_result_summary(&label, true, Some(&value)));
                 self.last_chat_response = Some(value);
                 self.chat_scroll_from_bottom = 0;
                 self.action_index = 0;
@@ -924,6 +1028,11 @@ impl App {
                 self.messages.push(ChatLine {
                     role: "assistant".to_string(),
                     content: format!("Action failed: {label}: {error}"),
+                });
+                self.last_action_result = Some(ActionResultSummary {
+                    label,
+                    status: "failed".to_string(),
+                    message: error.clone(),
                 });
                 self.chat_scroll_from_bottom = 0;
                 self.status = format!("queue action failed: {error}");
@@ -1065,6 +1174,49 @@ impl App {
         self.dashboard_scroll = 0;
         self.status = format!("view: {}", self.dashboard_view.label());
     }
+
+    fn activate_focused_control(&mut self) -> anyhow::Result<()> {
+        match self.focus {
+            TuiFocus::Dashboard if dashboard_view_uses_action_queue(self.dashboard_view) => {
+                self.begin_apply_selected_action()
+            }
+            TuiFocus::Dashboard if self.dashboard_view == DashboardView::Goals => {
+                self.dashboard_view = DashboardView::Graph;
+                self.dashboard_scroll = 0;
+                self.status =
+                    "opened graph for selected goal; use Ctrl-N/Ctrl-P to change goals".to_string();
+                Ok(())
+            }
+            TuiFocus::Dashboard if self.active_goal_draft.is_some() => {
+                self.status =
+                    "active draft is visible; press F5 or Ctrl-G to submit, Ctrl-D to discard"
+                        .to_string();
+                Ok(())
+            }
+            TuiFocus::Dashboard => {
+                self.status = format!(
+                    "{} is read-only here; use numbered tabs, actions, or chat controls",
+                    self.dashboard_view.label()
+                );
+                Ok(())
+            }
+            TuiFocus::Chat => {
+                self.focus = TuiFocus::Input;
+                self.status =
+                    "input focused; type a message, then press Ctrl-S to send".to_string();
+                Ok(())
+            }
+            TuiFocus::Input => {
+                self.status = if self.input.trim().is_empty() {
+                    "input is empty; type a message, then press Ctrl-S to send".to_string()
+                } else {
+                    "press Ctrl-S or Ctrl-Enter to send chat; Enter only activates panels"
+                        .to_string()
+                };
+                Ok(())
+            }
+        }
+    }
 }
 
 pub async fn run(config: TuiConfig) -> anyhow::Result<()> {
@@ -1108,6 +1260,10 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         return Ok(true);
     }
     match key.code {
+        KeyCode::Enter if chat_submit_modifiers(key.modifiers) => {
+            app.begin_send_chat()?;
+            Ok(false)
+        }
         KeyCode::Esc => Ok(true),
         KeyCode::Char('q') if app.input.is_empty() => Ok(true),
         KeyCode::Tab => {
@@ -1174,20 +1330,7 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Enter => {
-            if app.focus == TuiFocus::Dashboard
-                && dashboard_view_uses_action_queue(app.dashboard_view)
-            {
-                app.begin_apply_selected_action()?;
-            } else if app.focus == TuiFocus::Input {
-                app.begin_send_chat()?;
-            } else {
-                let previous_focus = app.focus.label();
-                app.focus = TuiFocus::Input;
-                app.status = format!(
-                    "input focused from {}; press Enter again to send",
-                    previous_focus
-                );
-            }
+            app.activate_focused_control()?;
             Ok(false)
         }
         KeyCode::Backspace => {
@@ -1206,6 +1349,22 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         }
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.begin_cancel_selected_goal()?;
+            Ok(false)
+        }
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.begin_send_chat()?;
+            Ok(false)
+        }
+        KeyCode::Char('r')
+            if key.modifiers.is_empty()
+                && app.focus == TuiFocus::Dashboard
+                && dashboard_view_uses_action_queue(app.dashboard_view) =>
+        {
+            app.begin_reject_selected_approval()?;
+            Ok(false)
+        }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::ALT) => {
+            app.begin_restart_selected_goal()?;
             Ok(false)
         }
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1340,6 +1499,10 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         }
         _ => Ok(false),
     }
+}
+
+fn chat_submit_modifiers(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
 }
 
 struct TerminalSession {
@@ -1540,7 +1703,7 @@ fn goals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(
-            "Ctrl-N/Ctrl-P or Up/Down selects. Ctrl-X cancels selected goal after confirmation.",
+            "Ctrl-N/Ctrl-P or Up/Down selects. Enter opens graph. Ctrl-X cancels. Alt-R restarts blocked work.",
         ),
         Line::from(""),
     ];
@@ -1612,7 +1775,7 @@ fn graph_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!("nodes {} scope {}", nodes.len(), scope)),
-        Line::from("Ctrl-N/Ctrl-P changes current goal. Tab focuses chat or input."),
+        Line::from("Ctrl-N/Ctrl-P changes goal. Alt-R restarts blocked work. Ctrl-X cancels goal."),
         Line::from(""),
     ];
     if nodes.is_empty() {
@@ -1652,7 +1815,7 @@ fn graph_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let approvals = app.scoped_action_items();
     let value_width = width.saturating_sub(15).max(20) as usize;
-    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_approvals.is_empty() {
+    let scope = if app.selected_goal_id.is_some() {
         "selected goal"
     } else {
         "all goals"
@@ -1671,13 +1834,17 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             scope
         )),
         Line::from(
-            "Up/Down selects. Enter/a runs the selected action. Ctrl-X cancels selected goal.",
+            "Up/Down selects. Enter/a runs action. r rejects approval gates. Alt-R restarts. Ctrl-X cancels.",
         ),
         Line::from(
             "Human prompts: empty input = Continue; typed input = Add context/answer. Ctrl-L clears local results.",
         ),
         Line::from(""),
     ];
+    if let Some(result) = app.last_action_result.as_ref() {
+        lines.extend(action_result_dashboard_lines(result, width));
+        lines.push(Line::from(""));
+    }
     if approvals.is_empty() {
         lines.push(Line::from("No operator actions are waiting."));
         return lines;
@@ -1704,21 +1871,12 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             ),
         ]));
         lines.push(Line::from(format!(
-            "  kind:{} action:{} id:{} risk:{} goal:{} task:{}",
+            "  kind:{} control:{} risk:{} goal:{} task:{}",
             action_kind_label(approval),
             action_label,
-            short_id(&approval.id),
             action_risk_label(approval),
-            approval
-                .goal_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string()),
-            approval
-                .task_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string())
+            row_goal_ref(approval.goal_id.as_deref(), app.selected_goal_id.as_deref()),
+            short_optional_ref(approval.task_id.as_deref())
         )));
         if action_requires_input(approval) && selected {
             lines.push(Line::from(
@@ -1740,7 +1898,7 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 fn approval_gates_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let approvals = current_approval_gate_items(app);
     let value_width = width.saturating_sub(15).max(20) as usize;
-    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_approvals.is_empty() {
+    let scope = if app.selected_goal_id.is_some() {
         "selected goal"
     } else {
         "all goals"
@@ -1753,7 +1911,7 @@ fn approval_gates_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!("pending {} scope {}", approvals.len(), scope)),
-        Line::from("Enter/a approves the selected gate. Use Actions for prompts and recovery."),
+        Line::from("Enter/a approves the selected gate. r rejects it with optional input reason."),
         Line::from(""),
     ];
     if approvals.is_empty() {
@@ -1781,19 +1939,11 @@ fn approval_gates_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             ),
         ]));
         lines.push(Line::from(format!(
-            "  id:{} risk:{} goal:{} task:{}",
-            short_id(&approval.id),
+            "  control:{} risk:{} goal:{} task:{}",
+            tui_action_label(approval),
             action_risk_label(approval),
-            approval
-                .goal_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string()),
-            approval
-                .task_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string())
+            row_goal_ref(approval.goal_id.as_deref(), app.selected_goal_id.as_deref()),
+            short_optional_ref(approval.task_id.as_deref())
         )));
         if let Some(created_at) = approval.created_at.as_deref() {
             lines.push(dashboard_value_line("  created", created_at, value_width));
@@ -1817,6 +1967,42 @@ fn action_queue_breakdown(approvals: &[ApprovalSummary]) -> String {
         .filter(|action| action.id.starts_with("thunk:"))
         .count();
     format!("approval gates:{approval_count} recovery:{task_count} prompts:{thunk_count}")
+}
+
+fn action_rows_for_goal(
+    rows: &[ApprovalSummary],
+    goal_id: &str,
+    include_unscoped: bool,
+) -> Vec<ApprovalSummary> {
+    rows.iter()
+        .filter(|row| row_matches_goal(row.goal_id.as_deref(), goal_id, include_unscoped))
+        .cloned()
+        .collect()
+}
+
+fn row_matches_goal(
+    row_goal_id: Option<&str>,
+    selected_goal_id: &str,
+    include_unscoped: bool,
+) -> bool {
+    row_goal_id
+        .map(|row_goal_id| row_goal_id == selected_goal_id)
+        .unwrap_or(include_unscoped)
+}
+
+fn row_goal_ref(row_goal_id: Option<&str>, selected_goal_id: Option<&str>) -> String {
+    match (row_goal_id, selected_goal_id) {
+        (Some(row_goal_id), Some(selected_goal_id)) if row_goal_id == selected_goal_id => {
+            "current".to_string()
+        }
+        (Some(row_goal_id), _) => short_id(row_goal_id),
+        (None, Some(_)) => "current".to_string(),
+        (None, None) => "-".to_string(),
+    }
+}
+
+fn short_optional_ref(value: Option<&str>) -> String {
+    value.map(short_id).unwrap_or_else(|| "-".to_string())
 }
 
 fn current_approval_gate_items(app: &App) -> Vec<ApprovalSummary> {
@@ -1866,13 +2052,18 @@ fn action_status_style(action: &ApprovalSummary) -> Style {
 }
 
 fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let events = if app.selected_goal_id.is_some() && !app.selected_goal_events.is_empty() {
-        &app.selected_goal_events
+    let events = if let Some(goal_id) = app.selected_goal_id.as_deref() {
+        let selected = event_rows_for_goal(&app.selected_goal_events, goal_id, true);
+        if !selected.is_empty() || !app.selected_goal_events.is_empty() {
+            selected
+        } else {
+            event_rows_for_goal(&app.events, goal_id, false)
+        }
     } else {
-        &app.events
+        app.events.clone()
     };
     let value_width = width.saturating_sub(15).max(20) as usize;
-    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_events.is_empty() {
+    let scope = if app.selected_goal_id.is_some() {
         "selected goal"
     } else {
         "all goals"
@@ -1890,7 +2081,9 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             app.event_sources.len(),
             scope
         )),
-        Line::from("Ctrl-R refreshes projections. Ctrl-L clears local action/chat results."),
+        Line::from(
+            "Ctrl-N/Ctrl-P changes goal. Ctrl-R refreshes. Ctrl-L clears local action/chat results.",
+        ),
     ];
     for source in app.event_sources.iter().take(4) {
         lines.push(Line::from(format!(
@@ -1921,19 +2114,10 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             Span::raw(truncate_text(&event.message, value_width)),
         ]));
         lines.push(Line::from(format!(
-            "  id:{} goal:{} task:{} source:{}",
-            short_id(&event.id),
-            event
-                .goal_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string()),
-            event
-                .task_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string()),
-            event.source.as_deref().unwrap_or("-")
+            "  source:{} goal:{} task:{}",
+            event.source.as_deref().unwrap_or("-"),
+            row_goal_ref(event.goal_id.as_deref(), app.selected_goal_id.as_deref()),
+            short_optional_ref(event.task_id.as_deref())
         )));
         if let Some(created_at) = event.created_at.as_deref() {
             lines.push(dashboard_value_line("  at", created_at, value_width));
@@ -1943,14 +2127,25 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+fn event_rows_for_goal(
+    rows: &[EventSummary],
+    goal_id: &str,
+    include_unscoped: bool,
+) -> Vec<EventSummary> {
+    rows.iter()
+        .filter(|row| row_matches_goal(row.goal_id.as_deref(), goal_id, include_unscoped))
+        .cloned()
+        .collect()
+}
+
 fn workers_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let workers = if app.selected_goal_id.is_some() && !app.selected_goal_worker_runs.is_empty() {
-        &app.selected_goal_worker_runs
+    let workers = if app.selected_goal_id.is_some() {
+        app.selected_goal_worker_runs.clone()
     } else {
-        &app.worker_runs
+        app.worker_runs.clone()
     };
     let value_width = width.saturating_sub(15).max(20) as usize;
-    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_worker_runs.is_empty() {
+    let scope = if app.selected_goal_id.is_some() {
         "selected goal"
     } else {
         "workspace"
@@ -1963,7 +2158,7 @@ fn workers_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!("runs {} scope {}", workers.len(), scope)),
-        Line::from("Registered runners and worker runs are read-only here."),
+        Line::from("Ctrl-N/Ctrl-P changes goal. Ctrl-R refreshes runner and run projections."),
         Line::from(""),
     ];
     if workers.is_empty() {
@@ -1983,13 +2178,8 @@ fn workers_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             ),
         ]));
         lines.push(Line::from(format!(
-            "  id:{} task:{} endpoint:{} node:{}",
-            short_id(&worker.id),
-            worker
-                .task
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string()),
+            "  task:{} endpoint:{} node:{}",
+            short_optional_ref(worker.task.as_deref()),
             worker.endpoint.as_deref().unwrap_or("-"),
             worker.node.as_deref().unwrap_or("-")
         )));
@@ -2005,13 +2195,18 @@ fn workers_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 fn evidence_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let evidence = if app.selected_goal_id.is_some() && !app.selected_goal_evidence.is_empty() {
-        &app.selected_goal_evidence
+    let evidence = if let Some(goal_id) = app.selected_goal_id.as_deref() {
+        let selected = evidence_rows_for_goal(&app.selected_goal_evidence, goal_id, true);
+        if !selected.is_empty() || !app.selected_goal_evidence.is_empty() {
+            selected
+        } else {
+            evidence_rows_for_goal(&app.evidence, goal_id, false)
+        }
     } else {
-        &app.evidence
+        app.evidence.clone()
     };
     let value_width = width.saturating_sub(14).max(20) as usize;
-    let scope = if app.selected_goal_id.is_some() && !app.selected_goal_evidence.is_empty() {
+    let scope = if app.selected_goal_id.is_some() {
         "selected goal"
     } else {
         "workspace"
@@ -2024,7 +2219,9 @@ fn evidence_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!("items {} scope {}", evidence.len(), scope)),
-        Line::from("Evidence explains why a task or goal can move forward."),
+        Line::from(
+            "Evidence explains why a task or goal can move forward. Ctrl-R refreshes projections.",
+        ),
         Line::from(""),
     ];
     if evidence.is_empty() {
@@ -2038,17 +2235,10 @@ fn evidence_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             Span::raw(truncate_text(&item.summary, value_width)),
         ]));
         lines.push(Line::from(format!(
-            "  id:{} source:{} goal:{} task:{}",
-            short_id(&item.id),
+            "  source:{} goal:{} task:{}",
             item.source.as_deref().unwrap_or("-"),
-            item.goal_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string()),
-            item.task_id
-                .as_deref()
-                .map(short_id)
-                .unwrap_or_else(|| "-".to_string())
+            row_goal_ref(item.goal_id.as_deref(), app.selected_goal_id.as_deref()),
+            short_optional_ref(item.task_id.as_deref())
         )));
         lines.push(Line::from(""));
     }
@@ -2059,6 +2249,17 @@ fn evidence_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         )));
     }
     lines
+}
+
+fn evidence_rows_for_goal(
+    rows: &[EvidenceSummary],
+    goal_id: &str,
+    include_unscoped: bool,
+) -> Vec<EvidenceSummary> {
+    rows.iter()
+        .filter(|row| row_matches_goal(row.goal_id.as_deref(), goal_id, include_unscoped))
+        .cloned()
+        .collect()
 }
 
 fn debug_dashboard_lines(width: u16) -> Vec<Line<'static>> {
@@ -2342,11 +2543,18 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let viewport_height = area.height.saturating_sub(2);
     let scroll_y = chat_scroll_y(total_rows, viewport_height, app.chat_scroll_from_bottom);
     let max_scroll = total_rows.saturating_sub(viewport_height as usize);
+    let position = scroll_position_label(scroll_y, max_scroll);
     let context = chat_context_label(app);
     let title = if app.focus == TuiFocus::Chat {
-        format!("Chat {} * row {}/{}", context, scroll_y, max_scroll)
+        format!(
+            "Chat {} * {position} row {}/{}",
+            context, scroll_y, max_scroll
+        )
     } else {
-        format!("Chat {} row {}/{}", context, scroll_y, max_scroll)
+        format!(
+            "Chat {} {position} row {}/{}",
+            context, scroll_y, max_scroll
+        )
     };
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -2417,10 +2625,11 @@ fn render_scrollable_lines(
     let viewport_height = area.height.saturating_sub(2);
     let max_scroll = total_rows.saturating_sub(viewport_height as usize);
     let scroll_y = (scroll as usize).min(max_scroll).min(u16::MAX as usize) as u16;
+    let position = scroll_position_label(scroll_y, max_scroll);
     let title = if focused {
-        format!("{title} * row {scroll_y}/{max_scroll}")
+        format!("{title} * {position} row {scroll_y}/{max_scroll}")
     } else {
-        format!("{title} row {scroll_y}/{max_scroll}")
+        format!("{title} {position} row {scroll_y}/{max_scroll}")
     };
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -2443,14 +2652,36 @@ fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let context = chat_context_label(app);
     let pending = if app.busy { " pending" } else { "" };
     let title = if app.focus == TuiFocus::Input {
-        format!("Input [{} {}{}] *", app.mode.label(), context, pending)
+        format!(
+            "Input [{} {}{}] * Ctrl-S/Ctrl-Enter sends",
+            app.mode.label(),
+            context,
+            pending
+        )
     } else {
-        format!("Input [{} {}{}]", app.mode.label(), context, pending)
+        format!(
+            "Input [{} {}{}] Ctrl-S/Ctrl-Enter sends",
+            app.mode.label(),
+            context,
+            pending
+        )
+    };
+    let input_text = if app.input.is_empty() && app.busy {
+        "request pending; type the next message here"
+    } else if app.input.is_empty() {
+        "type here; Ctrl-S or Ctrl-Enter sends chat"
+    } else {
+        app.input.as_str()
+    };
+    let input_style = if app.input.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
     };
     frame.render_widget(
-        Paragraph::new(app.input.as_str())
+        Paragraph::new(input_text)
             .block(Block::default().borders(Borders::ALL).title(title))
-            .style(Style::default().fg(Color::White)),
+            .style(input_style),
         area,
     );
     if app.focus == TuiFocus::Input {
@@ -2476,7 +2707,7 @@ fn chat_context_label(app: &App) -> String {
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter/a run action  Ctrl-X cancel goal  Ctrl-L clear local  F5/Ctrl-G accept draft  Ctrl-R refresh  Esc quit",
+            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter/a apply  r reject approval  Ctrl-S/Ctrl-Enter send chat  F5/Ctrl-G accept draft  Ctrl-D discard  Alt-R restart  Ctrl-X cancel  Ctrl-R refresh  Esc quit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -2872,6 +3103,31 @@ fn cancel_goal_request(goal_id: &str, reason: &str) -> (String, Value, String) {
     )
 }
 
+fn restart_goal_request(
+    goal_id: &str,
+    task_id: Option<&str>,
+    message: &str,
+) -> (String, Value, String) {
+    let scope = if task_id.is_some() { "task" } else { "blocked" };
+    (
+        format!("/api/operator/goals/{}/restart", percent_encode(goal_id)),
+        json!({
+            "goal_id": goal_id,
+            "scope": scope,
+            "reason": "operator_requested",
+            "message": message,
+            "task_id": task_id,
+            "reset_attempts": false,
+            "preserve_artifacts": true,
+            "operator": "operator"
+        }),
+        match task_id {
+            Some(task_id) => format!("restart task {}", short_id(task_id)),
+            None => format!("restart blocked work {}", short_id(goal_id)),
+        },
+    )
+}
+
 fn operator_action_request(
     goal_id: &str,
     action: &ApprovalSummary,
@@ -2893,10 +3149,38 @@ fn operator_action_request(
     } else {
         "approve"
     };
+    operator_action_request_with_resolution(goal_id, action, input, resolution)
+}
+
+fn operator_action_request_with_resolution(
+    goal_id: &str,
+    action: &ApprovalSummary,
+    input: &str,
+    resolution: &str,
+) -> anyhow::Result<(String, Value, String)> {
+    let resolution = if action.id.starts_with("thunk:") {
+        if input.trim().is_empty() {
+            "continue"
+        } else {
+            "add_context"
+        }
+    } else if action.id.starts_with("task:") {
+        let status = status_token(&action.status);
+        if status == "blocked" || status == "failed" {
+            "retry"
+        } else {
+            "replan"
+        }
+    } else if resolution == "reject" {
+        "reject"
+    } else {
+        "approve"
+    };
     let response_summary = if input.trim().is_empty() {
         match resolution {
             "continue" => "Continue".to_string(),
             "approve" => "Approved through COAT TUI action queue".to_string(),
+            "reject" => "Rejected through COAT TUI action queue".to_string(),
             "retry" => format!("Retry from action queue: {}", action.action),
             "replan" => format!("Request replan from action queue: {}", action.action),
             _ => "Resolved through COAT TUI action queue".to_string(),
@@ -2934,7 +3218,7 @@ fn tui_action_label(action: &ApprovalSummary) -> &'static str {
             _ => "Replan with context",
         }
     } else {
-        "Approve and continue"
+        "Approve / Reject"
     }
 }
 
@@ -4775,6 +5059,74 @@ fn goal_draft_dashboard_lines(summary: &GoalDraftSummary, width: u16) -> Vec<Lin
     ]
 }
 
+fn action_result_summary(label: &str, ok: bool, value: Option<&Value>) -> ActionResultSummary {
+    let status = value
+        .and_then(|value| {
+            compact_string_at_paths(
+                value,
+                &[
+                    &["status"],
+                    &["resolution"],
+                    &["result", "status"],
+                    &["data", "status"],
+                ],
+            )
+        })
+        .map(|status| status_token(&status))
+        .unwrap_or_else(|| {
+            if ok {
+                "applied".to_string()
+            } else {
+                "failed".to_string()
+            }
+        });
+    let message = value
+        .and_then(|value| {
+            compact_string_at_paths(
+                value,
+                &[
+                    &["message"],
+                    &["summary"],
+                    &["detail"],
+                    &["response_summary"],
+                    &["result", "message"],
+                    &["result", "summary"],
+                    &["result", "detail"],
+                    &["data", "message"],
+                    &["data", "summary"],
+                ],
+            )
+        })
+        .unwrap_or_else(|| {
+            if ok {
+                "gateway accepted the action; refresh projections for follow-up work".to_string()
+            } else {
+                "gateway rejected the action; keep the row selected and retry or replan".to_string()
+            }
+        });
+    ActionResultSummary {
+        label: label.to_string(),
+        status,
+        message,
+    }
+}
+
+fn action_result_dashboard_lines(result: &ActionResultSummary, width: u16) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(15).max(20) as usize;
+    vec![
+        Line::from(Span::styled(
+            "last action result",
+            Style::default()
+                .fg(status_color(&result.status))
+                .add_modifier(Modifier::BOLD),
+        )),
+        dashboard_value_line("action", &result.label, value_width),
+        dashboard_value_line("status", &result.status, value_width),
+        dashboard_value_line("result", &result.message, value_width),
+        Line::from("recover    retry selected row, Alt-R restart, or type context and replan"),
+    ]
+}
+
 fn dashboard_value_line(label: &str, value: &str, value_width: usize) -> Line<'static> {
     Line::from(format!(
         "{label:<10} {}",
@@ -4843,6 +5195,18 @@ fn chat_scroll_y(total_rows: usize, viewport_height: u16, from_bottom: u16) -> u
     max_scroll
         .saturating_sub(from_bottom as usize)
         .min(u16::MAX as usize) as u16
+}
+
+fn scroll_position_label(scroll_y: u16, max_scroll: usize) -> &'static str {
+    if max_scroll == 0 {
+        "all"
+    } else if scroll_y == 0 {
+        "top"
+    } else if scroll_y as usize >= max_scroll {
+        "bottom"
+    } else {
+        "scrolled"
+    }
 }
 
 fn percent_encode(value: &str) -> String {
@@ -5154,6 +5518,18 @@ mod tests {
         );
         assert!(label.contains("approve"));
 
+        let (path, payload, label) = operator_action_request_with_resolution(
+            goal_id,
+            &approval,
+            "Risk is too broad",
+            "reject",
+        )
+        .expect("approval reject payload");
+        assert!(path.ends_with("/api/operator/actions/approval-1/resolve"));
+        assert_eq!(payload["resolution"], "reject");
+        assert_eq!(payload["response_summary"], "Risk is too broad");
+        assert!(label.contains("reject"));
+
         let waiting_task_without_thunk = ApprovalSummary {
             id: "task:task-waiting-1".to_string(),
             status: "waiting_input".to_string(),
@@ -5180,6 +5556,28 @@ mod tests {
         assert_eq!(path, "/api/operator/goals/goal%3Aabc%2F123/cancel");
         assert_eq!(payload, json!("Stop this goal from the TUI."));
         assert_eq!(label, "cancel goal goal:abc");
+    }
+
+    #[test]
+    fn restart_goal_request_builds_blocked_and_task_payloads() {
+        let (path, payload, label) =
+            restart_goal_request("goal:abc/123", None, "Recover blocked work.");
+
+        assert_eq!(path, "/api/operator/goals/goal%3Aabc%2F123/restart");
+        assert_eq!(payload["goal_id"], "goal:abc/123");
+        assert_eq!(payload["scope"], "blocked");
+        assert_eq!(payload["reason"], "operator_requested");
+        assert_eq!(payload["message"], "Recover blocked work.");
+        assert!(payload["task_id"].is_null());
+        assert_eq!(label, "restart blocked work goal:abc");
+
+        let (_path, payload, label) =
+            restart_goal_request("goal-1", Some("task-12345678"), "Retry this task.");
+        assert_eq!(payload["scope"], "task");
+        assert_eq!(payload["task_id"], "task-12345678");
+        assert_eq!(payload["reset_attempts"], false);
+        assert_eq!(payload["preserve_artifacts"], true);
+        assert_eq!(label, "restart task task-123");
     }
 
     #[test]
@@ -5213,7 +5611,7 @@ mod tests {
         };
 
         assert_eq!(tui_action_label(&thunk), "Continue / Add context");
-        assert_eq!(tui_action_label(&approval), "Approve and continue");
+        assert_eq!(tui_action_label(&approval), "Approve / Reject");
         assert_eq!(tui_action_label(&waiting_task), "Replan with context");
         assert!(action_requires_input(&thunk));
         assert!(!action_requires_input(&waiting_task));
@@ -5370,7 +5768,8 @@ mod tests {
             approvals.contains("queue 1 (approval gates:1 recovery:0 prompts:0) scope all goals")
         );
         assert!(approvals.contains("kind:approval gate"));
-        assert!(approvals.contains("Enter/a runs the selected action"));
+        assert!(approvals.contains("Enter/a runs action"));
+        assert!(approvals.contains("Alt-R restarts"));
         assert!(approvals.contains("Ctrl-L clears local results"));
         assert!(approvals.contains("approve network-open research task"));
         assert!(approvals.contains("critical"));
@@ -5379,11 +5778,159 @@ mod tests {
         assert!(approval_gates.contains("pending 1 scope all goals"));
         assert!(approval_gates.contains("approve network-open research task"));
         assert!(events.contains("recent 1 sources 0 scope all goals"));
-        assert!(events.contains("Ctrl-R refreshes projections"));
+        assert!(events.contains("Ctrl-R refreshes"));
         assert!(events.contains("Ctrl-L clears local action/chat results"));
         assert!(events.contains("pull_request_check_failed"));
         assert!(events.contains("CI build failed on ubuntu-24.04-arm"));
         assert!(events.contains("github-actions"));
+    }
+
+    #[test]
+    fn actions_dashboard_shows_last_action_result_and_recovery_paths() {
+        let mut app = test_app();
+        app.last_action_result = Some(action_result_summary(
+            "retry task task-1234",
+            true,
+            Some(&json!({
+                "status": "queued",
+                "message": "Restart queued; waiting for runner capacity."
+            })),
+        ));
+        app.approvals = vec![ApprovalSummary {
+            id: "task:task-1234".to_string(),
+            status: "blocked".to_string(),
+            action: "Recover blocked task".to_string(),
+            risk: Some("task attention".to_string()),
+            goal_id: Some("goal-1234".to_string()),
+            task_id: Some("task-1234".to_string()),
+            created_at: None,
+        }];
+
+        let actions = lines_to_plain_text(&actions_dashboard_lines(&app, 96));
+
+        assert!(actions.contains("last action result"));
+        assert!(actions.contains("retry task task-1234"));
+        assert!(actions.contains("queued"));
+        assert!(actions.contains("Restart queued; waiting for runner capacity."));
+        assert!(actions.contains("recover    retry selected row, Alt-R restart"));
+        assert!(actions.contains("recovery: retry task work"));
+    }
+
+    #[test]
+    fn selected_goal_scopes_operator_tabs_before_falling_back_to_workspace_rows() {
+        let current_goal = "018f8f2f-1fd8-7688-bb12-8bfb6b756601";
+        let other_goal = "028f8f2f-1fd8-7688-bb12-8bfb6b756602";
+        let mut app = test_app();
+        app.selected_goal_id = Some(current_goal.to_string());
+        app.approvals = vec![
+            ApprovalSummary {
+                id: "approval-current".to_string(),
+                status: "pending".to_string(),
+                action: "approve current goal deploy".to_string(),
+                goal_id: Some(current_goal.to_string()),
+                ..ApprovalSummary::default()
+            },
+            ApprovalSummary {
+                id: "approval-other".to_string(),
+                status: "pending".to_string(),
+                action: "approve unrelated goal deploy".to_string(),
+                goal_id: Some(other_goal.to_string()),
+                ..ApprovalSummary::default()
+            },
+        ];
+        app.events = vec![
+            EventSummary {
+                id: "event-current".to_string(),
+                kind: "goal_blocked".to_string(),
+                message: "current goal needs input".to_string(),
+                goal_id: Some(current_goal.to_string()),
+                ..EventSummary::default()
+            },
+            EventSummary {
+                id: "event-other".to_string(),
+                kind: "goal_blocked".to_string(),
+                message: "other goal needs input".to_string(),
+                goal_id: Some(other_goal.to_string()),
+                ..EventSummary::default()
+            },
+        ];
+        app.evidence = vec![
+            EvidenceSummary {
+                id: "evidence-current".to_string(),
+                kind: "test_result".to_string(),
+                summary: "current goal tui test passed".to_string(),
+                goal_id: Some(current_goal.to_string()),
+                ..EvidenceSummary::default()
+            },
+            EvidenceSummary {
+                id: "evidence-other".to_string(),
+                kind: "test_result".to_string(),
+                summary: "other goal tui test passed".to_string(),
+                goal_id: Some(other_goal.to_string()),
+                ..EvidenceSummary::default()
+            },
+        ];
+        app.worker_runs = vec![WorkerRunSummary {
+            id: "workspace-run".to_string(),
+            runner: "workspace runner".to_string(),
+            status: "running".to_string(),
+            ..WorkerRunSummary::default()
+        }];
+
+        let actions = lines_to_plain_text(&actions_dashboard_lines(&app, 100));
+        let events = lines_to_plain_text(&events_dashboard_lines(&app, 100));
+        let evidence = lines_to_plain_text(&evidence_dashboard_lines(&app, 100));
+        let workers = lines_to_plain_text(&workers_dashboard_lines(&app, 100));
+
+        assert!(actions.contains("queue 1"));
+        assert!(actions.contains("scope selected goal"));
+        assert!(actions.contains("approve current goal deploy"));
+        assert!(actions.contains("goal:current"));
+        assert!(!actions.contains("approve unrelated goal deploy"));
+        assert!(events.contains("recent 1"));
+        assert!(events.contains("current goal needs input"));
+        assert!(!events.contains("other goal needs input"));
+        assert!(evidence.contains("items 1"));
+        assert!(evidence.contains("current goal tui test passed"));
+        assert!(!evidence.contains("other goal tui test passed"));
+        assert!(workers.contains("runs 0 scope selected goal"));
+        assert!(!workers.contains("workspace runner"));
+    }
+
+    #[test]
+    fn selected_goal_snapshot_rows_without_goal_ids_stay_visible() {
+        let mut app = test_app();
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string());
+        app.selected_goal_approvals = vec![ApprovalSummary {
+            id: "thunk:operator-prompt".to_string(),
+            status: "waiting-input".to_string(),
+            action: "Choose the continuation path".to_string(),
+            risk: Some("human prompt".to_string()),
+            ..ApprovalSummary::default()
+        }];
+        app.selected_goal_events = vec![EventSummary {
+            id: "event-selected".to_string(),
+            kind: "goal_waiting_input".to_string(),
+            message: "selected goal is waiting for a prompt response".to_string(),
+            ..EventSummary::default()
+        }];
+        app.selected_goal_evidence = vec![EvidenceSummary {
+            id: "artifact-selected".to_string(),
+            kind: "checkpoint".to_string(),
+            summary: "selected goal checkpoint is available".to_string(),
+            ..EvidenceSummary::default()
+        }];
+
+        let actions = lines_to_plain_text(&actions_dashboard_lines(&app, 100));
+        let events = lines_to_plain_text(&events_dashboard_lines(&app, 100));
+        let evidence = lines_to_plain_text(&evidence_dashboard_lines(&app, 100));
+
+        assert!(actions.contains("Choose the continuation path"));
+        assert!(actions.contains("goal:current"));
+        assert!(events.contains("selected goal is waiting for a prompt response"));
+        assert!(events.contains("goal:current"));
+        assert!(evidence.contains("selected goal checkpoint is available"));
+        assert!(evidence.contains("goal:current"));
     }
 
     #[test]
@@ -6009,7 +6556,140 @@ mod tests {
         assert_eq!(app.focus, TuiFocus::Input);
         assert_eq!(app.input, "do not send yet");
         assert!(app.pending_request.is_none());
-        assert!(app.status.contains("press Enter again"));
+        assert!(app.status.contains("Ctrl-S"));
+    }
+
+    #[tokio::test]
+    async fn plain_enter_on_input_does_not_send_chat() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Input;
+        app.input = "do not send on plain enter".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("handle enter");
+
+        assert_eq!(app.input, "do not send on plain enter");
+        assert!(app.pending_request.is_none());
+        assert!(!app.busy);
+        assert!(app.status.contains("Ctrl-S"));
+    }
+
+    #[tokio::test]
+    async fn enter_on_actions_resolves_the_selected_operator_action() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Dashboard;
+        app.dashboard_view = DashboardView::Actions;
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string());
+        app.approvals = vec![ApprovalSummary {
+            id: "thunk:operator-prompt".to_string(),
+            status: "waiting-input".to_string(),
+            action: "Choose the recovery path".to_string(),
+            risk: Some("human prompt".to_string()),
+            goal_id: app.selected_goal_id.clone(),
+            task_id: Some("118f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string()),
+            created_at: None,
+        }];
+        app.input = "Use the validated path".to_string();
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("enter action");
+
+        assert!(app.busy);
+        assert!(app.input.is_empty());
+        let pending = app.pending_request.as_ref().expect("pending action");
+        let PendingRequestKind::OperatorAction { label } = &pending.kind else {
+            panic!("expected pending operator action");
+        };
+        assert_eq!(label, "add context thunk:op");
+        pending.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn r_on_approval_gate_rejects_with_optional_reason() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Dashboard;
+        app.dashboard_view = DashboardView::Approvals;
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string());
+        app.approvals = vec![ApprovalSummary {
+            id: "approval-1".to_string(),
+            status: "pending".to_string(),
+            action: "Approve sandbox profile".to_string(),
+            risk: Some("approval required".to_string()),
+            goal_id: app.selected_goal_id.clone(),
+            task_id: None,
+            created_at: None,
+        }];
+        app.input = "Network risk is too broad.".to_string();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("reject approval");
+
+        assert!(app.busy);
+        assert!(app.input.is_empty());
+        let pending = app.pending_request.as_ref().expect("pending reject");
+        let PendingRequestKind::OperatorAction { label } = &pending.kind else {
+            panic!("expected pending operator action");
+        };
+        assert_eq!(label, "reject approval");
+        pending.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn modified_key_sends_chat_and_clears_input() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Input;
+        app.input = "send with modified key".to_string();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("handle ctrl-s");
+
+        assert!(app.input.is_empty());
+        assert!(app.busy);
+        assert!(app.pending_request.is_some());
+        assert_eq!(
+            app.messages.last(),
+            Some(&ChatLine {
+                role: "user".to_string(),
+                content: "send with modified key".to_string()
+            })
+        );
+        app.pending_request.as_ref().unwrap().handle.abort();
+    }
+
+    #[tokio::test]
+    async fn ctrl_enter_sends_chat_and_clears_input() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Input;
+        app.input = "send with ctrl enter".to_string();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("handle ctrl-enter");
+
+        assert!(app.input.is_empty());
+        assert!(app.busy);
+        assert!(app.pending_request.is_some());
+        assert_eq!(
+            app.messages.last(),
+            Some(&ChatLine {
+                role: "user".to_string(),
+                content: "send with ctrl enter".to_string()
+            })
+        );
+        app.pending_request.as_ref().unwrap().handle.abort();
     }
 
     #[tokio::test]
@@ -6032,6 +6712,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_navigation_keys_switch_views_and_open_goal_graph() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Dashboard;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+        )
+        .await
+        .expect("events view");
+        assert_eq!(app.dashboard_view, DashboardView::Events);
+        assert_eq!(app.dashboard_scroll, 0);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .await
+            .expect("next view");
+        assert_eq!(app.dashboard_view, DashboardView::Workers);
+
+        app.dashboard_view = DashboardView::Goals;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .expect("open graph");
+        assert_eq!(app.dashboard_view, DashboardView::Graph);
+        assert!(app.status.contains("opened graph"));
+    }
+
+    #[tokio::test]
     async fn ctrl_l_clears_local_messages_and_last_action_result() {
         let mut app = test_app();
         app.messages = vec![
@@ -6045,6 +6752,7 @@ mod tests {
             },
         ];
         app.last_chat_response = Some(json!({"ok": true}));
+        app.last_action_result = Some(action_result_summary("retry task", true, None));
         app.active_goal_draft = Some(ActiveGoalDraft {
             goal_spec: json!({"title": "Clear me"}),
             summary: GoalDraftSummary {
@@ -6066,6 +6774,7 @@ mod tests {
 
         assert!(app.messages.is_empty());
         assert!(app.last_chat_response.is_none());
+        assert!(app.last_action_result.is_none());
         assert!(app.active_goal_draft.is_none());
         assert!(app.status.contains("cleared 2 local messages"));
         assert!(app.status.contains("durable chat is unchanged"));
@@ -6103,6 +6812,40 @@ mod tests {
             panic!("expected operator action");
         };
         assert!(label.contains("cancel goal"));
+        pending.handle.abort();
+    }
+
+    #[tokio::test]
+    async fn alt_r_restarts_selected_action_task() {
+        let mut app = test_app();
+        app.focus = TuiFocus::Dashboard;
+        app.dashboard_view = DashboardView::Actions;
+        app.selected_goal_id = Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string());
+        app.approvals = vec![ApprovalSummary {
+            id: "task:118f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string(),
+            status: "blocked".to_string(),
+            action: "Restart blocked implementation task".to_string(),
+            risk: Some("task attention".to_string()),
+            goal_id: app.selected_goal_id.clone(),
+            task_id: Some("118f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string()),
+            created_at: None,
+        }];
+        app.input = "Retry after clearing stale wait.".to_string();
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT),
+        )
+        .await
+        .expect("alt-r");
+
+        assert!(app.busy);
+        assert!(app.input.is_empty());
+        let pending = app.pending_request.as_ref().expect("pending restart");
+        let PendingRequestKind::OperatorAction { label } = &pending.kind else {
+            panic!("expected operator action");
+        };
+        assert!(label.contains("restart task"));
         pending.handle.abort();
     }
 
@@ -6346,6 +7089,14 @@ mod tests {
         assert_eq!(chat_scroll_y(30, 10, 5), 15);
         assert_eq!(chat_scroll_y(30, 10, u16::MAX), 0);
         assert_eq!(chat_scroll_y(5, 10, 0), 0);
+    }
+
+    #[test]
+    fn scroll_position_labels_make_history_location_visible() {
+        assert_eq!(scroll_position_label(0, 0), "all");
+        assert_eq!(scroll_position_label(0, 20), "top");
+        assert_eq!(scroll_position_label(10, 20), "scrolled");
+        assert_eq!(scroll_position_label(20, 20), "bottom");
     }
 
     #[test]

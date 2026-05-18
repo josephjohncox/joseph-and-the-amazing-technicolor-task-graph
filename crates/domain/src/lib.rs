@@ -2800,7 +2800,15 @@ impl GoalState {
     }
 
     pub fn mark_running(&mut self, task_id: TaskId) -> Result<(), DomainError> {
+        self.ensure_goal_accepts_mutation("mark task running")?;
+        self.ensure_task_accepts_mutation(task_id, "mark task running")?;
         let task = self.task_mut(task_id)?;
+        if task.status != TaskStatus::Runnable {
+            return Err(DomainError::InvariantViolation(format!(
+                "cannot mark task {task_id} running from status {:?}",
+                task.status
+            )));
+        }
         task.status = TaskStatus::Running;
         task.attempts += 1;
         self.events
@@ -2812,6 +2820,8 @@ impl GoalState {
         &mut self,
         task_id: TaskId,
     ) -> Result<Option<ApprovalRequest>, DomainError> {
+        self.ensure_goal_accepts_mutation("request task approval")?;
+        self.ensure_task_accepts_mutation(task_id, "request task approval")?;
         let task = self.task(task_id)?.clone();
         let next_attempt = task.attempts + 1;
         if self.approvals.iter().any(|approval| {
@@ -3123,6 +3133,7 @@ impl GoalState {
         &mut self,
         request: DelayedComputeThunkRequest,
     ) -> Result<DelayedComputeThunk, DomainError> {
+        self.ensure_goal_accepts_mutation("create delayed compute thunk")?;
         if request.goal_id != self.goal.id {
             return Err(DomainError::SteeringDenied(
                 "delayed compute thunk goal_id does not match workflow goal".to_string(),
@@ -3147,6 +3158,7 @@ impl GoalState {
             return Ok(existing);
         }
         if let Some(task_id) = request.task_id {
+            self.ensure_task_accepts_mutation(task_id, "create delayed compute thunk")?;
             let task = self.task_mut(task_id)?;
             task.status = if request.kind == DelayedComputeThunkKind::Approval {
                 TaskStatus::WaitingApproval
@@ -3182,6 +3194,7 @@ impl GoalState {
         &mut self,
         request: DelayedComputeThunkResumeRequest,
     ) -> Result<DelayedComputeThunk, DomainError> {
+        self.ensure_goal_accepts_mutation("resume delayed compute thunk")?;
         let index = self
             .delayed_compute_thunks
             .iter()
@@ -3198,6 +3211,9 @@ impl GoalState {
         }
 
         let task_id = self.delayed_compute_thunks[index].task_id;
+        if let Some(task_id) = task_id {
+            self.ensure_task_accepts_mutation(task_id, "resume delayed compute thunk")?;
+        }
         let record = DelayedComputeThunkResumeRecord {
             responder: request.responder,
             response_summary: request.response_summary,
@@ -3491,7 +3507,9 @@ impl GoalState {
         mut result: AgentRunResult,
         policy: &SpawnPolicy,
     ) -> Result<(), DomainError> {
+        self.ensure_goal_accepts_mutation("apply worker result")?;
         let task_snapshot = self.task(result.task_id)?.clone();
+        self.ensure_task_snapshot_accepts_mutation(&task_snapshot, "apply worker result")?;
         let effective_status =
             self.normalize_action_needed_agent_result(&mut result, &task_snapshot)?;
         let mut child_requests = result.child_requests.clone();
@@ -3763,6 +3781,17 @@ impl GoalState {
     }
 
     pub fn apply_validation(&mut self, report: ValidationReport) -> Result<(), DomainError> {
+        self.ensure_goal_accepts_mutation("apply validation report")?;
+        if report.goal_id != self.goal.id {
+            return Err(DomainError::InvariantViolation(
+                "validation report goal_id does not match workflow goal".to_string(),
+            ));
+        }
+        if let Some(vote) = report.branch_vote.as_ref() {
+            self.validate_branch_vote(report.task_id, vote)?;
+        }
+        let task_snapshot = self.task(report.task_id)?.clone();
+        self.ensure_task_snapshot_accepts_mutation(&task_snapshot, "apply validation report")?;
         let purpose = self.task(report.task_id)?.purpose.clone();
         if let Some(vote) = report.branch_vote.clone() {
             self.record_branch_vote(report.task_id, vote)?;
@@ -4475,6 +4504,8 @@ impl GoalState {
         timeout_seconds: u64,
         message: impl Into<String>,
     ) -> Result<bool, DomainError> {
+        self.ensure_goal_accepts_mutation("record task timeout")?;
+        self.ensure_task_accepts_mutation(task_id, "record task timeout")?;
         let message = message.into();
         let event = TimeoutEvent {
             id: Uuid::new_v4(),
@@ -5141,12 +5172,34 @@ impl GoalState {
         voter_task_id: TaskId,
         vote: BranchVoteOutput,
     ) -> Result<(), DomainError> {
+        self.validate_branch_vote(voter_task_id, &vote)?;
+        self.branch_votes.retain(|record| {
+            !(record.group_id == vote.group_id && record.voter_task_id == voter_task_id)
+        });
+        self.branch_votes.push(BranchVoteRecord {
+            voter_task_id,
+            group_id: vote.group_id,
+            selected_task_id: vote.selected_task_id,
+            confidence: vote.confidence,
+            rationale: vote.rationale,
+        });
+        self.events.push(StateEvent::new(format!(
+            "branch_vote_recorded:{}:{}:{}",
+            vote.group_id, voter_task_id, vote.selected_task_id
+        )));
+        Ok(())
+    }
+
+    fn validate_branch_vote(
+        &self,
+        voter_task_id: TaskId,
+        vote: &BranchVoteOutput,
+    ) -> Result<(), DomainError> {
         let group = self
             .branch_groups
             .iter()
             .find(|group| group.id == vote.group_id)
-            .ok_or(DomainError::BranchGroupNotFound(vote.group_id))?
-            .clone();
+            .ok_or(DomainError::BranchGroupNotFound(vote.group_id))?;
         if !group.candidate_task_ids.contains(&vote.selected_task_id) {
             return Err(DomainError::BranchDenied(format!(
                 "vote selected task {} outside branch group {}",
@@ -5168,20 +5221,6 @@ impl GoalState {
                 vote.selected_task_id
             )));
         }
-        self.branch_votes.retain(|record| {
-            !(record.group_id == vote.group_id && record.voter_task_id == voter_task_id)
-        });
-        self.branch_votes.push(BranchVoteRecord {
-            voter_task_id,
-            group_id: vote.group_id,
-            selected_task_id: vote.selected_task_id,
-            confidence: vote.confidence,
-            rationale: vote.rationale,
-        });
-        self.events.push(StateEvent::new(format!(
-            "branch_vote_recorded:{}:{}:{}",
-            vote.group_id, voter_task_id, vote.selected_task_id
-        )));
         Ok(())
     }
 
@@ -5374,12 +5413,48 @@ impl GoalState {
             .ok_or(DomainError::TaskNotFound(task_id))
     }
 
+    fn ensure_goal_accepts_mutation(&self, action: &str) -> Result<(), DomainError> {
+        if matches!(self.status, GoalStatus::Done | GoalStatus::Cancelled) {
+            return Err(DomainError::InvariantViolation(format!(
+                "cannot {action} because goal is terminal: {:?}",
+                self.status
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_task_accepts_mutation(
+        &self,
+        task_id: TaskId,
+        action: &str,
+    ) -> Result<(), DomainError> {
+        let task = self.task(task_id)?;
+        self.ensure_task_snapshot_accepts_mutation(task, action)
+    }
+
+    fn ensure_task_snapshot_accepts_mutation(
+        &self,
+        task: &TaskNode,
+        action: &str,
+    ) -> Result<(), DomainError> {
+        if task.status.is_terminal() {
+            return Err(DomainError::InvariantViolation(format!(
+                "cannot {action} because task {} is terminal: {:?}",
+                task.id, task.status
+            )));
+        }
+        Ok(())
+    }
+
     fn task_graph_actionability_report(&self) -> TaskGraphActionabilityReport {
         let mut violations = Vec::new();
         for task in self.tasks.values() {
             if matches!(
                 task.status,
-                TaskStatus::Blocked | TaskStatus::WaitingApproval | TaskStatus::WaitingInput
+                TaskStatus::Blocked
+                    | TaskStatus::Failed
+                    | TaskStatus::WaitingApproval
+                    | TaskStatus::WaitingInput
             ) && self.task_recovery_actions(task).is_empty()
             {
                 violations.push(TaskRecoveryViolation {
@@ -5408,7 +5483,9 @@ impl GoalState {
             self.pending_approvals_for_task(task.id)
                 .map(|_| TaskRecoveryAction::PendingApproval),
         );
-        if task.status == TaskStatus::Blocked && self.task_restart_is_available(task) {
+        if matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed)
+            && self.task_restart_is_available(task)
+        {
             actions.push(TaskRecoveryAction::RestartableTask);
         }
         actions.extend(task.children.iter().filter_map(|child_id| {
@@ -19034,6 +19111,27 @@ mod tests {
         assert_eq!(report.violations.len(), 1);
         assert_eq!(report.violations[0].task_id, task_id);
         assert_eq!(report.violations[0].status, TaskStatus::Blocked);
+        assert!(report.violations[0].reason.contains("no pending thunk"));
+    }
+
+    #[test]
+    fn task_graph_actionability_report_flags_failed_task_without_recovery() {
+        let mut goal = GoalSpec::new(
+            "failed report",
+            "task graph validation should find failed tasks without retry or replan paths",
+        );
+        goal.restart_policy.enabled = false;
+        let mut state = GoalState::new(goal);
+        let task_id = state.runnable_tasks().remove(0).id;
+        state.task_mut(task_id).expect("task").status = TaskStatus::Failed;
+        state.status = GoalStatus::Failed;
+
+        let report = state.task_graph_actionability_report();
+
+        assert!(!report.is_actionable());
+        assert_eq!(report.violations.len(), 1);
+        assert_eq!(report.violations[0].task_id, task_id);
+        assert_eq!(report.violations[0].status, TaskStatus::Failed);
         assert!(report.violations[0].reason.contains("no pending thunk"));
     }
 

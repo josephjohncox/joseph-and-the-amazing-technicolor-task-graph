@@ -53,6 +53,649 @@ The completed plans under `docs/exec-plans/completed/` remain the subsystem evid
 
 Workers in these workstreams use COAT durable child tasks. They must not use hidden native Codex, Claude Code, Agents SDK, or MCP subagent spawning. Any request for more work returns `ChildTaskRequest` values for coordinator approval.
 
+## Run-To-Completion Simplification Plan
+
+This section is the durable execution plan for the remaining refactoring,
+operator-product cleanup, and simplification work. It intentionally lives inside
+the single active master plan so follow-up work does not scatter back across the
+completed subsystem plans.
+
+PLAN-1 is the authoritative simplification design. PLAN-0 contributes only
+non-conflicting implementation organization, especially module boundaries,
+projection builders, service cleanup, and model-based state-machine tests. When
+the two differ, prefer PLAN-1: backend-first actor state machines, compact
+operator APIs, Postgres or local goal-store read projection, SSE as projection
+streaming, Vite/React/shadcn SPA, Ratatui TUI, and bounded registered workers.
+
+### Core Goal
+
+Make COAT feel like a direct operator console for a durable task graph:
+
+- The operator can create, inspect, steer, block, resume, approve, reject,
+  cancel, and complete goals without understanding Restate URLs, raw workflow
+  IDs, JSON payload shapes, or internal compatibility surfaces.
+- The SPA and TUI answer the same questions in the same language: what goal is
+  selected, what is running, what is blocked, what action is needed, what
+  evidence exists, what workers are active, and whether the goal is satisfied.
+- Backend state transitions stay actor-style and typed. UI surfaces render and
+  command backend state; they do not own durable truth.
+- Chat is an authoring and explanation surface. Draft acceptance, human prompts,
+  approvals, recovery, branch selection, and cancellation are explicit operator
+  actions, not buried chat replies.
+- Remaining live-runtime work continues, but the refactor priority is to make
+  the normal local/operator experience simple before adding more visible knobs.
+
+### Product Model
+
+The operator product model has five primary objects:
+
+- `Goal`: the selected durable objective, with status, satisfaction, progress,
+  and evidence.
+- `Task`: a bounded work item owned by the coordinator and executed by one
+  registered worker.
+- `Action`: a human or coordinator-visible decision needed to make progress,
+  such as approve, reject, continue, answer, add context, retry, replan, select
+  branch, restart, or cancel.
+- `Run`: worker execution history, output, checkpoint refs, errors, and current
+  stage.
+- `Evidence`: artifacts, checkpoints, reviews, test reports, citations,
+  approvals, and satisfaction rationale.
+
+Everything else is secondary drill-down:
+
+- thunks are action-producing suspended continuations;
+- reviews and adversarial rounds are evidence and decision workflows;
+- events are external signals that create or steer goals;
+- memory is context and provenance, not a substitute for evidence;
+- debug payloads are inspectable, but not the primary interface.
+
+### Interaction Target
+
+The SPA first screen should be a focused goal workbench:
+
+- top bar: workspace health, current-goal switcher, global search, theme, and
+  one debug/inspect affordance;
+- left column: goal list and current action queue;
+- center: selected goal summary, task graph, and next action;
+- right column: chat/draft panel, evidence/review panel, and worker run stream;
+- contextual drawers: memory, events, adversarial/review rounds, raw inspect.
+
+The TUI should mirror the same model:
+
+- tabs: Overview, Goals, Graph, Actions, Approvals, Events, Workers, Evidence,
+  Adversarial, Debug;
+- one selected goal inherited by every tab and by chat;
+- enter/escape/tab/shift-tab behavior must be predictable;
+- chat input clears on submit, pending work is visible, history scrolls, and the
+  operator can submit or discard drafts without switching to the CLI.
+
+### Refactor Principles
+
+- No compatibility work for removed UI/helper surfaces unless a live operator
+  path still depends on them.
+- Prefer deletion over hiding when a control does not help answer the selected
+  goal's current state.
+- Keep all mutations on compact typed backend APIs under `/api/operator/*`.
+- Keep lower-level Restate, goal-store, and raw JSON views behind inspect/debug.
+- Make impossible states boring: invalid transitions must be rejected with a
+  recovery action, and the UI must surface that recovery action.
+- A blocked state must be actionable. It needs either a resumable thunk or
+  explicit retry, restart, replan, create-human-prompt, add-context, or cancel
+  controls.
+- A completed goal must show evidence and satisfaction rationale.
+- A draft is a server-owned resource with lifecycle state: active, edited,
+  accepted, submitted, discarded, or expired.
+
+### State Machine Simplification
+
+The core cleanup is to make the backend state machines small, explicit, and
+testable. Avoid scattering lifecycle rules across coordinator handlers,
+goal-store projection code, gateway normalization, SPA reducers, and TUI state.
+
+Authoritative actor kinds:
+
+- `GoalActor`
+- `TaskActor`
+- `ThunkActor`
+- `WorkerRunActor`
+- `ReviewActor`
+- `ApprovalActor`
+- `EventActor`
+- `DraftActor`
+- `RunnerActor`
+- `MemoryActor`
+- `MechanismActor`
+
+Authoritative lifecycle classes:
+
+- active: runnable, dispatching, running, reviewing, validating;
+- waiting: waiting-input, waiting-approval, waiting-event, waiting-resource,
+  waiting-model, waiting-timer;
+- recoverable: blocked, failed, timeout, stale, budget-exhausted,
+  validation-needed;
+- terminal: satisfied, cancelled;
+- immutable history: archived events, delivered notifications, accepted
+  evidence, completed worker runs.
+
+Required typed transitions:
+
+- submit goal, accept draft, edit draft, discard draft, submit draft as goal;
+- dispatch task, receive worker result, validate result, request review,
+  complete review, select branch, satisfy goal;
+- create thunk, resume thunk, expire thunk, cancel thunk;
+- request approval, approve, reject, request more context;
+- steer goal, replan goal, retry task, restart goal, cancel goal;
+- ingest event, dedupe event, route event to goal, dead-letter event;
+- register runner, heartbeat runner, drain runner, mark runner stale;
+- write memory evidence, retract memory entry, repair memory adapter replay;
+- start mechanism round, submit ballot or bid, close round, apply outcome.
+
+Simplification rules:
+
+- Each transition has one backend implementation and one recovery path for
+  invalid or stale inputs.
+- UI and TUI never infer lifecycle validity. They render
+  `OperatorAction.available_actions` and send typed action requests.
+- A non-terminal actor with no available action is invalid unless it is actively
+  running under a live `WorkerRunActor`.
+- A terminal actor can still be inspected but cannot be steered, restarted, or
+  mutated except through explicit archival or fork/new-goal flows.
+- The read model projects from durable events and actor snapshots. It must not
+  manufacture success states from placeholder text.
+- Service-specific states map into these actor classes. Do not build separate
+  hidden state machines in the gateway, SPA, TUI, runner registry, notifier, or
+  event gateway.
+
+Implementation organization from PLAN-0, when it does not conflict with PLAN-1:
+
+- Split `crates/domain/src/lib.rs` into focused modules while preserving public
+  exports where current code still imports the root module:
+  `goal`, `task`, `state_machine`, `validation`, `approval`, `thunk`, `review`,
+  `mechanism`, `runner`, `memory`, `events`, `operator_projection`, and
+  `schemas`.
+- Refactor `crates/coordinator/src/main.rs` into workflow handlers, mutation
+  handlers, transition helpers, dispatch loop, projection emission, service
+  clients, and tests.
+- Refactor `ui/control-plane-web/src/server.ts` into routes, service clients,
+  chat, drafts, operator projection, operator actions, MCP tools, and SSE.
+- Refactor goal-store, event-gateway, sandbox-runner, memory-gateway, notifier,
+  and runner-registry internals around repositories/adapters/projections rather
+  than endpoint-local JSON shaping.
+- Add projection builders for `GoalState -> OperatorWorkspaceSnapshot`, action
+  queue projection from approvals/thunks/compute graph, actor/critic projection
+  from reviews and mechanism rounds, and runner/event/memory summary rows.
+
+### State Machine Testing
+
+The state-machine test suite should prove lifecycle behavior, not just enum
+serialization.
+
+Required test layers:
+
+- table-driven transition tests for every valid transition and every expected
+  invalid transition;
+- model-based/property tests, preferably with `proptest`, that generate bounded
+  transition sequences and assert global invariants after each step;
+- projection rebuild tests that replay append-only events into the same actor
+  snapshot and action queue;
+- stale-action tests proving repeated, late, or already-resolved actions return
+  explicit recovery results without wedging the workflow;
+- scenario tests that exercise lifecycle stories through backend APIs rather
+  than direct state mutation;
+- SPA/TUI tests that prove the same selected actor, available actions, blocker,
+  evidence, and satisfaction state are visible through both clients.
+
+Global invariants:
+
+- satisfied and cancelled are the only terminal goal states;
+- blocked, failed, timeout, stale, waiting, budget-exhausted, and
+  validation-needed states always expose a recovery action;
+- every waiting human prompt has either a delayed compute thunk with a
+  continuation ref or an explicit recovery action to create one;
+- every worker run belongs to exactly one task and has at most one terminal
+  result;
+- every evidence item has a causation actor, correlation ID, and provenance ref;
+- every branch selection references validated candidate evidence;
+- every event has an idempotency key and dedupe outcome;
+- every action resolution is idempotent by action ID and causation ID;
+- replaying the same durable event sequence yields the same operator projection;
+- placeholder/stub results cannot satisfy non-stub goals.
+
+### Execution Phases
+
+#### Phase 0: Product Cut And Contract Freeze
+
+- Inventory the currently exposed SPA routes, TUI tabs, CLI commands, MCP tools,
+  gateway endpoints, and scenario fixtures.
+- Mark each surface as keep, fold into another surface, debug-only, or delete.
+- Freeze the operator projection contract for the next implementation pass:
+  workspace, goals, goal detail, graph, actions, events, evidence, workers,
+  drafts, chat sessions, and stream events.
+- Record the PLAN-1/PLAN-0 incorporation decision: PLAN-1 owns product and
+  public contracts; PLAN-0 contributes only non-conflicting module and test
+  organization.
+- Freeze the actor transition matrix and global invariants before deep SPA/TUI
+  refactors so clients target a stable action model.
+
+Exit criteria:
+
+- one route/tab map for SPA and TUI;
+- one API contract checklist;
+- one deletion list for confusing controls and legacy surfaces;
+- one actor transition matrix and invariant checklist;
+- no UI implementation begins until backend action semantics for that route are
+  stable or explicitly stubbed as unavailable.
+
+#### Phase 1: Backend State And Projection Cleanup
+
+- Add or tighten the small domain actor/state-machine layer for goals, tasks,
+  thunks, worker runs, reviews, approvals, events, drafts, runners, memory, and
+  mechanism rounds.
+- Collapse scattered lifecycle helpers into typed transition functions with
+  `TransitionResult` values that include accepted, rejected, stale, no-op, and
+  recovery guidance.
+- Normalize action queue records so approvals, thunks, blocked tasks, failed
+  tasks, branch decisions, adversarial decisions, and cancel/restart actions all
+  share one product-shaped `OperatorAction`.
+- Ensure goal-store projections rebuild the same action queue from append-only
+  events and snapshots.
+- Persist chat sessions and drafts in the goal-store/Postgres path rather than
+  relying on in-memory gateway maps for durable UX.
+- Add `GET /api/operator/goals/:id/timeline` or fold timeline into goal detail
+  so the SPA/TUI can show why a goal is blocked.
+- Keep SSE as projection streaming only; no mutation over SSE.
+- Standardize mutation routing through the compact operator action path:
+  `POST /api/operator/actions/:id/resolve` for existing actions and, where a
+  command creates a new action-like transition, a typed operator action request
+  that returns `OperatorActionResult` plus refreshed projection state.
+- Split domain, coordinator, gateway, and service modules where file size or
+  duplicated lifecycle logic prevents state-machine reasoning.
+
+Exit criteria:
+
+- action queue projection has unit tests for every action kind;
+- actor transition tests cover valid, invalid, stale, and idempotent paths;
+- projection rebuild tests prove event-log replay produces stable operator
+  snapshots;
+- draft lifecycle survives gateway restart when goal-store/Postgres is enabled;
+- blocked goal detail shows blocker, reason, recovery action, and evidence refs.
+
+#### Phase 2: SPA Simplification
+
+- Split the SPA into feature modules around the product model:
+  `GoalWorkbench`, `GoalSwitcher`, `ActionQueue`, `TaskGraph`, `EvidencePanel`,
+  `WorkerRuns`, `ChatDraftPanel`, `EventsPanel`, `MemoryPanel`, and
+  `DebugInspector`.
+- Use shadcn-backed components for cards, buttons, dialogs, command picker,
+  tabs, sheets, forms, and toasts. Keep Vite and React.
+- Remove normal raw UUID entry, command coverage panels, endpoint taxonomy, and
+  broad control menus from the main flow.
+- Make the chat panel mode simple:
+  `Ask`, `Draft goal`, `Draft plan`, and `Search/research request`.
+  The selected goal context is visible, but not a dropdown maze.
+- Render drafts as compact editable summaries with primary actions:
+  edit, accept, submit, convert to plan, discard.
+- Render human prompts as direct controls:
+  continue, answer, add context, approve, reject, retry, replan, cancel.
+- Make graph nodes clickable and side-panel driven: node state, next action,
+  worker run, evidence, and raw inspect.
+
+Exit criteria:
+
+- an operator can create a goal from chat, accept the draft, see it selected,
+  inspect subgoals/tasks, resolve a prompt, and cancel/restart without pasting an
+  ID;
+- the UI has fewer top-level options than today while exposing all common
+  actions where they are needed;
+- Playwright tests assert visible outcomes, not just button presence.
+
+#### Phase 3: TUI Simplification
+
+- Keep Ratatui/Crossterm unless a specific terminal framework prototype proves a
+  materially better chat/input experience without splitting backend semantics.
+- Make tab focus and chat focus deterministic:
+  `Tab`/`Shift-Tab` change panels, `Enter` focuses or activates the selected
+  row, and `Ctrl-Enter` or configured send key submits chat if needed.
+- Add scroll indicators for chat, actions, graph rows, and evidence.
+- Add explicit draft card controls and action-row controls in the TUI:
+  accept draft, discard draft, approve, reject, continue, retry, replan, cancel.
+- Keep raw JSON only in Debug.
+
+Exit criteria:
+
+- TUI tests cover goal selection, chat scrolling, draft submit/discard, action
+  resolution, approval reject/approve, cancel/restart, and selected-goal context;
+- manual TUI smoke can complete the same basic lifecycle as the SPA.
+
+#### Phase 4: Scenario And Usability Proof
+
+- Expand deterministic scenarios into use-case stories:
+  basic lifecycle, blocked/resumed, pending action, approval reject/approve,
+  signal-driven goal, fanout, fork/join review, long iterative loop, cancel and
+  queue cleanup, memory/research evidence.
+- Treat the scenario scripts as the main system exercise harness, not incidental
+  CI helpers. The harness must reset, seed, drive, observe, and report on real
+  product flows through the same backend APIs used by SPA, TUI, CLI, and event
+  gateways.
+- Add browser-visible checks for the main workbench: selected goal, action
+  queue, task graph, evidence, worker runs, draft state, and completion.
+- Add TUI transcript capture once the scenario harness can drive terminal
+  surfaces deterministically.
+- Keep LLM usability evaluation optional and gated. Deterministic rubrics remain
+  the PR gate.
+
+Exit criteria:
+
+- `make scenario-e2e` and `make scenario-e2e-ui` prove operator outcomes;
+- failed scenarios upload enough evidence for a reviewer to understand the user
+  failure without reproducing locally.
+
+### Scenario Scripts And System Exercise Harness
+
+The simplification pass needs executable scripts that make the system feel real
+locally and provide reviewer evidence in CI. These scripts should exercise COAT
+as an operator product: reset state, seed useful scenarios, run bounded work,
+show pending human actions, complete recoverable paths, and emit a report with
+links to evidence.
+
+Keep these existing entrypoints as the base:
+
+- `scripts/coat-scenario-e2e.sh`: deterministic backend scenario runner.
+- `scripts/coat-bootstrap-scenarios.sh`: fixture-backed bootstrap and seed
+  generation.
+- `scripts/coat-bootstrap-live-scenarios.sh`: live local-stack bootstrap goals.
+- `scripts/coat-local-reset.sh`: scenario, bootstrap, evidence, and stack reset.
+- `scripts/coat-event-gateway-smoke.sh` and
+  `scripts/coat-event-gateway-compose-smoke.sh`: event ingress exercise.
+- `scripts/coat-runner-registry-smoke.sh` and
+  `scripts/coat-compose-runner-smoke.sh`: runner registration and routing
+  exercise.
+- `scripts/coat-eventops-sqs-smoke.sh`: SQS/LocalStack notification and event
+  queue exercise.
+
+Add or standardize one top-level exercise wrapper:
+
+- `scripts/coat-exercise-system.sh`
+
+It should provide these modes:
+
+- `--mode quick`: reset syntax/dry-run smoke, deterministic bootstrap
+  fixtures, runner-registry smoke, and event-gateway smoke without directly
+  starting the Compose stack.
+- `--mode demo`: reset local demo evidence, start or reuse local services, seed
+  navigable goals for completed, running, pending-action, approval, blocked,
+  fanout, fork/join, signal, memory/research, and cancelled-history states.
+- `--mode e2e`: run the deterministic stub-stack scenario suite through
+  `make scenario-e2e`.
+- `--mode ui`: run the deterministic stack plus Playwright operator journeys
+  through `make scenario-e2e-ui` or `make scenario-e2e-ui-live`.
+- `--mode full`: run quick, demo, backend scenarios, UI scenarios, event gateway
+  smoke, runner registry smoke, compose runner smoke, and SQS/LocalStack smoke
+  when local prerequisites are available.
+
+Required exercise scenarios:
+
+- basic completed goal with evidence and satisfaction rationale;
+- pending human prompt backed by a delayed compute thunk and continuation;
+- approval request with approve and reject paths;
+- blocked task with retry, replan, add-context, and cancel recovery actions;
+- cancelled goal with queue cleanup and retained history;
+- signal-driven goal from fake PR/CI/GitHub Actions/GitLab-style event input;
+- fanout where child tasks become visible subgoals or workstreams;
+- fork/join review where candidates, reviewer votes, selected branch, and
+  unifier rationale are visible;
+- memory/research evidence with citations, source artifacts, and information-use
+  plan;
+- long iterative loop with bounded retries, progress, budget, and stop reason;
+- runner availability/routing scenario with registered runners and rejected
+  runner reasons;
+- event/notification scenario with inbound and outbound SQS/LocalStack messages.
+
+Exercise output:
+
+- write per-scenario artifacts under `target/coat-scenarios/<scenario-id>/`;
+- write bootstrap/demo artifacts under `target/coat-scenarios/bootstrap/` and
+  `target/coat-scenarios/live-bootstrap/`;
+- write a rollup report at
+  `target/coat-scenarios/latest/system-exercise.json`;
+- include submitted goal IDs, selected-goal projection, graph snapshot, action
+  queue snapshot, worker-run summaries, evidence refs, event refs, reset actions,
+  command exit statuses, and links to SPA screenshots or TUI transcripts when
+  available.
+
+Acceptance for the exercise harness:
+
+- `make reset-smoke`, `make bootstrap-scenarios`,
+  `make validate-task-graph-bootstraps`, `make scenario-e2e`, and
+  `make scenario-e2e-ui` remain the CI-facing pieces.
+- `scripts/coat-exercise-system.sh --mode demo` creates useful state that is
+  immediately navigable in both SPA and TUI.
+- `scripts/coat-exercise-system.sh --mode quick` runs without Docker and catches
+  broken scenario specs, reset drift, and shell-script regressions.
+- `scripts/coat-exercise-system.sh --mode full` is the local pre-release
+  confidence pass and records enough evidence to debug failures after the fact.
+
+#### Phase 5: Live Runtime Proof
+
+- Run the remaining live-runtime follow-ups only after the simplified operator
+  surface is stable enough to inspect the results:
+  Restate restart/resume, Codex App Server live worker, kind/k3d executor Jobs,
+  Qdrant/Graphiti/Zep, S3/MinIO object snapshots, SQS/provider adapters, and
+  release/Helm smoke.
+- Every live proof must produce replay fixtures and visible operator evidence.
+
+Exit criteria:
+
+- live proofs are env-gated, replayable, and visible in SPA/TUI evidence and
+  worker-run panels;
+- no live path can satisfy a goal with placeholder output.
+
+#### Phase 6: Closure And Deletion
+
+- Delete superseded UI helpers, docs, tests, and scripts after replacement tests
+  pass.
+- Move this master plan to completed only after every remaining follow-up is
+  satisfied, explicitly superseded, or moved into a new active plan with a
+  narrower owner.
+
+Exit criteria:
+
+- `coat plan follow-ups` is empty or names only intentionally deferred live
+  provider work;
+- `cargo test --workspace`, `make ci-node`, `make scenario-e2e`, and
+  `make scenario-e2e-ui` pass in CI-capable environments;
+- local operator bootstrap produces navigable, useful demo state in SPA/TUI.
+
+### Implementation Workstreams For The Next Execution Turn
+
+When execution starts, use durable child-task workstreams with non-overlapping
+write scopes:
+
+- `SurfaceAuditor`: inventory and deletion plan across SPA/TUI/CLI/MCP/docs.
+- `StateMachineCore`: actor transition matrix, domain module split, invariants,
+  property/model tests, and projection rebuild tests.
+- `BackendProjection`: goal-store/operator action/draft/timeline persistence.
+- `GatewayStream`: compact operator API and SSE projection contract.
+- `SPAWorkbench`: shadcn workbench and simplified chat/draft/action UX.
+- `TUIWorkbench`: tab/focus/scroll/action UX aligned with SPA.
+- `ScenarioUsability`: behavioral and visible-outcome scenario tests.
+- `BootstrapDemo`: reset/bootstrap scripts and useful demo states.
+- `DocsUnifier`: docs and active-plan follow-up cleanup.
+- `ReleaseCI`: CI/runtime validation, Node/Rust cache, release smoke alignment.
+- `Reviewer`: code-review, usability-review, and deletion-risk gate.
+
+### Execution Decisions
+
+Recorded 2026-05-15:
+
+- SPA keeps multiple visible routes, but each route must be simplified around a
+  clear operator task and the shared selected-goal context.
+- Chat defaults to `Ask` when no goal is selected.
+- TUI `Enter` activates the focused row or panel control. Chat submission uses a
+  modified keybinding so navigation and chat do not fight each other.
+- The first live-proof batch after simplification includes all three reference
+  proofs: Restate restart/resume, Codex App Server, and kind/k3d executor Jobs.
+- Old debug/helper endpoints and surfaces should be deleted immediately when a
+  replacement operator path exists. Do not keep compatibility shims for removed
+  surfaces.
+
+### First-Wave Implementation Evidence
+
+Recorded 2026-05-15:
+
+- `StateMachineCore` added domain-level terminal mutation guards and
+  table/property-style state-machine tests for stale terminal mutations,
+  cancelled-goal immutability, terminal-task stale worker results, deterministic
+  projections, and non-stub placeholder satisfaction rejection. Remaining work:
+  carry those precise recovery errors through coordinator, gateway, and operator
+  projection surfaces.
+- `BackendProjection` added goal-store read projections for operator timeline,
+  worker runs, and evidence, tightened draft/action resolution so accepting one
+  draft does not resolve unrelated actions, and added focused projection tests.
+  Remaining work: wire these projections fully into gateway/SPAs and add live
+  Postgres-backed projection tests.
+- `GatewayStream` made `/api/operator/actions/{action_id}/resolve` preserve
+  upstream workflow status such as `409`, added recovery actions to validation
+  failures, projected compute-graph thunks into `/api/operator/actions`, and
+  tightened SSE filtering/reconnect metadata. Remaining work: replace polling
+  stream internals with richer run/event projection only after backend event
+  records are stable.
+- `SPAWorkbench` simplified the React/Vite operator surface: chat defaults to
+  Ask, goal drafting is explicit, drafts have clearer edit/discard/accept
+  controls, labels moved toward product language, the dashboard surfaces recent
+  runs, and action cards warn when required refs are missing. Remaining work:
+  keep shrinking route panels around selected-goal outcomes and add browser E2E
+  for visible operator behavior.
+- `TUIWorkbench` made Enter activate focused rows/controls, moved chat submit
+  to `Ctrl-S` and modified Enter where available, kept input editable while a
+  request is pending, added scroll-state labels, exposed restart with `Alt-R`,
+  and extended TUI tests for keyboard/restart behavior. Remaining work:
+  manually smoke a real terminal session and add gateway/backend integration
+  tests for action resolution.
+- `ScenarioScripts` added `scripts/coat-exercise-system.sh` with quick, demo,
+  e2e, ui, and full modes, Make targets, reset-smoke syntax validation, and a
+  summary writer for `target/coat-scenarios/latest/system-exercise.json`.
+  Remaining work: expand bootstrap/demo states beyond the current live and
+  fixture coverage until completed, running, pending-action, approval, blocked,
+  fanout, fork/join, signal, memory/research, and cancelled-history scenarios
+  are all navigable in SPA and TUI.
+- `MCP/operator` docs and smoke coverage now treat
+  `coat_operator_workspace`, `coat_operator_goal`, `coat_operator_actions`,
+  `coat_operator_action_resolve`, `coat_operator_agent_context`,
+  `coat_operator_goal_submit`, and `coat_operator_goal_steer` as the compact
+  operator surface. Old overview/snapshot/activity/approval/runner helper tool
+  names and old HTTP helper routes are not compatibility targets.
+- Live proofs are not complete yet. Restate restart/resume, live Codex App
+  Server, kind/k3d executor Jobs, live memory adapters, and published release
+  smoke remain follow-ups until this plan records direct evidence.
+
+### DocsPlanUnifierReview Evidence
+
+Recorded 2026-05-15:
+
+- Reviewed the current documentation edits against the master plan, compact
+  operator API docs, chat-client MCP guidance, TUI/CLI docs, local exercise
+  wrapper docs, release smoke notes, and product spec updates. The docs now point
+  operators to `/api/operator/*`, `/api/operator/stream`, the compact MCP
+  operator tools, and the system exercise wrapper without reopening completed
+  subsystem plans.
+- `target/debug/coat plan follow-ups --json` reports one active plan and 24
+  follow-ups for that review snapshot. No follow-up was removed in that review
+  because the remaining items still require live proof, broader scenario
+  evidence, provider credentials, terminal/browser artifact capture, or release
+  evidence.
+- Local documentation checks for this review: `make docs-check` passed, and
+  `git diff --check` passed.
+
+### PlanAndCIUnifier Evidence
+
+Recorded 2026-05-15:
+
+- Reviewed the current dirty diff without reverting unrelated work. The
+  PlanAndCIUnifier slice checked only plan, CI, Make, and operator-doc wiring
+  around `runtime-live-scaffold`, deterministic `scenario-e2e`, and UI smoke
+  paths. Runtime live scaffold remains a readiness artifact only; it writes
+  `live_proof_executed=false` and does not start Docker, Restate, Codex App
+  Server, kind, k3d, kubectl, or Kubernetes workloads.
+- CI/Make wiring currently runs `make runtime-live-scaffold` in the normal CI
+  build and `ci`/`ci-pr` targets, keeps `make scenario-e2e` as the deterministic
+  backend scenario path, keeps `make scenario-e2e-ui` as the fixture-backed
+  Playwright path, and leaves `make scenario-e2e-ui-live` as the real local
+  Compose gateway browser proof.
+- Corrected local-dev docs that still referenced the old
+  `scripts/coat-scenarios/*.json` scenario spec path; the actual checked-in
+  scenario specs are under `scenarios/e2e/*.json`.
+- `target/debug/coat plan follow-ups --json` reports one active plan and 24
+  follow-ups for that review snapshot. No follow-up was removed in that review
+  because the remaining items still require live proof, broader scenario
+  evidence, provider credentials, terminal/browser artifact capture,
+  token-broker design, or release evidence.
+- Local validation for this slice passed: `make docs-check`,
+  `target/debug/coat plan follow-ups --json`, and `git diff --check`.
+- Final integration review 2026-05-15 closed the local deterministic
+  state-machine, scenario-bootstrap, and Phase 0-3 simplification follow-ups.
+  Remaining follow-ups are the live/provider/browser/cluster/release proofs and
+  longer-running UI/module hardening items.
+
+### Worker6 Plan Cleanup Evidence
+
+Recorded 2026-05-15:
+
+- Reviewed `target/debug/coat plan follow-ups --json` and this active plan. The
+  current projection before this cleanup reported one active plan and 19
+  follow-ups.
+- Local deterministic evidence is recorded for state-machine guards and
+  projection tests, no-stack scenario/bootstrap coverage, SPA/TUI simplification,
+  gateway action recovery, and runtime-live-scaffold gating. Those items are
+  closed as local deterministic proof, not as live Restate, live Codex, kind/k3d,
+  live memory, provider, Slack, or release proof.
+- The Restate, Codex App Server, kind/k3d, Qdrant/Graphiti/Zep, Slack/provider,
+  token-broker, and release follow-ups remain open because this plan has no
+  direct workspace evidence that those live proofs completed.
+- This cleanup reran the requested local gates: `make docs-check` passed,
+  `target/debug/coat plan follow-ups --json` reported one active plan and 18
+  follow-ups, and `make runtime-live-scaffold` passed with Restate
+  restart/resume, Codex App Server, and kind/k3d executor proofs skipped
+  because their explicit live gates were not set.
+- No live follow-up was closed in this cleanup. The runtime scaffold output is
+  readiness evidence only; it records `live_proof_executed=false` and does not
+  contact Docker, Restate, Codex App Server, kind, k3d, kubectl, Kubernetes, or
+  model/provider services.
+
+### Six-Worker Simplification Evidence
+
+Recorded 2026-05-15:
+
+- SPA extraction continued without changing the product model: graph/goal
+  presentation and projection helpers moved into
+  `ui/control-plane-web/src/spa/features/goal-graph-panel.tsx`, while
+  action/evidence/queue controls moved into
+  `ui/control-plane-web/src/spa/features/operator-action-panels.tsx`. The
+  remaining App shell still owns route/state composition, selected-goal context,
+  and backend API calls.
+- Gateway operator projections now attach product-shaped recovery data with
+  concrete `actions` and `suggested_resolutions` to stale or failed action
+  outcomes. Smoke coverage asserts `/api/operator/workspace`,
+  `/api/operator/goals/:id/graph`, `/api/operator/actions`, and
+  `/api/operator/stream` in operator terms rather than raw Restate error text.
+- TUI action resolution now keeps the last action result visible in the Actions
+  panel, including recovery hints. `Ctrl-L` clears this local result along with
+  local chat/action state.
+- Scenario runs now write deterministic operator evidence under each run's
+  `operator/` directory: selected goal, action queue, graph nodes, evidence,
+  worker runs, chat/draft state, normalized snapshot, and `transcript.md`.
+  `report.json` links those artifacts so failures can show what an operator
+  would have seen without requiring a live browser.
+- Local validation for this slice passed: `npm run --prefix
+  ui/control-plane-web build`, `npm run --prefix ui/control-plane-web smoke`,
+  `cargo test -p coat-cli tui`, `cargo test -p coat-cli scenario`,
+  `cargo test --workspace`, `make scenario-e2e stack=never
+  SCENARIO_E2E_KEEP_STACK=0`, `make bootstrap-scenarios`, `make reset-smoke`,
+  `make runtime-live-scaffold`, `make docs-check`, `cargo fmt --all --check`,
+  and `git diff --check`.
+- No live-provider or cluster follow-up was closed. The remaining live
+  follow-ups still require the explicit gates listed below.
+
 ## Workstreams
 
 ### Runtime Proof
@@ -62,6 +705,11 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Evidence 2026-05-11: `crates/coordinator/tests/restate_restart_resume.rs` now has deterministic config, harness-step ordering, projection idempotency, and transition-counter assertions around the live proof gate.
 - Evidence 2026-05-11: coordinator transition observations now include waiting-input counts, pending delayed thunks, mechanism-round counts, compute-graph node/edge counts, and a `coordinator.transition` tracing span; RuntimeVerifier projection counters now assert persisted compute-graph nodes, edges, open thunks, and waiting tasks.
 - Evidence 2026-05-14: coordinator control handlers now route through a shared serialized transition path for cancel, feedback, steer, approve, restart, branch, select-branch, vote, delayed thunk, and mechanism actions. Tests prove blocked, waiting, and failed goals can recover through restart or resume while done and cancelled goals stay closed.
+- Evidence 2026-05-15: `scripts/coat-runtime-live-scaffold.sh` and `make runtime-live-scaffold` now record Restate restart/resume readiness as skipped by default, failed for unsafe config, or blocked when all gates are present but the Docker/Testcontainers harness is still intentionally unimplemented. The scaffold writes `live_proof_executed=false` so CI cannot mistake readiness for proof.
+- Evidence 2026-05-15: coordinator `create_thunk` replay handling now treats
+  exact duplicate task/continuation pairs as idempotent while preserving the
+  domain invariant that rejects reusing the same continuation for a different
+  task. Focused coordinator coverage proves the conflict path.
 - Start Restate with persistent data, start coordinator on a dynamic local port, register the deployment, and drive workflow calls through Restate ingress.
 - Prove coordinator restart against existing workflow state.
 - Prove Restate process restart with persisted journal data.
@@ -81,6 +729,7 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Capture replay fixtures with thread IDs, checkpoint refs, git refs, artifact manifests, structured results, and diagnostics.
 - Verify live provider profiles after auth setup is exercised on real nodes, including Codex App Server, Claude Code, Bedrock, vLLM, Ollama, Hugging Face, and OpenAI-compatible gateways.
 - Evidence 2026-05-11: `/verify` now returns provider-profile entries with explicit `verified`, `skipped`, or `failed` state so unavailable live provider routes produce reviewable skipped evidence instead of silent absence.
+- Evidence 2026-05-15: the runtime live scaffold adds a separate `COAT_CODEX_APP_SERVER_LIVE_PROOF` readiness gate that requires live mode, App Server auth, endpoint URL, and an existing isolated workspace before a Codex App Server smoke can be attempted. It performs no network probe and records readiness separately from live proof evidence.
 - Keep staff-engineer live execution second-phase until current `@ctxr/kit` and `@ctxr/agent-staff-engineer` behavior, isolated target repo install, tracker auth, and Claude Code auth distribution are verified.
 - Add a live staff-engineer issue-to-PR smoke test only after those staff-engineer gates pass.
 
@@ -92,6 +741,7 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 - Watch Job and Pod state, collect logs and applied/final manifests, classify image-pull, scheduling, runtime-class, admission, timeout, deadline, and cleanup failures, enforce TTL/cleanup, and project results into goal-store.
 - Preserve provision request ID, goal/task IDs, capacity decision ref, ConfigMap/Job/Pod UIDs, phase transition timestamps, log refs, result manifest refs, and attestation evidence as validator-reviewable artifacts.
 - Evidence 2026-05-11: `crates/sandbox-runner` now mounts `provisioner-evidence.json`, injects `COAT_*` evidence paths into executor Jobs, and rejects live modes before cluster contact when coordinator evidence refs are absent.
+- Evidence 2026-05-15: the runtime live scaffold adds a `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF` readiness gate for the kind/k3d proof. It requires `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d, a `server_dry_run` or `apply` proof mode, and coordinator capacity/template/result-ingestion refs, but it does not contact the Kubernetes API.
 - Keep rendered Job manifests as operator fixtures and escape hatches; the normal backend path uses Rust `kube`/`k8s-openapi` clients.
 
 ### Memory, Research, And Object Artifacts
@@ -206,6 +856,12 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   pending approval goal, and one pending human prompt goal visible in the
   SPA/TUI. Direct read-model fixture projection remains explicit as
   `make bootstrap-fixture-goals` or `coat scenario seed`.
+- Evidence 2026-05-15: deterministic bootstrap scenarios now include completed,
+  running, pending-action, approval, blocked/recovery, fanout, fork/join,
+  signal-driven, memory/research, cancelled-history, and operator-usability
+  fixtures. `make bootstrap-scenarios` and `make scenario-e2e stack=never`
+  passed over the full fixture set, including `bootstrap_running`,
+  `bootstrap_pending_action`, and `operator_usability_workbench`.
 - Evidence 2026-05-12: CI and docs now define the deterministic PR-gated
   scenario workstream as a loop over `scenarios/e2e/*.json` with
   `target/debug/coat scenario run --file <scenario> --output-dir
@@ -222,6 +878,49 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
   backend-routed memory write, memory preview/apply, human queue visibility,
   registered runner status, and event-source registration through the real
   gateway before shutting the deterministic stack back down.
+- Evidence 2026-05-15: the SPA chat/draft surface was split into
+  `ChatDraftPanel`, Ask is the default chat mode, Draft goal is explicit, and
+  active draft controls use direct edit/discard/accept wording without showing
+  raw `operator:default` session IDs. The browser live-stack spec now uses the
+  current Action Queue naming.
+- Evidence 2026-05-15: goal-scoped gateway workspace/action projections now
+  request filtered goal-store paths and defensively filter actions, events,
+  worker runs, evidence, approvals, and tasks by `goal_id`; invalid action
+  resolutions return `400` with recovery guidance instead of falling through to
+  restart. Control-web smoke covers cross-goal filtering and invalid-action
+  recovery.
+- Evidence 2026-05-15: SPA module cleanup continued by moving action-needed
+  projection, continuation queue rendering, and work-graph rendering into
+  feature modules (`operator-action-panels.tsx` and `task-graph-view.tsx`) while
+  keeping `App.tsx` as the route shell. Validation passed with
+  `npm run --prefix ui/control-plane-web build` and
+  `npm run --prefix ui/control-plane-web smoke`.
+- Evidence 2026-05-15: the operator action configuration surface moved into
+  `operator-control-panel.tsx`, including voting, steering, restart/branch,
+  wait-state, mechanism-round, review, and research payload builders. The SPA
+  shell now imports the feature route instead of owning those action builders;
+  build, smoke, scenario, and TUI focused tests passed.
+- Evidence 2026-05-15: the memory route moved into `memory-view.tsx`, including
+  memory search/context/write, replacement preview/apply, diff rendering, and
+  memory event projection. The memory render smoke now loads the feature module
+  directly, and the SPA build and smoke suite passed after the extraction.
+- Evidence 2026-05-15: dashboard, plan, action-queue, event-source, worker-run,
+  service-strip, and runner-fleet route surfaces moved into
+  `operator-dashboard-routes.tsx`. `App.tsx` is now closer to a route shell and
+  shared chat/selection state owner, and the smoke guardrail reads the extracted
+  module when proving `/api/operator/actions` usage.
+- Evidence 2026-05-15: operator SSE connection, event parsing, reconnect
+  behavior, and TanStack Query projection-cache updates moved into
+  `operator-stream.ts`; `App.tsx` consumes the hook instead of owning stream
+  protocol details. SPA build and smoke passed after the extraction.
+- Evidence 2026-05-15: the TUI action and approval surfaces now support
+  approval rejection with `r`, including optional rejection text, while keeping
+  selected-goal scoping and modified-key chat submission. `cargo test -p
+  coat-cli tui` passed with the new rejection coverage.
+- Limitation 2026-05-15: local Playwright browser E2E could not be rerun in
+  this sandbox after the first failure fix because Vite localhost binding
+  requires escalation and the escalation reviewer rejected the rerun after the
+  usage limit was reached. The SPA build and gateway smoke passed.
 - Add token-broker-backed multi-user MCP smoke only after a broker implementation is selected.
 
 ### Release And Deployment Proof
@@ -272,6 +971,17 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 
 ## Tests
 
+- State-machine tests cover the actor transition matrix for goals, tasks,
+  thunks, worker runs, reviews, approvals, events, drafts, runners, memory, and
+  mechanism rounds, including valid, invalid, stale, idempotent, recoverable,
+  and terminal paths.
+- Model-based/property tests generate bounded transition sequences and assert
+  global invariants: terminal states, recoverability, continuation refs,
+  idempotency, projection determinism, evidence provenance, branch validation,
+  event dedupe, and non-stub satisfaction gates.
+- Projection rebuild tests replay append-only domain events into
+  `OperatorWorkspaceSnapshot`, action queue, actor graph, timeline, evidence,
+  and worker-run projections without relying on gateway-local normalization.
 - Unit tests cover task lifecycle, restart policy, projection idempotency, attestation validation, event retry states, object artifact refs, stub-output rejection, and public-contract serialization.
 - Unit tests cover opt-in goal ranking vote promotion/demotion, delayed compute thunk pause/resume behavior, worker waiting-result thunk materialization, and compute graph projection of tasks, thunks, wait refs, and continuations.
 - Unit tests cover opt-in mechanism rounds for consensus tallies and Vickrey auction decisions with human-ratification state.
@@ -288,24 +998,24 @@ Workers in these workstreams use COAT durable child tasks. They must not use hid
 
 ## Follow-Ups
 
-- `RuntimeVerifier`: complete the ignored entrypoint's deterministic scaffold with a Docker Testcontainers Restate harness and restart/resume proof.
-- `RuntimeVerifier`: wire the deterministic transition/projection observation assertions into the live Docker Testcontainers harness and, once an OpenTelemetry sink is selected, assert exported spans instead of only local tracing fields.
-- `CodexWorker`: run an env-gated live Codex App Server smoke with real thread/turn IDs, then capture the live result as a replay fixture.
-- `CodexWorker`: run live provider verification on real configured nodes and archive one profile result per enabled model route.
-- `CodexWorker`: verify `@ctxr/kit` and `@ctxr/agent-staff-engineer` before staff-engineer live smoke work.
-- `Provisioner`: run kind/k3d watch proof from sandbox-runner provision request through result ingestion, failure taxonomy, cleanup, and attestation projection.
-- `Provisioner`: add provider-backed sandbox adapters only when they return validator-reviewable attestations, or write a supersession note if provider sandboxes remain out of scope.
-- `ResearchMemory`: run live Qdrant, Graphiti, Zep, and object-store adapter smoke with approved credentials, then capture replayable fixture evidence.
-- `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version or digest evidence for source snapshots and large artifacts.
-- `EventOps`: add live Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and provider-adapter smoke tests behind credentials and explicit approval gates.
-- `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events.
-- `UIE2E`: continue replacing monolithic SPA sections with shadcn-backed feature modules over the compact `/api/operator/*` API without making the frontend the durable state owner; keep explicit draft and human-action controls visible in the panels where operators already inspect the selected goal.
-- `UIE2E`: keep the TUI and SPA aligned on the same selected-goal model, action queue, approvals, worker-run, evidence, and event projections as the backend-first state machine stabilizes.
-- `UIE2E`: add persisted SPA screenshots and TUI transcripts to scenario artifacts when the scenario runner grows first-class terminal and browser capture paths.
-- `UIE2E`: consider a gated LLM usability evaluator later; PR CI should keep using deterministic coherence checks.
-- `UIE2E`: add token-broker-backed multi-user MCP smoke after broker design is selected.
-- `ReleaseHardening`: run the first published binary and Helm chart smoke and record evidence.
-- `ReleaseHardening`: add provider-specific deploy overlays and Restate Cloud journal-encryption guidance once the first cloud target and supported SDK path are selected.
+- `SimplificationRun`: continue Phase 5 and Phase 6 by running one selected live proof end-to-end, then close or supersede only the follow-ups backed by direct evidence; do not delete remaining surfaces until replacement SPA/TUI/CLI/MCP evidence passes.
+- `RuntimeVerifier`: implement the ignored Docker Testcontainers Restate restart/resume harness; required local gate is `COAT_RESTATE_RESTART_RESUME_TEST=1` with Docker available, a non-`latest` `COAT_RESTATE_TESTCONTAINERS_IMAGE`, and a built coordinator binary at `CARGO_BIN_EXE_coat-coordinator` or `target/debug/coat-coordinator`.
+- `RuntimeVerifier`: move deterministic transition/projection assertions into the live harness; keep span assertions local until an OpenTelemetry sink and endpoint are selected, then assert exported workflow, dispatch, validation, approval, restart, and projection spans.
+- `CodexWorker`: run a live Codex App Server smoke and capture the result as a replay fixture; required gate/config is `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`, `CODEX_RUNNER_MODE=live`, `CODEX_AUTH_MODE=app_server`, `CODEX_APP_SERVER_URL`, and an existing isolated `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`.
+- `CodexWorker`: run live provider verification on real configured nodes and archive one `/verify` profile result per enabled route; required config is provider env or brokered auth, model endpoints, runner registration, and explicit non-stub route selection.
+- `CodexWorker`: verify `@ctxr/kit`, `@ctxr/agent-staff-engineer`, isolated target-repo install, tracker auth, and Claude Code auth distribution before attempting staff-engineer live issue-to-PR smoke work.
+- `Provisioner`: run the kind/k3d executor proof from sandbox-runner provision request through Job/Pod watch, result ingestion, cleanup, failure taxonomy, and attestation projection; required gate/config is `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`, `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d, `COAT_KUBERNETES_EXECUTOR_PROOF_MODE=server_dry_run` or `apply`, `COAT_KUBERNETES_CAPACITY_DECISION_REF`, `COAT_KUBERNETES_TEMPLATE_REF`, and `COAT_KUBERNETES_RESULT_INGESTION_REF`.
+- `Provisioner`: add provider-backed sandbox adapters only when the provider can return validator-reviewable attestation evidence; otherwise record a supersession note that keeps provider sandboxes out of scope for this plan.
+- `ResearchMemory`: run live Qdrant, Graphiti, Zep, and object-store adapter smokes only with approved service URLs, credentials or brokered auth, embedding route config, and an explicit object-store bucket/prefix; capture replay fixtures for every accepted live source.
+- `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version, digest, bucket, and object-key evidence for raw source snapshots and large artifacts.
+- `EventOps`: add Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and other provider-adapter smokes only behind approved credentials, callback/webhook auth policy, and explicit activation gates.
+- `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events; required local proof is Playwright against the Compose-hosted gateway with artifacts under `target/coat-scenarios` or the standard Playwright report paths.
+- `UIE2E`: continue replacing monolithic SPA sections with shadcn-backed feature modules over `/api/operator/*` without making the frontend the durable state owner; each replacement needs visible draft/action/evidence behavior covered by smoke or browser evidence.
+- `UIE2E`: add persisted SPA screenshots and TUI transcripts to scenario artifacts once the scenario runner has first-class browser and terminal capture paths.
+- `UIE2E`: keep any LLM usability evaluator optional and separately gated; PR CI remains deterministic unless an approved evaluator route, model auth, and rubric artifact format are selected.
+- `UIE2E`: add token-broker-backed multi-user MCP smoke only after broker implementation, OIDC tenant/client config, short-lived lease policy, and approval UX are selected.
+- `ReleaseHardening`: run the first published binary and Helm chart smoke after a GitHub Release exists, then record asset names, checksums, install/template commands, and results in `docs/operations/releases.md`.
+- `ReleaseHardening`: add provider-specific deploy overlays and Restate Cloud journal-encryption guidance only after the first cloud target, supported SDK path, service identity verification, and provider documentation are selected.
 
 ## Acceptance
 

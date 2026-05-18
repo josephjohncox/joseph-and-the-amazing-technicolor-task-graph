@@ -30,8 +30,9 @@ Options:
   -h, --help                 Show this help.
 
 Default scenario set:
-  completed, pending action, approval, human thunk/resume, fanout, fork/join,
-  signal-driven, blocked recovery, cancelled queue history, and memory evidence.
+  completed, running, pending action, approval, human thunk/resume, fanout,
+  fork/join, signal-driven, blocked recovery, cancelled queue history,
+  memory evidence, and operator usability.
 
 Examples:
   sh scripts/coat-bootstrap-scenarios.sh --dry-run
@@ -122,7 +123,7 @@ gateway_url=${COAT_BOOTSTRAP_SCENARIO_GATEWAY_URL:-http://127.0.0.1:0}
 goal_store_url=${COAT_BOOTSTRAP_GOAL_STORE_URL:-${COAT_GOAL_STORE_URL:-http://127.0.0.1:9088}}
 seed_goals=${COAT_BOOTSTRAP_SEED_GOALS:-false}
 scenario_args=${COAT_BOOTSTRAP_SCENARIO_ARGS:-}
-specs=${COAT_BOOTSTRAP_SCENARIO_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_pending_action.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/bootstrap_blocked_retry_recovery.json scenarios/e2e/bootstrap_cancelled_queue_history.json scenarios/e2e/bootstrap_memory_research_evidence.json scenarios/e2e/blocked_and_resumed.json scenarios/e2e/goal_lifecycle_basic.json"}
+specs=${COAT_BOOTSTRAP_SCENARIO_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_running.json scenarios/e2e/bootstrap_pending_action.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/bootstrap_blocked_retry_recovery.json scenarios/e2e/bootstrap_cancelled_queue_history.json scenarios/e2e/bootstrap_memory_research_evidence.json scenarios/e2e/operator_usability_workbench.json scenarios/e2e/blocked_and_resumed.json scenarios/e2e/goal_lifecycle_basic.json"}
 dry_run=${COAT_BOOTSTRAP_SCENARIO_DRY_RUN:-0}
 
 while [ "$#" -gt 0 ]; do

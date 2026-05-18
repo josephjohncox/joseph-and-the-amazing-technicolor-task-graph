@@ -48,7 +48,7 @@ export function ActiveGoalRuntimeBar(props: {
         <span className="status-pill muted">{props.view.taskCount} tasks</span>
         <span className={clsx("status-pill", props.view.actionCount ? "status-waiting-approval" : "status-done")}>{props.view.actionCount} actions</span>
         <span className="status-pill muted">{props.view.streamUpdatedLabel}</span>
-        {props.view.actionBusy && <span className="status-pill status-running">Accepting draft</span>}
+        {props.view.actionBusy && <span className="status-pill status-running">Submitting draft</span>}
       </div>
       <div className="button-row">
         <button type="button" className="secondary-button" onClick={props.onOpenGraph}>
@@ -57,11 +57,11 @@ export function ActiveGoalRuntimeBar(props: {
         </button>
         <button type="button" className={props.view.actionCount ? "primary-button" : "secondary-button"} onClick={props.onOpenQueue}>
           <Bell size={15} />
-          Actions
+          Action queue
         </button>
         <button type="button" className="secondary-button" onClick={props.onOpenControls}>
           <ShieldCheck size={15} />
-          Operator actions
+          Goal controls
         </button>
       </div>
       {props.view.streamError && <span className="error-text">{props.view.streamError}</span>}
@@ -90,7 +90,7 @@ export function DraftReviewDock(props: {
   return (
     <section className="draft-review-dock" aria-label="Active draft">
       <div>
-        <span className="goal-context-kicker">Active draft</span>
+        <span className="goal-context-kicker">Draft</span>
         <strong>{props.view.title}</strong>
         <small>{props.view.detail}</small>
       </div>
@@ -109,12 +109,12 @@ export function DraftReviewDock(props: {
         )}
         <Button type="button" variant="outline" disabled={props.view.busy || accepted} onClick={props.onDiscardGoalDraft}>
           <XCircle size={15} />
-          Discard
+          Discard draft
         </Button>
         {props.view.hasGoalDraft && (
           <Button type="button" disabled={props.view.busy || accepted} onClick={props.onSubmitGoalDraft}>
             <ListChecks size={15} />
-            {accepted ? "Accepted" : props.view.busy ? "Accepting" : "Accept draft"}
+            {accepted ? "Accepted" : props.view.busy ? "Submitting" : "Accept draft"}
           </Button>
         )}
       </div>

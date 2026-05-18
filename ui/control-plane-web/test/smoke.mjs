@@ -147,10 +147,9 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Open graph", "Ask or draft", "New durable goal", "Planning draft", "Active draft", "Live state", "Streaming", "Goal draft", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "History:", "Operator Actions", "Operator actions", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Continuations", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Ask or draft", "New durable goal", "Planning draft", "Active draft", "Live state", "Streaming", "Goal draft", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "History:", "Operator Actions", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Continuations", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
-  assert(script.includes("Clear the local goal selection. This does not cancel the goal."), "client script explains clear selection is local-only");
   assert(script.includes("Stop this durable goal through the coordinator."), "client script explains cancel stops a durable goal");
   assert(!script.includes("Clear local history"), "client script distinguishes local clear from goal cancellation");
   assert(!script.includes(">Thunks<"), "client script does not expose thunk wording in queue filters");
@@ -185,8 +184,12 @@ async function assertArchitectureGuardrails() {
   }
 
   const appSource = await readFile(new URL("../src/spa/App.tsx", import.meta.url), "utf8");
+  const actionPanelSource = await readFile(new URL("../src/spa/features/operator-action-panels.tsx", import.meta.url), "utf8");
+  const dashboardRoutesSource = await readFile(new URL("../src/spa/features/operator-dashboard-routes.tsx", import.meta.url), "utf8");
+  const chatDraftSource = await readFile(new URL("../src/spa/features/chat-draft-panel.tsx", import.meta.url), "utf8");
   const apiSource = await readFile(new URL("../src/spa/api.ts", import.meta.url), "utf8");
   const serverSource = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
+  const operatorSurfaceSource = `${appSource}\n${actionPanelSource}\n${dashboardRoutesSource}`;
   const designDoc = await readFile(new URL("../../../docs/design-docs/110-control-gateway-spa.md", import.meta.url), "utf8");
   const removedGoalRoute = "/api/" + "goals";
   const removedApprovalRoute = "/api/" + "approvals";
@@ -219,9 +222,12 @@ async function assertArchitectureGuardrails() {
   assert(!serverSource.includes(`url.pathname === "${removedRunnersRoute}"`), "gateway does not keep removed runner route");
   assert(!serverSource.includes(`url.pathname === "${removedHumanThreadsRoute}"`), "gateway does not keep removed human thread route");
   assert(!serverSource.includes(`coat_follow_ups`), "gateway MCP surface does not keep removed follow-up tools");
-  assert(appSource.includes("operatorActions("), "SPA reads action queue through /api/operator/actions");
-  assert(appSource.includes("resolveOperatorAction("), "SPA resolves human prompts through /api/operator/actions/{id}/resolve");
-  assert(appSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
+  assert(operatorSurfaceSource.includes("operatorActions("), "SPA reads action queue through /api/operator/actions");
+  assert(operatorSurfaceSource.includes("resolveOperatorAction("), "SPA resolves human prompts through /api/operator/actions/{id}/resolve");
+  assert(chatDraftSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
+  assert(appSource.includes("<ChatDraftPanel"), "SPA renders chat and draft flow through the feature module");
+  assert(chatDraftSource.includes("Draft goal") && chatDraftSource.includes("Ask"), "SPA exposes Ask and Draft goal as explicit modes");
+  assert(chatDraftSource.includes("Accept draft") && chatDraftSource.includes("Discard draft"), "SPA draft lifecycle has visible accept and discard controls");
   assert(!appSource.includes("@ai-sdk/react"), "SPA does not call AI SDK useChat directly");
   assert(!appSource.includes("assistant-ui"), "SPA does not replace chat with assistant-ui directly");
   assert(serverSource.includes('url.pathname === "/api/chat"'), "gateway owns /api/chat handling");
@@ -235,19 +241,7 @@ async function assertMemoryReplacementDiffRender() {
     configFile: false,
     root: packageRoot,
     logLevel: "silent",
-    plugins: [
-      react(),
-      {
-        name: "coat-memory-diff-render-smoke",
-        enforce: "post",
-        transform(code, id) {
-          if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { MemoryDiffTable, PreviewStatus, memoryEditPayload, previewReady };`;
-          }
-          return null;
-        },
-      },
-    ],
+    plugins: [react()],
     optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false },
     appType: "custom",
@@ -259,7 +253,7 @@ async function assertMemoryReplacementDiffRender() {
       PreviewStatus,
       memoryEditPayload,
       previewReady,
-    } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+    } = await viteServer.ssrLoadModule("/src/spa/features/memory-view.tsx");
 
     assert(typeof MemoryDiffTable === "function", "memory diff render smoke can load MemoryDiffTable");
     assert(typeof PreviewStatus === "function", "memory diff render smoke can load PreviewStatus");
@@ -360,7 +354,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ActionResultCard, BlockerInsightPanel, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, DraftReviewDock, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, OperatorActionList, QueueFilterBar, RunnersView, SubgoalPlanPanel, TaskSummary, actionNeededItemsFromApprovals, actionNeededItemsFromComposedSnapshot, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromComposedSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, composedSnapshotHasProjectedTasks, goalSubgoalsFromComposedSnapshotOrDraft, mergeSubmittedGoalRows, queueGroupForItem, queueGroupsForItems, queueItemsFromComposedSnapshot, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
+            return `${code}\nexport { ActiveGoalRuntimeBar, ChatDraftPanel, ComputeGraphDetails, DraftReviewDock, GoalContextBar, GoalList, GraphStatusPanel, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, composedSnapshotHasProjectedTasks, goalSubgoalsFromComposedSnapshotOrDraft, mergeSubmittedGoalRows, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -373,47 +367,82 @@ async function assertOperatorWorkflowRender() {
 
   try {
     const {
-      CommandPanel,
-      BlockerInsightPanel,
-      CompilerControlPanel,
-      ComputeGraphDetails,
-      ContinuationQueue,
-      Dashboard,
+      ChatDraftPanel,
+      ActiveGoalRuntimeBar,
+      BlockerInsightPanel: appBlockerInsightPanel,
+      CompilerControlPanel: appCompilerControlPanel,
+      ComputeGraphDetails: appComputeGraphDetails,
+      ContinuationQueue: appContinuationQueue,
       DraftReviewDock,
-      EventSourcesPanel,
-      EvidenceNextActionPanel,
+      EvidenceNextActionPanel: appEvidenceNextActionPanel,
       GoalContextBar,
-      GoalList,
-      GraphStatusPanel,
-      MemoryEventsTable,
-      OperatorActionList,
-      ActionResultCard,
-      QueueFilterBar,
-      RunnersView,
-      SubgoalPlanPanel,
-      TaskSummary,
-      actionNeededItemsFromApprovals,
-      actionNeededItemsFromComposedSnapshot,
-      computeGraphNodes,
-      computeNodeMatchesGraphFilter,
-      continuationRowsFromComposedSnapshot,
-      eventSourceTableRow,
+      GoalList: appGoalList,
+      GraphStatusPanel: appGraphStatusPanel,
+      MemoryEventsTable: appMemoryEventsTable,
+      OperatorActionList: appOperatorActionList,
+      ActionResultCard: appActionResultCard,
+      QueueFilterBar: appQueueFilterBar,
+      SubgoalPlanPanel: appSubgoalPlanPanel,
+      TaskSummary: appTaskSummary,
+      actionNeededItemsFromApprovals: appActionNeededItemsFromApprovals,
+      actionNeededItemsFromComposedSnapshot: appActionNeededItemsFromComposedSnapshot,
+      computeGraphNodes: appComputeGraphNodes,
+      computeNodeMatchesGraphFilter: appComputeNodeMatchesGraphFilter,
+      continuationRowsFromComposedSnapshot: appContinuationRowsFromComposedSnapshot,
       goalDraftFromChatResponse,
       goalIdFromSubmitResponse,
-      goalRowsWithSelected,
-      composedSnapshotHasProjectedTasks,
-      goalSubgoalsFromComposedSnapshotOrDraft,
-      mergeSubmittedGoalRows,
-      queueGroupForItem,
-      queueGroupsForItems,
-      queueItemsFromComposedSnapshot,
-      runnerTableRow,
+      goalRowsWithSelected: appGoalRowsWithSelected,
+      composedSnapshotHasProjectedTasks: appComposedSnapshotHasProjectedTasks,
+      goalSubgoalsFromComposedSnapshotOrDraft: appGoalSubgoalsFromComposedSnapshotOrDraft,
+      mergeSubmittedGoalRows: appMergeSubmittedGoalRows,
+      queueGroupForItem: appQueueGroupForItem,
+      queueGroupsForItems: appQueueGroupsForItems,
+      queueItemsFromComposedSnapshot: appQueueItemsFromComposedSnapshot,
       selectedGoalIdFromLocation,
-      selectedGoalSummary,
-      taskMatchesGraphFilter,
-      taskRowsFromGoalDraft,
-      taskStatusCounts,
+      selectedGoalSummary: appSelectedGoalSummary,
+      taskMatchesGraphFilter: appTaskMatchesGraphFilter,
+      taskRowsFromGoalDraft: appTaskRowsFromGoalDraft,
+      taskStatusCounts: appTaskStatusCounts,
     } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+    const actionPanels = await viteServer.ssrLoadModule("/src/spa/features/operator-action-panels.tsx");
+    const graphPanels = await viteServer.ssrLoadModule("/src/spa/features/goal-graph-panel.tsx");
+    const controlPanels = await viteServer.ssrLoadModule("/src/spa/features/operator-control-panel.tsx");
+    const memoryPanels = await viteServer.ssrLoadModule("/src/spa/features/memory-view.tsx");
+    const dashboardRoutes = await viteServer.ssrLoadModule("/src/spa/features/operator-dashboard-routes.tsx");
+    const Dashboard = dashboardRoutes.Dashboard;
+    const EventSourcesPanel = dashboardRoutes.EventSourcesPanel;
+    const RunnersView = dashboardRoutes.RunnersView;
+    const eventSourceTableRow = dashboardRoutes.eventSourceTableRow;
+    const runnerTableRow = dashboardRoutes.runnerTableRow;
+    const CompilerControlPanel = appCompilerControlPanel ?? controlPanels.CompilerControlPanel;
+    const MemoryEventsTable = appMemoryEventsTable ?? memoryPanels.MemoryEventsTable;
+    const ComputeGraphDetails = appComputeGraphDetails ?? graphPanels.ComputeGraphDetails;
+    const GoalList = appGoalList ?? graphPanels.GoalList;
+    const GraphStatusPanel = appGraphStatusPanel ?? graphPanels.GraphStatusPanel;
+    const SubgoalPlanPanel = appSubgoalPlanPanel ?? graphPanels.SubgoalPlanPanel;
+    const TaskSummary = appTaskSummary ?? graphPanels.TaskSummary;
+    const computeGraphNodes = appComputeGraphNodes ?? graphPanels.computeGraphNodes;
+    const computeNodeMatchesGraphFilter = appComputeNodeMatchesGraphFilter ?? graphPanels.computeNodeMatchesGraphFilter;
+    const goalRowsWithSelected = appGoalRowsWithSelected ?? graphPanels.goalRowsWithSelected;
+    const composedSnapshotHasProjectedTasks = appComposedSnapshotHasProjectedTasks ?? graphPanels.composedSnapshotHasProjectedTasks;
+    const goalSubgoalsFromComposedSnapshotOrDraft = appGoalSubgoalsFromComposedSnapshotOrDraft ?? graphPanels.goalSubgoalsFromComposedSnapshotOrDraft;
+    const mergeSubmittedGoalRows = appMergeSubmittedGoalRows ?? graphPanels.mergeSubmittedGoalRows;
+    const selectedGoalSummary = appSelectedGoalSummary ?? graphPanels.selectedGoalSummary;
+    const taskMatchesGraphFilter = appTaskMatchesGraphFilter ?? graphPanels.taskMatchesGraphFilter;
+    const taskRowsFromGoalDraft = appTaskRowsFromGoalDraft ?? graphPanels.taskRowsFromGoalDraft;
+    const taskStatusCounts = appTaskStatusCounts ?? graphPanels.taskStatusCounts;
+    const BlockerInsightPanel = appBlockerInsightPanel ?? actionPanels.BlockerInsightPanel;
+    const EvidenceNextActionPanel = appEvidenceNextActionPanel ?? actionPanels.EvidenceNextActionPanel;
+    const OperatorActionList = appOperatorActionList ?? actionPanels.OperatorActionList;
+    const ActionResultCard = appActionResultCard ?? actionPanels.ActionResultCard;
+    const QueueFilterBar = appQueueFilterBar ?? actionPanels.QueueFilterBar;
+    const queueGroupForItem = appQueueGroupForItem ?? actionPanels.queueGroupForItem;
+    const queueGroupsForItems = appQueueGroupsForItems ?? actionPanels.queueGroupsForItems;
+    const ContinuationQueue = appContinuationQueue ?? actionPanels.ContinuationQueue;
+    const actionNeededItemsFromApprovals = appActionNeededItemsFromApprovals ?? actionPanels.actionNeededItemsFromApprovals;
+    const actionNeededItemsFromComposedSnapshot = appActionNeededItemsFromComposedSnapshot ?? actionPanels.actionNeededItemsFromComposedSnapshot;
+    const continuationRowsFromComposedSnapshot = appContinuationRowsFromComposedSnapshot ?? actionPanels.continuationRowsFromComposedSnapshot;
+    const queueItemsFromComposedSnapshot = appQueueItemsFromComposedSnapshot ?? actionPanels.queueItemsFromComposedSnapshot;
     const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 
     const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
@@ -547,7 +576,7 @@ async function assertOperatorWorkflowRender() {
       runId: "chat-run-smoke",
     };
     const commandMarkup = renderToStaticMarkup(
-      React.createElement(CommandPanel, {
+      React.createElement(ChatDraftPanel, {
         messages: [
           { role: "assistant", content: "Ready." },
           { role: "user", content: "Ship chat goal submit." },
@@ -565,6 +594,7 @@ async function assertOperatorWorkflowRender() {
         goalSubmitError: null,
         goalSubmitResult: undefined,
         selectedGoalId: "",
+        selectedGoal: null,
         sessionId: "operator:default",
         mode: "draft_goal",
         onDraftKindChange: () => {},
@@ -576,10 +606,11 @@ async function assertOperatorWorkflowRender() {
         onClear: () => {},
       }),
     );
-    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: Workspace chat", "Draft review", "Evidence requirements"]) {
+    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: Workspace chat", "Evidence requirements"]) {
       assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
     }
-    assert(!commandMarkup.includes("Accept draft"), "command panel leaves submit controls to the active draft dock");
+    assert(commandMarkup.includes("Accept draft"), "command panel exposes a direct draft acceptance action");
+    assert(!commandMarkup.includes("operator:default"), "command panel hides raw chat session ids");
     assertNoCliCoverageOrDebugInventory(commandMarkup, "command panel goal-submit markup");
     assert(!commandMarkup.includes("<pre>"), "command panel does not render raw draft JSON inline");
     assert(!commandMarkup.includes("&quot;initial_tasks&quot;"), "command panel does not render raw GoalSpec JSON inline");
@@ -590,7 +621,7 @@ async function assertOperatorWorkflowRender() {
           title: "Goal draft",
           detail: "Submit an operator-authored goal through the coordinator.",
           kindLabel: "Goal draft",
-          sessionLabel: "operator:default",
+          sessionLabel: "Workspace chat",
           hasGoalDraft: true,
           submittedGoalLabel: "",
           busy: false,
@@ -600,8 +631,29 @@ async function assertOperatorWorkflowRender() {
         onDiscardGoalDraft: () => {},
       }),
     );
-    for (const expected of ["Active draft", "Goal draft", "Goal draft ready", "operator:default", "Discard", "Accept draft"]) {
+    for (const expected of ["Active draft", "Goal draft", "Goal draft ready", "Workspace chat", "Discard", "Accept draft"]) {
       assert(dockMarkup.includes(expected), `draft review dock markup includes ${expected}`);
+    }
+    assert(!dockMarkup.includes("operator:default"), "draft review dock renders a friendly session label");
+    const runtimeMarkup = renderToStaticMarkup(
+      React.createElement(ActiveGoalRuntimeBar, {
+        view: {
+          stateLabel: "Running",
+          title: "Operator workflow smoke",
+          streamStatus: "live",
+          streamUpdatedLabel: "updated now",
+          streamError: "",
+          taskCount: 4,
+          actionCount: 1,
+          actionBusy: false,
+        },
+        onOpenGraph: () => {},
+        onOpenQueue: () => {},
+        onOpenControls: () => {},
+      }),
+    );
+    for (const expected of ["Selected goal active state", "Live state", "Streaming", "Action queue", "Goal controls"]) {
+      assert(runtimeMarkup.includes(expected), `active runtime bar includes ${expected}`);
     }
 
     const pendingGoalRows = mergeSubmittedGoalRows([], {
@@ -685,9 +737,12 @@ async function assertOperatorWorkflowRender() {
       "pending · approval-source-github",
       "Goal attention",
       "Runners",
+      "Runs",
+      "Approval",
     ]) {
       assert(dashboardMarkup.includes(expected), `operator dashboard markup includes ${expected}`);
     }
+    assert(!dashboardMarkup.includes("resolve_approval"), "operator dashboard renders direct action labels instead of raw action kinds");
     assertNoAmbiguousLaneCopy(dashboardMarkup, "operator dashboard");
 
     const goalListMarkup = renderToStaticMarkup(React.createElement(GoalList, { goals, selectedGoalId: goalId, onSelect: () => {} }));
@@ -765,7 +820,7 @@ async function assertOperatorWorkflowRender() {
     assert(taskSummaryMarkup.includes("waiting_input: 1"), "task summary renders waiting input status");
     assert(taskSummaryMarkup.includes("ranking: +2 · 2 up · 0 down · promoted"), "task summary renders ranking vote state");
     assert(taskSummaryMarkup.includes("mechanisms: 1 open · 1 ratify"), "task summary renders mechanism round state");
-    assert(taskSummaryMarkup.includes("compute graph: 3 nodes · 2 edges · 1 thunks"), "task summary renders compute graph counters");
+    assert(taskSummaryMarkup.includes("workflow graph: 3 nodes · 2 edges · 1 continuations"), "task summary renders workflow graph counters");
 
     const computeGraphSnapshot = {
       workflow_compute_graph: {
@@ -840,7 +895,7 @@ async function assertOperatorWorkflowRender() {
       assert(blockerMarkup.includes(expected), `blocker insight markup includes ${expected}`);
     }
     const emptyBlockerMarkup = renderToStaticMarkup(React.createElement(BlockerInsightPanel, { items: [], onOpenControls: () => {} }));
-    assert(emptyBlockerMarkup.includes("No blockers projected"), "empty blocker panel explains stable state");
+    assert(emptyBlockerMarkup.includes("No blockers"), "empty blocker panel explains stable state");
     const actionItems = actionNeededItemsFromComposedSnapshot({
       goal_id: goalId,
       agent_activity: [
@@ -956,8 +1011,8 @@ async function assertOperatorWorkflowRender() {
       ),
     );
     for (const expected of [
-      "Operator actions",
-      "Primary actions",
+      "Actions",
+      "Primary operator actions",
       "Review evidence",
       "Request review",
       "Research gap",
@@ -1226,7 +1281,7 @@ async function assertOperatorWorkflowRender() {
         React.createElement(OperatorActionList, { items: mixedQueueItems }),
       ),
     );
-    for (const expected of ["Approvals", "Recovery", "Continuations", "Stopped history", "Cancelled filter task", "History rows are read-only; use Cancel goal only on active work."]) {
+    for (const expected of ["Approvals", "Recovery", "Continuations", "Stopped history", "Cancelled filter task", "Read-only"]) {
       assert(mixedQueueMarkup.includes(expected), `mixed action queue markup includes ${expected}`);
     }
     const actionResultMarkup = renderToStaticMarkup(React.createElement(ActionResultCard, {
@@ -1236,7 +1291,7 @@ async function assertOperatorWorkflowRender() {
     }));
     assert(actionResultMarkup.includes("Restart accepted"), "action result renders accepted action name");
     assert(actionResultMarkup.includes("Clear notice"), "action result exposes local-only clear control");
-    assert(actionResultMarkup.includes("Projection will refresh from the stream."), "action result explains projection refresh behavior");
+    assert(actionResultMarkup.includes("State will refresh automatically."), "action result explains projection refresh behavior");
 
     const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { workspace }));
     for (const expected of [
@@ -1664,6 +1719,7 @@ async function assertBackendBackedControlSurfaces() {
   const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
   const compiledGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756603";
   const staleGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756604";
+  const otherGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756605";
   const thunkId = "018f8f2f-1fd8-7688-bb12-8bfb6b756777";
   const planId = "plan-smoke-compile";
   const approvalId = "approval-prod-deploy";
@@ -1776,6 +1832,112 @@ async function assertBackendBackedControlSurfaces() {
       status: "pending",
       risk: "deployment",
       reason: "requires explicit human gate before execution",
+    },
+  ];
+  const allTaskRows = [
+    ...taskRows,
+    {
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      title: "Other goal task must not leak into selected projections",
+      role: "planner",
+      status: "blocked",
+      payload_json: {},
+    },
+  ];
+  const allApprovalRows = [
+    ...approvalRows,
+    {
+      approval_id: "approval-other-goal",
+      goal_id: otherGoalId,
+      status: "pending",
+      risk: "unrelated",
+      reason: "belongs to another selected-goal projection",
+    },
+  ];
+  const projectedActionRows = [
+    {
+      action_id: "goal-store-row-approval-prod-deploy",
+      kind: "resolve_approval",
+      goal_id: goalId,
+      task_id: "task-plan",
+      approval_id: approvalId,
+      status: "pending",
+      allowed_resolutions: [],
+    },
+    {
+      action_id: `task:${goalId}:task-plan`,
+      kind: "restart_task",
+      goal_id: goalId,
+      task_id: "task-plan",
+      status: "blocked",
+      allowed_resolutions: ["retry", "replan", "create_thunk"],
+      payload_json: { task_status: "blocked" },
+    },
+    {
+      action_id: `task:${otherGoalId}:task-other-goal`,
+      kind: "restart_task",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      status: "blocked",
+      allowed_resolutions: ["retry"],
+      payload_json: { task_status: "blocked" },
+    },
+  ];
+  const projectedTimelineRows = [
+    {
+      event_id: "event-selected-goal",
+      event_type: "task.updated",
+      goal_id: goalId,
+      task_id: "task-plan",
+      title: "Selected goal event",
+      detail: "selected projection only",
+      created_at: "2026-05-09T12:04:00Z",
+      payload_json: { goal_id: goalId },
+    },
+    {
+      event_id: "event-other-goal",
+      event_type: "task.updated",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      title: "Other goal event",
+      detail: "must stay filtered",
+      created_at: "2026-05-09T12:05:00Z",
+      payload_json: { goal_id: otherGoalId },
+    },
+  ];
+  const projectedWorkerRunRows = [
+    {
+      run_id: "run-selected-goal",
+      goal_id: goalId,
+      task_id: "task-plan",
+      worker: "planner",
+      status: "running",
+      summary: "selected goal worker run",
+    },
+    {
+      run_id: "run-other-goal",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      worker: "planner",
+      status: "blocked",
+      summary: "other goal worker run",
+    },
+  ];
+  const projectedEvidenceRows = [
+    {
+      evidence_id: "evidence-selected-goal",
+      goal_id: goalId,
+      task_id: "task-plan",
+      title: "Selected goal evidence",
+      uri: "git:selected",
+    },
+    {
+      evidence_id: "evidence-other-goal",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      title: "Other goal evidence",
+      uri: "git:other",
     },
   ];
   const threadRows = [
@@ -1897,13 +2059,33 @@ async function assertBackendBackedControlSurfaces() {
       respondJson(res, 200, { events: operatorEvents });
       return;
     }
+    if (request.method === "GET" && request.path === "/goal-store/actions") {
+      respondJson(res, 200, { actions: projectedActionRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/tasks") {
+      respondJson(res, 200, { tasks: allTaskRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-timeline") {
+      respondJson(res, 200, { events: projectedTimelineRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-worker-runs") {
+      respondJson(res, 200, { worker_runs: projectedWorkerRunRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-evidence") {
+      respondJson(res, 200, { evidence: projectedEvidenceRows });
+      return;
+    }
     if (request.method === "POST" && request.path === "/goal-store/operator-events") {
       operatorEvents.push(request.body?.event ?? request.body);
       respondJson(res, 200, { accepted: true, event: request.body?.event ?? request.body });
       return;
     }
     if (request.method === "GET" && request.path === "/goal-store/approvals") {
-      respondJson(res, 200, { data: approvalRows, queue_owner: "goal-store-projection" });
+      respondJson(res, 200, { data: allApprovalRows, queue_owner: "goal-store-projection" });
       return;
     }
     if (request.method === "GET" && request.path === "/goal-store/plans") {
@@ -2014,6 +2196,13 @@ async function assertBackendBackedControlSurfaces() {
       return;
     }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/steer`) {
+      if (request.body?.kind?.request_replan?.reason === "Reject stale action for recovery smoke.") {
+        respondJson(res, 409, {
+          code: 409,
+          message: "the requested recovery action is stale for the current workflow state",
+        });
+        return;
+      }
       respondJson(res, 200, { accepted: true, handler: "steer", directive: request.body });
       return;
     }
@@ -2336,6 +2525,17 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "operator goal detail includes checkpoint refs");
     assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "operator goal detail includes human approval gates");
     assertEqual(snapshot.agent_activity.length, 2, "operator goal detail derives agent activity rows from projected tasks");
+    const graphResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/graph`);
+    assert(graphResponse.ok, "operator graph api returns ok");
+    const graphBody = await graphResponse.json();
+    assertEqual(graphBody.goal_id, goalId, "operator graph response preserves selected goal id");
+    assertEqual(graphBody.graph.open_thunks, 1, "operator graph exposes open continuation count");
+    assert(graphBody.graph.edges.some((edge) => edge.kind === "suspends_into"), "operator graph exposes suspension boundary edges");
+    assert(graphBody.actions.some((action) => action.kind === "resume_thunk"), "operator graph includes continuation actions");
+    assert(
+      graphBody.actions.every((action) => Array.isArray(action.recovery?.actions) && action.recovery.actions.includes("refresh_actions")),
+      "operator graph action rows expose product recovery actions",
+    );
     const activity = snapshot.agent_activity[0];
     assertEqual(activity.task_id, "task-plan", "agent activity preserves task id");
     assertEqual(activity.current_prompt, taskPrompt, "agent activity exposes current prompt payload");
@@ -2407,9 +2607,63 @@ async function assertBackendBackedControlSurfaces() {
     const workspace = await workspaceResponse.json();
     assertEqual(workspace.human_threads.data.data[0].thread_key, `approval:${approvalId}`, "operator workspace preserves notifier thread key");
     assertEqual(workspace.human_threads.data.data[0].latest_status, "waiting_operator", "operator workspace preserves waiting status");
+    assert(workspace.actions.some((action) => action.kind === "resolve_approval"), "operator workspace projects approval actions");
+    assert(workspace.actions.some((action) => action.kind === "resume_thunk"), "operator workspace projects continuation actions");
+    assert(workspace.actions.some((action) => action.kind === "restart_task"), "operator workspace projects recoverable task actions");
+    assert(
+      workspace.actions.every((action) => Array.isArray(action.recovery?.actions) && action.recovery.actions.includes("inspect_actor")),
+      "operator workspace action rows expose concrete recovery actions",
+    );
+    assert(workspace.events.every((event) => event.payload_json), "operator workspace keeps event provenance available");
+    assert(workspace.actions.every((action) => action.goal_id === goalId), "selected workspace filters action rows to the selected goal");
+    assert(workspace.events.every((event) => event.goal_id === goalId), "selected workspace filters timeline rows to the selected goal");
+    assert(workspace.worker_runs.every((run) => run.goal_id === goalId), "selected workspace filters worker runs to the selected goal");
+    assert(workspace.evidence.every((evidence) => evidence.goal_id === goalId), "selected workspace filters evidence rows to the selected goal");
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/tasks?limit=200&goal_id=${encodeURIComponent(goalId)}`),
+      "operator workspace asks goal-store for selected-goal task projection",
+    );
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/approvals?limit=100&goal_id=${encodeURIComponent(goalId)}`),
+      "operator workspace asks goal-store for selected-goal approval projection",
+    );
+
+    const operatorActionsResponse = await fetch(`${backendBaseUrl}/api/operator/actions?goal_id=${encodeURIComponent(goalId)}`);
+    assert(operatorActionsResponse.ok, "operator action list returns ok");
+    const operatorActionsBody = await operatorActionsResponse.json();
+    assert(operatorActionsBody.actions.some((action) => action.action_id === `approval:${goalId}:${approvalId}`), "operator action list exposes approval action id");
+    assert(
+      operatorActionsBody.actions.some((action) => action.action_id === `approval:${goalId}:${approvalId}` && action.source_action_id === "goal-store-row-approval-prod-deploy"),
+      "operator action list normalizes top-level projected approval ids",
+    );
+    assert(operatorActionsBody.actions.some((action) => action.action_id === `thunk:${goalId}:${thunkId}`), "operator action list exposes thunk action id");
+    assert(operatorActionsBody.actions.every((action) => action.goal_id === goalId), "operator action list filters stale cross-goal projection rows");
+    assert(
+      operatorActionsBody.actions.every((action) => Array.isArray(action.allowed_resolutions) && action.allowed_resolutions.length > 0),
+      "operator actions always expose concrete resolutions",
+    );
+    assert(
+      operatorActionsBody.actions.every((action) => Array.isArray(action.recovery?.suggested_resolutions) && action.recovery.suggested_resolutions.length > 0),
+      "operator actions always expose recovery suggestions instead of raw coordinator errors",
+    );
+    const recoverableTaskAction = operatorActionsBody.actions.find((action) => action.action_id === `task:${goalId}:task-adversarial`);
+    assert(
+      recoverableTaskAction?.allowed_resolutions.includes("create_thunk"),
+      "recoverable task actions can create a concrete human prompt",
+    );
+
+    for (const legacyPath of ["/api/goals", "/api/approvals", "/api/runners", "/api/overview", "/api/follow-ups", "/api/human/threads"]) {
+      const legacyResponse = await fetch(`${backendBaseUrl}${legacyPath}`);
+      assertEqual(legacyResponse.status, 404, `${legacyPath} is not kept as a legacy helper route`);
+    }
+
     const streamController = new AbortController();
-    const streamResponse = await fetch(`${backendBaseUrl}/api/operator/stream?goal_id=${encodeURIComponent(goalId)}`, {
+    const sinceCursor = "2026-05-09T12:00:00Z";
+    const streamResponse = await fetch(`${backendBaseUrl}/api/operator/stream?goal_id=${encodeURIComponent(goalId)}&event_type=action.required&since=${encodeURIComponent(sinceCursor)}`, {
       signal: streamController.signal,
+      headers: {
+        "Last-Event-ID": "operator-stream:previous-projection",
+      },
     });
     assert(streamResponse.ok, "operator stream returns ok");
     assert(streamResponse.headers.get("content-type")?.includes("text/event-stream"), "operator stream uses SSE content type");
@@ -2423,11 +2677,18 @@ async function assertBackendBackedControlSurfaces() {
       streamText += streamDecoder.decode(chunk.value, { stream: true });
     }
     streamController.abort();
-    assert(/event: (action\.required|approval\.requested)/.test(streamText), "operator stream emits product-level action events");
+    assert(streamText.includes("event: action.required"), "operator stream emits requested product-level action event");
     assert(streamText.includes("event: stream.heartbeat"), "operator stream emits heartbeats when projection state is unchanged");
     assert(streamText.includes(`"selected_goal_id":"${goalId}"`), "operator stream carries the selected goal workspace projection");
+    assert(streamText.includes("\"recovery\":{\"reason\":\"operator_action_available\""), "operator stream carries product-shaped action recovery data");
+    assert(streamText.includes(`"since":"${sinceCursor}"`), "operator stream echoes the since filter");
+    assert(streamText.includes("\"last_event_id\":\"operator-stream:previous-projection\""), "operator stream reports the reconnect event id");
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/operator-events?limit=100&goal_id=${encodeURIComponent(goalId)}&event_type=action.required&since=${encodeURIComponent(sinceCursor)}`),
+      "operator stream forwards event filters to the goal-store projection",
+    );
     const approvalQueue = await callMcpAt(backendBaseUrl, "coat_operator_actions", { goal_id: goalId });
-    const projectedApprovalAction = approvalQueue.actions.find((action) => action.approval?.approval_id === approvalId);
+    const projectedApprovalAction = approvalQueue.actions.find((action) => action.approval?.approval_id === approvalId || action.approval_id === approvalId);
     assert(projectedApprovalAction, "operator actions read projected human gate");
     assert(
       calls.goalStore.some((call) => call.url === `/goal-store/approvals?limit=100&goal_id=${encodeURIComponent(goalId)}`),
@@ -2448,6 +2709,65 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(approvalContextBody.result.data.handler, "steer", "approval add-context routes through steering, not approval");
     const approvalContextCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer` && call.body?.kind?.add_context?.approval_id === approvalId);
     assert(approvalContextCall, "approval add-context forwards target approval id to the coordinator");
+
+    const invalidActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`task:${goalId}:task-plan`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        resolution: "teleport",
+        response_summary: "Invalid resolution should not restart work.",
+      }),
+    });
+    assertEqual(invalidActionResponse.status, 400, "invalid operator action resolution returns HTTP 400");
+    const invalidActionBody = await invalidActionResponse.json();
+    assertEqual(invalidActionBody.accepted, false, "invalid operator action is not accepted");
+    assertEqual(invalidActionBody.recovery.reason, "invalid_operator_action_resolution", "invalid action response carries recovery reason");
+    assert(invalidActionBody.recovery.suggested_resolutions.includes("retry"), "invalid action recovery includes retry");
+    assert(invalidActionBody.recovery.suggested_resolutions.includes("create_thunk"), "invalid action recovery includes create-thunk prompt option");
+    assert(
+      !calls.restate.some((call) => call.url === `/GoalWorkflow/${goalId}/restart` && call.body?.message === "Invalid resolution should not restart work."),
+      "invalid action resolution is rejected before a restart mutation",
+    );
+
+    const staleActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`task:${goalId}:task-plan`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        resolution: "replan",
+        response_summary: "Reject stale action for recovery smoke.",
+      }),
+    });
+    assertEqual(staleActionResponse.status, 409, "operator action resolution surfaces stale coordinator state as HTTP 409");
+    const staleActionBody = await staleActionResponse.json();
+    assertEqual(staleActionBody.accepted, false, "stale operator action is not accepted");
+    assertEqual(staleActionBody.recovery.reason, "coordinator_rejected_current_action_state", "stale action response carries recovery guidance");
+    assert(staleActionBody.recovery.suggested_resolutions.includes("retry"), "stale action recovery suggests an alternate progress action");
+    assert(staleActionBody.recovery.suggested_resolutions.includes("create_thunk"), "stale action recovery can turn blocked work into an explicit prompt");
+    assert(staleActionBody.recovery.actions.includes("refresh_actions"), "stale action recovery asks the operator to refresh the projection");
+    assert(staleActionBody.recovery.actions.includes("inspect_actor"), "stale action recovery preserves an inspect path");
+    assert(!String(staleActionBody.error ?? "").includes("requested recovery action is stale"), "stale action does not expose raw Restate errors as the operator-facing error");
+    assertEqual(staleActionBody.operator_event.event.event_type, "goal.updated", "stale action still appends an operator event projection");
+
+    const createPromptActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`task:${goalId}:task-plan`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        resolution: "create_thunk",
+        response_summary: "Ask the operator which recovery path to use.",
+      }),
+    });
+    assert(createPromptActionResponse.ok, "operator action can create a concrete recovery prompt");
+    const createPromptActionBody = await createPromptActionResponse.json();
+    assertEqual(createPromptActionBody.result.data.handler, "create_thunk", "create-thunk action resolution routes through workflow create_thunk");
+    const createPromptCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/create_thunk` && call.body?.continuation?.continuation_id?.includes("task:"));
+    assertEqual(createPromptCall?.body?.kind, "human_input", "create-thunk action resolution creates a human-input thunk");
+    assertEqual(createPromptCall?.body?.continuation?.boundary, "task_dispatch", "create-thunk action resolution resumes at task dispatch");
 
     const thunkActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`thunk:${goalId}:${thunkId}`)}/resolve`, {
       method: "POST",

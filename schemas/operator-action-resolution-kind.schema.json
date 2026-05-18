@@ -10,6 +10,7 @@
     "reject",
     "retry",
     "replan",
+    "create_thunk",
     "cancel_goal",
     "accept_draft",
     "discard_draft",

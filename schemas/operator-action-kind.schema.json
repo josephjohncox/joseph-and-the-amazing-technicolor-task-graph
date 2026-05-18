@@ -6,6 +6,7 @@
     "accept_draft",
     "resume_thunk",
     "resolve_approval",
+    "create_thunk",
     "restart_task",
     "replan_task",
     "select_branch",

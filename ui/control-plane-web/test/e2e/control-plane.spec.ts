@@ -11,6 +11,7 @@ type JsonRecord = Record<string, unknown>;
 
 type FixtureState = {
   actions: Array<{ handler: string; body: JsonRecord }>;
+  cancelledGoals: Set<string>;
   freezeChatSession: boolean;
   requestCounts: Record<string, number>;
   submittedGoalSpec: JsonRecord | null;
@@ -25,23 +26,30 @@ test.describe("COAT control-plane browser flows", () => {
     }, [selectedGoalStorageKey, themeStorageKey]);
   });
 
-  test("shows chat scope, edits or discards goal drafts, submits, and refreshes the selected goal", async ({ page }) => {
+  test("asks by default, edits or discards goal drafts, submits, and refreshes the selected goal", async ({ page }) => {
     const state = await installGatewayFixtures(page);
 
     await page.goto("/");
     await expectNoAmbiguousLaneCopy(page);
     await expect(page.locator(".outcome-meta")).toContainText("Assistant");
     await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
-    await expect(page.locator(".outcome-meta")).toContainText("Draft: none");
-    await expect(page.locator(".outcome-meta")).toContainText("History: operator:default");
+    await expect(page.locator(".outcome-meta")).toContainText("History: Workspace chat");
+    await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
     await expectNoCriticalOrSeriousAxeViolations(page, "initial operator console");
 
-    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" })).toHaveClass(/active/);
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Ask" })).toHaveClass(/active/);
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft plan" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Search" })).toBeVisible();
+    await sendComposerMessage(page, "What is blocked and what should I do next?");
+    await expect(page.getByText("The selected goal has one action needed item.")).toBeVisible();
+    await expect(page.locator(".draft-review-dock")).toBeHidden();
+    await expect(page.getByText("Goal draft ready", { exact: true })).toHaveCount(0);
 
+    await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, "Discard this browser E2E goal draft after review.");
 
     await expect(page.locator(".outcome-meta")).toContainText("Draft: Goal draft");
-    await expect(page.locator(".draft-review-dock")).toContainText("Active draft");
+    await expect(page.locator(".draft-review-dock")).toContainText("Submitted browser E2E task");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Review draft" })).toHaveCount(0);
     await expect(page.locator(".draft-summary-card")).toContainText("Submitted browser E2E task");
@@ -50,9 +58,10 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.locator(".draft-summary-card")).toContainText("1 constraint");
     await expectNoCliCoverageOrDebugInventory(page);
     await expect(page.getByText("acceptance_evidence")).toHaveCount(0);
-    await page.getByRole("button", { name: "Discard" }).click();
+    await page.getByRole("button", { name: "Discard draft" }).click();
     await expect(page.locator(".draft-review-dock")).toBeHidden();
 
+    await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, "Submit browser E2E task with deterministic mocked gateway evidence.");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     const draftEditor = page.locator(".goal-draft-editor");
@@ -64,10 +73,10 @@ test.describe("COAT control-plane browser flows", () => {
     await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(1);
     await expect(page.locator(".outcome-meta")).toContainText("Context: Submitted browser E2E task");
-    await expect(page.locator(".outcome-meta")).toContainText("Draft: none");
     await expect(page.locator(".draft-review-dock")).toBeHidden();
     await expect(page.getByText("Submitted goal is syncing")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Work graph", exact: true })).toBeVisible();
+    await expect(page.getByText(submittedGoal, { exact: true })).toHaveCount(0);
     await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E task");
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(3);
     await openPrimaryNav(page, "Work Graph");
@@ -77,8 +86,7 @@ test.describe("COAT control-plane browser flows", () => {
       window.history.pushState({}, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, selectedGoalStorageKey);
-    await expect(page.locator(".outcome-meta")).toContainText("History: operator:default");
-    await expect(page.locator(".outcome-meta")).toContainText("Draft: none");
+    await expect(page.locator(".outcome-meta")).toContainText("History: Workspace chat");
     await expect(page.locator(".draft-review-dock")).toBeHidden();
     expect(state.submittedGoalSpec?.objective).toContain("Edited browser E2E task");
   });
@@ -88,7 +96,7 @@ test.describe("COAT control-plane browser flows", () => {
 
     await page.goto(`/?goal=${goalA}`);
     await expect(page.locator(".outcome-meta")).toContainText("Context: Baseline durable goal");
-    await expect(page.locator(".outcome-meta")).toContainText(`History: goal:${goalA}`);
+    await expect(page.locator(".outcome-meta")).toContainText("History: Selected goal chat");
     await openPrimaryNav(page, "Work Graph");
     await expect(subgoalCard(page, "Coordinator truth boundary")).toBeVisible();
 
@@ -121,7 +129,7 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(goalPickerTrigger).toContainText("Branch visibility goal");
     await expect(page.locator(".outcome-meta")).toContainText("Context: Branch visibility goal");
 
-    const goalDraftButton = page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" });
+    const goalDraftButton = page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" });
     await goalDraftButton.focus();
     await expect(goalDraftButton).toBeFocused();
     await page.keyboard.press("Enter");
@@ -140,7 +148,7 @@ test.describe("COAT control-plane browser flows", () => {
 
     await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Operator Actions", exact: true }).focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("heading", { level: 1, name: "Operator Actions" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
     await expectNoAdvancedControlInventory(page);
     const reviewEvidence = page.getByTestId("primary-review-evidence");
     await reviewEvidence.focus();
@@ -167,10 +175,9 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.getByLabel("Why blocked")).toContainText("Review action-needed thunk");
     await expect(page.getByLabel("Why blocked")).toContainText("Provide the missing input and resume the continuation.");
     await expect(page.getByLabel("Action needed")).toContainText("Review action-needed thunk");
-    await expect(page.getByText("Waiting continuations")).toBeVisible();
-    await page.getByText("Waiting continuations").click();
-    await expect(page.getByLabel("Continuations")).toContainText("1 waiting");
-    await expect(page.getByLabel("Continuations")).toContainText("wait Ref thunk-approval-1");
+    await expect(page.locator(".evidence-next-panel")).toContainText("Wait evidence");
+    await expect(page.locator(".evidence-next-panel")).toContainText("1 continuations");
+    await expect(page.getByLabel("Why blocked")).toContainText("continuation Ref thunk-approval-1");
 
     await openPrimaryNav(page, "Action Queue");
     await expect(page.getByRole("heading", { level: 1, name: "Action Queue" })).toBeVisible();
@@ -200,15 +207,27 @@ test.describe("COAT control-plane browser flows", () => {
     expect(continueAction?.body.response_summary).toBe("Operator chose Continue.");
 
     await openPrimaryNav(page, "Operator Actions");
-    await expect(page.getByRole("heading", { level: 1, name: "Operator Actions" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
     await expectNoAdvancedControlInventory(page);
     await expect(page.getByRole("button", { name: "Review evidence" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Research gap" })).toBeVisible();
-    await revealRequestReviewAction(page);
-    await page.getByRole("button", { name: "Request review" }).click();
-    await expect.poll(() => state.actions.map((action) => action.handler)).toContain("steer");
-    expect(steeringKind(state.actions.filter((action) => action.handler === "steer").at(-1)?.body)).toBe("request_standard_review");
     await expectNoCriticalOrSeriousAxeViolations(page, "flow control view");
+  });
+
+  test("cancels a selected goal and removes stale action-needed controls", async ({ page }) => {
+    const state = await installGatewayFixtures(page);
+
+    await page.goto(`/?goal=${goalA}`);
+    await openPrimaryNav(page, "Action Queue");
+    await expect(page.locator(".approval-card").filter({ hasText: "Action needed: approve sandbox profile" }).first()).toBeVisible();
+
+    await page.locator(".goal-context-cancel").click();
+    await expect.poll(() => state.actions.some((action) => action.handler === "cancel")).toBe(true);
+    await openPrimaryNav(page, "Action Queue");
+    await expect(page.locator(".approval-card")).toHaveCount(0);
+    await expect(page.getByText("Cancelled task retained for operator queue history.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve and continue" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Continue" })).toHaveCount(0);
   });
 
   test("keeps normal operator UI direct and hides CLI coverage inventory", async ({ page }) => {
@@ -223,10 +242,9 @@ test.describe("COAT control-plane browser flows", () => {
     await expectNoCliCoverageOrDebugInventory(page);
 
     await openPrimaryNav(page, "Operator Actions");
-    await expect(page.getByRole("heading", { level: 1, name: "Operator Actions" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Review evidence" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Research gap" })).toBeVisible();
-    await revealRequestReviewAction(page);
     await expectNoAdvancedControlInventory(page);
     await expectNoCliCoverageOrDebugInventory(page);
   });
@@ -249,7 +267,7 @@ function subgoalCard(page: Page, text: string) {
 }
 
 async function installGatewayFixtures(page: Page): Promise<FixtureState> {
-  const state: FixtureState = { actions: [], freezeChatSession: false, requestCounts: {}, submittedGoalSpec: null };
+  const state: FixtureState = { actions: [], cancelledGoals: new Set(), freezeChatSession: false, requestCounts: {}, submittedGoalSpec: null };
 
   await page.route("**/api/**", async (route) => {
     await fulfillApi(route, state);
@@ -276,14 +294,6 @@ async function expectNoCliCoverageOrDebugInventory(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: "Inspect JSON" })).toHaveCount(0);
   await expect(page.getByText("Use CLI", { exact: true })).toHaveCount(0);
   await expect(page.getByText(/\bcoat (?:plan|goal|deploy|runner|tool|memory|event|store|scenario|setup|tui)\b/)).toHaveCount(0);
-}
-
-async function revealRequestReviewAction(page: Page): Promise<void> {
-  const requestReview = page.getByRole("button", { name: "Request review" });
-  if (!(await requestReview.isVisible().catch(() => false))) {
-    await page.getByText("More operator actions", { exact: true }).click();
-  }
-  await expect(requestReview).toBeVisible();
 }
 
 function steeringKind(body: JsonRecord | undefined): unknown {
@@ -326,7 +336,7 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
 
   if (method === "POST" && path === "/api/chat") {
     const body = await requestBody(request);
-    state.freezeChatSession = true;
+    state.freezeChatSession = String(body.kind ?? body.draft_kind ?? body.mode ?? "") !== "ask";
     await json(route, chatResponseFixture(body));
     return;
   }
@@ -357,7 +367,7 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
   if (goalMatch && method === "GET" && !goalMatch[2]) {
     const goalId = decodeURIComponent(goalMatch[1]);
     countRequest(state, `goal:${goalId}`);
-    await json(route, operatorGoalDetailFixture(composedGoalProjectionFixture(goalId, state)));
+    await json(route, operatorGoalDetailFixture(composedGoalProjectionFixture(goalId, state), state));
     return;
   }
 
@@ -369,26 +379,30 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
       goal_id: goalId,
       graph: (snapshot.workflow_compute_graph as JsonRecord)?.data ?? {},
       tasks: rowsFrom((snapshot.tasks as JsonRecord)?.data ?? snapshot.tasks),
-      actions: operatorActionsFixture(goalId),
+      actions: operatorActionsFixture(goalId, state),
     });
     return;
   }
 
   if (goalMatch && method === "POST" && goalMatch[2]) {
+    const goalId = decodeURIComponent(goalMatch[1]);
     const handler = decodeURIComponent(goalMatch[2]);
     const body = await requestBody(request);
+    if (handler === "cancel") {
+      state.cancelledGoals.add(goalId);
+    }
     state.actions.push({ handler, body });
     await json(route, {
       ok: true,
       status: 202,
-      url: `http://fixture.local/GoalWorkflow/${decodeURIComponent(goalMatch[1])}/${handler}`,
+      url: `http://fixture.local/GoalWorkflow/${goalId}/${handler}`,
       data: { accepted: true, handler, body },
     });
     return;
   }
 
   if (method === "GET" && path === "/api/operator/actions") {
-    await json(route, { actions: operatorActionsFixture(url.searchParams.get("goal_id") ?? undefined) });
+    await json(route, { actions: operatorActionsFixture(url.searchParams.get("goal_id") ?? undefined, state) });
     return;
   }
 
@@ -396,7 +410,7 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
   if (method === "POST" && actionResolveMatch) {
     const body = await requestBody(request);
     const actionId = decodeURIComponent(actionResolveMatch[1]);
-    const action = operatorActionsFixture().find((item) => item.action_id === actionId);
+    const action = operatorActionsFixture(undefined, state).find((item) => item.action_id === actionId);
     const handler = action?.handler ? String(action.handler) : actionId.startsWith("approval:")
       ? "approve"
       : actionId.startsWith("thunk:")
@@ -480,10 +494,10 @@ function goalRows(state?: FixtureState): JsonRecord[] {
       goal_id: goalA,
       title: "Baseline durable goal",
       objective: "Exercise goal projection, action-needed state, and branch fork UI.",
-      status: "running",
-      percent_done: 0.35,
-      open_tasks: 3,
-      blocked_tasks: 1,
+      status: state?.cancelledGoals.has(goalA) ? "cancelled" : "running",
+      percent_done: state?.cancelledGoals.has(goalA) ? 1 : 0.35,
+      open_tasks: state?.cancelledGoals.has(goalA) ? 0 : 3,
+      blocked_tasks: state?.cancelledGoals.has(goalA) ? 0 : 1,
       failed_tasks: 0,
       updated_at: "2026-05-12T12:00:00.000Z",
     },
@@ -520,8 +534,8 @@ function operatorWorkspaceFixture(goalId: string, state?: FixtureState): JsonRec
   return {
     generated_at: "2026-05-12T12:00:00.000Z",
     goals: goalRows(state),
-    selected_goal: operatorGoalDetailFixture(snapshot),
-    actions: operatorActionsFixture(goalId),
+    selected_goal: operatorGoalDetailFixture(snapshot, state),
+    actions: operatorActionsFixture(goalId, state),
     events: [],
     worker_runs: rowsFrom((snapshot.tasks as JsonRecord)?.data ?? snapshot.tasks),
     evidence: [],
@@ -530,7 +544,7 @@ function operatorWorkspaceFixture(goalId: string, state?: FixtureState): JsonRec
   };
 }
 
-function operatorGoalDetailFixture(snapshot: JsonRecord): JsonRecord {
+function operatorGoalDetailFixture(snapshot: JsonRecord, state?: FixtureState): JsonRecord {
   const goal = (((snapshot.goal_store_goal as JsonRecord)?.data as JsonRecord)?.goal ?? {}) as JsonRecord;
   return {
     summary: {
@@ -548,13 +562,45 @@ function operatorGoalDetailFixture(snapshot: JsonRecord): JsonRecord {
     progress: (snapshot.workflow_progress as JsonRecord)?.data ?? {},
     graph: (snapshot.workflow_compute_graph as JsonRecord)?.data ?? {},
     tasks: rowsFrom((snapshot.tasks as JsonRecord)?.data ?? snapshot.tasks),
-    actions: operatorActionsFixture(String(goal.goal_id ?? snapshot.goal_id ?? "")),
+    actions: operatorActionsFixture(String(goal.goal_id ?? snapshot.goal_id ?? ""), state),
     evidence: [],
     snapshot,
   };
 }
 
 function composedGoalProjectionFixture(goalId: string, state?: FixtureState): JsonRecord {
+  if (state?.cancelledGoals.has(goalId)) {
+    return snapshot(goalId, {
+      title: goalId === goalA ? "Baseline durable goal" : "Cancelled fixture goal",
+      objective: "Cancelled by the operator; queue history remains visible without stale action controls.",
+      status: "cancelled",
+      subgoals: [
+        {
+          id: "cancelled-history",
+          title: "Cancelled queue history",
+          objective: "Retain cancellation evidence after action-needed controls are cleared.",
+        },
+      ],
+      tasks: [
+        {
+          goal_id: goalId,
+          task_id: "root-task",
+          title: "Cancelled task retained for operator queue history.",
+          role: "planner",
+          status: "cancelled",
+          subgoal_id: "cancelled-history",
+        },
+      ],
+      computeGraph: {
+        open_thunks: 0,
+        nodes: [
+          { id: "root-task", kind: "task", label: "Cancelled task retained for operator queue history.", status: "cancelled", task_id: "root-task" },
+        ],
+        edges: [],
+      },
+    });
+  }
+
   if (goalId === submittedGoal) {
     if ((state?.requestCounts[`goal:${submittedGoal}`] ?? 0) <= 2) {
       return submittedProjectionShell();
@@ -741,7 +787,7 @@ function snapshot(goalId: string, input: {
     events: { ok: true, status: 200, data: { events: [] } },
     artifacts: { ok: true, status: 200, data: { artifacts: [] } },
     checkpoints: { ok: true, status: 200, data: { checkpoints: [] } },
-    approvals: { ok: true, status: 200, data: { approvals: approvalsFixture() } },
+    approvals: { ok: true, status: 200, data: { approvals: input.status === "cancelled" ? [] : approvalsFixture() } },
     agent_activity: input.tasks,
   };
 }
@@ -791,8 +837,12 @@ function approvalsFixture(): JsonRecord[] {
   ];
 }
 
-function operatorActionsFixture(goalId?: string): JsonRecord[] {
+function operatorActionsFixture(goalId?: string, state?: FixtureState): JsonRecord[] {
+  if (goalId && state?.cancelledGoals.has(goalId)) {
+    return [];
+  }
   const approvalActions = approvalsFixture()
+    .filter((approval) => !state?.cancelledGoals.has(String(approval.goal_id)))
     .filter((approval) => !goalId || approval.goal_id === goalId)
     .map((approval) => ({
       action_id: `approval:${approval.goal_id}:${approval.approval_id}`,
@@ -807,7 +857,7 @@ function operatorActionsFixture(goalId?: string): JsonRecord[] {
       approval,
       payload_json: approval,
     }));
-  const thunkActions = !goalId || goalId === goalA
+  const thunkActions = (!goalId || goalId === goalA) && !state?.cancelledGoals.has(goalA)
     ? [{
         action_id: `thunk:${goalA}:thunk-approval-1`,
         kind: "resume_thunk",
@@ -835,6 +885,24 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
   const objective = typeof latest === "string" && latest.trim()
     ? latest.trim()
     : "Submit browser E2E task with deterministic mocked gateway evidence.";
+  const requestedKind = String(body.kind ?? body.draft_kind ?? "");
+  const requestedMode = String(body.mode ?? "");
+  if (requestedKind === "ask" || requestedMode === "ask") {
+    return {
+      provider: "fixture",
+      model: null,
+      mode: "ask",
+      assistant: "The selected goal has one action needed item. Open Action Queue to continue, add context, replan, or cancel.",
+      session_id: body.session_id,
+      run_id: body.run_id,
+      chat_run: { run_id: body.run_id, status: "done", stage: "fixture" },
+      related_state: {
+        selected_goal_id: body.goal_id ?? null,
+        answer_kind: "operator_guidance",
+        draft_created: false,
+      },
+    };
+  }
   return {
     provider: "fixture",
     model: null,

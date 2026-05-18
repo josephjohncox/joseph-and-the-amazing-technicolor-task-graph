@@ -148,6 +148,13 @@
       "assertion": "frontier_empty == true && no blocked task remains after cancellation",
       "expected": true,
       "required": true
+    },
+    {
+      "id": "cancelled_operator_cleanup_visible",
+      "kind": "operator_flow",
+      "assertion": "cancel_cleanup",
+      "expected": true,
+      "required": true
     }
   ],
   "usability_coherence": {

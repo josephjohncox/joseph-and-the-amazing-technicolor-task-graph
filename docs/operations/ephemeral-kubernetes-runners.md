@@ -285,6 +285,20 @@ runtime class references without launching work. Use `"mode": "apply"` only
 after that dry-run returns the expected ConfigMap and Job and the coordinator
 has recorded the approval that allowed this capacity request.
 
+Before attempting the kind/k3d proof, run the CI-safe readiness scaffold:
+
+```sh
+make runtime-live-scaffold
+```
+
+The scaffold does not contact Kubernetes. With
+`COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`, it fails readiness when `kubectl`,
+kind/k3d, `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, or the coordinator
+evidence refs are missing. It writes
+`target/coat-runtime-live-scaffold/runtime-live-scaffold.json` with
+`live_proof_executed=false`, so the artifact is only a gate record, not proof
+that a Job ran.
+
 Live `server_dry_run` and `apply` requests must include coordinator evidence
 annotations before sandbox-runner contacts the cluster:
 

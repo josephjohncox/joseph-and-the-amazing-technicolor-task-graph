@@ -583,6 +583,7 @@ fn resume_thunk_stale_skip(error: &DomainError) -> Option<SkippedMutation> {
 fn create_thunk_duplicate_skip(
     state: &GoalState,
     continuation_id: &str,
+    task_id: Option<coat_domain::TaskId>,
 ) -> Option<SkippedMutation> {
     state
         .delayed_compute_thunks
@@ -590,6 +591,7 @@ fn create_thunk_duplicate_skip(
         .any(|thunk| {
             thunk.status == coat_domain::DelayedComputeThunkStatus::Pending
                 && thunk.continuation.continuation_id == continuation_id
+                && thunk.task_id == task_id
         })
         .then_some(SkippedMutation {
             event: "create_thunk_skipped:continuation_exists",
@@ -816,9 +818,11 @@ fn apply_serialized_control_transition(
             }
         }
         GoalControlTransition::CreateThunk(request) => {
-            if let Some(skip) =
-                create_thunk_duplicate_skip(state, &request.continuation.continuation_id)
-            {
+            if let Some(skip) = create_thunk_duplicate_skip(
+                state,
+                &request.continuation.continuation_id,
+                request.task_id,
+            ) {
                 return Err(GoalControlTransitionError::Skip(skip));
             }
             let thunk = state.create_delayed_compute_thunk(request)?;
@@ -1813,15 +1817,126 @@ mod tests {
         state.create_delayed_compute_thunk(request).expect("thunk");
 
         assert_eq!(
-            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input"),
+            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input", Some(task_id)),
             Some(SkippedMutation {
                 event: "create_thunk_skipped:continuation_exists",
                 transition: "create_thunk_skipped_continuation_exists",
             })
         );
         assert_eq!(
-            create_thunk_duplicate_skip(&state, "runtime-verifier/other-input"),
+            create_thunk_duplicate_skip(&state, "runtime-verifier/other-input", Some(task_id)),
             None
+        );
+    }
+
+    #[test]
+    fn serialized_duplicate_create_thunk_is_idempotent_action_resolution() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "duplicate thunk transition",
+            "replayed create-thunk actions should be explicit noops",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let request = human_input_thunk_request(&state, task_id, "runtime-verifier/operator-input");
+
+        apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(request.clone()),
+            &SpawnPolicy::default(),
+        )
+        .expect("first create-thunk action should create the wait");
+        let first_thunk_id = state.delayed_compute_thunks[0].id;
+
+        let replay = apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(request),
+            &SpawnPolicy::default(),
+        )
+        .expect_err("duplicate create-thunk action should become an explicit skip");
+
+        assert!(
+            matches!(
+                replay,
+                GoalControlTransitionError::Skip(SkippedMutation {
+                    event: "create_thunk_skipped:continuation_exists",
+                    transition: "create_thunk_skipped_continuation_exists"
+                })
+            ),
+            "unexpected duplicate create-thunk replay result: {replay:?}"
+        );
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        assert_eq!(state.delayed_compute_thunks[0].id, first_thunk_id);
+    }
+
+    #[test]
+    fn serialized_create_thunk_preserves_domain_conflict_for_different_task() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "conflicting thunk transition",
+            "same continuation id must not be reused for another task",
+        ));
+        let root_task = state.runnable_tasks().remove(0);
+        let mut result = AgentRunResult::stub_done(&root_task);
+        result.child_requests.push(ChildTaskRequest {
+            role: WorkerKind::Codex,
+            purpose: None,
+            title: Some("Second recovery task".to_string()),
+            subgoal_id: None,
+            color: None,
+            prompt: "Exercise conflicting delayed-compute thunk routing.".to_string(),
+            reason: "test second task conflict".to_string(),
+            dependencies: Vec::new(),
+            budget: None,
+            sandbox: None,
+            done_criteria: None,
+            review_doctrine: None,
+            execution: None,
+            priority: TaskPriority::High,
+            tags: Vec::new(),
+        });
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("child task created");
+        let second_task_id = state
+            .tasks
+            .values()
+            .find(|task| task.parent_id == Some(root_task.id))
+            .expect("second task")
+            .id;
+        let continuation_id = "runtime-verifier/shared-continuation";
+        let first_request = human_input_thunk_request(&state, root_task.id, continuation_id);
+
+        apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(first_request),
+            &SpawnPolicy::default(),
+        )
+        .expect("first create-thunk action should create the wait");
+
+        let conflicting_request =
+            human_input_thunk_request(&state, second_task_id, continuation_id);
+        let conflict = apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(conflicting_request),
+            &SpawnPolicy::default(),
+        )
+        .expect_err("same continuation for a different task should remain a domain conflict");
+
+        assert!(
+            matches!(
+                conflict,
+                GoalControlTransitionError::Domain(DomainError::InvariantViolation(ref message))
+                    if message.contains("already exists for a different task")
+            ),
+            "unexpected conflicting create-thunk result: {conflict:?}"
+        );
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        assert_eq!(state.delayed_compute_thunks[0].task_id, Some(root_task.id));
+        assert_eq!(
+            state
+                .tasks
+                .get(&second_task_id)
+                .expect("second task")
+                .status,
+            TaskStatus::Runnable
         );
     }
 
@@ -1837,7 +1952,7 @@ mod tests {
         state.delayed_compute_thunks[0].status = coat_domain::DelayedComputeThunkStatus::Cancelled;
 
         assert_eq!(
-            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input"),
+            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input", Some(task_id)),
             None
         );
     }
@@ -1928,8 +2043,8 @@ mod tests {
         assert!(
             matches!(
                 resume_error,
-                DomainError::SteeringDenied(ref message)
-                    if message == &format!("delayed compute thunk {} is not pending", thunk.id)
+                DomainError::InvariantViolation(ref message)
+                    if message == "cannot resume delayed compute thunk because goal is terminal: Cancelled"
             ),
             "unexpected resume error: {resume_error}"
         );

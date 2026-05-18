@@ -1,0 +1,498 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "operator_usability_workbench",
+  "title": "Operator usability workbench",
+  "description": "Exercise the simplified operator path: ask without creating a draft, draft/edit/discard/accept a goal, submit it, resolve human actions, see worker runs and evidence, and complete with a selected goal projection.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T12:00:00Z",
+    "seed": 4201,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "creation": "chat_draft_accepted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000004201",
+        "title": "Simplify operator usability",
+        "objective": "Prove the SPA and TUI can guide an operator from chat ask to accepted goal and explicit action resolution without raw JSON.",
+        "initial_tasks": [
+          {
+            "role": "planner",
+            "title": "Resolve operator usability workbench",
+            "prompt": "Return deterministic worker and evidence output for the simplified operator flow.",
+            "reason": "Exercise draft, action queue, worker-run, evidence, and selected-goal projections.",
+            "tags": ["scenario", "operator", "usability"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "ask_workspace_default",
+      "type": "emit_external_event",
+      "description": "Ask is the default chat mode and must not create a goal draft.",
+      "event": {
+        "event_type": "operator.chat.ask",
+        "session_id": "operator:default",
+        "kind": "ask",
+        "mode": "ask",
+        "selected_goal_id": null,
+        "message": "What is blocked and what should I do next?"
+      },
+      "expect": {
+        "chat_response_kind": "answer",
+        "draft_created": false,
+        "draft_visible": false
+      }
+    },
+    {
+      "id": "draft_goal",
+      "type": "emit_external_event",
+      "description": "The operator explicitly switches to Draft goal.",
+      "event": {
+        "event_type": "operator.draft.created",
+        "kind": "goal",
+        "mode": "draft_goal",
+        "draft_ref": "fixture://drafts/operator-usability-workbench",
+        "title": "Simplify operator usability"
+      },
+      "expect": {
+        "draft_created": true,
+        "draft_visible": true
+      }
+    },
+    {
+      "id": "discard_draft",
+      "type": "emit_external_event",
+      "description": "A draft can be discarded without changing the selected goal.",
+      "event": {
+        "event_type": "operator.draft.discarded",
+        "draft_ref": "fixture://drafts/operator-usability-workbench"
+      },
+      "expect": {
+        "draft_visible": false,
+        "selected_goal_unchanged": true
+      }
+    },
+    {
+      "id": "draft_goal_again",
+      "type": "emit_external_event",
+      "description": "The operator drafts a replacement goal and reviews it.",
+      "event": {
+        "event_type": "operator.draft.created",
+        "kind": "goal",
+        "mode": "draft_goal",
+        "draft_ref": "fixture://drafts/operator-usability-workbench-v2",
+        "title": "Simplify operator usability"
+      },
+      "expect": {
+        "draft_created": true,
+        "draft_visible": true
+      }
+    },
+    {
+      "id": "accept_draft",
+      "type": "emit_external_event",
+      "description": "The operator accepts the reviewed draft before submit.",
+      "event": {
+        "event_type": "operator.draft.accepted",
+        "draft_ref": "fixture://drafts/operator-usability-workbench-v2",
+        "accepted_goal_id": "00000000-0000-4000-8000-000000004201"
+      },
+      "expect": {
+        "draft_visible": false,
+        "selected_goal_id": "00000000-0000-4000-8000-000000004201"
+      }
+    },
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "description": "Submit the accepted draft as a coordinator-owned goal.",
+      "expect": {
+        "goal_status": "running"
+      }
+    },
+    {
+      "id": "request_human_action",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "description": "Replay a worker result that creates explicit action cards for a thunk and approval.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000004211",
+        "status": "waiting_approval",
+        "summary": "Waiting for the operator to approve the deterministic fixture and provide context.",
+        "confidence": 0.92,
+        "runner_id": "scenario-stub-runner",
+        "operator_action": "Approve the fixture gate, add context if useful, or replan/cancel the goal.",
+        "recovery_actions": ["approve", "continue", "add-context", "replan", "cancel"],
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000004221",
+            "kind": "human_input",
+            "status": "pending",
+            "summary": "Choose whether to continue the usability fixture.",
+            "wait_ref": "wait://operator_usability_workbench/human-input",
+            "continuation_ref": "continuation://operator_usability_workbench/human-input",
+            "operator_action": "Choose Continue, answer with context, replan, or cancel.",
+            "human_prompt": {
+              "title": "Continue usability fixture?",
+              "question": "Should the deterministic usability fixture continue?",
+              "why_waiting": "The worker produced a durable human prompt.",
+              "allowed_actions": ["continue", "answer", "add-context", "replan", "cancel"],
+              "required_context": "optional",
+              "continuation_ref": "continuation://operator_usability_workbench/human-input"
+            }
+          },
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000004222",
+            "kind": "approval",
+            "status": "pending",
+            "summary": "Approve the fixture gate.",
+            "approval_ref": "approval://operator_usability_workbench/fixture-gate",
+            "continuation_ref": "continuation://operator_usability_workbench/approval",
+            "operator_action": "Approve or reject the fixture gate.",
+            "approval_request": {
+              "title": "Approve fixture gate",
+              "question": "Approve this deterministic gate and continue?",
+              "allowed_actions": ["approve", "reject", "replan"],
+              "approval_ref": "approval://operator_usability_workbench/fixture-gate",
+              "continuation_ref": "continuation://operator_usability_workbench/approval"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "approve_gate",
+      "type": "resume_delayed_compute",
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "after": ["request_human_action"],
+      "resume": {
+        "thunk_id": "00000000-0000-4000-8000-000000004222",
+        "approval_ref": "approval://operator_usability_workbench/fixture-gate",
+        "continuation_ref": "continuation://operator_usability_workbench/approval",
+        "action": "approve",
+        "operator_action": "Approve the fixture gate and continue."
+      }
+    },
+    {
+      "id": "resume_with_context",
+      "type": "resume_delayed_compute",
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "after": ["approve_gate"],
+      "resume": {
+        "thunk_id": "00000000-0000-4000-8000-000000004221",
+        "continuation_ref": "continuation://operator_usability_workbench/human-input",
+        "action": "add-context",
+        "response_summary": "Proceed with the simplified operator path.",
+        "operator_action": "Resume the human prompt with operator context."
+      }
+    },
+    {
+      "id": "complete_worker_run",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "task_id": "00000000-0000-4000-8000-000000004211",
+      "after": ["resume_with_context"],
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000004211",
+        "status": "done",
+        "summary": "Operator usability fixture completed after explicit action resolution.",
+        "confidence": 0.96,
+        "runner_id": "scenario-stub-runner",
+        "artifacts": [
+          {
+            "kind": "report",
+            "uri": "artifact://scenarios/operator_usability_workbench/usability-report.json",
+            "description": "Ask/draft/action/evidence operator flow report"
+          }
+        ],
+        "test_evidence": [
+          {
+            "command": "coat scenario run --file scenarios/e2e/operator_usability_workbench.json",
+            "result": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "validate_goal",
+      "type": "validate_goal",
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "after": ["complete_worker_run"],
+      "expect": {
+        "goal_status": "done"
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "done",
+    "task_counts": {
+      "done": 1,
+      "blocked": 0,
+      "waiting_approval": 0,
+      "failed": 0,
+      "cancelled": 0
+    },
+    "required_events": ["operator.chat.ask", "operator.draft.created", "operator.draft.discarded", "operator.draft.accepted", "goal_submitted", "approval_granted", "delayed_compute_thunk_resumed", "goal_satisfied"],
+    "forbidden_events": ["raw_json_required", "goal_id_pasted_by_operator", "live_provider_called"],
+    "required_artifacts": ["artifact://scenarios/operator_usability_workbench/usability-report.json"],
+    "satisfaction": {
+      "min_score": 0.95,
+      "actual_score": 0.96,
+      "required": true,
+      "rationale": "The operator asked without creating a draft, explicitly accepted a reviewed draft, resolved thunk and approval action cards, saw worker/evidence output, and reached done."
+    },
+    "open_wait_refs": 0
+  },
+  "evaluator_checks": [
+    {
+      "id": "ask_default_no_draft",
+      "kind": "operator_flow",
+      "description": "Ask mode answers without creating a draft.",
+      "assertion": "ask_default_does_not_create_draft",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "draft_accept_discard_submit",
+      "kind": "operator_flow",
+      "description": "Drafts can be discarded, accepted, and submitted as goals.",
+      "assertion": "draft_lifecycle_accept_discard_submit",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "selected_goal_visible",
+      "kind": "operator_flow",
+      "description": "The current selected goal is visible as product state.",
+      "assertion": "selected_goal_visible",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "action_cards_visible",
+      "kind": "operator_flow",
+      "description": "Thunks and approvals expose explicit operator controls.",
+      "assertion": "action_cards_thunk_approval_controls",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "worker_runs_and_evidence_visible",
+      "kind": "operator_flow",
+      "description": "Worker run and evidence panels expose completion proof.",
+      "assertion": "worker_runs_and_evidence_visible",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "no_raw_goal_id_handoff",
+      "kind": "operator_flow",
+      "description": "The operator can navigate by selected goal title, action cards, and chat/draft state without pasting a raw goal ID.",
+      "assertion": "operator_path_without_raw_goal_ids",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "fixtures": {
+    "projection": {
+      "goal_id": "00000000-0000-4000-8000-000000004201",
+      "goal_status": "done",
+      "terminal_state": "completed",
+      "subgoals": [
+        {
+          "id": "operator-usability",
+          "title": "Operator usability",
+          "owner_role": "planner"
+        }
+      ],
+      "tasks": [
+        {
+          "goal_id": "00000000-0000-4000-8000-000000004201",
+          "task_id": "00000000-0000-4000-8000-000000004211",
+          "title": "Operator usability fixture completed after explicit action resolution.",
+          "status": "done",
+          "purpose": "work",
+          "role": "planner",
+          "worker_result": {
+            "status": "done",
+            "summary": "Operator usability fixture completed after explicit action resolution.",
+            "runner_id": "scenario-stub-runner",
+            "artifacts": [
+              {
+                "kind": "report",
+                "uri": "artifact://scenarios/operator_usability_workbench/usability-report.json",
+                "description": "Ask/draft/action/evidence operator flow report"
+              }
+            ],
+            "test_evidence": [
+              {
+                "command": "coat scenario run --file scenarios/e2e/operator_usability_workbench.json",
+                "result": "passed"
+              }
+            ]
+          }
+        }
+      ],
+      "events": [
+        { "event_type": "operator.chat.ask", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "operator.draft.created", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "operator.draft.discarded", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "operator.draft.accepted", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "goal_submitted", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "approval_granted", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "delayed_compute_thunk_resumed", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "goal_satisfied", "scenario_id": "operator_usability_workbench" }
+      ],
+      "artifacts": [
+        {
+          "kind": "report",
+          "uri": "artifact://scenarios/operator_usability_workbench/usability-report.json",
+          "description": "Ask/draft/action/evidence operator flow report"
+        }
+      ],
+      "checkpoints": [
+        {
+          "kind": "scenario_checkpoint",
+          "uri": "checkpoint://scenarios/operator_usability_workbench"
+        }
+      ],
+      "compute_graph_nodes": [
+        {
+          "id": "00000000-0000-4000-8000-000000004201",
+          "kind": "goal",
+          "label": "Simplify operator usability",
+          "status": "done"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000004211",
+          "kind": "task",
+          "status": "done",
+          "purpose": "work"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000004221",
+          "kind": "delayed_compute_thunk",
+          "status": "resumed",
+          "label": "action_required",
+          "continuation_ref": "continuation://operator_usability_workbench/human-input",
+          "operator_action": "Resume the human prompt with operator context."
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000004222",
+          "kind": "delayed_compute_thunk",
+          "status": "approved",
+          "label": "approval",
+          "approval_ref": "approval://operator_usability_workbench/fixture-gate",
+          "continuation_ref": "continuation://operator_usability_workbench/approval",
+          "operator_action": "Approve the fixture gate and continue."
+        }
+      ],
+      "runner_dispatches": [
+        {
+          "action_id": "request_human_action",
+          "kind": "inject_worker_result",
+          "goal_id": "00000000-0000-4000-8000-000000004201",
+          "runner_id": "scenario-stub-runner"
+        },
+        {
+          "action_id": "complete_worker_run",
+          "kind": "inject_worker_result",
+          "goal_id": "00000000-0000-4000-8000-000000004201",
+          "runner_id": "scenario-stub-runner"
+        }
+      ],
+      "ui_projection": {
+        "goal_list": {
+          "surface": "goal_list",
+          "goals": [
+            {
+              "goal_id": "00000000-0000-4000-8000-000000004201",
+              "title": "Simplify operator usability",
+              "status": "done"
+            }
+          ]
+        },
+        "selected_goal": {
+          "surface": "selected_goal",
+          "goal_id": "00000000-0000-4000-8000-000000004201",
+          "title": "Simplify operator usability",
+          "status": "done"
+        },
+        "chat": {
+          "surface": "chat",
+          "default_mode": "ask",
+          "ask": "answer saved without a draft",
+          "draft": "draft goal is explicit"
+        },
+        "draft_review": {
+          "surface": "draft_review",
+          "states": ["created", "discarded", "accepted", "submitted"],
+          "actions": ["edit", "discard", "accept draft", "submit goal"]
+        },
+        "action_queue": {
+          "surface": "action_queue",
+          "pending_count": 0,
+          "resolved": [
+            {
+              "kind": "delayed_compute_thunk",
+              "actions": ["continue", "answer", "add-context", "replan", "cancel"]
+            },
+            {
+              "kind": "approval",
+              "actions": ["approve", "reject", "replan"]
+            }
+          ]
+        },
+        "worker_runs": {
+          "surface": "worker_runs",
+          "runs": [
+            {
+              "runner_id": "scenario-stub-runner",
+              "status": "completed",
+              "summary": "Operator usability fixture completed after explicit action resolution."
+            }
+          ]
+        },
+        "evidence": {
+          "surface": "evidence",
+          "artifacts": ["artifact://scenarios/operator_usability_workbench/usability-report.json"]
+        },
+        "task_graph": {
+          "surface": "task_graph",
+          "nodes": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"]
+        },
+        "usability_coherence": {
+          "surface": "usability_coherence",
+          "visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+          "completed_goal": {
+            "status": "completed",
+            "evidence_artifacts": ["artifact://scenarios/operator_usability_workbench/usability-report.json"],
+            "satisfaction_rationale": "The operator asked without creating a draft, explicitly accepted a reviewed draft, resolved thunk and approval action cards, saw worker/evidence output, and reached done."
+          }
+        }
+      },
+      "transitions": ["ask_workspace_default", "draft_goal", "discard_draft", "draft_goal_again", "accept_draft", "submit_goal", "request_human_action", "approve_gate", "resume_with_context", "complete_worker_run", "validate_goal"],
+      "raw": {
+        "satisfaction": {
+          "rationale": "The operator asked without creating a draft, explicitly accepted a reviewed draft, resolved thunk and approval action cards, saw worker/evidence output, and reached done."
+        }
+      }
+    }
+  }
+}

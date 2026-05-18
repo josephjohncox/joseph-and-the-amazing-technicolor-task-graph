@@ -53,21 +53,22 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Review draft" })).toHaveCount(0);
     await expect(page.locator(".draft-summary-card")).toContainText("Submitted browser E2E task");
-    await expect(page.locator(".draft-summary-card")).toContainText("fixture://drafts/browser-e2e");
+    await expect(page.locator(".draft-summary-card")).toContainText("Ref browser-e2e");
+    await expect(page.locator(".draft-summary-card")).not.toContainText("fixture://drafts/browser-e2e");
     await expect(page.locator(".draft-summary-card")).toContainText("2 evidence items");
     await expect(page.locator(".draft-summary-card")).toContainText("1 constraint");
     await expectNoCliCoverageOrDebugInventory(page);
     await expect(page.getByText("acceptance_evidence")).toHaveCount(0);
-    await page.getByRole("button", { name: "Discard draft" }).click();
+    await page.getByLabel("Active draft").getByRole("button", { name: "Discard draft" }).click();
     await expect(page.locator(".draft-review-dock")).toBeHidden();
 
     await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, "Submit browser E2E task with deterministic mocked gateway evidence.");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     const draftEditor = page.locator(".goal-draft-editor");
-    await expect(draftEditor).toContainText("Draft review");
+    await expect(draftEditor).toContainText("Draft ready");
     await draftEditor.getByLabel("Objective").fill("Edited browser E2E task with deterministic mocked gateway evidence.");
-    await page.getByRole("button", { name: "Accept draft" }).click();
+    await page.getByLabel("Draft actions").getByRole("button", { name: "Accept draft" }).click();
 
     await expect(page).toHaveURL(new RegExp(`goal=${submittedGoal}`));
     await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);

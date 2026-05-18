@@ -1,9 +1,10 @@
-//! RuntimeVerifier scaffold for proving Restate restart/resume behavior.
+//! RuntimeVerifier live harness for proving Restate restart/resume behavior.
 //!
 //! This file is intentionally safe for normal CI: the live proof is ignored by
-//! default and also checks an explicit env gate before touching Docker. The
-//! live RuntimeVerifier slice should replace the explicit ready-state failure
-//! with a Testcontainers-backed process runner for the ordered harness plan below.
+//! default and also checks an explicit env gate before touching Docker. When the
+//! gate is enabled it starts a pinned Restate container, registers the local
+//! coordinator, restarts both coordinator and Restate, and compares durable
+//! projection state across the restart boundaries.
 
 use coat_domain::{
     ChildTaskRequest, ContinuationBoundary, ContinuationRef, ContinuationResumeAction,
@@ -13,10 +14,15 @@ use coat_domain::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
+    env, fs,
+    net::{TcpListener, TcpStream},
     path::PathBuf,
-    process::Command,
+    process::{Child, Command, Stdio},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use reqwest::StatusCode;
+use serde_json::{Value, json};
 
 const ENABLE_ENV: &str = "COAT_RESTATE_RESTART_RESUME_TEST";
 const RESTATE_IMAGE_ENV: &str = "COAT_RESTATE_TESTCONTAINERS_IMAGE";
@@ -70,7 +76,7 @@ impl RuntimeVerifierSkipReason {
                 "set COAT_RESTATE_RESTART_RESUME_TEST=1 to enable the live Restate proof"
             }
             Self::DockerUnavailable => {
-                "Docker is unavailable; skipping the Testcontainers Restate harness"
+                "Docker is unavailable; skipping the Docker-backed Restate harness"
             }
         }
     }
@@ -328,6 +334,257 @@ fn docker_is_available() -> bool {
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
+}
+
+#[derive(Debug)]
+struct RuntimeVerifierTempDir {
+    path: PathBuf,
+}
+
+impl RuntimeVerifierTempDir {
+    fn new(prefix: &str) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        let path = env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&path).unwrap_or_else(|error| {
+            panic!(
+                "create RuntimeVerifier temp dir {}: {error}",
+                path.display()
+            )
+        });
+        Self { path }
+    }
+}
+
+impl Drop for RuntimeVerifierTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[derive(Debug)]
+struct DockerRestate {
+    name: String,
+    ingress_port: u16,
+    admin_port: u16,
+}
+
+impl DockerRestate {
+    fn start(image: &str, data_dir: &RuntimeVerifierTempDir, name_suffix: &str) -> Self {
+        let ingress_port = free_local_port();
+        let admin_port = free_local_port();
+        let name = format!("coat-runtime-verifier-{name_suffix}-{}", std::process::id());
+        let data_mount = format!("{}:/restate-data", data_dir.path.display());
+        let ingress_mapping = format!("127.0.0.1:{ingress_port}:8080");
+        let admin_mapping = format!("127.0.0.1:{admin_port}:9070");
+        let status = Command::new("docker")
+            .args([
+                "run",
+                "--rm",
+                "-d",
+                "--name",
+                &name,
+                "--add-host=host.docker.internal:host-gateway",
+                "-p",
+                &ingress_mapping,
+                "-p",
+                &admin_mapping,
+                "-v",
+                &data_mount,
+                image,
+                "--node-name=runtime-verifier",
+            ])
+            .status()
+            .expect("start Restate docker container");
+        assert!(
+            status.success(),
+            "docker run for Restate failed with {status}"
+        );
+        Self {
+            name,
+            ingress_port,
+            admin_port,
+        }
+    }
+
+    fn ingress_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.ingress_port)
+    }
+
+    fn admin_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.admin_port)
+    }
+
+    fn stop(self) {
+        drop(self);
+    }
+}
+
+impl Drop for DockerRestate {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &self.name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+#[derive(Debug)]
+struct CoordinatorProcess {
+    child: Child,
+    port: u16,
+}
+
+impl CoordinatorProcess {
+    fn start(config: &RuntimeVerifierConfig) -> Self {
+        let port = free_local_port();
+        let mut child = Command::new(&config.coordinator_bin)
+            .env("BIND_ADDR", format!("0.0.0.0:{port}"))
+            .env("COAT_ALLOW_LOCAL_STUB_FALLBACK", "true")
+            .env(
+                "RUST_LOG",
+                "info,tower_http=warn,restate_sdk=info,coat_coordinator=debug",
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "start coordinator binary {}: {error}",
+                    config.coordinator_bin.display()
+                )
+            });
+        wait_for_tcp_port(port, Duration::from_secs(10)).unwrap_or_else(|error| {
+            let _ = child.kill();
+            panic!("coordinator did not open port {port}: {error}");
+        });
+        Self { child, port }
+    }
+
+    fn service_uri_for_restate(&self) -> String {
+        format!("http://host.docker.internal:{}", self.port)
+    }
+
+    fn stop(mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for CoordinatorProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn free_local_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("bind ephemeral local port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
+fn wait_for_tcp_port(port: u16, timeout: Duration) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(_) => return Ok(()),
+            Err(error) if start.elapsed() > timeout => {
+                return Err(format!("{error}"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
+async fn wait_for_http_ok(client: &reqwest::Client, url: &str, timeout: Duration) {
+    let start = std::time::Instant::now();
+    loop {
+        match client.get(url).send().await {
+            Ok(response) if response.status().is_success() => return,
+            Ok(response)
+                if response.status() == StatusCode::NOT_FOUND && url.ends_with("/health") =>
+            {
+                return;
+            }
+            Ok(_) | Err(_) if start.elapsed() > timeout => {
+                panic!("timed out waiting for HTTP readiness at {url}");
+            }
+            Ok(_) | Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
+}
+
+async fn register_restate_deployment(client: &reqwest::Client, admin_url: &str, service_uri: &str) {
+    let response = client
+        .post(format!("{}/deployments", admin_url.trim_end_matches('/')))
+        .json(&json!({
+            "uri": service_uri,
+            "force": true,
+        }))
+        .send()
+        .await
+        .expect("register coordinator deployment with Restate");
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success() || status == StatusCode::CONFLICT,
+        "Restate deployment registration failed with {status}: {text}"
+    );
+}
+
+async fn post_json(client: &reqwest::Client, url: String, body: &Value) -> Value {
+    let response = client
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("POST {url}: {error}"));
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "POST {url} failed with {status}: {text}"
+    );
+    serde_json::from_str(&text).unwrap_or(Value::String(text))
+}
+
+async fn post_no_body(client: &reqwest::Client, url: String) -> Value {
+    let response = client
+        .post(&url)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("POST {url}: {error}"));
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "POST {url} failed with {status}: {text}"
+    );
+    serde_json::from_str(&text).unwrap_or(Value::String(text))
+}
+
+fn workflow_url(ingress_url: &str, goal_id: &str, handler: &str) -> String {
+    format!(
+        "{}/GoalWorkflow/{goal_id}/{handler}",
+        ingress_url.trim_end_matches('/')
+    )
+}
+
+fn goal_status_summary(value: &Value) -> Value {
+    json!({
+        "status": value.pointer("/status"),
+        "goal_id": value.pointer("/goal/id"),
+        "total_tasks": value.pointer("/goal/total_tasks"),
+        "open_tasks": value.pointer("/goal/open_tasks"),
+        "task_count": value.pointer("/tasks").and_then(Value::as_object).map(|tasks| tasks.len()),
+        "event_count": value.pointer("/events").and_then(Value::as_array).map(|events| events.len()),
+    })
 }
 
 #[test]
@@ -779,17 +1036,90 @@ async fn restate_restart_resume_proof_entrypoint() {
                 3,
                 "live proof must capture durable counters at each restart boundary"
             );
-            panic!(
-                "live RuntimeVerifier proof is explicitly gated but the Docker/Testcontainers \
-                 execution harness is not implemented in this crate yet. Ready config: image={}, \
-                 coordinator={}. Required ordered steps: [{}]",
-                config.restate_image,
-                config.coordinator_bin.display(),
-                RUNTIME_VERIFIER_STEPS
-                    .iter()
-                    .map(|step| step.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+
+            let client = reqwest::Client::new();
+            let data_dir = RuntimeVerifierTempDir::new("coat-restate-runtime-verifier");
+            let mut restate = DockerRestate::start(&config.restate_image, &data_dir, "first");
+            wait_for_http_ok(
+                &client,
+                &format!("{}/health", restate.admin_url()),
+                Duration::from_secs(30),
+            )
+            .await;
+
+            let mut coordinator = CoordinatorProcess::start(&config);
+            register_restate_deployment(
+                &client,
+                &restate.admin_url(),
+                &coordinator.service_uri_for_restate(),
+            )
+            .await;
+
+            let goal = runtime_verifier_goal_state().goal;
+            let goal_id = goal.id.to_string();
+            let goal_value = serde_json::to_value(&goal).expect("goal json");
+            let before_restart = post_json(
+                &client,
+                workflow_url(&restate.ingress_url(), &goal_id, "run"),
+                &goal_value,
+            )
+            .await;
+            let before_summary = goal_status_summary(&before_restart);
+
+            coordinator.stop();
+            coordinator = CoordinatorProcess::start(&config);
+            register_restate_deployment(
+                &client,
+                &restate.admin_url(),
+                &coordinator.service_uri_for_restate(),
+            )
+            .await;
+            let after_coordinator_restart = post_no_body(
+                &client,
+                workflow_url(&restate.ingress_url(), &goal_id, "status"),
+            )
+            .await;
+            assert_eq!(
+                before_summary,
+                goal_status_summary(&after_coordinator_restart),
+                "coordinator restart must preserve durable goal state"
+            );
+
+            restate.stop();
+            restate = DockerRestate::start(&config.restate_image, &data_dir, "second");
+            wait_for_http_ok(
+                &client,
+                &format!("{}/health", restate.admin_url()),
+                Duration::from_secs(30),
+            )
+            .await;
+            register_restate_deployment(
+                &client,
+                &restate.admin_url(),
+                &coordinator.service_uri_for_restate(),
+            )
+            .await;
+            let after_restate_restart = post_no_body(
+                &client,
+                workflow_url(&restate.ingress_url(), &goal_id, "status"),
+            )
+            .await;
+            assert_eq!(
+                before_summary,
+                goal_status_summary(&after_restate_restart),
+                "Restate restart with persistent data must replay to the same durable goal state"
+            );
+
+            let rerun_after_restate_restart = post_json(
+                &client,
+                workflow_url(&restate.ingress_url(), &goal_id, "run"),
+                &goal_value,
+            )
+            .await;
+            assert_eq!(
+                before_summary,
+                goal_status_summary(&rerun_after_restate_restart),
+                "reinvoking run after restart must not re-execute completed durable state"
             );
         }
     }

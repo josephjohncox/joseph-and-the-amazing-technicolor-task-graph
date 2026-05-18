@@ -10,7 +10,10 @@ Backend-first simplification work also rolls up here. The product model is a dur
 
 ## Defaults
 
-- Restate harness: Docker Testcontainers with a pinned Restate image.
+- Restate harness: Docker-backed restart/resume proof with a pinned Restate
+  image. The harness may move to the Rust Testcontainers crate later if that
+  buys cleaner CI lifecycle management, but direct Docker proof is sufficient
+  for the current runtime evidence gate.
 - First live worker: Codex App Server.
 - First Kubernetes proof: kind or k3d CI.
 - Live test policy: env-gated live tests plus replay fixtures that always run in CI.
@@ -700,19 +703,39 @@ Recorded 2026-05-15:
 
 ### Runtime Proof
 
-- Add a Docker Testcontainers-based Restate integration harness for `coat-coordinator`.
-- Scaffold the ignored `coat-coordinator` RuntimeVerifier entrypoint at `crates/coordinator/tests/restate_restart_resume.rs`; normal CI only compiles gate/default tests, while the live proof requires `COAT_RESTATE_RESTART_RESUME_TEST=1`, Docker availability, and a pinned `COAT_RESTATE_TESTCONTAINERS_IMAGE`.
+- Evidence 2026-05-18: `crates/coordinator/tests/restate_restart_resume.rs`
+  now contains a real Docker-backed live RuntimeVerifier harness. With
+  `COAT_RESTATE_RESTART_RESUME_TEST=1`, Docker daemon access, a pinned
+  `COAT_RESTATE_TESTCONTAINERS_IMAGE`, and `target/debug/coat-coordinator`, the
+  ignored test starts Restate with persistent data, starts the coordinator on a
+  dynamic port, registers the deployment, submits a goal through Restate
+  ingress, restarts the coordinator, restarts Restate against the same data
+  directory, and compares the durable goal state across all boundaries.
+- Evidence 2026-05-18: live proof command passed locally:
+  `COAT_RESTATE_RESTART_RESUME_TEST=1
+  COAT_RESTATE_TESTCONTAINERS_IMAGE=docker.restate.dev/restatedev/restate:1.5
+  cargo test -p coat-coordinator restate_restart_resume_proof_entrypoint --
+  --ignored --exact --nocapture`.
+- Evidence 2026-05-18: `scripts/coat-runtime-live-scaffold.sh` now runs the
+  Restate restart/resume proof when `COAT_RESTATE_RESTART_RESUME_TEST=1` is
+  enabled and records `live_proof_executed=true` in its JSON summary. Local
+  proof passed with output under
+  `target/coat-runtime-live-scaffold-live-smoke/runtime-live-scaffold.json`;
+  the default `make runtime-live-scaffold` path still skips live work unless the
+  explicit gate is enabled.
+- The ignored `coat-coordinator` RuntimeVerifier entrypoint remains safe for
+  normal CI: default tests compile the gate/config/idempotency path without
+  touching Docker, and the live proof requires explicit opt-in env vars.
 - Evidence 2026-05-11: `crates/coordinator/tests/restate_restart_resume.rs` now has deterministic config, harness-step ordering, projection idempotency, and transition-counter assertions around the live proof gate.
 - Evidence 2026-05-11: coordinator transition observations now include waiting-input counts, pending delayed thunks, mechanism-round counts, compute-graph node/edge counts, and a `coordinator.transition` tracing span; RuntimeVerifier projection counters now assert persisted compute-graph nodes, edges, open thunks, and waiting tasks.
 - Evidence 2026-05-14: coordinator control handlers now route through a shared serialized transition path for cancel, feedback, steer, approve, restart, branch, select-branch, vote, delayed thunk, and mechanism actions. Tests prove blocked, waiting, and failed goals can recover through restart or resume while done and cancelled goals stay closed.
-- Evidence 2026-05-15: `scripts/coat-runtime-live-scaffold.sh` and `make runtime-live-scaffold` now record Restate restart/resume readiness as skipped by default, failed for unsafe config, or blocked when all gates are present but the Docker/Testcontainers harness is still intentionally unimplemented. The scaffold writes `live_proof_executed=false` so CI cannot mistake readiness for proof.
+- Evidence 2026-05-15: `scripts/coat-runtime-live-scaffold.sh` and `make runtime-live-scaffold` record Restate restart/resume readiness as skipped by default, failed for unsafe config, or blocked when gates are missing. The earlier unimplemented-harness blocker was superseded by the 2026-05-18 live proof.
 - Evidence 2026-05-15: coordinator `create_thunk` replay handling now treats
   exact duplicate task/continuation pairs as idempotent while preserving the
   domain invariant that rejects reusing the same continuation for a different
   task. Focused coordinator coverage proves the conflict path.
-- Start Restate with persistent data, start coordinator on a dynamic local port, register the deployment, and drive workflow calls through Restate ingress.
-- Prove coordinator restart against existing workflow state.
-- Prove Restate process restart with persisted journal data.
+- Remaining runtime proof work is observability depth: export and assert spans
+  once an OpenTelemetry sink endpoint is selected for the live harness.
 - Assert completed durable steps are not re-executed after replay.
 - Add transition metrics and spans for workflow run, task dispatch, runner calls, validation, restart, approval pause/resume, projection attempts, and projection failures.
 - Populate trace IDs already present in worker/protocol metadata instead of creating a separate observability model.
@@ -760,6 +783,11 @@ Recorded 2026-05-15:
 - Add SQS LocalStack inbound event-source and outbound notification smoke tests. First proof slice: `make eventops-sqs-smoke` starts LocalStack when Docker is available, reuses the SQS event-source and notification examples with local queue URLs, proves inbound poll/delete through `coat-event-gateway`, and proves outbound SQS delivery through `coat-notifier`.
 - Evidence 2026-05-11: `coat-notifier` now has a journaled outbox with `pending`, `delivered`, `awaiting_ack`, `acknowledged`, `retry_scheduled`, and `dead_lettered` states plus `/outbox`, `/outbox/{id}/ack`, `/outbox/{id}/retry`, `/outbox/retry-due`, and `/dlq` endpoints.
 - Evidence 2026-05-11: `make eventops-sqs-smoke` passed against `localstack/localstack:3.8.1`, proving inbound SQS poll/delete, outbound SQS delivery, notifier journal replay shape, and an `awaiting_ack` outbox entry.
+- Evidence 2026-05-18: `make eventops-sqs-smoke` passed locally with Docker
+  access, rebuilding `coat-event-gateway`, `coat-goal-store`, and
+  `coat-notifier`, starting LocalStack SQS, registering the inbound event
+  source, polling and deleting the inbound SQS event through event-gateway, and
+  delivering an outbound notification envelope through notifier.
 - Evidence 2026-05-11: event sources now include explicit `pull_request_check`, `github_actions_check`, and `gitlab_pipeline_check` kinds with examples and normalization tests, so PR required checks, GitHub Actions runs, and GitLab pipelines all project provider-neutral `_coat_change_activity` metadata before routing durable goals.
 - Closure 2026-05-11: the SQS/LocalStack residuals inherited from the distributed-runners and events plans are satisfied by the smoke above; remaining EventOps work is topology proof plus additional provider adapters.
 - Normalize recurrent observability events into durable gateway events before creating or steering goals.
@@ -878,6 +906,18 @@ Recorded 2026-05-15:
   backend-routed memory write, memory preview/apply, human queue visibility,
   registered runner status, and event-source registration through the real
   gateway before shutting the deterministic stack back down.
+- Evidence 2026-05-18: `make scenario-e2e-ui` passed locally after the
+  simplified SPA assertions were aligned with the current draft/action wording
+  and selected-goal model. The fast browser suite reported six passing specs
+  with the live-stack spec intentionally skipped outside the live gate.
+- Evidence 2026-05-18: `make scenario-e2e-ui-live` passed locally with Docker
+  access. It built the React/Vite control web app, started the deterministic
+  Compose stack with stub runners, drove a chat-authored draft through accept
+  and submit, observed the goal-store projection, verified the selected goal in
+  goals and work graph views, exercised memory write plus preview/apply,
+  confirmed the Action Queue and feedback-thread surfaces, verified registered
+  runner rows with node/capacity/endpoints, registered an event source, and
+  tore the stack down cleanly.
 - Evidence 2026-05-15: the SPA chat/draft surface was split into
   `ChatDraftPanel`, Ask is the default chat mode, Draft goal is explicit, and
   active draft controls use direct edit/discard/accept wording without showing
@@ -917,10 +957,8 @@ Recorded 2026-05-15:
   approval rejection with `r`, including optional rejection text, while keeping
   selected-goal scoping and modified-key chat submission. `cargo test -p
   coat-cli tui` passed with the new rejection coverage.
-- Limitation 2026-05-15: local Playwright browser E2E could not be rerun in
-  this sandbox after the first failure fix because Vite localhost binding
-  requires escalation and the escalation reviewer rejected the rerun after the
-  usage limit was reached. The SPA build and gateway smoke passed.
+- Closure 2026-05-18: the earlier Playwright rerun limitation is superseded by
+  the passing fast and live browser E2E proofs above.
 - Add token-broker-backed multi-user MCP smoke only after a broker implementation is selected.
 
 ### Release And Deployment Proof
@@ -998,24 +1036,95 @@ Recorded 2026-05-15:
 
 ## Follow-Ups
 
-- `SimplificationRun`: continue Phase 5 and Phase 6 by running one selected live proof end-to-end, then close or supersede only the follow-ups backed by direct evidence; do not delete remaining surfaces until replacement SPA/TUI/CLI/MCP evidence passes.
-- `RuntimeVerifier`: implement the ignored Docker Testcontainers Restate restart/resume harness; required local gate is `COAT_RESTATE_RESTART_RESUME_TEST=1` with Docker available, a non-`latest` `COAT_RESTATE_TESTCONTAINERS_IMAGE`, and a built coordinator binary at `CARGO_BIN_EXE_coat-coordinator` or `target/debug/coat-coordinator`.
-- `RuntimeVerifier`: move deterministic transition/projection assertions into the live harness; keep span assertions local until an OpenTelemetry sink and endpoint are selected, then assert exported workflow, dispatch, validation, approval, restart, and projection spans.
-- `CodexWorker`: run a live Codex App Server smoke and capture the result as a replay fixture; required gate/config is `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`, `CODEX_RUNNER_MODE=live`, `CODEX_AUTH_MODE=app_server`, `CODEX_APP_SERVER_URL`, and an existing isolated `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`.
-- `CodexWorker`: run live provider verification on real configured nodes and archive one `/verify` profile result per enabled route; required config is provider env or brokered auth, model endpoints, runner registration, and explicit non-stub route selection.
-- `CodexWorker`: verify `@ctxr/kit`, `@ctxr/agent-staff-engineer`, isolated target-repo install, tracker auth, and Claude Code auth distribution before attempting staff-engineer live issue-to-PR smoke work.
-- `Provisioner`: run the kind/k3d executor proof from sandbox-runner provision request through Job/Pod watch, result ingestion, cleanup, failure taxonomy, and attestation projection; required gate/config is `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`, `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d, `COAT_KUBERNETES_EXECUTOR_PROOF_MODE=server_dry_run` or `apply`, `COAT_KUBERNETES_CAPACITY_DECISION_REF`, `COAT_KUBERNETES_TEMPLATE_REF`, and `COAT_KUBERNETES_RESULT_INGESTION_REF`.
-- `Provisioner`: add provider-backed sandbox adapters only when the provider can return validator-reviewable attestation evidence; otherwise record a supersession note that keeps provider sandboxes out of scope for this plan.
-- `ResearchMemory`: run live Qdrant, Graphiti, Zep, and object-store adapter smokes only with approved service URLs, credentials or brokered auth, embedding route config, and an explicit object-store bucket/prefix; capture replay fixtures for every accepted live source.
-- `ResearchMemory`: promote replay object refs to real S3/MinIO uploads with immutable version, digest, bucket, and object-key evidence for raw source snapshots and large artifacts.
-- `EventOps`: add Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry, and other provider-adapter smokes only behind approved credentials, callback/webhook auth policy, and explicit activation gates.
-- `UIE2E`: fill the PR-gated `scenarios/e2e` workflow with full Compose browser workflows for goals, memory, approvals, runners, and events; required local proof is Playwright against the Compose-hosted gateway with artifacts under `target/coat-scenarios` or the standard Playwright report paths.
-- `UIE2E`: continue replacing monolithic SPA sections with shadcn-backed feature modules over `/api/operator/*` without making the frontend the durable state owner; each replacement needs visible draft/action/evidence behavior covered by smoke or browser evidence.
-- `UIE2E`: add persisted SPA screenshots and TUI transcripts to scenario artifacts once the scenario runner has first-class browser and terminal capture paths.
-- `UIE2E`: keep any LLM usability evaluator optional and separately gated; PR CI remains deterministic unless an approved evaluator route, model auth, and rubric artifact format are selected.
-- `UIE2E`: add token-broker-backed multi-user MCP smoke only after broker implementation, OIDC tenant/client config, short-lived lease policy, and approval UX are selected.
-- `ReleaseHardening`: run the first published binary and Helm chart smoke after a GitHub Release exists, then record asset names, checksums, install/template commands, and results in `docs/operations/releases.md`.
-- `ReleaseHardening`: add provider-specific deploy overlays and Restate Cloud journal-encryption guidance only after the first cloud target, supported SDK path, service identity verification, and provider documentation are selected.
+2026-05-18 triage: follow-ups below are the active completion gates for this
+plan. Deferred extension ideas moved out of the active follow-up list so
+`coat plan follow-ups` reflects runnable or credential-gated proof work, not a
+grab bag of optional future integrations.
+
+- `RuntimeVerifier`: extend the live restart proof with exported span
+  assertions when an OpenTelemetry sink endpoint is selected.
+- `CodexWorker`: run a live Codex App Server smoke and capture the result as a
+  replay fixture. Required gate/config:
+  `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`, `CODEX_RUNNER_MODE=live`,
+  `CODEX_AUTH_MODE=app_server`, `CODEX_APP_SERVER_URL`, and an isolated
+  `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`.
+- `CodexWorker`: run live provider verification for configured runner/model
+  routes and archive one `/verify` profile result per enabled non-stub route.
+- `CodexWorker`: verify `@ctxr/kit`, `@ctxr/agent-staff-engineer`, isolated
+  target-repo install, tracker auth, and Claude Code auth distribution before
+  attempting staff-engineer live issue-to-PR smoke work.
+- `Provisioner`: run the kind/k3d executor proof from sandbox-runner provision
+  request through Job/Pod watch, result ingestion, cleanup, failure taxonomy,
+  and attestation projection. Required gate/config:
+  `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`,
+  `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d,
+  `COAT_KUBERNETES_EXECUTOR_PROOF_MODE=server_dry_run` or `apply`,
+  `COAT_KUBERNETES_CAPACITY_DECISION_REF`, `COAT_KUBERNETES_TEMPLATE_REF`, and
+  `COAT_KUBERNETES_RESULT_INGESTION_REF`.
+- `ResearchMemory`: run live Qdrant, Graphiti, Zep, and MinIO/S3-compatible
+  object-store adapter smokes with approved service URLs, credentials or
+  brokered auth, embedding route config, and an explicit bucket/prefix; capture
+  replay fixtures for every accepted live source.
+- `ReleaseHardening`: run the first published binary and Helm chart smoke after
+  a GitHub Release exists, then record asset names, checksums,
+  install/template commands, and results in `docs/operations/releases.md`.
+
+## Deferred Or Deprecated Follow-Ups
+
+- Provider-backed sandbox adapters are deferred until a provider can return
+  validator-reviewable attestation evidence. They are not an active completion
+  gate for this plan.
+- Slack, tracker, PagerDuty, Google Calendar, Outlook, OpenTelemetry provider
+  adapters, and other external-provider smokes are deferred behind approved
+  credentials, webhook auth policy, and explicit activation gates.
+- Persisted SPA screenshots, TUI transcripts, and optional LLM usability
+  evaluators are deferred until the deterministic scenario runner has
+  first-class browser/terminal capture paths and an approved evaluator route.
+- Token-broker-backed multi-user MCP smoke is deferred because the default
+  deployment remains single-user; it becomes active only after broker
+  implementation, OIDC tenant/client config, short-lived lease policy, and
+  approval UX are selected.
+- Provider-specific deploy overlays and Restate Cloud journal-encryption
+  guidance are deferred until a first cloud target and supported SDK/provider
+  documentation path are selected.
+
+### Deferred TODOs
+
+These items are intentionally not active `coat plan follow-ups` yet. Promote
+one into `## Follow-Ups` only after its activation criteria are true and there
+is a concrete proof path.
+
+- [ ] Provider-backed sandbox adapters:
+  - Select the first provider sandbox target and document the exact attestation
+    shape it can return.
+  - Add a `SandboxAttestation` fixture that a validator/reviewer can inspect
+    without trusting provider prose.
+  - Add an env-gated live smoke that launches a bounded executor, captures
+    command/output/artifact refs, and fails if attestation evidence is missing
+    or non-verifiable.
+  - Promotion criteria: provider docs/API prove attestation support, credentials
+    are approved, and the validator can reject missing or malformed evidence.
+- [ ] Scenario artifact capture and usability evaluator:
+  - Extend the deterministic scenario runner with first-class browser
+    screenshot, Playwright trace, and TUI transcript artifact slots.
+  - Store artifact refs in scenario evidence and operator snapshots without
+    requiring the UI to expose raw paths in normal workflows.
+  - Define a deterministic usability rubric before adding any LLM evaluator.
+  - Add an optional LLM evaluator only behind explicit model/auth gates and keep
+    PR CI deterministic by default.
+  - Promotion criteria: scenario artifacts are captured by the runner, not ad
+    hoc test scripts, and evaluator output has a stable schema.
+- [ ] Token-broker-backed multi-user MCP smoke:
+  - Choose the token broker design, OIDC tenant/client setup, lease duration,
+    refresh policy, and revocation model.
+  - Add `UserPrincipalRef`, broker lease refs, and MCP auth refs to smoke
+    fixtures without storing raw tokens in state, logs, memory, or artifacts.
+  - Add an approval UX for brokered user auth before a runner can use delegated
+    credentials.
+  - Prove single-user mode remains the default and multi-user OIDC is opt-in.
+  - Promotion criteria: broker implementation exists, OIDC config is available,
+    short-lived leases are testable, and the MCP smoke can authenticate as a
+    delegated user without leaking secrets.
 
 ## Acceptance
 

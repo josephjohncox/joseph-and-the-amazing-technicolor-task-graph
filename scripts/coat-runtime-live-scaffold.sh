@@ -20,11 +20,11 @@ Options:
   --summary PATH     Summary JSON path. Default: <output-dir>/runtime-live-scaffold.json
   -h, --help         Show this help.
 
-This is a readiness scaffold, not a live proof runner. With the default
+This is a readiness scaffold plus gated proof runner. With the default
 environment it records skipped proof families and exits successfully. When an
 explicit live gate is enabled, unsafe or incomplete configuration is reported as
-failed, but this script still does not start Docker, Restate, Codex App Server,
-kind, k3d, kubectl, or Kubernetes workloads.
+failed. Proof families only start live infrastructure when their dedicated gate
+is enabled; currently the Restate restart/resume proof can run Docker/Restate.
 EOF
 }
 
@@ -66,6 +66,7 @@ esac
 run_dir="$out_root/proofs"
 results_file="$out_root/proofs.tsv"
 overall_status=passed
+any_live_proof=0
 
 mkdir -p "$run_dir"
 : >"$results_file"
@@ -98,6 +99,7 @@ record_proof() {
   gate_enabled_value=$4
   reason=$5
   next_step=$6
+  live_proof_executed=${7:-false}
   proof_dir="$run_dir/$proof_name"
   mkdir -p "$proof_dir"
   {
@@ -107,10 +109,13 @@ record_proof() {
     printf 'gate_enabled=%s\n' "$gate_enabled_value"
     printf 'reason=%s\n' "$reason"
     printf 'next_step=%s\n' "$next_step"
-    printf 'live_proof_executed=false\n'
+    printf 'live_proof_executed=%s\n' "$live_proof_executed"
   } >"$proof_dir/status.txt"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$proof_name" "$proof_status" "$gate_name" "$gate_enabled_value" "$reason" "$next_step" >>"$results_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$proof_name" "$proof_status" "$gate_name" "$gate_enabled_value" "$reason" "$next_step" "$live_proof_executed" >>"$results_file"
   log "$proof_name: $proof_status - $reason"
+  if [ "$live_proof_executed" = "true" ]; then
+    any_live_proof=1
+  fi
   if [ "$proof_status" = "failed" ]; then
     overall_status=failed
   fi
@@ -124,11 +129,16 @@ write_summary() {
     printf '  "status": "%s",\n' "$(json_escape "$overall_status")"
     printf '  "generated_at": "%s",\n' "$(json_escape "$generated_at")"
     printf '  "repo_root": "%s",\n' "$(json_escape "$repo_root")"
-    printf '  "live_proof_executed": false,\n'
-    printf '  "note": "Readiness scaffold only; no Docker, Restate, Codex App Server, kind, k3d, kubectl, or Kubernetes workload was started.",\n'
+    if [ "$any_live_proof" = "1" ]; then
+      printf '  "live_proof_executed": true,\n'
+      printf '  "note": "At least one explicitly gated live proof executed; remaining proof families may still be skipped or readiness-only.",\n'
+    else
+      printf '  "live_proof_executed": false,\n'
+      printf '  "note": "Readiness scaffold only; no live proof gate was enabled.",\n'
+    fi
     printf '  "proofs": [\n'
     first=1
-    while IFS='	' read -r proof_name proof_status gate_name gate_enabled_value reason next_step; do
+    while IFS='	' read -r proof_name proof_status gate_name gate_enabled_value reason next_step live_proof_executed; do
       [ -n "$proof_name" ] || continue
       if [ "$first" = "1" ]; then
         first=0
@@ -140,7 +150,7 @@ write_summary() {
       printf '      "status": "%s",\n' "$(json_escape "$proof_status")"
       printf '      "gate": "%s",\n' "$(json_escape "$gate_name")"
       printf '      "gate_enabled": %s,\n' "$gate_enabled_value"
-      printf '      "live_proof_executed": false,\n'
+      printf '      "live_proof_executed": %s,\n' "$live_proof_executed"
       printf '      "reason": "%s",\n' "$(json_escape "$reason")"
       printf '      "next_step": "%s"\n' "$(json_escape "$next_step")"
       printf '    }'
@@ -162,7 +172,8 @@ check_restate_restart_resume() {
   fi
 
   image=${COAT_RESTATE_TESTCONTAINERS_IMAGE:-docker.restate.dev/restatedev/restate:1.5}
-  coordinator_bin=${CARGO_BIN_EXE_coat-coordinator:-target/debug/coat-coordinator}
+  coordinator_bin=$(env | sed -n 's/^CARGO_BIN_EXE_coat-coordinator=//p' | sed -n '1p')
+  [ -n "$coordinator_bin" ] || coordinator_bin=target/debug/coat-coordinator
 
   case "$image" in
     *:latest)
@@ -175,7 +186,7 @@ check_restate_restart_resume() {
 
   if ! command_exists docker; then
     record_proof restate_restart_resume skipped "$gate" true \
-      "docker CLI is unavailable; Testcontainers Restate proof cannot run here" \
+      "docker CLI is unavailable; Docker-backed Restate proof cannot run here" \
       "install Docker or run this proof on a Docker-enabled host"
     return
   fi
@@ -187,9 +198,23 @@ check_restate_restart_resume() {
     return
   fi
 
-  record_proof restate_restart_resume blocked "$gate" true \
-    "local gates are present, but the ignored Docker/Testcontainers harness still deliberately fails until implemented" \
-    "replace the RuntimeVerifier ready-state panic with the ordered Testcontainers restart/resume proof"
+  proof_dir="$run_dir/restate_restart_resume"
+  mkdir -p "$proof_dir"
+  log "restate_restart_resume: running live proof with image $image"
+  if COAT_RESTATE_RESTART_RESUME_TEST=1 \
+    COAT_RESTATE_TESTCONTAINERS_IMAGE="$image" \
+    cargo test -p coat-coordinator restate_restart_resume_proof_entrypoint -- --ignored --exact --nocapture \
+    >"$proof_dir/live-proof.log" 2>&1; then
+    record_proof restate_restart_resume passed "$gate" true \
+      "live Restate restart/resume proof passed" \
+      "keep this proof in release/runtime verification when Docker is available" \
+      true
+  else
+    record_proof restate_restart_resume failed "$gate" true \
+      "live Restate restart/resume proof failed; see $proof_dir/live-proof.log" \
+      "fix the RuntimeVerifier harness or local Docker/Restate/coordinator configuration" \
+      true
+  fi
 }
 
 check_codex_app_server() {

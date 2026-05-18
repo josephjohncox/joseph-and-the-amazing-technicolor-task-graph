@@ -19,7 +19,7 @@ test.describe("COAT live deterministic stack", () => {
 
     await page.locator(".goal-draft-editor").getByLabel("Title").fill(title);
     await page.locator(".goal-draft-editor").getByLabel("Objective").fill(objective);
-    await page.getByRole("button", { name: "Accept draft" }).click();
+    await page.getByLabel("Draft actions").getByRole("button", { name: "Accept draft" }).click();
 
     const goalId = await selectedGoalIdFromUrl(page);
     expect(goalId).toMatch(/^[0-9a-f-]{36}$/);
@@ -71,7 +71,9 @@ test.describe("COAT live deterministic stack", () => {
     await expect(page.getByText(replacementKey).first()).toBeVisible();
 
     await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Action Queue", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Approvals" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Action Queue", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Action queue", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Approvals \d+/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Feedback threads" })).toBeVisible();
 
     await expect.poll(async () => runnerCount(page), {
@@ -80,8 +82,9 @@ test.describe("COAT live deterministic stack", () => {
       intervals: [500, 1_000, 2_000],
     }).toBeGreaterThan(0);
     await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Runners", exact: true }).click();
-    await expect(page.getByRole("heading", { level: 2, name: "Runners", exact: true })).toBeVisible();
-    await expect(page.getByLabel("Runner state")).toContainText("registered");
+    await expect(page.getByRole("heading", { level: 1, name: "Runner Fleet", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Runner fleet", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Runner fleet state")).toContainText("registered");
 
     const sourceId = `live-ui-ci-${Date.now()}`;
     await registerEventSource(page, sourceId);

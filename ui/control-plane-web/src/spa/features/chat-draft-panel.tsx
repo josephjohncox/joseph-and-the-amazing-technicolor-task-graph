@@ -91,14 +91,13 @@ export function ChatDraftPanel(props: {
   }, [props.busy, props.sessionId, props.messages.length, latestMessage?.role, latestMessage?.content]);
 
   return (
-    <section className="command-panel" aria-label="Ask or draft">
+    <section className="command-panel" aria-label="Assistant">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Assistant</p>
-          <h2>Ask or draft</h2>
+          <h2>{props.goalDraft ? "Review goal draft" : "Ask"}</h2>
         </div>
         <div className="draft-mode-group">
-          <span>Mode</span>
           <div className="mode-toggle" role="group" aria-label="Draft type">
             <button
               type="button"
@@ -116,7 +115,7 @@ export function ChatDraftPanel(props: {
               onClick={() => props.onDraftKindChange("plan")}
             >
               <GitBranch size={15} />
-              Draft plan
+              Plan
             </button>
             <button
               type="button"
@@ -127,26 +126,29 @@ export function ChatDraftPanel(props: {
               <ListChecks size={15} />
               Draft goal
             </button>
-            <button
-              type="button"
-              className={clsx("mode-option", props.draftKind === "search" && "active")}
-              aria-pressed={props.draftKind === "search"}
-              onClick={() => props.onDraftKindChange("search")}
-            >
-              <Search size={15} />
-              Search
-            </button>
           </div>
+          <details className="secondary-mode-details">
+            <summary>Search</summary>
+            <div>
+              <button
+                type="button"
+                className={clsx("mode-option", props.draftKind === "search" && "active")}
+                aria-pressed={props.draftKind === "search"}
+                onClick={() => props.onDraftKindChange("search")}
+              >
+                <Search size={15} />
+                Search
+              </button>
+            </div>
+          </details>
         </div>
       </div>
-      <div className="draft-mode-hint">
-        <strong>{draftModeHeadline(props.draftKind)}</strong>
-        <span>{draftModeDetail(props.draftKind)}</span>
-      </div>
       <div className="outcome-meta" aria-label="Chat scope">
-        <span className="status-pill muted">Assistant</span>
         <span className={clsx("status-pill", props.selectedGoal ? statusTone(props.selectedGoal.status) : "muted")}>
           {props.selectedGoal ? `Context: ${props.selectedGoal.title}` : "Context: workspace"}
+        </span>
+        <span className={clsx("status-pill", props.busy ? "status-running" : "muted")}>
+          {props.busy ? commandBusyLabel(props.draftKind) : draftModeHeadline(props.draftKind)}
         </span>
         {props.activeDraft && (
           <span className={clsx("status-pill", props.goalDraft ? "status-runnable" : "muted")}>
@@ -154,9 +156,6 @@ export function ChatDraftPanel(props: {
           </span>
         )}
         {draftFromOtherSession && <span className="status-pill status-waiting-input">Draft from {sessionDisplayLabel(props.activeDraft?.sessionId ?? "")}</span>}
-        <span className={clsx("status-pill", props.busy ? "status-running" : "status-pending")}>
-          {props.busy ? commandBusyLabel(props.draftKind) : `History: ${sessionDisplayLabel(props.sessionId)}`}
-        </span>
         {!props.activeDraft && (props.busy || props.chatRun || props.latestResponse || draftKeys.length > 0) && (
           <AdvancedInspect summaryLabel={activityLabel} title="Chat activity" payload={activityPayload} buttonLabel="Debug" />
         )}
@@ -250,7 +249,21 @@ function GoalDraftEditor(props: {
 }) {
   return (
     <section className="goal-draft-editor" aria-label="Goal draft review">
-      <DraftSummaryCard summary={props.summary} />
+      <div className="draft-editor-header">
+        <div>
+          <span className="goal-context-kicker">Goal draft ready</span>
+          <strong>{props.summary.title}</strong>
+          {props.summary.objective && <p>{props.summary.objective}</p>}
+        </div>
+        <div className="button-row" aria-label="Draft actions">
+          <button type="button" className="secondary-button" disabled={props.submitBusy} onClick={props.onDiscard}>
+            Discard draft
+          </button>
+          <button type="button" className="primary-button" disabled={props.submitDisabled} onClick={props.onSubmit}>
+            {props.submittedGoalLabel ? "Accepted" : props.submitBusy ? "Submitting" : "Accept draft"}
+          </button>
+        </div>
+      </div>
       <div className="draft-editor-grid">
         <label>
           Title
@@ -285,19 +298,11 @@ function GoalDraftEditor(props: {
           />
         </label>
       </div>
-      <div className="draft-action-row" aria-label="Draft actions">
-        <div>
-          <strong>{props.submittedGoalLabel ? "Draft accepted" : "Draft ready"}</strong>
-          <span>{props.submittedGoalLabel ? `Selected ${props.submittedGoalLabel}` : "Edit, discard, or accept it as a durable goal."}</span>
-        </div>
-        <div className="button-row">
-          <button type="button" className="secondary-button" disabled={props.submitBusy} onClick={props.onDiscard}>
-            Discard draft
-          </button>
-          <button type="button" className="primary-button" disabled={props.submitDisabled} onClick={props.onSubmit}>
-            {props.submittedGoalLabel ? "Accepted" : props.submitBusy ? "Submitting" : "Accept draft"}
-          </button>
-        </div>
+      <div className="draft-summary-meta" aria-label="Draft summary">
+        {props.submittedGoalLabel && <span className="status-pill status-done">Selected {props.submittedGoalLabel}</span>}
+        <span className="status-pill status-runnable">Edit draft</span>
+        <span className="status-pill muted">{countLabel(props.summary.evidenceCount, "evidence item")}</span>
+        <span className="status-pill muted">{countLabel(props.summary.constraintCount, "constraint")}</span>
       </div>
     </section>
   );
@@ -502,12 +507,12 @@ function compilerPromptTemplates(goalId: string, goalTitle?: string): Array<{ la
     {
       label: "Summarize work",
       icon: "graph",
-      prompt: `Summarize the current compute graph${goalClause}: runnable work, waiting continuations, blocked tasks, and the next control action.`,
+      prompt: `Summarize current work${goalClause}: running tasks, blocked tasks, human prompts, and the next action.`,
     },
     {
-      label: "Draft steering",
+      label: "Plan next step",
       icon: "control",
-      prompt: `Draft one structured steering directive${goalClause} that moves the objective forward through coordinator review.`,
+      prompt: `Plan the next useful step${goalClause}. Include what should happen, why, and what evidence should prove it worked.`,
     },
     {
       label: "Research gap",
@@ -519,14 +524,14 @@ function compilerPromptTemplates(goalId: string, goalTitle?: string): Array<{ la
 
 function draftModeHeadline(kind: DraftKind): string {
   if (kind === "ask") return "Ask";
-  if (kind === "goal") return "New durable goal";
+  if (kind === "goal") return "Goal draft";
   if (kind === "search") return "Search request";
-  return "Planning draft";
+  return "Plan draft";
 }
 
 function draftModeDetail(kind: DraftKind): string {
-  if (kind === "ask") return "Ask about selected goal state, actions, evidence, runners, memory, or what to do next.";
-  if (kind === "goal") return "Draft a goal, edit it, then submit it to the coordinator.";
+  if (kind === "ask") return "Ask about the current goal, blockers, evidence, runners, memory, or next step.";
+  if (kind === "goal") return "Draft a goal, review it, then submit it.";
   if (kind === "search") return "Draft a sourced search request for a goal or the workspace.";
   return "Draft a plan before turning it into a goal.";
 }

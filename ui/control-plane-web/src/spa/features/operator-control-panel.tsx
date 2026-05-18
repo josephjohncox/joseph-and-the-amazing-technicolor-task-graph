@@ -58,8 +58,8 @@ export function CompilerControlView(props: { goalId: string; snapshot?: Composed
     <section className="panel">
       <div className="section-heading">
         <div>
-          <h2>Operator actions</h2>
-          <span className="muted-small">Review evidence, recover blocked work, and choose one follow-up action when needed</span>
+          <h2>Steer work</h2>
+          <span className="muted-small">Review evidence, recover blocked work, or choose the next follow-up</span>
         </div>
       </div>
       {!props.goalId ? (
@@ -173,7 +173,7 @@ export function CompilerControlPanel({ goalId, snapshot, compact = false }: { go
           <span className="goal-context-kicker">Blockers</span>
           <h4>{failed + blocked + approvals}</h4>
           <p>{failed} failed · {blocked} blocked · {approvals} approvals</p>
-          <small>{continuations} waiting continuations</small>
+          <small>{continuations} human prompts</small>
         </section>
         <section className="primary-action-card">
           <span className="goal-context-kicker">Evidence</span>

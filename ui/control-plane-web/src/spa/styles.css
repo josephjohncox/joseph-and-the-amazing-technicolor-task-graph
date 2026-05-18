@@ -524,19 +524,6 @@ label {
   padding: 18px;
 }
 
-.draft-review-dock {
-  display: grid;
-  grid-template-columns: minmax(240px, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  margin: 0 18px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent-soft);
-  padding: 12px;
-  box-shadow: var(--shadow);
-}
-
 .active-runtime-bar {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(260px, auto) auto;
@@ -568,23 +555,6 @@ label {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
-}
-
-.draft-review-dock > div:first-child {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.draft-review-dock strong,
-.draft-review-dock small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.draft-review-dock .error-text {
-  grid-column: 1 / -1;
 }
 
 .command-panel,
@@ -784,7 +754,7 @@ label {
 
 .mode-toggle {
   display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
+  grid-template-columns: repeat(3, minmax(72px, 1fr));
   gap: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -793,8 +763,11 @@ label {
 }
 
 .draft-mode-group {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: stretch;
+  justify-content: flex-end;
 }
 
 .draft-mode-group > span {
@@ -802,27 +775,6 @@ label {
   font-size: 12px;
   font-weight: 750;
   text-transform: uppercase;
-}
-
-.draft-mode-hint {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: baseline;
-  margin: -2px 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-soft);
-  padding: 9px 10px;
-}
-
-.draft-mode-hint span {
-  flex: 1 1 220px;
-  color: var(--muted);
-}
-
-.draft-mode-hint strong {
-  color: var(--text);
 }
 
 .mode-option {
@@ -836,6 +788,49 @@ label {
   background: transparent;
   color: var(--muted);
   padding: 7px 10px;
+}
+
+.secondary-mode-details {
+  position: relative;
+  display: grid;
+}
+
+.secondary-mode-details summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  padding: 7px 11px;
+  cursor: pointer;
+  font-weight: 700;
+  list-style: none;
+}
+
+.secondary-mode-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.secondary-mode-details[open] summary {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.secondary-mode-details > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 5;
+  display: grid;
+  min-width: 150px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 6px;
 }
 
 .mode-option.active {
@@ -858,6 +853,30 @@ label {
   border-radius: 8px;
   background: var(--panel-soft);
   padding: 10px 12px;
+}
+
+.draft-editor-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: start;
+}
+
+.draft-editor-header > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.draft-editor-header strong,
+.draft-editor-header p {
+  overflow-wrap: anywhere;
+}
+
+.draft-editor-header p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .draft-summary-card {
@@ -942,31 +961,6 @@ label {
 .draft-editor-grid textarea {
   min-height: 82px;
   resize: vertical;
-}
-
-.draft-action-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-top: 1px solid var(--line);
-  padding-top: 10px;
-}
-
-.draft-action-row > div:first-child {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.draft-action-row strong,
-.draft-action-row span {
-  overflow-wrap: anywhere;
-}
-
-.draft-action-row span {
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .chat-shell {
@@ -1721,19 +1715,14 @@ label {
   }
 
   .active-runtime-bar,
+  .draft-editor-header,
   .draft-summary-card {
     grid-template-columns: 1fr;
   }
 
-  .draft-review-dock,
-  .draft-action-row,
   .graph-control-redirect {
     align-items: stretch;
     grid-template-columns: 1fr;
-  }
-
-  .draft-action-row {
-    flex-direction: column;
   }
 
   .draft-summary-meta,

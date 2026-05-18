@@ -147,10 +147,10 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Ask or draft", "New durable goal", "Planning draft", "Active draft", "Live state", "Streaming", "Goal draft", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "History:", "Operator Actions", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Continuations", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Ask", "Plan", "Goal draft", "Plan draft", "Live state", "Streaming", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Human prompts", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
-  assert(script.includes("Stop this durable goal through the coordinator."), "client script explains cancel stops a durable goal");
+  assert(script.includes("Cancel this goal."), "client script labels goal cancellation directly");
   assert(!script.includes("Clear local history"), "client script distinguishes local clear from goal cancellation");
   assert(!script.includes(">Thunks<"), "client script does not expose thunk wording in queue filters");
   assert(!script.includes("Response summary"), "client script does not expose generic response-summary continuation copy");
@@ -165,7 +165,7 @@ async function assertStylesheet() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "stylesheet returns ok");
   const css = await response.text();
-  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".draft-review-dock", ".goal-draft-editor", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".queue-filter", ".queue-group", ".action-result-controls", ".queue-history-card", ".danger-note", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".human-prompt-card", ".human-prompt-actions", ".react-flow__node.task-node"]) {
+  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".secondary-mode-details", ".goal-draft-editor", ".draft-editor-header", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".queue-filter", ".queue-group", ".action-result-controls", ".queue-history-card", ".danger-note", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".human-prompt-card", ".human-prompt-actions", ".react-flow__node.task-node"]) {
     assert(css.includes(expected), `stylesheet includes ${expected}`);
   }
 }
@@ -354,7 +354,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ActiveGoalRuntimeBar, ChatDraftPanel, ComputeGraphDetails, DraftReviewDock, GoalContextBar, GoalList, GraphStatusPanel, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, composedSnapshotHasProjectedTasks, goalSubgoalsFromComposedSnapshotOrDraft, mergeSubmittedGoalRows, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
+            return `${code}\nexport { ActiveGoalRuntimeBar, ChatDraftPanel, ComputeGraphDetails, GoalContextBar, GoalList, GraphStatusPanel, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, composedSnapshotHasProjectedTasks, goalSubgoalsFromComposedSnapshotOrDraft, mergeSubmittedGoalRows, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -373,7 +373,6 @@ async function assertOperatorWorkflowRender() {
       CompilerControlPanel: appCompilerControlPanel,
       ComputeGraphDetails: appComputeGraphDetails,
       ContinuationQueue: appContinuationQueue,
-      DraftReviewDock,
       EvidenceNextActionPanel: appEvidenceNextActionPanel,
       GoalContextBar,
       GoalList: appGoalList,
@@ -606,7 +605,7 @@ async function assertOperatorWorkflowRender() {
         onClear: () => {},
       }),
     );
-    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: Workspace chat", "Evidence requirements"]) {
+    for (const expected of ["Review goal draft", "Plan", "Assistant", "Context: workspace", "Draft: Goal draft", "Evidence requirements", "Edit draft"]) {
       assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
     }
     assert(commandMarkup.includes("Accept draft"), "command panel exposes a direct draft acceptance action");
@@ -615,26 +614,6 @@ async function assertOperatorWorkflowRender() {
     assert(!commandMarkup.includes("<pre>"), "command panel does not render raw draft JSON inline");
     assert(!commandMarkup.includes("&quot;initial_tasks&quot;"), "command panel does not render raw GoalSpec JSON inline");
 
-    const dockMarkup = renderToStaticMarkup(
-      React.createElement(DraftReviewDock, {
-        view: {
-          title: "Goal draft",
-          detail: "Submit an operator-authored goal through the coordinator.",
-          kindLabel: "Goal draft",
-          sessionLabel: "Workspace chat",
-          hasGoalDraft: true,
-          submittedGoalLabel: "",
-          busy: false,
-          errorMessage: "",
-        },
-        onSubmitGoalDraft: () => {},
-        onDiscardGoalDraft: () => {},
-      }),
-    );
-    for (const expected of ["Active draft", "Goal draft", "Goal draft ready", "Workspace chat", "Discard", "Accept draft"]) {
-      assert(dockMarkup.includes(expected), `draft review dock markup includes ${expected}`);
-    }
-    assert(!dockMarkup.includes("operator:default"), "draft review dock renders a friendly session label");
     const runtimeMarkup = renderToStaticMarkup(
       React.createElement(ActiveGoalRuntimeBar, {
         view: {
@@ -714,7 +693,7 @@ async function assertOperatorWorkflowRender() {
     for (const expected of ["Current goal", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Cancel goal"]) {
       assert(goalContextMarkup.includes(expected), `goal context picker includes ${expected}`);
     }
-    assert(goalContextMarkup.includes("Stop this durable goal through the coordinator."), "goal picker labels cancellation as a durable stop");
+    assert(goalContextMarkup.includes("Cancel this goal."), "goal picker labels cancellation directly");
     const subgoalMarkup = renderToStaticMarkup(React.createElement(SubgoalPlanPanel, { subgoals: draftSubgoals, source: "submitted draft" }));
     for (const expected of ["Subgoals", "submitted draft", "Submit drafted GoalSpec", "Project graph state"]) {
       assert(subgoalMarkup.includes(expected), `subgoal panel markup includes ${expected}`);
@@ -787,7 +766,7 @@ async function assertOperatorWorkflowRender() {
       "Reviewing",
       "Satisfied",
       "approval gate",
-      "waiting continuation",
+      "human prompt",
     ]) {
       assert(graphStatusMarkup.includes(expected), `graph status markup includes ${expected}`);
     }
@@ -1072,7 +1051,7 @@ async function assertOperatorWorkflowRender() {
       ),
     );
     for (const expected of [
-      "Continuations",
+      "Human prompts",
       "Need operator answer",
       "task Ref task-plan",
       "continuation Ref operator-answer",
@@ -1090,7 +1069,7 @@ async function assertOperatorWorkflowRender() {
         React.createElement(ContinuationQueue, { goalId, snapshot: { workflow_compute_graph: { data: { nodes: [], edges: [], open_thunks: 0 } } } }),
       ),
     );
-    assert(emptyContinuationMarkup.includes("Continuations clear"), "empty continuation queue renders stable empty state");
+    assert(emptyContinuationMarkup.includes("Human prompts clear"), "empty human prompt queue renders stable empty state");
 
     const approvalItems = approvals.map((approval) => ({
       key: `approval:${approval.approval_id}`,
@@ -1206,11 +1185,11 @@ async function assertOperatorWorkflowRender() {
         }),
       ),
     );
-    assert(thunkMarkup.includes("Need rollout decision"), "action queue renders waiting continuation text");
+    assert(thunkMarkup.includes("Need rollout decision"), "action queue renders human prompt text");
     assert(thunkMarkup.includes("Human prompt"), "action queue renders a concrete human prompt");
-    assert(thunkMarkup.includes("Add context for the agent, or leave blank and press Continue."), "action queue explains the continuation choices");
-    assert(thunkMarkup.includes("Context"), "action queue labels continuation context clearly");
-    assert(thunkMarkup.includes("Add context"), "action queue renders context input for continuations");
+    assert(thunkMarkup.includes("Add context for the agent, or leave blank and press Continue."), "action queue explains human prompt choices");
+    assert(thunkMarkup.includes("Context"), "action queue labels human prompt context clearly");
+    assert(thunkMarkup.includes("Add context"), "action queue renders context input for human prompts");
     assert(thunkMarkup.includes(">Continue<"), "action queue renders one-click continue command");
     assert(thunkMarkup.includes(">Add context<"), "action queue renders context command");
     assert(!thunkMarkup.includes(">Retry<"), "continuation cards do not render retry actions");
@@ -1267,21 +1246,21 @@ async function assertOperatorWorkflowRender() {
     ];
     assertEqual(queueGroupForItem(mixedQueueItems[0]), "approvals", "queue grouping identifies approvals");
     assertEqual(queueGroupForItem(mixedQueueItems[1]), "blocked", "queue grouping identifies blocked work");
-    assertEqual(queueGroupForItem(mixedQueueItems[2]), "thunks", "queue grouping identifies continuations");
+    assertEqual(queueGroupForItem(mixedQueueItems[2]), "thunks", "queue grouping identifies human prompts");
     assertEqual(queueGroupForItem(mixedQueueItems[3]), "cancelled", "queue grouping identifies cancelled history");
-    assertEqual(queueGroupsForItems(mixedQueueItems).length, 4, "queue grouping keeps approvals, recovery work, continuations, and stopped history separate");
+    assertEqual(queueGroupsForItems(mixedQueueItems).length, 4, "queue grouping keeps approvals, recovery work, human prompts, and stopped history separate");
     const queueFilterMarkup = renderToStaticMarkup(React.createElement(QueueFilterBar, { items: mixedQueueItems, active: "all", onChange: () => {} }));
-    for (const expected of [">All<span>4</span>", ">Approvals<span>1</span>", ">Recovery<span>1</span>", ">Continuations<span>1</span>", ">Stopped<span>1</span>"]) {
+    for (const expected of [">All<span>4</span>", ">Approvals<span>1</span>", ">Recovery<span>1</span>", ">Human prompts<span>1</span>", ">Stopped<span>1</span>"]) {
       assert(queueFilterMarkup.includes(expected), `queue filter markup includes ${expected}`);
     }
     assert(queueFilterMarkup.includes("blocked or failed work that can be retried, replanned, or turned into a prompt"), "queue filter explains recovery actions");
-    assert(queueFilterMarkup.includes("waiting prompts that can be resumed by an operator"), "queue filter explains continuations without thunk wording");
+    assert(queueFilterMarkup.includes("questions or decisions that need an operator"), "queue filter explains human prompts without thunk wording");
     const mixedQueueMarkup = renderToStaticMarkup(
       React.createElement(QueryClientProvider, { client: new QueryClient() },
         React.createElement(OperatorActionList, { items: mixedQueueItems }),
       ),
     );
-    for (const expected of ["Approvals", "Recovery", "Continuations", "Stopped history", "Cancelled filter task", "Read-only"]) {
+    for (const expected of ["Approvals", "Recovery", "Human prompts", "Stopped history", "Cancelled filter task", "Read-only"]) {
       assert(mixedQueueMarkup.includes(expected), `mixed action queue markup includes ${expected}`);
     }
     const actionResultMarkup = renderToStaticMarkup(React.createElement(ActionResultCard, {

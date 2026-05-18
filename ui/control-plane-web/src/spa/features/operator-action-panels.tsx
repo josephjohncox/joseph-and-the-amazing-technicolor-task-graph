@@ -65,13 +65,13 @@ const queueFilterOptions: Array<{ key: QueueFilter; label: string; detail: strin
   { key: "all", label: "All", detail: "all operator actions and stopped history" },
   { key: "approvals", label: "Approvals", detail: "approval gates that need a human decision" },
   { key: "blocked", label: "Recovery", detail: "blocked or failed work that can be retried, replanned, or turned into a prompt" },
-  { key: "thunks", label: "Continuations", detail: "waiting prompts that can be resumed by an operator" },
+  { key: "thunks", label: "Human prompts", detail: "questions or decisions that need an operator" },
   { key: "cancelled", label: "Stopped", detail: "stopped work kept as read-only history" },
 ];
 const queueGroupLabels: Record<QueueGroup, string> = {
   approvals: "Approvals",
   blocked: "Recovery",
-  thunks: "Continuations",
+  thunks: "Human prompts",
   cancelled: "Stopped history",
 };
 const queueGroupOrder: QueueGroup[] = ["approvals", "blocked", "thunks", "cancelled"];
@@ -182,7 +182,7 @@ function blockerReason(item: ActionNeededItem): string {
     return item.risk ? `Approval is waiting because risk was classified as ${item.risk}.` : "A human approval gate is waiting.";
   }
   if (isResumableThunkItem(item)) {
-    return "A waiting continuation needs operator input before the task graph can resume.";
+    return "This task needs your input before work can continue.";
   }
   if (status === "waiting-input") {
     return "The task is waiting for input. Create a prompt so the operator can answer.";
@@ -272,8 +272,8 @@ export function nextActionSummary(counts: Map<string, number>, taskCount: number
   }
   if (continuations > 0) {
     return {
-      title: "Resume waiting continuation",
-      detail: `${continuations} waiting continuations can accept operator input.`,
+      title: "Answer human prompt",
+      detail: `${continuations} waiting prompts can accept operator input.`,
       state: "waiting",
       stateLabel: "Waiting",
     };
@@ -699,13 +699,13 @@ export function ContinuationQueue({ goalId, snapshot }: { goalId: string; snapsh
   });
 
   if (!rows.length) {
-    return <EmptyState title="Continuations clear" detail="Waiting tasks will appear here." />;
+    return <EmptyState title="Human prompts clear" detail="Tasks that need your input will appear here." />;
   }
 
   return (
-    <div className="continuation-list" aria-label="Continuations">
+    <div className="continuation-list" aria-label="Human prompts">
       <div className="section-heading">
-        <h3>Continuations</h3>
+        <h3>Human prompts</h3>
         <span className="muted-small">{rows.length} waiting</span>
       </div>
       {rows.map((row) => {
@@ -979,7 +979,7 @@ export function HumanPromptCard(props: {
             type="button"
             className="danger-button"
             disabled={cancelDisabled}
-            title="Stop the durable goal. This is not a local clear action."
+            title="Cancel this goal."
             onClick={() => props.onAction(props.item, context, "cancel-goal")}
           >
             <XCircle size={15} />

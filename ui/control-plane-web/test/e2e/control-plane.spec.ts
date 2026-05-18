@@ -31,42 +31,37 @@ test.describe("COAT control-plane browser flows", () => {
 
     await page.goto("/");
     await expectNoAmbiguousLaneCopy(page);
-    await expect(page.locator(".outcome-meta")).toContainText("Assistant");
     await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
-    await expect(page.locator(".outcome-meta")).toContainText("History: Workspace chat");
+    await expect(page.locator(".outcome-meta")).toContainText("Ask");
     await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
     await expectNoCriticalOrSeriousAxeViolations(page, "initial operator console");
 
     await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Ask" })).toHaveClass(/active/);
-    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft plan" })).toBeVisible();
-    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Search" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Plan" })).toBeVisible();
+    await expect(page.locator("summary").filter({ hasText: "Search" })).toBeVisible();
     await sendComposerMessage(page, "What is blocked and what should I do next?");
     await expect(page.getByText("The selected goal has one action needed item.")).toBeVisible();
-    await expect(page.locator(".draft-review-dock")).toBeHidden();
     await expect(page.getByText("Goal draft ready", { exact: true })).toHaveCount(0);
 
     await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, "Discard this browser E2E goal draft after review.");
 
     await expect(page.locator(".outcome-meta")).toContainText("Draft: Goal draft");
-    await expect(page.locator(".draft-review-dock")).toContainText("Submitted browser E2E task");
+    await expect(page.locator(".goal-draft-editor")).toContainText("Submitted browser E2E task");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Review draft" })).toHaveCount(0);
-    await expect(page.locator(".draft-summary-card")).toContainText("Submitted browser E2E task");
-    await expect(page.locator(".draft-summary-card")).toContainText("Ref browser-e2e");
-    await expect(page.locator(".draft-summary-card")).not.toContainText("fixture://drafts/browser-e2e");
-    await expect(page.locator(".draft-summary-card")).toContainText("2 evidence items");
-    await expect(page.locator(".draft-summary-card")).toContainText("1 constraint");
+    await expect(page.locator(".goal-draft-editor")).toContainText("2 evidence items");
+    await expect(page.locator(".goal-draft-editor")).toContainText("1 constraint");
     await expectNoCliCoverageOrDebugInventory(page);
     await expect(page.getByText("acceptance_evidence")).toHaveCount(0);
-    await page.getByLabel("Active draft").getByRole("button", { name: "Discard draft" }).click();
-    await expect(page.locator(".draft-review-dock")).toBeHidden();
+    await page.getByLabel("Draft actions").getByRole("button", { name: "Discard draft" }).click();
+    await expect(page.locator(".goal-draft-editor")).toBeHidden();
 
     await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, "Submit browser E2E task with deterministic mocked gateway evidence.");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
     const draftEditor = page.locator(".goal-draft-editor");
-    await expect(draftEditor).toContainText("Draft ready");
+    await expect(draftEditor).toContainText("Goal draft ready");
     await draftEditor.getByLabel("Objective").fill("Edited browser E2E task with deterministic mocked gateway evidence.");
     await page.getByLabel("Draft actions").getByRole("button", { name: "Accept draft" }).click();
 
@@ -74,8 +69,8 @@ test.describe("COAT control-plane browser flows", () => {
     await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(1);
     await expect(page.locator(".outcome-meta")).toContainText("Context: Submitted browser E2E task");
-    await expect(page.locator(".draft-review-dock")).toBeHidden();
-    await expect(page.getByText("Submitted goal is syncing")).toBeVisible();
+    await expect(page.locator(".goal-draft-editor")).toBeHidden();
+    await expect(page.getByText("Goal submitted")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Work graph", exact: true })).toBeVisible();
     await expect(page.getByText(submittedGoal, { exact: true })).toHaveCount(0);
     await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E task");
@@ -87,8 +82,8 @@ test.describe("COAT control-plane browser flows", () => {
       window.history.pushState({}, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, selectedGoalStorageKey);
-    await expect(page.locator(".outcome-meta")).toContainText("History: Workspace chat");
-    await expect(page.locator(".draft-review-dock")).toBeHidden();
+    await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
+    await expect(page.locator(".goal-draft-editor")).toBeHidden();
     expect(state.submittedGoalSpec?.objective).toContain("Edited browser E2E task");
   });
 
@@ -97,7 +92,7 @@ test.describe("COAT control-plane browser flows", () => {
 
     await page.goto(`/?goal=${goalA}`);
     await expect(page.locator(".outcome-meta")).toContainText("Context: Baseline durable goal");
-    await expect(page.locator(".outcome-meta")).toContainText("History: Selected goal chat");
+    await expect(page.locator(".outcome-meta")).toContainText("Ask");
     await openPrimaryNav(page, "Work Graph");
     await expect(subgoalCard(page, "Coordinator truth boundary")).toBeVisible();
 
@@ -147,9 +142,9 @@ test.describe("COAT control-plane browser flows", () => {
     await page.keyboard.press("Enter");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
-    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Operator Actions", exact: true }).focus();
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Steer", exact: true }).focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Steer" })).toBeVisible();
     await expectNoAdvancedControlInventory(page);
     const reviewEvidence = page.getByTestId("primary-review-evidence");
     await reviewEvidence.focus();
@@ -180,8 +175,8 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.locator(".evidence-next-panel")).toContainText("1 continuations");
     await expect(page.getByLabel("Why blocked")).toContainText("continuation Ref thunk-approval-1");
 
-    await openPrimaryNav(page, "Action Queue");
-    await expect(page.getByRole("heading", { level: 1, name: "Action Queue" })).toBeVisible();
+    await openPrimaryNav(page, "Actions");
+    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
     await expect(page.locator(".approval-list")).toContainText("Review action-needed thunk");
     await expect(page.locator(".approval-list")).toContainText("Action needed: approve sandbox profile");
     const approvalCard = page.locator(".approval-card").filter({ hasText: "sandbox profile approval" }).first();
@@ -207,8 +202,8 @@ test.describe("COAT control-plane browser flows", () => {
     expect(continueAction?.body.thunk_id).toBe("thunk-approval-1");
     expect(continueAction?.body.response_summary).toBe("Operator chose Continue.");
 
-    await openPrimaryNav(page, "Operator Actions");
-    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
+    await openPrimaryNav(page, "Steer");
+    await expect(page.getByRole("heading", { level: 1, name: "Steer" })).toBeVisible();
     await expectNoAdvancedControlInventory(page);
     await expect(page.getByRole("button", { name: "Review evidence" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Research gap" })).toBeVisible();
@@ -219,12 +214,12 @@ test.describe("COAT control-plane browser flows", () => {
     const state = await installGatewayFixtures(page);
 
     await page.goto(`/?goal=${goalA}`);
-    await openPrimaryNav(page, "Action Queue");
+    await openPrimaryNav(page, "Actions");
     await expect(page.locator(".approval-card").filter({ hasText: "Action needed: approve sandbox profile" }).first()).toBeVisible();
 
     await page.locator(".goal-context-cancel").click();
     await expect.poll(() => state.actions.some((action) => action.handler === "cancel")).toBe(true);
-    await openPrimaryNav(page, "Action Queue");
+    await openPrimaryNav(page, "Actions");
     await expect(page.locator(".approval-card")).toHaveCount(0);
     await expect(page.getByText("Cancelled task retained for operator queue history.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve and continue" })).toHaveCount(0);
@@ -242,8 +237,8 @@ test.describe("COAT control-plane browser flows", () => {
     await expectNoAdvancedControlInventory(page);
     await expectNoCliCoverageOrDebugInventory(page);
 
-    await openPrimaryNav(page, "Operator Actions");
-    await expect(page.getByRole("heading", { level: 1, name: "Actions" })).toBeVisible();
+    await openPrimaryNav(page, "Steer");
+    await expect(page.getByRole("heading", { level: 1, name: "Steer" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Review evidence" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Research gap" })).toBeVisible();
     await expectNoAdvancedControlInventory(page);
@@ -893,7 +888,7 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
       provider: "fixture",
       model: null,
       mode: "ask",
-      assistant: "The selected goal has one action needed item. Open Action Queue to continue, add context, replan, or cancel.",
+      assistant: "The selected goal has one action needed item. Open Actions to continue, add context, replan, or cancel.",
       session_id: body.session_id,
       run_id: body.run_id,
       chat_run: { run_id: body.run_id, status: "done", stage: "fixture" },

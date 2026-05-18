@@ -60,7 +60,7 @@ export const statusLegend = [
   { token: "failed", label: "Action needed", detail: "failed task" },
   { token: "blocked", label: "Action needed", detail: "blocked task" },
   { token: "waiting-approval", label: "Action needed", detail: "approval gate" },
-  { token: "waiting-input", label: "Waiting", detail: "waiting continuation" },
+  { token: "waiting-input", label: "Waiting", detail: "human prompt" },
   { token: "running", label: "Running", detail: "agent is active" },
   { token: "needs-validation", label: "Reviewing", detail: "evidence check" },
   { token: "runnable", label: "Running", detail: "ready frontier" },

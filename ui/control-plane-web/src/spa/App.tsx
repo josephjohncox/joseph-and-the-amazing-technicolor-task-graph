@@ -43,18 +43,15 @@ import type { ChatMessage, ChatRunTrace, GoalRow } from "./types";
 import { EmptyState, InspectButton } from "./components/operator-primitives";
 import {
   ChatDraftPanel,
-  draftKindLabel,
-  draftReviewSummary,
   goalDraftFromChatResponse,
   goalIdFromSubmitResponse,
   modeForDraftKind,
-  sessionDisplayLabel,
   updateGoalDraftField,
   type ActiveDraftState,
   type DraftKind,
   type GoalDraftEditField,
 } from "./features/chat-draft-panel";
-import { ActiveGoalRuntimeBar, DraftReviewDock, type ActiveRuntimeViewModel, type DraftDockViewModel } from "./features/operator-runtime";
+import { ActiveGoalRuntimeBar, type ActiveRuntimeViewModel } from "./features/operator-runtime";
 import {
   GoalContextBar,
   GoalsView,
@@ -81,7 +78,6 @@ import { TaskGraphView } from "./features/task-graph-view";
 import { MemoryView } from "./features/memory-view";
 import {
   createRunId,
-  friendlyRef,
   statusToken,
   stringValue,
 } from "./features/workbench-format";
@@ -98,20 +94,19 @@ const themeColors: Record<ResolvedTheme, string> = {
 };
 const views: Array<{ key: ViewKey; label: string; icon: typeof Route }> = [
   { key: "dashboard", label: "Dashboard", icon: Route },
+  { key: "plans", label: "Plans", icon: GitBranch },
   { key: "goals", label: "Goals", icon: ListChecks },
   { key: "graph", label: "Work Graph", icon: Network },
-  { key: "control", label: "Operator Actions", icon: ShieldCheck },
+  { key: "human", label: "Actions", icon: Bell },
+  { key: "control", label: "Steer", icon: ShieldCheck },
   { key: "memory", label: "Memory", icon: Brain },
-  { key: "plans", label: "Plans", icon: GitBranch },
-  { key: "human", label: "Action Queue", icon: Bell },
   { key: "runners", label: "Runners", icon: Server },
 ];
 
 const starterMessages: ChatMessage[] = [
   {
     role: "assistant",
-    content:
-      "Ask about the workspace, or switch to Draft goal when you want to create coordinator-owned work.",
+    content: "Ask about the workspace, draft a plan, or create a goal.",
   },
 ];
 
@@ -266,13 +261,6 @@ export function App() {
     submitGoalDraft.reset();
     sendChat.mutate(content);
   };
-  const focusActiveDraftEditor = () => {
-    setActiveView("dashboard");
-    window.requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(".goal-draft-editor input, .goal-draft-editor textarea")?.focus();
-      document.querySelector<HTMLElement>(".goal-draft-editor")?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-  };
   const discardActiveGoalDraft = () => {
     setActiveDraft(null);
     sendChat.reset();
@@ -405,24 +393,6 @@ export function App() {
       actionBusy: submitGoalDraft.isPending,
     };
   }, [currentGoal, goalStream.error, goalStream.lastEventAt, goalStream.status, selectedGoal, submitGoalDraft.isPending]);
-  const activeDraftView = useMemo<DraftDockViewModel | null>(() => {
-    if (!visibleActiveDraft) {
-      return null;
-    }
-    const summary = draftReviewSummary(visibleActiveDraft.response, latestGoalDraft);
-    const submittedGoalId = goalIdFromSubmitResponse(submitGoalDraft.data?.response);
-    return {
-      title: summary.title,
-      detail: summary.objective || summary.summary,
-      kindLabel: draftKindLabel(visibleActiveDraft.kind),
-      sessionLabel: visibleActiveDraft.sessionId ? sessionDisplayLabel(visibleActiveDraft.sessionId) : "",
-      hasGoalDraft: Boolean(latestGoalDraft),
-      submittedGoalLabel: submittedGoalId ? friendlyRef(submittedGoalId) : "",
-      busy: submitGoalDraft.isPending,
-      errorMessage: (submitGoalDraft.error as Error | null)?.message ?? "",
-    };
-  }, [latestGoalDraft, submitGoalDraft.data?.response, submitGoalDraft.error, submitGoalDraft.isPending, visibleActiveDraft]);
-
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -476,7 +446,7 @@ export function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="topbar-title">
-            <p className="eyebrow">User-facing manager</p>
+            <p className="eyebrow">Workspace</p>
             <h1>{titleFor(activeView)}</h1>
           </div>
           <GoalContextBar
@@ -504,15 +474,6 @@ export function App() {
           onOpenQueue={() => setActiveView("human")}
           onOpenControls={() => setActiveView("control")}
         />
-        {activeDraftView && (
-          <DraftReviewDock
-            view={activeDraftView}
-            onEditGoalDraft={focusActiveDraftEditor}
-            onSubmitGoalDraft={() => submitGoalDraft.mutate()}
-            onDiscardGoalDraft={discardActiveGoalDraft}
-          />
-        )}
-
         <section className="content-grid">
           {activeView === "dashboard" && (
             <Dashboard
@@ -734,10 +695,10 @@ function titleFor(view: ViewKey): string {
     dashboard: "Overview",
     goals: "Goals",
     graph: "Work Graph",
-    control: "Actions",
+    control: "Steer",
     memory: "Shared Memory",
     plans: "Durable Plans",
-    human: "Action Queue",
+    human: "Actions",
     runners: "Runner Fleet",
   }[view];
 }

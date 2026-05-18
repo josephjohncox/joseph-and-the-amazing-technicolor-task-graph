@@ -1081,11 +1081,27 @@ Recorded 2026-05-15:
 
 ## Follow-Ups
 
-2026-05-18 completion triage: no active follow-ups remain in this plan. The
-remaining proof ideas require external infrastructure, credentials, or a
-selected observability/storage target and are tracked below as deferred gated
-proofs. `coat plan follow-ups` should return zero for this plan until one of
-those gates is explicitly activated.
+2026-05-18 operator workflow review reopened one active internal follow-up:
+
+- [ ] Durable plan/draft manager contract:
+  - Persist chat-created plan drafts through the existing `/api/plans` /
+    goal-store plan surface instead of keeping plan drafts as transient chat
+    payloads.
+  - Persist goal drafts through goal-store-backed draft records rather than the
+    control gateway process-local map, so accept/discard works after restart
+    and across nodes.
+  - Make the primary authoring flow `Ask -> Plan -> Draft goal -> Accept draft
+    -> Goal selected -> Work graph -> Actions/Evidence -> Satisfied`.
+  - Surface selected-goal draft scopes explicitly: new goal, plan for selected
+    goal, add subgoal, steer selected goal, or research request.
+  - Add typed operator action resolution payloads for accept/discard/revise,
+    and make draft refs match exactly when resolving action-queue rows.
+  - Add scenario and browser/TUI tests for plan-first drafting, selected-goal
+    draft scope, accept/edit/discard/submit, and queue updates after action
+    resolution.
+  - Completion criteria: SPA, TUI, MCP, and scenario runner can all manage the
+    same durable draft/plan records without raw JSON or in-memory-only draft
+    recovery.
 
 ## Deferred Or Deprecated Follow-Ups
 

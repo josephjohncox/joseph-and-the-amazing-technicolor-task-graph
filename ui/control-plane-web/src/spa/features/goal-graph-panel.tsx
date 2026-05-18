@@ -103,7 +103,7 @@ export function GoalContextBar(props: {
             type="button"
             className="danger-button goal-context-cancel"
             disabled={props.cancelBusy}
-            title="Stop this durable goal through the coordinator."
+            title="Cancel this goal."
             onClick={props.onCancelGoal}
           >
             <XCircle size={15} />
@@ -165,7 +165,7 @@ export function GoalContextBar(props: {
                   type="button"
                   className="danger-button"
                   disabled={!canCancelSelectedGoal || props.cancelBusy}
-                  title="Stop this durable goal through the coordinator."
+                  title="Cancel this goal."
                   onClick={props.onCancelGoal}
                 >
                   <XCircle size={15} />
@@ -237,7 +237,7 @@ export function GoalList({ goals, selectedGoalId, onSelect }: { goals: GoalRow[]
               <span><strong>{done}%</strong><small>complete</small></span>
               <span><strong>{openTasks}</strong><small>open</small></span>
               <span className={blockedTasks || failedTasks ? "attention" : ""}><strong>{blockedTasks + failedTasks}</strong><small>blocked or failed</small></span>
-              <span><strong>{statusLabel(status)}</strong><small>backend status</small></span>
+              <span><strong>{statusLabel(status)}</strong><small>state</small></span>
             </div>
             <div className="goal-next-row">
               <span>{nextAction}</span>

@@ -91,6 +91,7 @@ impl TuiFocus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DashboardView {
     Overview,
+    Plans,
     Goals,
     Graph,
     Actions,
@@ -105,10 +106,10 @@ enum DashboardView {
 impl DashboardView {
     const ALL: [Self; 10] = [
         Self::Overview,
+        Self::Plans,
         Self::Goals,
         Self::Graph,
         Self::Actions,
-        Self::Approvals,
         Self::Events,
         Self::Workers,
         Self::Evidence,
@@ -129,9 +130,10 @@ impl DashboardView {
     fn index(self) -> usize {
         match self {
             Self::Overview => 0,
-            Self::Goals => 1,
-            Self::Graph => 2,
-            Self::Actions => 3,
+            Self::Plans => 1,
+            Self::Goals => 2,
+            Self::Graph => 3,
+            Self::Actions => 4,
             Self::Approvals => 4,
             Self::Events => 5,
             Self::Workers => 6,
@@ -144,6 +146,7 @@ impl DashboardView {
     fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
+            Self::Plans => "Plans",
             Self::Goals => "Goals",
             Self::Graph => "Graph",
             Self::Actions => "Actions",
@@ -159,9 +162,10 @@ impl DashboardView {
     fn key_hint(self) -> &'static str {
         match self {
             Self::Overview => "1",
-            Self::Goals => "2",
-            Self::Graph => "3",
-            Self::Actions => "4",
+            Self::Plans => "2",
+            Self::Goals => "3",
+            Self::Graph => "4",
+            Self::Actions => "5",
             Self::Approvals => "5",
             Self::Events => "6",
             Self::Workers => "7",
@@ -227,8 +231,8 @@ impl ChatMode {
 
     fn label(self) -> &'static str {
         match self {
-            Self::General => "general",
-            Self::Goal => "goal",
+            Self::General => "ask",
+            Self::Goal => "draft goal",
             Self::Plan => "plan",
             Self::Search => "search",
         }
@@ -342,15 +346,19 @@ struct ActionResultSummary {
 impl GoalDraftSummary {
     fn chat_preview(&self) -> String {
         format!(
-            "Goal draft ready.\nTitle: {}\nObjective: {}\nInitial tasks: {}\nDone criteria: {}\nAccept this exact draft with F5 or Ctrl-G.",
+            "Goal draft ready.\nTitle: {}\nObjective: {}\nWork items: {}\nEvidence: {}\nF5 or Ctrl-G submits this goal. Ctrl-D discards it.",
             self.title, self.objective, self.initial_tasks, self.done_criteria
         )
     }
 
     fn submit_confirmation(&self, goal_id: &str) -> String {
         format!(
-            "Accepted draft and submitted goal to the coordinator.\ngoal_id: {goal_id}\ntitle: {}\nobjective: {}\ninitial_tasks: {}\ndone_criteria: {}",
-            self.title, self.objective, self.initial_tasks, self.done_criteria
+            "Goal submitted and selected.\nReference: {}\nTitle: {}\nObjective: {}\nWork items: {}\nEvidence: {}",
+            short_id(goal_id),
+            self.title,
+            self.objective,
+            self.initial_tasks,
+            self.done_criteria
         )
     }
 }
@@ -542,7 +550,7 @@ impl App {
         if self.messages.is_empty() {
             self.messages.push(ChatLine {
                 role: "assistant".to_string(),
-                content: "COAT terminal chat is connected to the control gateway. Type a request and press Enter.".to_string(),
+                content: "Ask about the workspace, draft a plan, or create a goal. Ctrl-S or Ctrl-Enter sends chat; Enter acts on the focused panel.".to_string(),
             });
         }
         Ok(())
@@ -644,12 +652,12 @@ impl App {
                         content: draft.summary.chat_preview(),
                     });
                     self.status = format!(
-                        "{}; goal draft ready, review dashboard or chat, F5/Ctrl-G accept, Ctrl-D discard",
+                        "{}; goal draft ready, F5/Ctrl-G submit, Ctrl-D discard",
                         chat_status(&value)
                     );
                 } else if self.active_goal_draft.is_some() {
                     self.status = format!(
-                        "{}; active goal draft still available, F5/Ctrl-G accept, Ctrl-D discard",
+                        "{}; goal draft still available, F5/Ctrl-G submit, Ctrl-D discard",
                         chat_status(&value)
                     );
                 } else {
@@ -686,12 +694,11 @@ impl App {
             || draft.selected_goal_id != self.selected_goal_id
         {
             self.status =
-                "active goal draft belongs to another chat context; switch back or discard it"
-                    .to_string();
+                "goal draft belongs to another chat context; switch back or discard it".to_string();
             return Ok(());
         }
 
-        self.status = "accepting active goal draft with coordinator".to_string();
+        self.status = "submitting goal draft".to_string();
         self.busy = true;
         self.pending_request = Some(PendingGatewayRequest {
             kind: PendingRequestKind::GoalSubmit {
@@ -723,13 +730,16 @@ impl App {
                     .as_ref()
                     .map(|summary| summary.submit_confirmation(&goal_id))
                     .unwrap_or_else(|| {
-                        format!("Accepted draft and submitted goal to the coordinator.\ngoal_id: {goal_id}")
+                        format!(
+                            "Goal submitted and selected.\nReference: {}",
+                            short_id(&goal_id)
+                        )
                     });
                 if goal_id != "assigned by coordinator" {
                     self.selected_goal_id = Some(goal_id.clone());
                 }
                 self.active_goal_draft = None;
-                let mut status = format!("goal submitted: {goal_id}");
+                let mut status = format!("goal submitted: {}", short_id(&goal_id));
                 if let Err(error) = self.refresh_dashboard().await {
                     status = format!("goal submitted, dashboard refresh failed: {error}");
                 } else if let Err(error) = self.load_chat_session().await {
@@ -759,12 +769,12 @@ impl App {
         if self.active_goal_draft.take().is_some() {
             self.messages.push(ChatLine {
                 role: "assistant".to_string(),
-                content: "Active goal draft discarded.".to_string(),
+                content: "Goal draft discarded.".to_string(),
             });
             self.chat_scroll_from_bottom = 0;
-            self.status = "active goal draft discarded".to_string();
+            self.status = "goal draft discarded".to_string();
         } else {
-            self.status = "no active goal draft to discard".to_string();
+            self.status = "no goal draft to discard".to_string();
         }
     }
 
@@ -1189,7 +1199,7 @@ impl App {
             }
             TuiFocus::Dashboard if self.active_goal_draft.is_some() => {
                 self.status =
-                    "active draft is visible; press F5 or Ctrl-G to submit, Ctrl-D to discard"
+                    "goal draft is visible; press F5 or Ctrl-G to submit, Ctrl-D to discard"
                         .to_string();
                 Ok(())
             }
@@ -1286,19 +1296,19 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             Ok(false)
         }
         KeyCode::Char('2') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Goals);
+            app.select_dashboard_view(DashboardView::Plans);
             Ok(false)
         }
         KeyCode::Char('3') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Graph);
+            app.select_dashboard_view(DashboardView::Goals);
             Ok(false)
         }
         KeyCode::Char('4') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Actions);
+            app.select_dashboard_view(DashboardView::Graph);
             Ok(false)
         }
         KeyCode::Char('5') if app.focus == TuiFocus::Dashboard => {
-            app.select_dashboard_view(DashboardView::Approvals);
+            app.select_dashboard_view(DashboardView::Actions);
             Ok(false)
         }
         KeyCode::Char('6') if app.focus == TuiFocus::Dashboard => {
@@ -1568,7 +1578,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" terminal control plane  "),
+        Span::raw(" terminal workspace  "),
         Span::styled(
             app.config.control_gateway_url.as_str(),
             Style::default().fg(Color::DarkGray),
@@ -1630,6 +1640,7 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     let lines = match app.dashboard_view {
         DashboardView::Overview => overview_dashboard_lines(app, chunks[1].width),
+        DashboardView::Plans => plans_dashboard_lines(app, chunks[1].width),
         DashboardView::Goals => goals_dashboard_lines(app, chunks[1].width),
         DashboardView::Graph => graph_dashboard_lines(app, chunks[1].width),
         DashboardView::Actions => actions_dashboard_lines(app, chunks[1].width),
@@ -1652,7 +1663,29 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn overview_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let dashboard = &app.dashboard;
-    let mut lines = vec![
+    let mut lines = Vec::new();
+    lines.extend(current_goal_lines(
+        app.selected_goal(),
+        app.selected_goal_id.as_deref(),
+        width,
+    ));
+    if let Some(draft) = app.active_goal_draft.as_ref() {
+        lines.extend(goal_draft_dashboard_lines(&draft.summary, width));
+    }
+    lines.extend(selected_goal_outline_lines(
+        &app.selected_goal_outline,
+        width,
+    ));
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "workspace",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.extend([
         Line::from(vec![
             Span::raw("services "),
             Span::styled(
@@ -1677,18 +1710,48 @@ fn overview_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 Style::default().fg(Color::Cyan),
             ),
         ]),
+    ]);
+    lines
+}
+
+fn plans_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(14).max(20) as usize;
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "plans",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from("Start here: ask, draft a plan, then submit a goal when the plan is clear."),
+        Line::from("Ctrl-T changes chat mode. Ctrl-S sends. F5 submits a visible goal draft."),
+        Line::from(""),
     ];
-    lines.extend(current_goal_lines(
-        app.selected_goal(),
-        app.selected_goal_id.as_deref(),
-        width,
-    ));
-    lines.extend(selected_goal_outline_lines(
-        &app.selected_goal_outline,
-        width,
-    ));
     if let Some(draft) = app.active_goal_draft.as_ref() {
         lines.extend(goal_draft_dashboard_lines(&draft.summary, width));
+        return lines;
+    }
+    lines.push(Line::from(format!(
+        "saved plans {}",
+        app.dashboard.plans_count
+    )));
+    lines.push(dashboard_value_line(
+        "next",
+        "Use chat Plan mode for a planning draft, then Draft goal when ready.",
+        value_width,
+    ));
+    if let Some(goal) = app.selected_goal() {
+        lines.push(dashboard_value_line(
+            "context",
+            &format!("planning against {}", goal.title),
+            value_width,
+        ));
+    } else {
+        lines.push(dashboard_value_line(
+            "context",
+            "workspace planning",
+            value_width,
+        ));
     }
     lines
 }
@@ -1822,7 +1885,7 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     };
     let mut lines = vec![
         Line::from(Span::styled(
-            "operator actions",
+            "actions",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1837,7 +1900,7 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             "Up/Down selects. Enter/a runs action. r rejects approval gates. Alt-R restarts. Ctrl-X cancels.",
         ),
         Line::from(
-            "Human prompts: empty input = Continue; typed input = Add context/answer. Ctrl-L clears local results.",
+            "Human prompts: Enter continues; type a note first to add context. Ctrl-L clears local results.",
         ),
         Line::from(""),
     ];
@@ -1846,7 +1909,7 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
     if approvals.is_empty() {
-        lines.push(Line::from("No operator actions are waiting."));
+        lines.push(Line::from("Actions are clear."));
         return lines;
     }
     for (index, approval) in approvals.iter().enumerate() {
@@ -2266,7 +2329,7 @@ fn debug_dashboard_lines(width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(16).max(24) as usize;
     let mut lines = vec![
         Line::from(Span::styled(
-            "debug",
+            "inspect",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -2535,7 +2598,7 @@ fn render_chat(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     if app.busy {
         lines.push(Line::from(Span::styled(
-            "generating with control gateway...",
+            "generating...",
             Style::default().fg(Color::Magenta),
         )));
     }
@@ -2707,7 +2770,7 @@ fn chat_context_label(app: &App) -> String {
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter/a apply  r reject approval  Ctrl-S/Ctrl-Enter send chat  F5/Ctrl-G accept draft  Ctrl-D discard  Alt-R restart  Ctrl-X cancel  Ctrl-R refresh  Esc quit",
+            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter acts  Ctrl-S sends chat  F5 submits draft  Ctrl-D discards  Ctrl-N/P goals  Ctrl-X cancels  Ctrl-R refreshes  Esc quits",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -3680,7 +3743,7 @@ fn chat_backend_label(config: &Value) -> String {
 }
 
 fn goal_label(value: &GoalSummary) -> String {
-    format!("{} [{}] {}", value.title, value.status, short_id(&value.id))
+    format!("{} [{}]", value.title, value.status)
 }
 
 fn current_goal_lines(
@@ -3702,7 +3765,7 @@ fn current_goal_lines(
         Some(goal) => {
             lines.push(dashboard_value_line("title", &goal.title, value_width));
             lines.push(Line::from(format!(
-                "status     {} {}% open:{} blocked:{}",
+                "state      {} {}% open:{} blocked:{}",
                 goal.status,
                 (goal.progress * 100.0).round() as u64,
                 goal.open_tasks,
@@ -3726,9 +3789,8 @@ fn current_goal_lines(
             if let Some(next_task) = goal.next_task.as_deref() {
                 lines.push(dashboard_value_line("next", next_task, value_width));
             }
-            lines.push(dashboard_value_line("id", &short_id(&goal.id), value_width));
             lines.push(Line::from(
-                "controls   Ctrl-X arm/cancel, Ctrl-O clear selection",
+                "controls   Enter opens graph, Ctrl-X cancels, Ctrl-O clears",
             ));
         }
         None if let Some(goal_id) = selected_goal_id => {
@@ -3738,9 +3800,7 @@ fn current_goal_lines(
                 value_width,
             ));
             lines.push(Line::from("status     loading projection"));
-            lines.push(Line::from(
-                "controls   Ctrl-X arm/cancel, Ctrl-O clear selection",
-            ));
+            lines.push(Line::from("controls   Ctrl-X cancels, Ctrl-O clears"));
         }
         None => {
             lines.push(Line::from("select     Ctrl-N / Ctrl-P"));
@@ -4919,6 +4979,7 @@ fn durable_chat_lines(messages: &[ChatLine]) -> Vec<ChatLine> {
                 && !message
                     .content
                     .starts_with("Accepted draft and submitted goal to the coordinator.")
+                && !message.content.starts_with("Goal submitted and selected.")
                 && !message.content.starts_with("Goal submit failed:")
         })
         .cloned()
@@ -5043,18 +5104,22 @@ fn goal_draft_dashboard_lines(summary: &GoalDraftSummary, width: u16) -> Vec<Lin
     vec![
         Line::from(""),
         Line::from(Span::styled(
-            "active goal draft",
+            "goal draft",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
         dashboard_value_line("title", &summary.title, value_width),
         dashboard_value_line("objective", &summary.objective, value_width),
-        Line::from(format!("tasks      {}", summary.initial_tasks)),
-        dashboard_value_line("criteria", &summary.done_criteria, value_width),
+        Line::from(format!("work items {}", summary.initial_tasks)),
+        dashboard_value_line("evidence", &summary.done_criteria, value_width),
         Line::from(Span::styled(
-            "accept     F5 or Ctrl-G",
+            "submit     F5 or Ctrl-G",
             Style::default().fg(Color::Green),
+        )),
+        Line::from(Span::styled(
+            "discard    Ctrl-D",
+            Style::default().fg(Color::DarkGray),
         )),
     ]
 }
@@ -5273,7 +5338,7 @@ mod tests {
             summary.chat_backend,
             "runner_registry/openai_compatible/model"
         );
-        assert_eq!(summary.latest_goals, vec!["Ship TUI [running] 018f8f2f"]);
+        assert_eq!(summary.latest_goals, vec!["Ship TUI [running]"]);
     }
 
     #[test]
@@ -5683,20 +5748,20 @@ mod tests {
 
     #[test]
     fn dashboard_views_cycle_and_label_shortcuts() {
-        assert_eq!(DashboardView::Overview.next(), DashboardView::Goals);
+        assert_eq!(DashboardView::Overview.next(), DashboardView::Plans);
+        assert_eq!(DashboardView::Plans.next(), DashboardView::Goals);
         assert_eq!(DashboardView::Goals.next(), DashboardView::Graph);
         assert_eq!(DashboardView::Graph.next(), DashboardView::Actions);
-        assert_eq!(DashboardView::Actions.next(), DashboardView::Approvals);
-        assert_eq!(DashboardView::Approvals.next(), DashboardView::Events);
+        assert_eq!(DashboardView::Actions.next(), DashboardView::Events);
         assert_eq!(DashboardView::Events.next(), DashboardView::Workers);
         assert_eq!(DashboardView::Workers.next(), DashboardView::Evidence);
         assert_eq!(DashboardView::Evidence.next(), DashboardView::Adversarial);
         assert_eq!(DashboardView::Adversarial.next(), DashboardView::Debug);
         assert_eq!(DashboardView::Debug.next(), DashboardView::Overview);
         assert_eq!(DashboardView::Overview.previous(), DashboardView::Debug);
-        assert_eq!(DashboardView::Graph.key_hint(), "3");
-        assert_eq!(DashboardView::Actions.title(), "Actions (4)");
-        assert_eq!(DashboardView::Approvals.title(), "Approvals (5)");
+        assert_eq!(DashboardView::Plans.title(), "Plans (2)");
+        assert_eq!(DashboardView::Graph.key_hint(), "4");
+        assert_eq!(DashboardView::Actions.title(), "Actions (5)");
         assert_eq!(DashboardView::Workers.title(), "Workers (7)");
         assert_eq!(DashboardView::Evidence.title(), "Evidence (8)");
         assert_eq!(DashboardView::Adversarial.title(), "Adversarial (9)");
@@ -6327,7 +6392,7 @@ mod tests {
         assert!(rendered.contains("approval: confirm release window"));
         assert!(rendered.contains("evidence"));
         assert!(rendered.contains("cargo test -p coat-cli tui passed"));
-        assert!(rendered.contains("018f8f2f"));
+        assert!(!rendered.contains("018f8f2f"));
         assert!(!rendered.contains(goal_id));
     }
 
@@ -6429,8 +6494,7 @@ mod tests {
             },
             ChatLine {
                 role: "assistant".to_string(),
-                content: "Accepted draft and submitted goal to the coordinator.\ngoal_id: g1"
-                    .to_string(),
+                content: "Goal submitted and selected.\nReference: g1".to_string(),
             },
         ]);
         let payload = chat_request_payload(
@@ -6907,7 +6971,7 @@ mod tests {
         assert!(
             summary
                 .submit_confirmation("goal-123")
-                .contains("goal_id: goal-123")
+                .contains("Reference: goal-123")
         );
     }
 
@@ -6932,20 +6996,20 @@ mod tests {
         assert_eq!(draft.summary.title, "Review before submit");
         assert_eq!(draft.session_id, "operator:default");
         assert_eq!(draft.selected_goal_id, None);
-        assert!(app.status.contains("F5/Ctrl-G accept"));
+        assert!(app.status.contains("F5/Ctrl-G submit"));
         let rendered = goal_draft_dashboard_lines(&draft.summary, 80)
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("active goal draft"));
+        assert!(rendered.contains("goal draft"));
         assert!(rendered.contains("F5 or Ctrl-G"));
 
         app.finish_chat(Ok(json!({"assistant": "normal follow-up"})))
             .expect("finish normal chat");
         assert!(app.active_goal_draft.is_some());
-        assert!(app.status.contains("active goal draft still available"));
+        assert!(app.status.contains("goal draft still available"));
     }
 
     #[tokio::test]
@@ -7077,7 +7141,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("active goal draft"));
+        assert!(rendered.contains("goal draft"));
         assert!(rendered.contains("title"));
         assert!(rendered.contains("..."));
         assert!(rendered.contains("F5 or Ctrl-G"));

@@ -93,7 +93,7 @@ export function TaskGraphView(props: {
       {!props.goalId ? (
         <EmptyState title="Select a goal" detail="Use the top-bar goal switcher." actionLabel="Choose goal" onAction={props.onOpenGoalPicker} />
       ) : props.loading && !showingSubmittedDraft ? (
-        <EmptyState title="Loading task graph" detail="Fetching operator goal detail and agent activity." />
+        <EmptyState title="Loading task graph" detail="Loading goal state and task activity." />
       ) : taskCount === 0 ? (
         <EmptyState title="Task activity pending" detail="Waiting for the first projected task." />
       ) : graph.nodes.length ? (
@@ -107,7 +107,7 @@ export function TaskGraphView(props: {
       ) : (
         <EmptyState title="Filter has no matches" detail="Try another task state." />
       )}
-      {showingSubmittedDraft && <EmptyState title="Submitted goal is syncing" detail="Draft tasks are visible while projection catches up." />}
+      {showingSubmittedDraft && <EmptyState title="Goal submitted" detail="Draft tasks are visible while goal state catches up." />}
       {subgoals.length > 0 && <SubgoalPlanPanel subgoals={subgoals} source={showingSubmittedDraft ? "submitted draft" : "goal projection"} />}
       {props.snapshot && (
         <>

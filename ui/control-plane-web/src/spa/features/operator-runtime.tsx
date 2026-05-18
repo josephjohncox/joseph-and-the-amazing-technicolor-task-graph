@@ -1,7 +1,5 @@
 import clsx from "clsx";
-import { Bell, ListChecks, Network, ShieldCheck, XCircle } from "lucide-react";
-
-import { Button } from "../components/ui/button";
+import { Bell, Network, ShieldCheck } from "lucide-react";
 
 export type ActiveRuntimeViewModel = {
   stateLabel: string;
@@ -65,60 +63,6 @@ export function ActiveGoalRuntimeBar(props: {
         </button>
       </div>
       {props.view.streamError && <span className="error-text">{props.view.streamError}</span>}
-    </section>
-  );
-}
-
-export type DraftDockViewModel = {
-  title: string;
-  detail: string;
-  kindLabel: string;
-  sessionLabel: string;
-  hasGoalDraft: boolean;
-  submittedGoalLabel: string;
-  busy: boolean;
-  errorMessage: string;
-};
-
-export function DraftReviewDock(props: {
-  view: DraftDockViewModel;
-  onEditGoalDraft: () => void;
-  onSubmitGoalDraft: () => void;
-  onDiscardGoalDraft: () => void;
-}) {
-  const accepted = Boolean(props.view.submittedGoalLabel);
-  return (
-    <section className="draft-review-dock" aria-label="Active draft">
-      <div>
-        <span className="goal-context-kicker">Draft</span>
-        <strong>{props.view.title}</strong>
-        <small>{props.view.detail}</small>
-      </div>
-      <div className="draft-summary-meta">
-        <span className="status-pill status-runnable">{props.view.kindLabel}</span>
-        {props.view.hasGoalDraft && <span className="status-pill status-runnable">Goal draft ready</span>}
-        {props.view.sessionLabel && <span className="status-pill muted">{props.view.sessionLabel}</span>}
-        {props.view.submittedGoalLabel && <span className="status-pill status-done">Accepted {props.view.submittedGoalLabel}</span>}
-      </div>
-      <div className="button-row">
-        {props.view.hasGoalDraft && (
-          <Button type="button" variant="outline" disabled={props.view.busy} onClick={props.onEditGoalDraft}>
-            <Bell size={15} />
-            Edit draft
-          </Button>
-        )}
-        <Button type="button" variant="outline" disabled={props.view.busy || accepted} onClick={props.onDiscardGoalDraft}>
-          <XCircle size={15} />
-          Discard draft
-        </Button>
-        {props.view.hasGoalDraft && (
-          <Button type="button" disabled={props.view.busy || accepted} onClick={props.onSubmitGoalDraft}>
-            <ListChecks size={15} />
-            {accepted ? "Accepted" : props.view.busy ? "Submitting" : "Accept draft"}
-          </Button>
-        )}
-      </div>
-      {props.view.errorMessage && <span className="error-text">{props.view.errorMessage}</span>}
     </section>
   );
 }

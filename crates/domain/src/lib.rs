@@ -1617,6 +1617,143 @@ pub enum PlanStatus {
     Archived,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanPhase {
+    Asking,
+    DraftingPlan,
+    DraftingGoals,
+    Accepting,
+    Executing,
+    Reviewing,
+    Satisfied,
+    Cancelled,
+}
+
+impl Default for PlanPhase {
+    fn default() -> Self {
+        Self::Asking
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanActionKind {
+    AnswerQuestion,
+    ReviewPlanDraft,
+    AcceptPlanDraft,
+    DraftGoal,
+    ReviewGoalDraft,
+    AcceptGoalIntoPlan,
+    SubmitGoal,
+    ResolveHumanPrompt,
+    Approve,
+    Retry,
+    Replan,
+    Cancel,
+    ReviewEvidence,
+    ConfirmSatisfaction,
+}
+
+impl PlanActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AnswerQuestion => "answer_question",
+            Self::ReviewPlanDraft => "review_plan_draft",
+            Self::AcceptPlanDraft => "accept_plan_draft",
+            Self::DraftGoal => "draft_goal",
+            Self::ReviewGoalDraft => "review_goal_draft",
+            Self::AcceptGoalIntoPlan => "accept_goal_into_plan",
+            Self::SubmitGoal => "submit_goal",
+            Self::ResolveHumanPrompt => "resolve_human_prompt",
+            Self::Approve => "approve",
+            Self::Retry => "retry",
+            Self::Replan => "replan",
+            Self::Cancel => "cancel",
+            Self::ReviewEvidence => "review_evidence",
+            Self::ConfirmSatisfaction => "confirm_satisfaction",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanActionStatus {
+    Pending,
+    Completed,
+    Dismissed,
+}
+
+impl Default for PlanActionStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanActionItem {
+    pub action_id: String,
+    pub plan_id: PlanId,
+    pub goal_id: Option<GoalId>,
+    pub task_id: Option<TaskId>,
+    pub kind: PlanActionKind,
+    pub title: String,
+    pub reason: String,
+    #[serde(default)]
+    pub allowed_actions: Vec<PlanActionKind>,
+    #[serde(default)]
+    pub required_fields: Vec<String>,
+    #[serde(default)]
+    pub status: PlanActionStatus,
+    #[serde(default)]
+    pub evidence_refs: Vec<ArtifactRef>,
+}
+
+impl PlanActionItem {
+    fn new(
+        plan_id: PlanId,
+        kind: PlanActionKind,
+        suffix: impl AsRef<str>,
+        title: impl Into<String>,
+        reason: impl Into<String>,
+        allowed_actions: Vec<PlanActionKind>,
+    ) -> Self {
+        debug_assert!(
+            !allowed_actions.is_empty(),
+            "derived plan action items must expose at least one allowed action"
+        );
+        Self {
+            action_id: format!("plan:{plan_id}:{}:{}", kind.as_str(), suffix.as_ref()),
+            plan_id,
+            goal_id: None,
+            task_id: None,
+            kind,
+            title: title.into(),
+            reason: reason.into(),
+            allowed_actions,
+            required_fields: Vec::new(),
+            status: PlanActionStatus::Pending,
+            evidence_refs: Vec::new(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), PlanActionValidationError> {
+        if self.allowed_actions.is_empty() {
+            return Err(PlanActionValidationError::MissingAllowedActions {
+                action_id: self.action_id.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum PlanActionValidationError {
+    #[error("plan action item {action_id} has no allowed actions")]
+    MissingAllowedActions { action_id: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanQuestionStatus {
@@ -1673,10 +1810,14 @@ pub struct DurablePlan {
     pub objective: String,
     pub repo: Option<String>,
     pub status: PlanStatus,
+    #[serde(default)]
+    pub phase: PlanPhase,
     pub mode: PlanningMode,
     pub version: u32,
     pub source_prompt: String,
     pub current: PlanRevision,
+    #[serde(default)]
+    pub action_items: Vec<PlanActionItem>,
     #[serde(default)]
     pub revisions: Vec<PlanRevision>,
     #[serde(default)]
@@ -1715,17 +1856,19 @@ impl DurablePlan {
         } else {
             request.status.unwrap_or(PlanStatus::Draft)
         };
-        Self {
+        let mut plan = Self {
             id: request.plan_id.unwrap_or_else(Uuid::new_v4),
             source_plan_id: request.source_plan_id,
             title: request.title,
             objective: request.objective,
             repo: request.repo,
             status,
+            phase: PlanPhase::default(),
             mode: request.mode,
             version: 1,
             source_prompt: request.prompt,
             current: revision.clone(),
+            action_items: Vec::new(),
             revisions: vec![revision],
             candidate_votes: Vec::new(),
             selected_candidate: None,
@@ -1733,7 +1876,9 @@ impl DurablePlan {
             compiled_quality: None,
             created_at: Some(now.clone()),
             updated_at: Some(now),
-        }
+        };
+        plan.refresh_phase_and_actions();
+        plan
     }
 
     pub fn summary(&self) -> DurablePlanSummary {
@@ -1744,10 +1889,12 @@ impl DurablePlan {
             objective: self.objective.clone(),
             repo: self.repo.clone(),
             status: self.status.clone(),
+            phase: self.phase,
             mode: self.mode.clone(),
             version: self.version,
             subgoal_count: self.current.plan.subgoals.len() as u32,
             initial_task_count: self.current.initial_tasks.len() as u32,
+            action_item_count: self.action_items.len() as u32,
             open_question_count: self
                 .current
                 .questions
@@ -1803,6 +1950,7 @@ impl DurablePlan {
         self.compiled_goal_id = None;
         self.compiled_quality = None;
         self.selected_candidate = None;
+        self.refresh_phase_and_actions();
         revision
     }
 
@@ -1825,6 +1973,7 @@ impl DurablePlan {
         };
         self.candidate_votes.push(vote.clone());
         self.updated_at = Some(now);
+        self.refresh_phase_and_actions();
         vote
     }
 
@@ -1846,6 +1995,7 @@ impl DurablePlan {
         self.selected_candidate = Some(selection.clone());
         self.status = PlanStatus::Superseded;
         self.updated_at = Some(now);
+        self.refresh_phase_and_actions();
         selection
     }
 
@@ -1889,10 +2039,176 @@ impl DurablePlan {
         self.compiled_goal_id = Some(goal.id);
         self.compiled_quality = Some(quality.clone());
         self.updated_at = Some(now_unix_timestamp_string());
+        self.refresh_phase_and_actions();
         PlanCompileResult {
             plan_id: self.id,
             goal,
             quality,
+        }
+    }
+
+    pub fn refresh_phase_and_actions(&mut self) {
+        self.phase = self.derive_phase();
+        self.action_items = self.derive_action_items(self.phase);
+        debug_assert!(self.validate_action_items().is_ok());
+    }
+
+    pub fn validate_action_items(&self) -> Result<(), PlanActionValidationError> {
+        for action in &self.action_items {
+            action.validate()?;
+        }
+        Ok(())
+    }
+
+    fn derive_phase(&self) -> PlanPhase {
+        match self.status {
+            PlanStatus::NeedsQuestions => PlanPhase::Asking,
+            PlanStatus::Draft => {
+                if self.current.plan.subgoals.is_empty() && self.current.initial_tasks.is_empty() {
+                    PlanPhase::DraftingPlan
+                } else {
+                    PlanPhase::DraftingGoals
+                }
+            }
+            PlanStatus::ReadyForReview => PlanPhase::Accepting,
+            PlanStatus::Approved => PlanPhase::Accepting,
+            PlanStatus::Compiled => PlanPhase::Executing,
+            PlanStatus::Superseded => PlanPhase::Satisfied,
+            PlanStatus::Archived => PlanPhase::Cancelled,
+        }
+    }
+
+    fn derive_action_items(&self, phase: PlanPhase) -> Vec<PlanActionItem> {
+        match phase {
+            PlanPhase::Asking => {
+                let actions: Vec<_> = self
+                    .current
+                    .questions
+                    .iter()
+                    .filter(|question| {
+                        question.required && question.status == PlanQuestionStatus::Open
+                    })
+                    .map(|question| {
+                        let mut action = PlanActionItem::new(
+                            self.id,
+                            PlanActionKind::AnswerQuestion,
+                            &question.id,
+                            format!("Answer: {}", question.question),
+                            "The plan is waiting for required operator input before goals are drafted.",
+                            vec![
+                                PlanActionKind::AnswerQuestion,
+                                PlanActionKind::ReviewPlanDraft,
+                                PlanActionKind::Cancel,
+                            ],
+                        );
+                        action.required_fields = vec!["answer".to_string()];
+                        action
+                    })
+                    .collect();
+                if actions.is_empty() {
+                    vec![PlanActionItem::new(
+                        self.id,
+                        PlanActionKind::ReviewPlanDraft,
+                        self.version.to_string(),
+                        "Draft plan",
+                        "The plan is in the ask phase but has no required open questions.",
+                        vec![
+                            PlanActionKind::ReviewPlanDraft,
+                            PlanActionKind::DraftGoal,
+                            PlanActionKind::Cancel,
+                        ],
+                    )]
+                } else {
+                    actions
+                }
+            }
+            PlanPhase::DraftingPlan => vec![PlanActionItem::new(
+                self.id,
+                PlanActionKind::ReviewPlanDraft,
+                self.version.to_string(),
+                "Review plan draft",
+                "The plan needs an accepted structure before goals are staged for execution.",
+                vec![
+                    PlanActionKind::AcceptPlanDraft,
+                    PlanActionKind::DraftGoal,
+                    PlanActionKind::Cancel,
+                ],
+            )],
+            PlanPhase::DraftingGoals => vec![PlanActionItem::new(
+                self.id,
+                PlanActionKind::ReviewGoalDraft,
+                self.version.to_string(),
+                "Review drafted goals",
+                "The plan has staged goal-shaped work that needs review before execution.",
+                vec![
+                    PlanActionKind::AcceptGoalIntoPlan,
+                    PlanActionKind::DraftGoal,
+                    PlanActionKind::AcceptPlanDraft,
+                    PlanActionKind::Cancel,
+                ],
+            )],
+            PlanPhase::Reviewing => vec![PlanActionItem::new(
+                self.id,
+                PlanActionKind::ReviewPlanDraft,
+                self.version.to_string(),
+                "Review plan for acceptance",
+                "The plan is ready for operator review before accepted goals are submitted.",
+                vec![
+                    PlanActionKind::AcceptPlanDraft,
+                    PlanActionKind::Replan,
+                    PlanActionKind::Cancel,
+                ],
+            )],
+            PlanPhase::Accepting => {
+                if self.status == PlanStatus::ReadyForReview {
+                    vec![PlanActionItem::new(
+                        self.id,
+                        PlanActionKind::ReviewPlanDraft,
+                        self.version.to_string(),
+                        "Review plan for acceptance",
+                        "The plan is ready for operator review before accepted goals are submitted.",
+                        vec![
+                            PlanActionKind::AcceptPlanDraft,
+                            PlanActionKind::Replan,
+                            PlanActionKind::Cancel,
+                        ],
+                    )]
+                } else {
+                    vec![PlanActionItem::new(
+                        self.id,
+                        PlanActionKind::SubmitGoal,
+                        self.version.to_string(),
+                        "Submit accepted goals",
+                        "The plan has been accepted and can be compiled into executable goal work.",
+                        vec![
+                            PlanActionKind::SubmitGoal,
+                            PlanActionKind::DraftGoal,
+                            PlanActionKind::Cancel,
+                        ],
+                    )]
+                }
+            }
+            PlanPhase::Executing => {
+                let mut action = PlanActionItem::new(
+                    self.id,
+                    PlanActionKind::ReviewEvidence,
+                    self.compiled_goal_id
+                        .map(|goal_id| goal_id.to_string())
+                        .unwrap_or_else(|| self.version.to_string()),
+                    "Review execution evidence",
+                    "The plan has compiled goal work; review evidence before confirming satisfaction.",
+                    vec![
+                        PlanActionKind::ReviewEvidence,
+                        PlanActionKind::Retry,
+                        PlanActionKind::Replan,
+                        PlanActionKind::ConfirmSatisfaction,
+                        PlanActionKind::Cancel,
+                    ],
+                );
+                action.goal_id = self.compiled_goal_id;
+                vec![action]
+            }
+            PlanPhase::Satisfied | PlanPhase::Cancelled => Vec::new(),
         }
     }
 }
@@ -2041,10 +2357,14 @@ pub struct DurablePlanSummary {
     pub objective: String,
     pub repo: Option<String>,
     pub status: PlanStatus,
+    #[serde(default)]
+    pub phase: PlanPhase,
     pub mode: PlanningMode,
     pub version: u32,
     pub subgoal_count: u32,
     pub initial_task_count: u32,
+    #[serde(default)]
+    pub action_item_count: u32,
     pub open_question_count: u32,
     pub compiled_goal_id: Option<GoalId>,
     pub updated_at: Option<String>,
@@ -15448,6 +15768,10 @@ mod tests {
             decisions: Vec::new(),
         });
         assert_eq!(plan.status, PlanStatus::NeedsQuestions);
+        assert_eq!(plan.phase, PlanPhase::Asking);
+        assert_eq!(plan.action_items.len(), 1);
+        assert_eq!(plan.action_items[0].kind, PlanActionKind::AnswerQuestion);
+        assert!(plan.validate_action_items().is_ok());
 
         plan.apply_revision(PlanRevisionRequest {
             author: Some("operator".to_string()),
@@ -15468,6 +15792,8 @@ mod tests {
         });
         assert_eq!(plan.version, 2);
         assert_eq!(plan.status, PlanStatus::Approved);
+        assert_eq!(plan.phase, PlanPhase::Accepting);
+        assert_eq!(plan.action_items[0].kind, PlanActionKind::SubmitGoal);
 
         let result = plan.compile_goal(PlanCompileRequest {
             plan_id: Some(plan.id),
@@ -15479,9 +15805,117 @@ mod tests {
             enable_branching: false,
         });
         assert_eq!(plan.status, PlanStatus::Compiled);
+        assert_eq!(plan.phase, PlanPhase::Executing);
+        assert_eq!(plan.action_items[0].goal_id, Some(result.goal.id));
+        assert_eq!(plan.action_items[0].kind, PlanActionKind::ReviewEvidence);
         assert_eq!(result.goal.plan.subgoals[0].id, "plan-contracts");
         assert_eq!(result.goal.repo.as_deref(), Some("repo"));
         assert!(result.goal.review_policy.doctrine.enabled);
+    }
+
+    #[test]
+    fn durable_plan_derives_phase_actions_from_status_and_revision() {
+        let mut plan = DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: None,
+            title: "Draft a plan-first flow".to_string(),
+            objective: "Make plan phases visible before executable goals are submitted."
+                .to_string(),
+            repo: None,
+            prompt: "Start with an empty plan draft.".to_string(),
+            mode: PlanningMode::Interactive,
+            status: Some(PlanStatus::Draft),
+            author: None,
+            summary: None,
+            authoring: GoalAuthoringGuidance::default(),
+            plan: GoalPlan::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        assert_eq!(plan.phase, PlanPhase::DraftingPlan);
+        assert_eq!(plan.action_items[0].kind, PlanActionKind::ReviewPlanDraft);
+        assert!(
+            plan.action_items[0]
+                .allowed_actions
+                .contains(&PlanActionKind::AcceptPlanDraft)
+        );
+
+        let mut goal_plan = GoalPlan {
+            summary: "Stage one implementation goal.".to_string(),
+            ..GoalPlan::default()
+        };
+        goal_plan.subgoals.push(SubgoalSpec {
+            id: "ui-phase-actions".to_string(),
+            title: "Phase actions".to_string(),
+            objective: "Expose clear plan phase action buttons.".to_string(),
+            owner_role: WorkerKind::Planner,
+            color: None,
+            priority: TaskPriority::Normal,
+            dependencies: Vec::new(),
+            tags: Vec::new(),
+            acceptance_evidence: vec!["phase action tests pass".to_string()],
+        });
+
+        plan.apply_revision(PlanRevisionRequest {
+            author: None,
+            summary: Some("Added a goal-shaped draft".to_string()),
+            operator_message: None,
+            status: Some(PlanStatus::Draft),
+            authoring: None,
+            plan: Some(goal_plan),
+            initial_tasks: None,
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+
+        assert_eq!(plan.phase, PlanPhase::DraftingGoals);
+        assert_eq!(plan.action_items[0].kind, PlanActionKind::ReviewGoalDraft);
+        assert!(
+            plan.action_items[0]
+                .allowed_actions
+                .contains(&PlanActionKind::AcceptGoalIntoPlan)
+        );
+
+        plan.apply_revision(PlanRevisionRequest {
+            author: None,
+            summary: Some("Ready for review".to_string()),
+            operator_message: None,
+            status: Some(PlanStatus::ReadyForReview),
+            authoring: None,
+            plan: None,
+            initial_tasks: None,
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+
+        assert_eq!(plan.phase, PlanPhase::Accepting);
+        assert_eq!(plan.action_items[0].kind, PlanActionKind::ReviewPlanDraft);
+        assert!(plan.validate_action_items().is_ok());
+    }
+
+    #[test]
+    fn plan_action_item_validation_rejects_empty_allowed_actions() {
+        let action = PlanActionItem {
+            action_id: "plan:test:bad".to_string(),
+            plan_id: Uuid::new_v4(),
+            goal_id: None,
+            task_id: None,
+            kind: PlanActionKind::ReviewPlanDraft,
+            title: "Invalid action".to_string(),
+            reason: "No allowed operator actions were provided.".to_string(),
+            allowed_actions: Vec::new(),
+            required_fields: Vec::new(),
+            status: PlanActionStatus::Pending,
+            evidence_refs: Vec::new(),
+        };
+
+        assert_eq!(
+            action.validate(),
+            Err(PlanActionValidationError::MissingAllowedActions {
+                action_id: "plan:test:bad".to_string()
+            })
+        );
     }
 
     #[test]

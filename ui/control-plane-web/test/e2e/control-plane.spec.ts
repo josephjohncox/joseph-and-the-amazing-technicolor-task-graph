@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 const selectedGoalStorageKey = "coat.selectedGoalId";
+const selectedPlanStorageKey = "coat.selectedPlanId";
 const themeStorageKey = "coat.theme";
 const goalA = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
 const goalB = "018f8f2f-1fd8-7688-bb12-8bfb6b756603";
@@ -11,6 +12,7 @@ type JsonRecord = Record<string, unknown>;
 
 type FixtureState = {
   actions: Array<{ handler: string; body: JsonRecord }>;
+  acceptedPlanDraft: boolean;
   cancelledGoals: Set<string>;
   freezeChatSession: boolean;
   requestCounts: Record<string, number>;
@@ -19,19 +21,24 @@ type FixtureState = {
 
 test.describe("COAT control-plane browser flows", () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(([storageKey, themeKey]) => {
+    await page.addInitScript(([goalStorageKey, planStorageKey, themeKey]) => {
       window.localStorage.clear();
-      window.localStorage.removeItem(storageKey);
+      window.localStorage.removeItem(goalStorageKey);
+      window.localStorage.removeItem(planStorageKey);
       window.localStorage.setItem(themeKey, "dark");
-    }, [selectedGoalStorageKey, themeStorageKey]);
+    }, [selectedGoalStorageKey, selectedPlanStorageKey, themeStorageKey]);
   });
 
-  test("asks by default, edits or discards goal drafts, submits, and refreshes the selected goal", async ({ page }) => {
+  test("uses a plan-first flow to ask, accept a plan draft, stage a goal draft, submit, and refresh the selected goal", async ({ page }) => {
     const state = await installGatewayFixtures(page);
 
     await page.goto("/");
     await expectNoAmbiguousLaneCopy(page);
-    await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
+    await expect(page.locator(".plan-context-trigger")).toContainText("Release readiness plan");
+    await expect(page.getByLabel("Plan workflow")).toContainText("Ask");
+    await expect(page.getByLabel("Plan phase actions").getByRole("button", { name: "Draft plan" })).toBeVisible();
+    await expect(page.locator(".outcome-meta")).toContainText("Plan: Release readiness plan");
+    await expect(page.locator(".outcome-meta")).toContainText("Goal focus: none");
     await expect(page.locator(".outcome-meta")).toContainText("Ask");
     await expect(page.getByRole("heading", { name: "Runs" })).toBeVisible();
     await expectNoCriticalOrSeriousAxeViolations(page, "initial operator console");
@@ -42,6 +49,13 @@ test.describe("COAT control-plane browser flows", () => {
     await sendComposerMessage(page, "What is blocked and what should I do next?");
     await expect(page.getByText("The selected goal has one action needed item.")).toBeVisible();
     await expect(page.getByText("Goal draft ready", { exact: true })).toHaveCount(0);
+
+    await page.getByLabel("Plan phase actions").getByRole("button", { name: "Draft plan" }).click();
+    await sendComposerMessage(page, "Draft the browser E2E plan before we create executable goals.");
+    await expect(page.getByText("Plan draft ready", { exact: true })).toBeVisible();
+    await page.getByLabel("Plan draft actions").getByRole("button", { name: "Accept plan" }).click();
+    await expect(page.getByText("Accepted plan", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Plan workflow")).toContainText("Draft goals");
 
     await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, "Discard this browser E2E goal draft after review.");
@@ -54,7 +68,7 @@ test.describe("COAT control-plane browser flows", () => {
     await expect(page.locator(".goal-draft-editor")).toContainText("1 constraint");
     await expectNoCliCoverageOrDebugInventory(page);
     await expect(page.getByText("acceptance_evidence")).toHaveCount(0);
-    await page.getByLabel("Draft actions").getByRole("button", { name: "Discard draft" }).click();
+    await page.getByLabel("Draft actions").getByRole("button", { name: "Discard" }).click();
     await expect(page.locator(".goal-draft-editor")).toBeHidden();
 
     await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
@@ -63,18 +77,20 @@ test.describe("COAT control-plane browser flows", () => {
     const draftEditor = page.locator(".goal-draft-editor");
     await expect(draftEditor).toContainText("Goal draft ready");
     await draftEditor.getByLabel("Objective").fill("Edited browser E2E task with deterministic mocked gateway evidence.");
-    await page.getByLabel("Draft actions").getByRole("button", { name: "Accept draft" }).click();
+    await page.getByLabel("Draft actions").getByRole("button", { name: "Accept into plan" }).click();
+    await expect(page.getByText("Staged goal", { exact: true })).toBeVisible();
+    await page.locator(".draft-action-card").filter({ hasText: "Staged goal" }).getByRole("button", { name: "Submit goal" }).click();
 
     await expect(page).toHaveURL(new RegExp(`goal=${submittedGoal}`));
     await expect.poll(() => state.requestCounts.goals ?? 0).toBeGreaterThanOrEqual(2);
     await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(1);
-    await expect(page.locator(".outcome-meta")).toContainText("Context: Submitted browser E2E task");
+    await expect(page.locator(".outcome-meta")).toContainText("Goal focus: Submitted browser E2E task");
     await expect(page.locator(".goal-draft-editor")).toBeHidden();
     await expect(page.getByText("Goal submitted")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Work graph", exact: true })).toBeVisible();
     await expect(page.getByText(submittedGoal, { exact: true })).toHaveCount(0);
     await expect(page.locator(".goal-context-trigger")).toContainText("Submitted browser E2E task");
-    await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(3);
+    await expect.poll(() => state.requestCounts[`goal:${submittedGoal}`] ?? 0).toBeGreaterThanOrEqual(2);
     await openPrimaryNav(page, "Work Graph");
     await expect(subgoalCard(page, "Validate mocked gateway fixtures")).toBeVisible();
     await page.evaluate((storageKey) => {
@@ -82,7 +98,7 @@ test.describe("COAT control-plane browser flows", () => {
       window.history.pushState({}, "", "/");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, selectedGoalStorageKey);
-    await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
+    await expect(page.locator(".outcome-meta")).toContainText("Goal focus: none");
     await expect(page.locator(".goal-draft-editor")).toBeHidden();
     expect(state.submittedGoalSpec?.objective).toContain("Edited browser E2E task");
   });
@@ -91,7 +107,8 @@ test.describe("COAT control-plane browser flows", () => {
     await installGatewayFixtures(page);
 
     await page.goto(`/?goal=${goalA}`);
-    await expect(page.locator(".outcome-meta")).toContainText("Context: Baseline durable goal");
+    await expect(page.locator(".outcome-meta")).toContainText("Plan: Release readiness plan");
+    await expect(page.locator(".outcome-meta")).toContainText("Goal focus: Baseline durable goal");
     await expect(page.locator(".outcome-meta")).toContainText("Ask");
     await openPrimaryNav(page, "Work Graph");
     await expect(subgoalCard(page, "Coordinator truth boundary")).toBeVisible();
@@ -123,7 +140,7 @@ test.describe("COAT control-plane browser flows", () => {
 
     await expect(page).toHaveURL(new RegExp(`goal=${goalB}`));
     await expect(goalPickerTrigger).toContainText("Branch visibility goal");
-    await expect(page.locator(".outcome-meta")).toContainText("Context: Branch visibility goal");
+    await expect(page.locator(".outcome-meta")).toContainText("Goal focus: Branch visibility goal");
 
     const goalDraftButton = page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" });
     await goalDraftButton.focus();
@@ -134,12 +151,7 @@ test.describe("COAT control-plane browser flows", () => {
     const composer = page.locator(".cs-message-input__content-editor");
     await composer.focus();
     await expect(composer).toBeFocused();
-    await composer.pressSequentially("Keyboard operator path should produce a reviewable goal draft.");
-
-    const sendButton = page.locator(".cs-message-input__tools button:not([disabled])");
-    await sendButton.focus();
-    await expect(sendButton).toBeFocused();
-    await page.keyboard.press("Enter");
+    await sendComposerMessage(page, "Keyboard operator path should produce a reviewable goal draft.");
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
     await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Steer", exact: true }).focus();
@@ -263,7 +275,14 @@ function subgoalCard(page: Page, text: string) {
 }
 
 async function installGatewayFixtures(page: Page): Promise<FixtureState> {
-  const state: FixtureState = { actions: [], cancelledGoals: new Set(), freezeChatSession: false, requestCounts: {}, submittedGoalSpec: null };
+  const state: FixtureState = {
+    actions: [],
+    acceptedPlanDraft: false,
+    cancelledGoals: new Set(),
+    freezeChatSession: false,
+    requestCounts: {},
+    submittedGoalSpec: null,
+  };
 
   await page.route("**/api/**", async (route) => {
     await fulfillApi(route, state);
@@ -334,6 +353,29 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
     const body = await requestBody(request);
     state.freezeChatSession = String(body.kind ?? body.draft_kind ?? body.mode ?? "") !== "ask";
     await json(route, chatResponseFixture(body));
+    return;
+  }
+
+  const planDraftAcceptMatch = path.match(/^\/api\/plans\/drafts\/([^/]+)\/accept$/);
+  if (method === "POST" && planDraftAcceptMatch) {
+    state.acceptedPlanDraft = true;
+    await json(route, {
+      ok: true,
+      status: 200,
+      draft_id: decodeURIComponent(planDraftAcceptMatch[1]),
+      plan_id: "plan-release-readiness",
+      acceptance_mode: "revise_plan",
+      data: {
+        found: true,
+        plan: {
+          plan_id: "plan-release-readiness",
+          id: "plan-release-readiness",
+          title: "Release readiness plan",
+          phase: "drafting_goals",
+          status: "draft",
+        },
+      },
+    });
     return;
   }
 
@@ -429,7 +471,30 @@ async function fulfillApi(route: Route, state: FixtureState): Promise<void> {
   }
 
   if (method === "GET" && path === "/api/plans") {
-    await json(route, { ok: true, status: 200, data: { plans: [] } });
+    await json(route, { ok: true, status: 200, data: { plans: planRowsFixture(state) } });
+    return;
+  }
+
+  const planActionsMatch = path.match(/^\/api\/plans\/([^/]+)\/actions$/);
+  if (method === "GET" && planActionsMatch) {
+    await json(route, {
+      generated_at: "2026-05-12T12:00:00.000Z",
+      plan_id: decodeURIComponent(planActionsMatch[1]),
+      phase: state.acceptedPlanDraft ? "drafting_goals" : "asking",
+      actions: state.acceptedPlanDraft
+        ? [
+            {
+              action_id: "plan:plan-release-readiness:draft_goal:e2e",
+              plan_id: "plan-release-readiness",
+              kind: "draft_goal",
+              title: "Draft goal",
+              reason: "The plan draft is accepted; draft satisfiable goal work next.",
+              allowed_actions: ["draft_goal", "cancel"],
+              status: "pending",
+            },
+          ]
+        : [],
+    });
     return;
   }
 
@@ -525,6 +590,21 @@ function goalRows(state?: FixtureState): JsonRecord[] {
   return rows;
 }
 
+function planRowsFixture(state?: FixtureState): JsonRecord[] {
+  return [
+    {
+      plan_id: "plan-release-readiness",
+      title: "Release readiness plan",
+      objective: "Plan-scoped workspace for browser E2E, staged goals, actions, evidence, and satisfaction review.",
+      phase: state?.acceptedPlanDraft ? "drafting_goals" : "asking",
+      status: state?.acceptedPlanDraft ? "draft" : "asking",
+      goal_count: 2,
+      open_question_count: state?.acceptedPlanDraft ? 0 : 1,
+      updated_at: "2026-05-12T11:55:00.000Z",
+    },
+  ];
+}
+
 function operatorWorkspaceFixture(goalId: string, state?: FixtureState): JsonRecord {
   const snapshot = composedGoalProjectionFixture(goalId, state);
   return {
@@ -598,7 +678,7 @@ function composedGoalProjectionFixture(goalId: string, state?: FixtureState): Js
   }
 
   if (goalId === submittedGoal) {
-    if ((state?.requestCounts[`goal:${submittedGoal}`] ?? 0) <= 2) {
+    if ((state?.requestCounts[`goal:${submittedGoal}`] ?? 0) <= 1) {
       return submittedProjectionShell();
     }
     return snapshot(goalId, {
@@ -897,6 +977,39 @@ function chatResponseFixture(body: JsonRecord): JsonRecord {
         answer_kind: "operator_guidance",
         draft_created: false,
       },
+    };
+  }
+  if (requestedMode === "draft_plan") {
+    return {
+      provider: "fixture",
+      model: null,
+      mode: "draft_plan",
+      assistant: "Plan draft ready. Review the workflow, then accept or discard it.",
+      draft_ref: "fixture://drafts/browser-e2e-plan",
+      draft_summary: {
+        plan: {
+          title: "Browser E2E release readiness plan",
+          objective,
+          summary: "Plan-first fixture with staged goals and explicit acceptance.",
+        },
+      },
+      drafts: {
+        plan: {
+          title: "Browser E2E release readiness plan",
+          objective,
+          summary: "Plan-first fixture with staged goals and explicit acceptance.",
+          phases: [
+            { title: "Ask", objective: "Clarify the operator outcome." },
+            { title: "Draft goals", objective: "Create executable goal contracts." },
+          ],
+          goal_slots: [
+            { title: "Browser E2E task", objective: "Submit a deterministic browser task." },
+          ],
+        },
+      },
+      session_id: body.session_id,
+      run_id: body.run_id,
+      chat_run: { run_id: body.run_id, status: "done", stage: "fixture" },
     };
   }
   return {

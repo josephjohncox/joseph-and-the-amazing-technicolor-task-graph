@@ -48,6 +48,31 @@
         "other"
       ]
     },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
     "AuthDistributionMode": {
       "type": "string",
       "enum": [
@@ -627,6 +652,13 @@
     "DurablePlan": {
       "type": "object",
       "properties": {
+        "action_items": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanActionItem"
+          }
+        },
         "candidate_votes": {
           "type": "array",
           "default": [],
@@ -669,6 +701,10 @@
         },
         "objective": {
           "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/PlanPhase",
+          "default": "asking"
         },
         "repo": {
           "type": [
@@ -2159,6 +2195,100 @@
         "risk_tolerance"
       ]
     },
+    "PlanActionItem": {
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "allowed_actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanActionKind"
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/PlanActionKind"
+        },
+        "plan_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "required_fields": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/PlanActionStatus",
+          "default": "pending"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "plan_id",
+        "kind",
+        "title",
+        "reason"
+      ]
+    },
+    "PlanActionKind": {
+      "type": "string",
+      "enum": [
+        "answer_question",
+        "review_plan_draft",
+        "accept_plan_draft",
+        "draft_goal",
+        "review_goal_draft",
+        "accept_goal_into_plan",
+        "submit_goal",
+        "resolve_human_prompt",
+        "approve",
+        "retry",
+        "replan",
+        "cancel",
+        "review_evidence",
+        "confirm_satisfaction"
+      ]
+    },
+    "PlanActionStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "completed",
+        "dismissed"
+      ]
+    },
     "PlanCandidateSelection": {
       "type": "object",
       "properties": {
@@ -2293,6 +2423,19 @@
         "title",
         "decision",
         "rationale"
+      ]
+    },
+    "PlanPhase": {
+      "type": "string",
+      "enum": [
+        "asking",
+        "drafting_plan",
+        "drafting_goals",
+        "accepting",
+        "executing",
+        "reviewing",
+        "satisfied",
+        "cancelled"
       ]
     },
     "PlanQuestion": {

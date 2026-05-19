@@ -13,6 +13,7 @@ import { useEffect, useRef } from "react";
 import { at, isRecord, rowsFrom } from "../api";
 import { AdvancedInspect } from "../components/operator-primitives";
 import type { ChatMessage, ChatResponse, ChatRunTrace, JsonRecord } from "../types";
+import { planDraftSummary, type PlanPhase } from "./plan-workflow";
 import { friendlyRef, statusTone, stringValue } from "./workbench-format";
 
 export type DraftKind = "ask" | "plan" | "goal" | "search";
@@ -26,7 +27,9 @@ export type ActiveDraftState = {
   savedAt: string;
   response: ChatResponse;
   goalDraft: JsonRecord | null;
+  planDraft: JsonRecord | null;
   runId: string | null;
+  selectedPlanId?: string;
 };
 
 export type DraftReviewSummary = {
@@ -44,6 +47,11 @@ type SelectedGoalContext = {
   status: string;
 };
 
+type SelectedPlanContext = {
+  title: string;
+  phase: PlanPhase;
+};
+
 export function ChatDraftPanel(props: {
   messages: ChatMessage[];
   input: string;
@@ -54,9 +62,12 @@ export function ChatDraftPanel(props: {
   latestResponse?: ChatResponse;
   chatRun?: ChatRunTrace;
   goalDraft: JsonRecord | null;
+  planDraft: JsonRecord | null;
   goalSubmitBusy: boolean;
   goalSubmitError: Error | null;
   goalSubmitResult?: unknown;
+  selectedPlanId: string;
+  selectedPlan: SelectedPlanContext;
   selectedGoalId: string;
   selectedGoal: SelectedGoalContext | null;
   sessionId: string;
@@ -65,7 +76,10 @@ export function ChatDraftPanel(props: {
   onInputChange: (value: string) => void;
   onSend: (content?: string) => void;
   onSubmitGoalDraft: () => void;
+  onAcceptGoalIntoPlan: () => void;
   onDiscardGoalDraft: () => void;
+  onAcceptPlanDraft: () => void;
+  onDiscardPlanDraft: () => void;
   onUpdateGoalDraftField: (field: GoalDraftEditField, value: string) => void;
   onClear: () => void;
 }) {
@@ -145,7 +159,20 @@ export function ChatDraftPanel(props: {
       </div>
       <div className="outcome-meta" aria-label="Chat scope">
         <span className={clsx("status-pill", props.selectedGoal ? statusTone(props.selectedGoal.status) : "muted")}>
-          {props.selectedGoal ? `Context: ${props.selectedGoal.title}` : "Context: workspace"}
+          Plan: {props.selectedPlan.title}
+        </span>
+        {props.selectedGoal && (
+          <span className={clsx("status-pill", statusTone(props.selectedGoal.status))}>
+            Goal focus: {props.selectedGoal.title}
+          </span>
+        )}
+        {!props.selectedGoal && (
+          <span className="status-pill muted">
+            Goal focus: none
+          </span>
+        )}
+        <span className="status-pill muted">
+          Phase: {phaseDisplay(props.selectedPlan.phase)}
         </span>
         <span className={clsx("status-pill", props.busy ? "status-running" : "muted")}>
           {props.busy ? commandBusyLabel(props.draftKind) : draftModeHeadline(props.draftKind)}
@@ -160,6 +187,14 @@ export function ChatDraftPanel(props: {
           <AdvancedInspect summaryLabel={activityLabel} title="Chat activity" payload={activityPayload} buttonLabel="Debug" />
         )}
       </div>
+      {props.planDraft && (
+        <PlanDraftReview
+          draft={props.planDraft}
+          disabled={props.busy}
+          onAccept={props.onAcceptPlanDraft}
+          onDiscard={props.onDiscardPlanDraft}
+        />
+      )}
       {props.goalDraft && (
         <GoalDraftEditor
           draft={props.goalDraft}
@@ -170,6 +205,7 @@ export function ChatDraftPanel(props: {
           submittedGoalLabel={submittedGoalId ? friendlyRef(submittedGoalId) : ""}
           onUpdate={props.onUpdateGoalDraftField}
           onSubmit={props.onSubmitGoalDraft}
+          onAcceptIntoPlan={props.onAcceptGoalIntoPlan}
           onDiscard={props.onDiscardGoalDraft}
         />
       )}
@@ -245,6 +281,7 @@ function GoalDraftEditor(props: {
   submittedGoalLabel: string;
   onUpdate: (field: GoalDraftEditField, value: string) => void;
   onSubmit: () => void;
+  onAcceptIntoPlan: () => void;
   onDiscard: () => void;
 }) {
   return (
@@ -257,10 +294,13 @@ function GoalDraftEditor(props: {
         </div>
         <div className="button-row" aria-label="Draft actions">
           <button type="button" className="secondary-button" disabled={props.submitBusy} onClick={props.onDiscard}>
-            Discard draft
+            Discard
+          </button>
+          <button type="button" className="secondary-button" disabled={props.disabled} onClick={props.onAcceptIntoPlan}>
+            Accept into plan
           </button>
           <button type="button" className="primary-button" disabled={props.submitDisabled} onClick={props.onSubmit}>
-            {props.submittedGoalLabel ? "Accepted" : props.submitBusy ? "Submitting" : "Accept draft"}
+            {props.submittedGoalLabel ? "Submitted" : props.submitBusy ? "Submitting" : "Submit goal"}
           </button>
         </div>
       </div>
@@ -303,6 +343,41 @@ function GoalDraftEditor(props: {
         <span className="status-pill status-runnable">Edit draft</span>
         <span className="status-pill muted">{countLabel(props.summary.evidenceCount, "evidence item")}</span>
         <span className="status-pill muted">{countLabel(props.summary.constraintCount, "constraint")}</span>
+      </div>
+    </section>
+  );
+}
+
+function PlanDraftReview(props: {
+  draft: JsonRecord;
+  disabled: boolean;
+  onAccept: () => void;
+  onDiscard: () => void;
+}) {
+  const summary = planDraftSummary(props.draft);
+  const phases = rowsFrom(props.draft.phases ?? props.draft.steps ?? props.draft.workstreams);
+  const goals = rowsFrom(props.draft.goals ?? props.draft.goal_slots ?? props.draft.subgoals);
+  return (
+    <section className="goal-draft-editor plan-draft-review" aria-label="Plan draft review">
+      <div className="draft-editor-header">
+        <div>
+          <span className="goal-context-kicker">Plan draft ready</span>
+          <strong>{summary.title}</strong>
+          {summary.objective && <p>{summary.objective}</p>}
+        </div>
+        <div className="button-row" aria-label="Plan draft actions">
+          <button type="button" className="secondary-button" disabled={props.disabled} onClick={props.onDiscard}>
+            Discard
+          </button>
+          <button type="button" className="primary-button" disabled={props.disabled} onClick={props.onAccept}>
+            Accept plan
+          </button>
+        </div>
+      </div>
+      <div className="draft-summary-meta">
+        <span className="status-pill muted">{phases.length} phases</span>
+        <span className="status-pill muted">{goals.length} goal slots</span>
+        <span className="status-pill status-runnable">Edit draft in chat</span>
       </div>
     </section>
   );
@@ -434,6 +509,15 @@ export function draftKindLabel(kind: DraftKind): string {
   if (kind === "goal") return "Goal draft";
   if (kind === "search") return "Search request";
   return "Plan draft";
+}
+
+function phaseDisplay(phase: PlanPhase): string {
+  if (phase === "drafting_plan") return "Draft plan";
+  if (phase === "drafting_goals") return "Draft goals";
+  return phase
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 export function sessionDisplayLabel(sessionId: string): string {
@@ -575,6 +659,7 @@ function chatActivityPayload(props: {
       mode: props.activeDraft.mode,
       session_id: props.activeDraft.sessionId,
       selected_goal_id: props.activeDraft.selectedGoalId || null,
+      selected_plan_id: props.activeDraft.selectedPlanId || null,
       saved_at: props.activeDraft.savedAt,
       run_id: props.activeDraft.runId,
     } : null,

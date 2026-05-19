@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanActionItem",
+  "type": "object",
+  "properties": {
+    "action_id": {
+      "type": "string"
+    },
+    "allowed_actions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PlanActionKind"
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      }
+    },
+    "goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "kind": {
+      "$ref": "#/$defs/PlanActionKind"
+    },
+    "plan_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "required_fields": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/PlanActionStatus",
+      "default": "pending"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_id",
+    "plan_id",
+    "kind",
+    "title",
+    "reason"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "PlanActionKind": {
+      "type": "string",
+      "enum": [
+        "answer_question",
+        "review_plan_draft",
+        "accept_plan_draft",
+        "draft_goal",
+        "review_goal_draft",
+        "accept_goal_into_plan",
+        "submit_goal",
+        "resolve_human_prompt",
+        "approve",
+        "retry",
+        "replan",
+        "cancel",
+        "review_evidence",
+        "confirm_satisfaction"
+      ]
+    },
+    "PlanActionStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "completed",
+        "dismissed"
+      ]
+    }
+  }
+}

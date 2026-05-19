@@ -94,12 +94,14 @@ composer, message rendering, streaming affordances, or local input state; they
 must not own durable chat history, draft storage, model routing, goal
 mutation, or human-action resume semantics.
 
-The SPA has one global current-goal selector in the top bar. Operators choose a
-projected goal there or submit a new chat-authored goal draft; normal Chat,
-Work Graph, intent controls, Memory, and Human Queue use that current goal and
-must not ask for raw UUID entry in each panel. After `/api/operator/goals`
-returns, the SPA selects the returned `goal_id` immediately and shows the
-submitted-draft overlay until goal-store projects the durable task graph.
+The SPA has one global current-plan selector and a nested current-goal focus.
+Operators normally start in a plan workspace, then narrow to a goal inside that
+plan when execution begins. Chat, Work Graph, intent controls, Memory, Human
+Queue, Events, and Evidence inherit the selected plan first and the selected
+goal second; normal panels must not ask for raw UUID entry. After
+`/api/operator/goals` returns, the SPA selects the returned `goal_id` inside
+the current plan immediately and shows the submitted-draft overlay until
+goal-store projects the task graph.
 When a current goal is selected, the SPA opens `/api/operator/stream` with the
 selected `goal_id`. The stream updates the operator workspace cache, global goal
 list cache, selected-goal detail, and action queue cache from the same projection
@@ -144,11 +146,36 @@ The SPA may edit text in browser forms, but edits become backend commands:
 - research application: operator steering directives derived from the sourced `InformationUsePlan`;
 - event source or trigger: `coat-event-gateway`.
 
-The chat tab is intentionally a drafting surface. The browser must not call model providers directly. It posts prompts to `/api/chat`; the control gateway resolves an operator-chat backend from gateway configuration, calls the provider server-side, journals the user and assistant turns, and returns compact draft review payloads. This lookup is for chat assistance on a user request; it is not durable task dispatch and must not call runner `/run-task` APIs. Chat inherits the current goal: with a selected goal it uses the `goal:<goal_id>` session and sends `goal_id` context, otherwise it uses the operator workspace session. Durable mutations still require the operator to press an explicit control. For GoalSpec drafts, the SPA keeps the full draft server-side behind a `draft_id`, renders editable review fields in the chat panel, and `Accept draft` calls `/api/operator/goals`; the coordinator remains responsible for projecting workflow state into goal-store.
+The chat tab is intentionally an authoring assistant, not the workflow
+controller. The browser must not call model providers directly. It posts prompts
+to `/api/chat`; the control gateway resolves an operator-chat backend from
+gateway configuration, calls the provider server-side, journals the user and
+assistant turns, and returns compact draft review payloads. This lookup is for
+chat assistance on a user request; it is not durable task dispatch and must not
+call runner `/run-task` APIs. Chat inherits the current plan and optional goal:
+with a selected durable plan it uses the `plan:<plan_id>` session and sends the
+goal id as nested focus when one is selected. The workspace intake plan may use a
+local `plan:workspace-plan` session, but it must not be written as a durable
+`plan_id`. Durable mutations still require the operator to press an explicit
+phase action. For GoalSpec drafts, the SPA keeps the full draft server-side
+behind a `draft_id`, renders editable review fields, and `Accept` either stages
+the goal into the plan or submits it only when the operator chooses that action.
+The coordinator remains responsible for projecting workflow state into
+goal-store.
 
 Chat draft payloads are compact operator payloads, not copied transcripts. The `drafts` object may contain `goal_spec`, `plan_draft`, `search_request`, or `steering_directive`, but it must not duplicate chat messages, run traces, backend-resolution details, model raw output, or operator goal details. Those diagnostics stay in `chat_run`, `chat_log`, backend metadata, and goal detail APIs. The UI renders friendly draft fields for normal review; compact JSON is available only behind inspect controls for debugging, audit, and exact handoff. Draft submission uses `/api/operator/goals`.
 
-Chat supports three primary authoring modes: durable plan draft, GoalSpec draft, and search request. Search mode emits a structured `search_request` plus an optional coordinator-owned research steering directive. It must not claim live memory, web, or reference search occurred unless a backend tool result is present.
+Chat supports three primary authoring modes: Ask, Draft plan, and Draft goal,
+with Search as a secondary request type. Search mode emits a structured
+`search_request` plus an optional coordinator-owned research steering
+directive. It must not claim live memory, web, or reference search occurred
+unless a backend tool result is present.
+
+The primary authoring flow is Ask -> Draft plan -> Draft goal -> Accept. Each
+phase should show explicit action items rather than relying on magic chat text:
+Answer question, Save note, Draft plan, Add phase, Add goal slot, Accept plan
+draft, Draft goal from plan item, Accept into plan, Submit goal, Request
+review, Start execution, Hold for later, Confirm satisfied, or Cancel.
 
 The primary operator flow is goal state first, action second, assistant third.
 The Work Graph answers what is happening, why it is blocked, what evidence
@@ -220,15 +247,17 @@ before submission.
 
 The terminal TUI follows the same split at smaller scope: chat uses
 `/api/chat`, dashboard cards are derived from `/api/operator/workspace`, and durable
-mutations remain explicit operator actions. Chat defaults to Ask. `Ctrl-N` and
-`Ctrl-P` cycle through projected goals, `Ctrl-O` clears the selected goal, and
-`Ctrl-R` refreshes projection state. With a selected goal, the TUI uses the
-`goal:<goal_id>` chat session and sends the goal id to `/api/chat`; after it
-submits a chat-authored `drafts.goal_spec`, it selects the returned goal id.
+mutations remain explicit operator actions. Chat defaults to Ask. The TUI
+selects plan context first and treats the selected goal as nested focus.
+`Ctrl-N` and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the nested
+goal focus, and `Ctrl-R` refreshes projection state. With a selected plan, the
+TUI uses the `plan:<plan_id>` chat session and sends the goal id to `/api/chat`
+only as nested context; after it submits a chat-authored `drafts.goal_spec`, it
+selects the returned goal id.
 The TUI action queue mirrors the SPA task-graph workflow: the Approvals tab
 lets operators select an action with Up/Down and apply it with Enter or `a`;
 human prompts show the concrete question, allowed actions, and any required
-context field; active GoalSpec drafts are accepted with `F5` or `Ctrl-G`.
+context field; active GoalSpec drafts are submitted with `F5` or `Ctrl-G`.
 Plain Enter activates focused rows and controls rather than sending chat. Chat
 submission uses `Ctrl-S` and, when the terminal reports it, modified Enter such
 as `Ctrl-Enter`; this keeps row navigation and text submission unambiguous.
@@ -372,10 +401,10 @@ decision. Related nodes should link across fork and join boundaries so a losing
 candidate, winning candidate, critic finding, vote, and unifier result can be
 read as one workflow.
 
-Agent chats are context views, not hidden control channels. A selected task or
-goal can open the associated `goal:<goal_id>` chat session and any task/session
-refs returned by the runner, but new work still becomes `steer`, `branch`,
-`mechanism`, `approve`, `resume-thunk`, or `research/apply` commands.
+Agent chats are context views, not hidden control channels. A selected plan or
+task can open the associated plan, goal, or runner session refs returned by the
+backend, but new work still becomes `steer`, `branch`, `mechanism`, `approve`,
+`resume-thunk`, or `research/apply` commands.
 
 This is intentionally projection-based. If exact live state is needed, the gateway calls coordinator-owned handlers behind `/api/operator/*`; the UI should label stale or failed projection reads instead of pretending they are authoritative.
 

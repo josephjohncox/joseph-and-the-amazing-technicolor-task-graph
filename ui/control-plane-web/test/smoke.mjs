@@ -147,7 +147,7 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Ask", "Plan", "Goal draft", "Plan draft", "Live state", "Streaming", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Human prompts", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Current plan", "Clear selection", "Cancel goal", "Ask", "Plan", "Goal draft", "Plan draft", "Live state", "Streaming", "Goal draft ready", "Discard", "Accept", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "Shared Memory", "Technicolor", "Plan workflow", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Human prompts", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
   assert(script.includes("Cancel this goal."), "client script labels goal cancellation directly");
@@ -227,7 +227,10 @@ async function assertArchitectureGuardrails() {
   assert(chatDraftSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
   assert(appSource.includes("<ChatDraftPanel"), "SPA renders chat and draft flow through the feature module");
   assert(chatDraftSource.includes("Draft goal") && chatDraftSource.includes("Ask"), "SPA exposes Ask and Draft goal as explicit modes");
-  assert(chatDraftSource.includes("Accept draft") && chatDraftSource.includes("Discard draft"), "SPA draft lifecycle has visible accept and discard controls");
+  assert(
+    chatDraftSource.includes("Accept plan") && chatDraftSource.includes("Accept into plan") && chatDraftSource.includes("Discard"),
+    "SPA draft lifecycle has visible accept and discard controls",
+  );
   assert(!appSource.includes("@ai-sdk/react"), "SPA does not call AI SDK useChat directly");
   assert(!appSource.includes("assistant-ui"), "SPA does not replace chat with assistant-ui directly");
   assert(serverSource.includes('url.pathname === "/api/chat"'), "gateway owns /api/chat handling");
@@ -572,6 +575,7 @@ async function assertOperatorWorkflowRender() {
       savedAt: "2026-05-12T12:00:00.000Z",
       response: chatGoalDraftResponse,
       goalDraft,
+      planDraft: null,
       runId: "chat-run-smoke",
     };
     const commandMarkup = renderToStaticMarkup(
@@ -589,9 +593,12 @@ async function assertOperatorWorkflowRender() {
         latestResponse: chatGoalDraftResponse,
         chatRun: { run_id: "chat-run-smoke", status: "done", steps: [{ stage: "journaling_turns" }] },
         goalDraft,
+        planDraft: null,
         goalSubmitBusy: false,
         goalSubmitError: null,
         goalSubmitResult: undefined,
+        selectedPlanId: "plan-smoke",
+        selectedPlan: { title: "Smoke plan", phase: "drafting_goals" },
         selectedGoalId: "",
         selectedGoal: null,
         sessionId: "operator:default",
@@ -600,15 +607,18 @@ async function assertOperatorWorkflowRender() {
         onInputChange: () => {},
         onSend: () => {},
         onSubmitGoalDraft: () => {},
+        onAcceptGoalIntoPlan: () => {},
         onDiscardGoalDraft: () => {},
+        onAcceptPlanDraft: () => {},
+        onDiscardPlanDraft: () => {},
         onUpdateGoalDraftField: () => {},
         onClear: () => {},
       }),
     );
-    for (const expected of ["Review goal draft", "Plan", "Assistant", "Context: workspace", "Draft: Goal draft", "Evidence requirements", "Edit draft"]) {
+    for (const expected of ["Review goal draft", "Plan: Smoke plan", "Goal focus: none", "Assistant", "Draft: Goal draft", "Evidence requirements", "Edit draft"]) {
       assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
     }
-    assert(commandMarkup.includes("Accept draft"), "command panel exposes a direct draft acceptance action");
+    assert(commandMarkup.includes("Accept into plan"), "command panel exposes a direct draft acceptance action");
     assert(!commandMarkup.includes("operator:default"), "command panel hides raw chat session ids");
     assertNoCliCoverageOrDebugInventory(commandMarkup, "command panel goal-submit markup");
     assert(!commandMarkup.includes("<pre>"), "command panel does not render raw draft JSON inline");
@@ -690,7 +700,7 @@ async function assertOperatorWorkflowRender() {
         onOpenGraph: () => {},
       }),
     );
-    for (const expected of ["Current goal", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Cancel goal"]) {
+    for (const expected of ["Goal focus", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Cancel goal"]) {
       assert(goalContextMarkup.includes(expected), `goal context picker includes ${expected}`);
     }
     assert(goalContextMarkup.includes("Cancel this goal."), "goal picker labels cancellation directly");
@@ -1320,11 +1330,14 @@ async function assertOperatorWorkflowRender() {
 
 async function assertChatApi() {
   const objective = "Draft a smoke-test plan for the control gateway chat UI.";
+  const planContextId = "018f8f2f-1fd8-7688-bb12-8bfb6b756701";
   const response = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      session_id: "operator:default",
       mode: "draft_plan",
+      plan_id: planContextId,
       messages: [{ role: "user", content: objective }],
     }),
   });
@@ -1336,16 +1349,36 @@ async function assertChatApi() {
   assert(draft, "chat returns plan draft");
   assertCompactDraftPayload(draft, "plan draft");
   assertEqual(draft.kind, "plan_draft", "plan draft compact payload records draft kind");
+  assertEqual(body.plan_id, planContextId, "chat response preserves selected plan context");
+  assertEqual(draft.plan_id, planContextId, "plan draft keeps selected plan id for staged acceptance");
+  assert(draft.allowed_actions.includes("accept_plan_draft"), "plan draft exposes explicit phase action");
   assertEqual(draft.summary, objective, "plan draft summary preserves operator request");
-  assert(!("authoring" in draft), "plan draft compact payload omits full authoring details");
+  assert(Array.isArray(draft.allowed_actions), "plan draft compact payload exposes phase actions instead of raw workflow mutation");
   assert(!("initial_tasks" in draft), "plan draft compact payload omits executable task details");
   assertEqual(body.draft_summary.plan_draft.preview, objective, "plan draft summary exposes concise preview");
+  assertEqual(body.draft_refs.plan_draft.plan_id, planContextId, "plan draft ref preserves plan id");
   assertEqual(body.session_id, "operator:default", "chat response returns durable session id");
   assert(body.run_id, "chat response returns a run id");
   assertEqual(body.chat_run.status, "done", "chat response includes completed operational trace");
   assertEqual(body.chat_run.stage, "done", "chat response includes compact completed run status");
   assertEqual(body.chat_log.backend, "jsonl", "chat falls back to local JSONL when goal-store is unavailable");
   assertEqual(body.chat_log.durable, true, "chat JSONL fallback is durable for the local server");
+
+  const workspacePlanResponse = await fetch(`${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      session_id: "plan:workspace-plan",
+      mode: "draft_plan",
+      messages: [{ role: "user", content: "Draft from the workspace intake plan without a durable plan id." }],
+    }),
+  });
+  assert(workspacePlanResponse.ok, "workspace intake plan chat returns ok");
+  const workspacePlanBody = await workspacePlanResponse.json();
+  const workspaceDraft = workspacePlanBody.drafts.plan_draft;
+  assert(workspaceDraft, "workspace intake plan chat returns a plan draft");
+  assertEqual(workspacePlanBody.plan_id, null, "workspace intake plan does not invent a durable plan id");
+  assertEqual(workspaceDraft.plan_id, undefined, "workspace intake plan draft omits durable plan id");
 
   const goalObjective = "Ship concise GoalSpec drafts through the control gateway.";
   const goalResponse = await fetch(`${baseUrl}/api/chat`, {
@@ -1376,6 +1409,7 @@ async function assertChatApi() {
   assert(traceResponse.ok, "chat run trace api returns ok");
   const trace = await traceResponse.json();
   assertEqual(trace.run_id, body.run_id, "chat run trace preserves run id");
+  assertEqual(trace.plan_id, planContextId, "chat run trace preserves plan id");
   assertEqual(trace.status, "done", "chat run trace reports done");
   assert(trace.steps.some((step) => step.stage === "using_stub"), "chat run trace exposes backend/stub stage");
 
@@ -1410,7 +1444,7 @@ async function assertDurableChatSessionApi() {
   assertEqual(body.messages[0].role, "user", "chat session first turn is user");
   assertEqual(body.messages[0].content, "Draft a smoke-test plan for the control gateway chat UI.", "chat session preserves user prompt");
   assertEqual(body.messages[1].role, "assistant", "chat session second turn is assistant");
-  assert(String(body.messages[1].content).includes("durable plan payload"), "chat session preserves assistant response");
+  assert(String(body.messages[1].content).includes("Plan draft ready"), "chat session preserves assistant response");
 }
 
 async function assertChatApiDiscoversRegisteredModel() {
@@ -1702,6 +1736,51 @@ async function assertBackendBackedControlSurfaces() {
   const thunkId = "018f8f2f-1fd8-7688-bb12-8bfb6b756777";
   const planId = "plan-smoke-compile";
   const approvalId = "approval-prod-deploy";
+  const planRevisionRequests = [];
+  const acceptedPlanDrafts = [];
+  let planRecord = {
+    id: planId,
+    title: "Backend-backed smoke plan",
+    objective: "Exercise real control-plane projections",
+    status: "draft",
+    phase: "drafting_plan",
+    mode: "durable_plan",
+    version: 1,
+    current: {
+      version: 1,
+      author: "operator",
+      summary: "Initial smoke plan",
+      authoring: {
+        intake_summary: "Exercise real control-plane projections",
+        acceptance_evidence: ["phase actions are visible"],
+        constraints: [],
+        assumptions: [],
+        out_of_scope: [],
+        open_questions: [],
+      },
+      plan: {
+        summary: "Plan-first smoke flow",
+        subgoals: [],
+        distribution_notes: [],
+      },
+      initial_tasks: [],
+      questions: [],
+      decisions: [],
+    },
+    action_items: [
+      {
+        action_id: `plan:${planId}:review_plan_draft:1`,
+        plan_id: planId,
+        kind: "review_plan_draft",
+        title: "Review plan draft",
+        reason: "The plan needs an accepted structure before goals are staged for execution.",
+        allowed_actions: ["accept_plan_draft", "draft_goal", "cancel"],
+        required_fields: [],
+        status: "pending",
+      },
+    ],
+    revisions: [],
+  };
   const calls = {
     goalStore: [],
     restate: [],
@@ -2069,15 +2148,65 @@ async function assertBackendBackedControlSurfaces() {
     }
     if (request.method === "GET" && request.path === "/goal-store/plans") {
       respondJson(res, 200, {
-        data: [
+        plans: [
           {
             plan_id: planId,
             title: "Backend-backed smoke plan",
             status: "ready_for_review",
+            phase: "accepting",
             mode: "durable_plan",
+            open_question_count: 0,
+            action_item_count: 1,
           },
         ],
       });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/plans/${planId}`) {
+      respondJson(res, 200, { found: true, plan: planRecord });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/goal-store/plans") {
+      acceptedPlanDrafts.push(request.body);
+      const acceptedPlanId = request.body?.plan_id ?? "018f8f2f-1fd8-7688-bb12-8bfb6b756650";
+      respondJson(res, 200, {
+        found: true,
+        plan: {
+          ...planRecord,
+          ...request.body,
+          id: acceptedPlanId,
+          status: request.body?.status ?? "approved",
+          phase: "accepting",
+        },
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/goal-store/plans/${planId}/revisions`) {
+      planRevisionRequests.push(request.body);
+      planRecord = {
+        ...planRecord,
+        status: request.body?.status ?? "approved",
+        phase: request.body?.status === "archived" ? "cancelled" : "accepting",
+        version: planRecord.version + 1,
+        action_items: [
+          {
+            action_id: `plan:${planId}:submit_goal:${planRecord.version + 1}`,
+            plan_id: planId,
+            kind: "submit_goal",
+            title: "Submit accepted goals",
+            reason: "The plan has been accepted and can be compiled into executable goal work.",
+            allowed_actions: ["submit_goal", "draft_goal", "cancel"],
+            required_fields: [],
+            status: "pending",
+          },
+        ],
+        current: {
+          ...planRecord.current,
+          ...request.body,
+          version: planRecord.version + 1,
+        },
+      };
+      respondJson(res, 200, { found: true, plan: planRecord });
       return;
     }
     if (request.method === "POST" && request.path === `/goal-store/plans/${planId}/compile`) {
@@ -2398,11 +2527,70 @@ async function assertBackendBackedControlSurfaces() {
     const submitRunCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${submitBody.data.goal_id}/run`);
     assertEqual(submitRunCall?.body?.plan?.subgoals?.[0]?.owner_role, "planner", "normalized submit payload reaches Restate");
 
+    const planListResponse = await fetch(`${backendBaseUrl}/api/plans?limit=100`);
+    assert(planListResponse.ok, "plan list projection returns ok");
+    const planListBody = await planListResponse.json();
+    assertEqual(planListBody.plans[0].plan_id, planId, "plan list projection preserves plan id");
+    assertEqual(planListBody.plans[0].phase, "accepting", "plan list projection exposes explicit phase");
+    assert(
+      planListBody.plans[0].actions.some((action) => action.kind === "review_plan_draft" && action.allowed_actions.includes("accept_plan_draft")),
+      "plan list projection exposes explicit phase actions",
+    );
+
+    const planDraftObjective = "Stage a plan-first smoke workflow before goals are submitted.";
+    const planDraftResponse = await fetch(`${backendBaseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: `plan:${planId}`,
+        plan_id: planId,
+        mode: "draft_plan",
+        messages: [{ role: "user", content: planDraftObjective }],
+      }),
+    });
+    assert(planDraftResponse.ok, "backend-backed plan chat draft returns ok");
+    const planDraftBody = await planDraftResponse.json();
+    const planDraft = planDraftBody.drafts.plan_draft;
+    assertCompactDraftPayload(planDraft, "backend-backed plan draft");
+    assertEqual(planDraftBody.plan_id, planId, "plan chat response preserves selected plan id");
+    assertEqual(planDraft.plan_id, planId, "plan draft compact payload preserves selected plan id");
+    assert(planDraft.allowed_actions.includes("accept_plan_draft"), "plan draft exposes accept phase action");
+    assertEqual(planDraftBody.draft_refs.plan_draft.plan_id, planId, "plan draft ref preserves plan id");
+    const planChatTurn = chatTurns.find((turn) => turn.session_id === `plan:${planId}` && turn.role === "user");
+    assertEqual(planChatTurn?.plan_id, planId, "goal-store chat turn preserves plan id");
+
+    const acceptPlanDraftResponse = await fetch(`${backendBaseUrl}/api/plans/drafts/${encodeURIComponent(planDraft.draft_id)}/accept`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        plan_id: planId,
+        acceptance: "revise_plan",
+        operator: "smoke",
+        summary: "Accepted the staged smoke plan.",
+      }),
+    });
+    assert(acceptPlanDraftResponse.ok, "plan draft acceptance api returns ok");
+    const acceptPlanDraftBody = await acceptPlanDraftResponse.json();
+    assertEqual(acceptPlanDraftBody.ok, true, "plan draft acceptance reports success");
+    assertEqual(acceptPlanDraftBody.plan_id, planId, "plan draft acceptance preserves plan id");
+    assertEqual(planRevisionRequests[0].status, "approved", "plan draft acceptance moves the plan into accepted phase");
+    assertEqual(planRevisionRequests[0].plan.summary, "Chat-authored durable plan draft.", "plan draft acceptance forwards full server-side plan payload");
+    assertEqual(acceptedPlanDrafts.length, 0, "accepting into an existing plan uses revisions rather than creating a sibling plan");
+    assert(operatorEvents.some((event) => event.transition === "plan_draft_accepted" && event.actor?.plan_id === planId), "plan draft acceptance appends a plan-scoped event");
+
+    const planActionsResponse = await fetch(`${backendBaseUrl}/api/plans/${encodeURIComponent(planId)}/actions`);
+    assert(planActionsResponse.ok, "plan action list returns ok");
+    const planActionsBody = await planActionsResponse.json();
+    assertEqual(planActionsBody.phase, "accepting", "plan action list reflects accepted plan phase");
+    assert(planActionsBody.actions.some((action) => action.kind === "submit_goal"), "accepted plan exposes submit-goal action");
+
     const draftObjective = "Submit a compact chat draft through the server-side draft store.";
     const chatDraftResponse = await fetch(`${backendBaseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        session_id: "operator:default",
+        plan_id: planId,
         mode: "draft_goal",
         messages: [{ role: "user", content: draftObjective }],
       }),
@@ -2411,6 +2599,7 @@ async function assertBackendBackedControlSurfaces() {
     const chatDraftBody = await chatDraftResponse.json();
     const compactDraft = chatDraftBody.drafts.goal_spec;
     assertCompactDraftPayload(compactDraft, "backend-backed goal draft");
+    assertEqual(compactDraft.plan_id, planId, "goal draft preserves selected plan id");
     assert(compactDraft.draft_id, "backend-backed goal draft includes server-side draft id");
     assert(!("root_budget" in compactDraft), "compact goal draft omits default budget payload");
     const activeDraftSessionResponse = await fetch(`${backendBaseUrl}/api/chat/session?session_id=operator%3Adefault`);

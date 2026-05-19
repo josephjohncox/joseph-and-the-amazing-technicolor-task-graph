@@ -2271,6 +2271,7 @@ async fn load_plan(state: &AppState, plan_id: PlanId) -> Result<Option<DurablePl
 }
 
 async fn upsert_plan_record(state: &AppState, plan: &DurablePlan) -> anyhow::Result<()> {
+    plan.validate_action_items()?;
     if let Some(pool) = &state.postgres {
         upsert_plan_postgres(pool, plan).await?;
     } else if let Err(error) = append_journal(state, JournalEntry::Plan(plan.clone())).await {
@@ -3315,8 +3316,9 @@ mod tests {
         EventSourceKind, GoalEventKind, GoalEventRecord, GoalSpec, GoalState,
         GoalStoreArtifactRecordRequest, GoalStoreSnapshotUpsertRequest, OperatorActionKind,
         OperatorActorKind, OperatorActorRef, OperatorEventAppendRequest, OperatorTransition,
-        PlanCandidateSelectionRequest, PlanCandidateVoteRequest, PlanCompileRequest,
-        PlanDraftRequest, ProtocolMetadata, TaskStatus, WorkerKind,
+        PlanActionKind, PlanCandidateSelectionRequest, PlanCandidateVoteRequest,
+        PlanCompileRequest, PlanDraftRequest, PlanPhase, PlanRevisionRequest, PlanStatus,
+        ProtocolMetadata, TaskStatus, WorkerKind,
     };
     use tokio::sync::RwLock;
 
@@ -3723,6 +3725,122 @@ mod tests {
         assert!(store.plans.contains_key(&plan_id));
         assert!(store.drafts.contains_key(&plan_id));
         assert_eq!(store.drafts[&plan_id].status, "draft");
+        assert_eq!(store.plans[&plan_id].phase, PlanPhase::DraftingPlan);
+        assert_eq!(
+            store.plans[&plan_id].action_items[0].kind,
+            PlanActionKind::ReviewPlanDraft
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_projection_preserves_phase_actions_across_revise_and_compile() {
+        let state = AppState {
+            store: Arc::new(RwLock::new(GoalStore::default())),
+            journal_path: None,
+            backend: GoalStoreBackend::Memory,
+            postgres: None,
+        };
+        let plan = coat_domain::DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: None,
+            title: "Phase action lifecycle".to_string(),
+            objective: "Keep plan phase action items queryable through goal-store.".to_string(),
+            repo: None,
+            prompt: "Draft plan, accept it, and compile a goal.".to_string(),
+            mode: Default::default(),
+            status: None,
+            author: None,
+            summary: None,
+            authoring: Default::default(),
+            plan: Default::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        let plan_id = plan.id;
+        upsert_plan_record(&state, &plan).await.unwrap();
+
+        let mut revised = super::load_plan(&state, plan_id)
+            .await
+            .unwrap()
+            .expect("stored plan");
+        revised.apply_revision(PlanRevisionRequest {
+            author: Some("operator".to_string()),
+            summary: Some("Accepted draft plan".to_string()),
+            operator_message: None,
+            status: Some(PlanStatus::Approved),
+            authoring: None,
+            plan: None,
+            initial_tasks: None,
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        upsert_plan_record(&state, &revised).await.unwrap();
+
+        let accepting = super::load_plan(&state, plan_id)
+            .await
+            .unwrap()
+            .expect("accepted plan");
+        assert_eq!(accepting.phase, PlanPhase::Accepting);
+        assert_eq!(accepting.action_items[0].kind, PlanActionKind::SubmitGoal);
+        assert!(!accepting.action_items[0].allowed_actions.is_empty());
+
+        let mut compiled = accepting;
+        let result = compiled.compile_goal(PlanCompileRequest {
+            plan_id: Some(plan_id),
+            goal_id: None,
+            title_override: None,
+            objective_override: None,
+            strict_review: false,
+            human_steered: false,
+            enable_branching: false,
+        });
+        upsert_plan_record(&state, &compiled).await.unwrap();
+
+        let stored = super::load_plan(&state, plan_id)
+            .await
+            .unwrap()
+            .expect("compiled plan");
+        assert_eq!(stored.phase, PlanPhase::Executing);
+        assert_eq!(stored.compiled_goal_id, Some(result.goal.id));
+        assert_eq!(stored.action_items[0].goal_id, Some(result.goal.id));
+        assert_eq!(stored.action_items[0].kind, PlanActionKind::ReviewEvidence);
+    }
+
+    #[tokio::test]
+    async fn plan_projection_rejects_action_items_without_allowed_actions() {
+        let state = AppState {
+            store: Arc::new(RwLock::new(GoalStore::default())),
+            journal_path: None,
+            backend: GoalStoreBackend::Memory,
+            postgres: None,
+        };
+        let mut plan = coat_domain::DurablePlan::draft(PlanDraftRequest {
+            plan_id: None,
+            source_plan_id: None,
+            title: "Invalid action item".to_string(),
+            objective: "Reject plan projections without operator actions.".to_string(),
+            repo: None,
+            prompt: "Create an invalid plan action.".to_string(),
+            mode: Default::default(),
+            status: None,
+            author: None,
+            summary: None,
+            authoring: Default::default(),
+            plan: Default::default(),
+            initial_tasks: Vec::new(),
+            questions: Vec::new(),
+            decisions: Vec::new(),
+        });
+        plan.action_items[0].allowed_actions.clear();
+
+        let error = upsert_plan_record(&state, &plan)
+            .await
+            .expect_err("invalid plan action should be rejected");
+        assert!(
+            error.to_string().contains("has no allowed actions"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

@@ -294,10 +294,11 @@ The PR gate runs every checked-in spec under `scenarios/e2e` with
 scenario uses local services, stub runner behavior, fixed seeds, bounded timeouts,
 and explicit fixtures. It should not require live model credentials, provider
 auth, real web search, or external SaaS. When the run drives the browser, it
-must assert the same goal-selection model operators use: the SPA top-bar
-current goal is the source for Chat, Task Graph, Flow Control, Memory, and
-Human Queue, and the TUI sends the selected goal through control-gateway
-chat/session APIs instead of asking the operator to retype raw UUIDs.
+must assert the same plan-first selection model operators use: the SPA top-bar
+current plan is the chat/workflow workspace, the selected goal is nested focus
+for Task Graph, Flow Control, Memory, and Human Queue, and the TUI sends selected
+plan plus optional goal context through control-gateway chat/session APIs instead
+of asking the operator to retype raw UUIDs.
 Scenario checks for blocked, failed, waiting, approval, or budget-exhausted
 states must also assert the progress invariant: human waits have delayed
 compute thunks with typed prompts and continuation refs, and blocked work
@@ -785,9 +786,9 @@ Set `COAT_CONTROL_GATEWAY_TOKEN` and `COAT_CONTROL_MCP_TOKEN` when exposing the 
 
 The Chat tab is always routed through the control gateway backend. The browser calls `/api/chat`; it does not call Ollama, vLLM, OpenAI, or other model providers directly.
 
-Chat inherits the top-bar current goal. With a goal selected, chat history and requests use the `goal:<goal_id>` session and send that goal id as context; without one, chat uses the operator workspace session.
+Chat inherits the top-bar current plan. With a plan selected, chat history and requests use the `plan:<plan_id>` session and send that plan id as context; a selected goal is sent as nested focus. Without a durable plan, chat uses the workspace intake session.
 
-Use the chat mode switcher for the three standard authoring paths: Plan, Goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
+Use the chat mode switcher for the standard authoring paths: Ask, Draft plan, Draft goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
 
 While a chat request is running, open **Chat activity** in the SPA to inspect the operational trace: request mode, session, selected goal, backend resolution, model/stub stage, journaling status, and errors. This is an execution trace, not hidden model reasoning.
 

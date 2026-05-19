@@ -6,7 +6,16 @@
  *
  * Architecture reference: docs/design-docs/110-control-gateway-spa.md
  */
-import type { ChatMessage, ChatResponse, ChatRunTrace, JsonRecord, OperatorGoalDetail, OperatorWorkspaceSnapshot } from "./types";
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatRunTrace,
+  JsonRecord,
+  OperatorGoalDetail,
+  OperatorWorkspaceSnapshot,
+  PlanDetailResponse,
+  PlanListResponse,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -72,8 +81,24 @@ export function operatorGoalDetail(goalId: string): Promise<OperatorGoalDetail> 
   return api<OperatorGoalDetail>(`/api/operator/goals/${encodeURIComponent(goalId)}`);
 }
 
-export function plans(): Promise<unknown> {
-  return api("/api/plans?limit=100");
+export function plans(): Promise<PlanListResponse> {
+  return api<PlanListResponse>("/api/plans?limit=100");
+}
+
+export function planDetail(planId: string): Promise<PlanDetailResponse> {
+  return api<PlanDetailResponse>(`/api/plans/${encodeURIComponent(planId)}`);
+}
+
+export function planActions(planId: string): Promise<unknown> {
+  return api(`/api/plans/${encodeURIComponent(planId)}/actions`);
+}
+
+export function resolvePlanAction(planId: string, actionId: string, body: JsonRecord): Promise<unknown> {
+  return api(`/api/plans/${encodeURIComponent(planId)}/actions/${encodeURIComponent(actionId)}/resolve`, jsonPost(body));
+}
+
+export function acceptPlanDraft(draftId: string, body: JsonRecord): Promise<unknown> {
+  return api(`/api/plans/drafts/${encodeURIComponent(draftId)}/accept`, jsonPost(body));
 }
 
 export function memorySearch(body: JsonRecord): Promise<unknown> {
@@ -100,8 +125,15 @@ export function memoryEvents(goalId: string): Promise<unknown> {
   return api(`/api/memory/events/${encodeURIComponent(goalId)}`);
 }
 
-export function chat(sessionId: string, mode: string, goalId: string, prompt: string, runId?: string): Promise<ChatResponse> {
-  return api<ChatResponse>("/api/chat", jsonPost({ session_id: sessionId, run_id: runId, mode, goal_id: goalId || undefined, prompt }));
+export function chat(sessionId: string, mode: string, goalId: string, prompt: string, runId?: string, planId?: string): Promise<ChatResponse> {
+  return api<ChatResponse>("/api/chat", jsonPost({
+    session_id: sessionId,
+    run_id: runId,
+    mode,
+    plan_id: planId || undefined,
+    goal_id: goalId || undefined,
+    prompt,
+  }));
 }
 
 export function chatSession(sessionId: string): Promise<{ session_id: string; messages: ChatMessage[] }> {

@@ -50,8 +50,8 @@ struct ChatLine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatMode {
     General,
-    Goal,
     Plan,
+    Goal,
     Search,
 }
 
@@ -189,6 +189,7 @@ struct ActiveGoalDraft {
     goal_spec: Value,
     summary: GoalDraftSummary,
     session_id: String,
+    selected_plan_id: Option<String>,
     selected_goal_id: Option<String>,
 }
 
@@ -213,9 +214,9 @@ struct PendingGatewayRequest {
 impl ChatMode {
     fn next(self) -> Self {
         match self {
-            Self::General => Self::Goal,
-            Self::Goal => Self::Plan,
-            Self::Plan => Self::Search,
+            Self::General => Self::Plan,
+            Self::Plan => Self::Goal,
+            Self::Goal => Self::Search,
             Self::Search => Self::General,
         }
     }
@@ -233,7 +234,7 @@ impl ChatMode {
         match self {
             Self::General => "ask",
             Self::Goal => "draft goal",
-            Self::Plan => "plan",
+            Self::Plan => "draft plan",
             Self::Search => "search",
         }
     }
@@ -255,6 +256,8 @@ struct DashboardSummary {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct GoalSummary {
     id: String,
+    plan_id: Option<String>,
+    plan_phase_id: Option<String>,
     title: String,
     status: String,
     progress: f64,
@@ -268,10 +271,29 @@ struct GoalSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GoalDraftSummary {
+    plan_id: Option<String>,
     title: String,
     objective: String,
     initial_tasks: usize,
     done_criteria: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PlanSummary {
+    id: String,
+    source_plan_id: Option<String>,
+    title: String,
+    objective: String,
+    status: String,
+    mode: Option<String>,
+    phase: String,
+    version: Option<u64>,
+    subgoal_count: usize,
+    goal_count: usize,
+    open_question_count: usize,
+    compiled_goal_id: Option<String>,
+    current_action: Option<String>,
+    updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -280,9 +302,13 @@ struct ApprovalSummary {
     status: String,
     action: String,
     risk: Option<String>,
+    plan_id: Option<String>,
     goal_id: Option<String>,
     task_id: Option<String>,
     created_at: Option<String>,
+    allowed_actions: Vec<String>,
+    required_fields: Vec<String>,
+    evidence_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -346,14 +372,14 @@ struct ActionResultSummary {
 impl GoalDraftSummary {
     fn chat_preview(&self) -> String {
         format!(
-            "Goal draft ready.\nTitle: {}\nObjective: {}\nWork items: {}\nEvidence: {}\nF5 or Ctrl-G submits this goal. Ctrl-D discards it.",
+            "Goal draft ready.\nTitle: {}\nObjective: {}\nWork items: {}\nEvidence: {}\nAccept/submit: F5 or Ctrl-G. Discard: Ctrl-D.",
             self.title, self.objective, self.initial_tasks, self.done_criteria
         )
     }
 
     fn submit_confirmation(&self, goal_id: &str) -> String {
         format!(
-            "Goal submitted and selected.\nReference: {}\nTitle: {}\nObjective: {}\nWork items: {}\nEvidence: {}",
+            "Accepted draft and submitted goal.\nReference: {}\nTitle: {}\nObjective: {}\nWork items: {}\nEvidence: {}",
             short_id(goal_id),
             self.title,
             self.objective,
@@ -367,6 +393,7 @@ struct App {
     config: TuiConfig,
     client: reqwest::Client,
     dashboard: DashboardSummary,
+    plans: Vec<PlanSummary>,
     goals: Vec<GoalSummary>,
     approvals: Vec<ApprovalSummary>,
     events: Vec<EventSummary>,
@@ -379,6 +406,7 @@ struct App {
     selected_goal_graph_nodes: Vec<GraphNodeSummary>,
     selected_goal_worker_runs: Vec<WorkerRunSummary>,
     selected_goal_evidence: Vec<EvidenceSummary>,
+    selected_plan_id: Option<String>,
     selected_goal_id: Option<String>,
     selected_goal_snapshot: Option<Value>,
     selected_goal_outline: Vec<String>,
@@ -414,6 +442,7 @@ impl App {
         Ok(Self {
             client,
             dashboard: DashboardSummary::default(),
+            plans: Vec::new(),
             goals: Vec::new(),
             approvals: Vec::new(),
             events: Vec::new(),
@@ -426,6 +455,7 @@ impl App {
             selected_goal_graph_nodes: Vec::new(),
             selected_goal_worker_runs: Vec::new(),
             selected_goal_evidence: Vec::new(),
+            selected_plan_id: None,
             selected_goal_id,
             selected_goal_snapshot: None,
             selected_goal_outline: Vec::new(),
@@ -468,19 +498,34 @@ impl App {
         };
         let operator_workspace = self.get_json(&operator_path).await?;
         let goals = self.get_json("/api/operator/goals?limit=100").await?;
+        let mut status = "dashboard refreshed".to_string();
+        let plans_result = self.get_json("/api/plans?limit=100").await;
+        let workspace_plans = plan_summaries_from_value(&operator_workspace);
+        let endpoint_plans = plans_result
+            .as_ref()
+            .map(plan_summaries_from_value)
+            .unwrap_or_default();
+        self.plans = if workspace_plans.is_empty() {
+            endpoint_plans
+        } else {
+            merge_plan_summaries(workspace_plans, endpoint_plans)
+        };
+        if let Err(error) = plans_result.as_ref() {
+            status = format!("dashboard refreshed; plans pending: {error}");
+        }
         let workspace_goals = goal_summaries_from_value(&operator_workspace);
         self.goals = if workspace_goals.is_empty() {
             goal_summaries_from_value(&goals)
         } else {
             workspace_goals
         };
+        self.reconcile_selected_plan();
         self.approvals = operator_action_summaries_from_value(&operator_workspace);
         self.events = event_summaries_from_value(&operator_workspace);
         self.event_sources = event_source_summaries_from_value(&operator_workspace);
         self.graph_nodes = graph_node_summaries_from_value(&operator_workspace);
         self.worker_runs = worker_run_summaries_from_value(&operator_workspace);
         self.evidence = evidence_summaries_from_value(&operator_workspace);
-        let mut status = "dashboard refreshed".to_string();
         if let Some(selected_goal) = operator_workspace.get("selected_goal")
             && !selected_goal.is_null()
         {
@@ -508,7 +553,8 @@ impl App {
         } else {
             self.action_index = self.action_index.min(action_count - 1);
         }
-        self.dashboard = dashboard_summary(&operator_workspace, &self.goals);
+        self.reconcile_selected_plan();
+        self.dashboard = dashboard_summary(&operator_workspace, &self.goals, &self.plans);
         self.last_refresh = Some(Instant::now());
         self.status = status;
         Ok(())
@@ -550,7 +596,7 @@ impl App {
         if self.messages.is_empty() {
             self.messages.push(ChatLine {
                 role: "assistant".to_string(),
-                content: "Ask about the workspace, draft a plan, or create a goal. Ctrl-S or Ctrl-Enter sends chat; Enter acts on the focused panel.".to_string(),
+                content: "Ask first, draft a plan, draft goals inside that plan, then accept staged work. Ctrl-S or Ctrl-Enter sends chat; Enter acts on the focused panel.".to_string(),
             });
         }
         Ok(())
@@ -579,6 +625,7 @@ impl App {
         let durable_messages = durable_chat_lines(&self.messages);
         let payload = chat_request_payload(
             self.current_session_id(),
+            self.selected_plan_id.clone(),
             self.selected_goal_id.clone(),
             self.mode,
             &durable_messages,
@@ -644,6 +691,7 @@ impl App {
                 if let Some(draft) = active_goal_draft_from_response(&value) {
                     self.active_goal_draft = Some(ActiveGoalDraft {
                         session_id: self.current_session_id(),
+                        selected_plan_id: self.selected_plan_id.clone(),
                         selected_goal_id: self.selected_goal_id.clone(),
                         ..draft.clone()
                     });
@@ -691,10 +739,12 @@ impl App {
             return Ok(());
         };
         if draft.session_id != self.current_session_id()
+            || draft.selected_plan_id != self.selected_plan_id
             || draft.selected_goal_id != self.selected_goal_id
         {
             self.status =
-                "goal draft belongs to another chat context; switch back or discard it".to_string();
+                "goal draft belongs to another plan or goal context; switch back or discard it"
+                    .to_string();
             return Ok(());
         }
 
@@ -737,6 +787,12 @@ impl App {
                     });
                 if goal_id != "assigned by coordinator" {
                     self.selected_goal_id = Some(goal_id.clone());
+                }
+                if let Some(plan_id) = draft_summary
+                    .as_ref()
+                    .and_then(|summary| summary.plan_id.clone())
+                {
+                    self.selected_plan_id = Some(plan_id);
                 }
                 self.active_goal_draft = None;
                 let mut status = format!("goal submitted: {}", short_id(&goal_id));
@@ -785,6 +841,12 @@ impl App {
                 return selected;
             }
             return action_rows_for_goal(&self.approvals, goal_id, false);
+        }
+        if let Some(plan_id) = self.selected_plan_id.as_deref() {
+            let selected = action_rows_for_plan(&self.approvals, plan_id, &self.goals, true);
+            if !selected.is_empty() {
+                return selected;
+            }
         }
         self.approvals.clone()
     }
@@ -1101,6 +1163,13 @@ impl App {
     }
 
     fn current_session_id(&self) -> String {
+        if let Some(plan_id) = self
+            .selected_plan_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return plan_chat_session_id_for(plan_id);
+        }
         if self
             .selected_goal_id
             .as_deref()
@@ -1117,6 +1186,13 @@ impl App {
     }
 
     fn display_session_id(&self) -> String {
+        if let Some(plan_id) = self
+            .selected_plan_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return format!("plan:{}", short_id(plan_id));
+        }
         if let Some(goal_id) = self
             .selected_goal_id
             .as_deref()
@@ -1132,6 +1208,60 @@ impl App {
         self.goals.iter().find(|goal| goal.id == selected)
     }
 
+    fn selected_plan(&self) -> Option<&PlanSummary> {
+        let selected = self.selected_plan_id.as_deref()?;
+        self.plans.iter().find(|plan| plan.id == selected)
+    }
+
+    fn selected_plan_phase(&self) -> String {
+        self.selected_plan()
+            .map(|plan| plan.phase.clone())
+            .unwrap_or_else(|| "asking".to_string())
+    }
+
+    fn reconcile_selected_plan(&mut self) {
+        if let Some(plan_id) = self.selected_goal().and_then(|goal| goal.plan_id.clone()) {
+            self.selected_plan_id = Some(plan_id);
+            return;
+        }
+        if self
+            .selected_plan_id
+            .as_deref()
+            .is_some_and(|selected| self.plans.iter().any(|plan| plan.id == selected))
+        {
+            return;
+        }
+        self.selected_plan_id = self.plans.first().map(|plan| plan.id.clone());
+    }
+
+    async fn select_plan_by_step(&mut self, step: isize) -> anyhow::Result<()> {
+        let Some(plan_id) = plan_id_after_step(&self.plans, self.selected_plan_id.as_deref(), step)
+        else {
+            self.status = "no plans available to select".to_string();
+            return Ok(());
+        };
+        self.selected_plan_id = Some(plan_id.clone());
+        if self.selected_goal().is_some_and(|goal| {
+            goal.plan_id
+                .as_deref()
+                .is_some_and(|goal_plan_id| goal_plan_id != plan_id)
+        }) {
+            self.selected_goal_id = None;
+            self.selected_goal_snapshot = None;
+            self.selected_goal_outline.clear();
+            self.selected_goal_approvals.clear();
+            self.selected_goal_events.clear();
+            self.selected_goal_graph_nodes.clear();
+            self.selected_goal_worker_runs.clear();
+            self.selected_goal_evidence.clear();
+        }
+        self.active_goal_draft = None;
+        self.cancel_goal_confirmation = None;
+        self.dashboard_scroll = 0;
+        self.status = format!("selected plan: {}", short_id(&plan_id));
+        self.load_chat_session().await
+    }
+
     async fn select_goal_by_step(&mut self, step: isize) -> anyhow::Result<()> {
         let Some(goal_id) = goal_id_after_step(&self.goals, self.selected_goal_id.as_deref(), step)
         else {
@@ -1139,6 +1269,7 @@ impl App {
             return Ok(());
         };
         self.selected_goal_id = Some(goal_id.clone());
+        self.reconcile_selected_plan();
         self.active_goal_draft = None;
         self.cancel_goal_confirmation = None;
         self.dashboard_scroll = 0;
@@ -1195,6 +1326,16 @@ impl App {
                 self.dashboard_scroll = 0;
                 self.status =
                     "opened graph for selected goal; use Ctrl-N/Ctrl-P to change goals".to_string();
+                Ok(())
+            }
+            TuiFocus::Dashboard if self.dashboard_view == DashboardView::Plans => {
+                self.status = if self.active_goal_draft.is_some() {
+                    "review the visible goal draft; F5/Ctrl-G accepts and submits it, Ctrl-D discards"
+                        .to_string()
+                } else {
+                    "plan actions are shown here; use Ctrl-T for Draft plan/Draft goal and Ctrl-S to ask"
+                        .to_string()
+                };
                 Ok(())
             }
             TuiFocus::Dashboard if self.active_goal_draft.is_some() => {
@@ -1401,6 +1542,22 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             }
             Ok(false)
         }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::ALT) => {
+            if app.busy {
+                app.status = "gateway request is running; plan selection is unchanged".to_string();
+            } else if let Err(error) = app.select_plan_by_step(1).await {
+                app.status = format!("selected plan changed; chat reload failed: {error}");
+            }
+            Ok(false)
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::ALT) => {
+            if app.busy {
+                app.status = "gateway request is running; plan selection is unchanged".to_string();
+            } else if let Err(error) = app.select_plan_by_step(-1).await {
+                app.status = format!("selected plan changed; chat reload failed: {error}");
+            }
+            Ok(false)
+        }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.busy {
                 app.status = "gateway request is running; goal selection is unchanged".to_string();
@@ -1433,6 +1590,14 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
                 && dashboard_view_uses_action_queue(app.dashboard_view)
             {
                 app.move_action_selection(-1);
+            } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Plans
+            {
+                if app.busy {
+                    app.status =
+                        "gateway request is running; plan selection is unchanged".to_string();
+                } else if let Err(error) = app.select_plan_by_step(-1).await {
+                    app.status = format!("selected plan changed; chat reload failed: {error}");
+                }
             } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals
             {
                 if app.busy {
@@ -1453,6 +1618,14 @@ async fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
                 && dashboard_view_uses_action_queue(app.dashboard_view)
             {
                 app.move_action_selection(1);
+            } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Plans
+            {
+                if app.busy {
+                    app.status =
+                        "gateway request is running; plan selection is unchanged".to_string();
+                } else if let Err(error) = app.select_plan_by_step(1).await {
+                    app.status = format!("selected plan changed; chat reload failed: {error}");
+                }
             } else if app.focus == TuiFocus::Dashboard && app.dashboard_view == DashboardView::Goals
             {
                 if app.busy {
@@ -1585,6 +1758,16 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ),
     ]);
     let status = Line::from(vec![
+        Span::raw("plan "),
+        Span::styled(plan_header_label(app), Style::default().fg(Color::Cyan)),
+        Span::raw("  phase "),
+        Span::styled(
+            app.selected_plan_phase(),
+            Style::default().fg(phase_color(&app.selected_plan_phase())),
+        ),
+        Span::raw("  goal "),
+        Span::styled(goal_header_label(app), Style::default().fg(Color::Green)),
+        Span::raw("  "),
         Span::raw("mode "),
         Span::styled(app.mode.label(), Style::default().fg(Color::Yellow)),
         Span::raw("  focus "),
@@ -1664,6 +1847,7 @@ fn render_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn overview_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let dashboard = &app.dashboard;
     let mut lines = Vec::new();
+    lines.extend(current_plan_lines(app.selected_plan(), width));
     lines.extend(current_goal_lines(
         app.selected_goal(),
         app.selected_goal_id.as_deref(),
@@ -1718,40 +1902,80 @@ fn plans_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(14).max(20) as usize;
     let mut lines = vec![
         Line::from(Span::styled(
-            "plans",
+            "current plan",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("Start here: ask, draft a plan, then submit a goal when the plan is clear."),
-        Line::from("Ctrl-T changes chat mode. Ctrl-S sends. F5 submits a visible goal draft."),
-        Line::from(""),
+        Line::from("Workflow: Ask -> Draft plan -> Draft goal -> Accept."),
+        Line::from("Alt-N/Alt-P or Up/Down selects plan. Ctrl-N/Ctrl-P selects nested goal."),
+        Line::from("Ctrl-T changes phase mode. Ctrl-S sends chat. Enter acts on focused rows."),
     ];
+    lines.extend(plan_phase_stepper_lines(app.selected_plan(), width));
+    lines.extend(plan_phase_action_lines(app, width));
     if let Some(draft) = app.active_goal_draft.as_ref() {
         lines.extend(goal_draft_dashboard_lines(&draft.summary, width));
-        return lines;
     }
-    lines.push(Line::from(format!(
-        "saved plans {}",
-        app.dashboard.plans_count
-    )));
+    lines.push(Line::from(""));
     lines.push(dashboard_value_line(
-        "next",
-        "Use chat Plan mode for a planning draft, then Draft goal when ready.",
+        "saved",
+        &format!(
+            "{} durable plans",
+            app.plans.len().max(app.dashboard.plans_count)
+        ),
         value_width,
     ));
-    if let Some(goal) = app.selected_goal() {
+    if app.plans.is_empty() {
         lines.push(dashboard_value_line(
-            "context",
-            &format!("planning against {}", goal.title),
+            "next",
+            "Ask in chat, then switch to Draft plan with Ctrl-T.",
             value_width,
         ));
-    } else {
-        lines.push(dashboard_value_line(
-            "context",
-            "workspace planning",
-            value_width,
-        ));
+        return lines;
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "plans",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for plan in &app.plans {
+        let selected = app
+            .selected_plan_id
+            .as_deref()
+            .is_some_and(|selected| selected == plan.id);
+        let marker = if selected { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                marker,
+                Style::default().fg(if selected {
+                    Color::Yellow
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                truncate_text(&plan.title, value_width),
+                Style::default().add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+            ),
+        ]));
+        lines.push(Line::from(format!(
+            "  phase:{} status:{} goals:{} questions:{} {}",
+            plan.phase,
+            plan.status,
+            plan.goal_count,
+            plan.open_question_count,
+            short_id(&plan.id)
+        )));
+        if let Some(action) = plan.current_action.as_deref() {
+            lines.push(dashboard_value_line("  action", action, value_width));
+        }
     }
     lines
 }
@@ -1771,7 +1995,7 @@ fn goals_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::from(""),
     ];
     if app.goals.is_empty() {
-        lines.push(Line::from("No projected goals yet."));
+        lines.push(Line::from("No goals yet."));
         return lines;
     }
     for goal in &app.goals {
@@ -1842,7 +2066,7 @@ fn graph_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::from(""),
     ];
     if nodes.is_empty() {
-        lines.push(Line::from("No task graph nodes are projected yet."));
+        lines.push(Line::from("No task graph nodes yet."));
         return lines;
     }
     for node in nodes.iter().take(40) {
@@ -1880,6 +2104,8 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(15).max(20) as usize;
     let scope = if app.selected_goal_id.is_some() {
         "selected goal"
+    } else if app.selected_plan_id.is_some() {
+        "selected plan"
     } else {
         "all goals"
     };
@@ -1941,6 +2167,27 @@ fn actions_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             row_goal_ref(approval.goal_id.as_deref(), app.selected_goal_id.as_deref()),
             short_optional_ref(approval.task_id.as_deref())
         )));
+        if let Some(plan_id) = approval.plan_id.as_deref() {
+            lines.push(dashboard_value_line(
+                "  plan",
+                &short_id(plan_id),
+                value_width,
+            ));
+        }
+        if !approval.allowed_actions.is_empty() {
+            lines.push(dashboard_value_line(
+                "  actions",
+                &approval.allowed_actions.join(", "),
+                value_width,
+            ));
+        }
+        if !approval.required_fields.is_empty() && selected {
+            lines.push(dashboard_value_line(
+                "  needs",
+                &approval.required_fields.join(", "),
+                value_width,
+            ));
+        }
         if action_requires_input(approval) && selected {
             lines.push(Line::from(
                 "  human prompt: press Enter to Continue, or type context/answer below first",
@@ -1963,6 +2210,8 @@ fn approval_gates_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(15).max(20) as usize;
     let scope = if app.selected_goal_id.is_some() {
         "selected goal"
+    } else if app.selected_plan_id.is_some() {
+        "selected plan"
     } else {
         "all goals"
     };
@@ -2041,6 +2290,45 @@ fn action_rows_for_goal(
         .filter(|row| row_matches_goal(row.goal_id.as_deref(), goal_id, include_unscoped))
         .cloned()
         .collect()
+}
+
+fn action_rows_for_plan(
+    rows: &[ApprovalSummary],
+    plan_id: &str,
+    goals: &[GoalSummary],
+    include_unscoped: bool,
+) -> Vec<ApprovalSummary> {
+    rows.iter()
+        .filter(|row| row_matches_plan(row, plan_id, goals, include_unscoped))
+        .cloned()
+        .collect()
+}
+
+fn row_matches_plan(
+    row: &ApprovalSummary,
+    selected_plan_id: &str,
+    goals: &[GoalSummary],
+    include_unscoped: bool,
+) -> bool {
+    if row
+        .plan_id
+        .as_deref()
+        .is_some_and(|plan_id| plan_id == selected_plan_id)
+    {
+        return true;
+    }
+    if let Some(row_goal_id) = row.goal_id.as_deref()
+        && goals.iter().any(|goal| {
+            goal.id == row_goal_id
+                && goal
+                    .plan_id
+                    .as_deref()
+                    .is_some_and(|plan_id| plan_id == selected_plan_id)
+        })
+    {
+        return true;
+    }
+    include_unscoped && row.plan_id.is_none() && row.goal_id.is_none()
 }
 
 fn row_matches_goal(
@@ -2162,7 +2450,7 @@ fn events_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
     if events.is_empty() {
-        lines.push(Line::from("No recent events projected."));
+        lines.push(Line::from("No recent events yet."));
         return lines;
     }
     for event in events.iter().rev() {
@@ -2221,11 +2509,11 @@ fn workers_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(format!("runs {} scope {}", workers.len(), scope)),
-        Line::from("Ctrl-N/Ctrl-P changes goal. Ctrl-R refreshes runner and run projections."),
+        Line::from("Ctrl-N/Ctrl-P changes goal. Ctrl-R refreshes runner and run state."),
         Line::from(""),
     ];
     if workers.is_empty() {
-        lines.push(Line::from("No worker or runner activity is projected yet."));
+        lines.push(Line::from("No worker or runner activity yet."));
         return lines;
     }
     for worker in workers.iter().take(40) {
@@ -2283,12 +2571,12 @@ fn evidence_dashboard_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         )),
         Line::from(format!("items {} scope {}", evidence.len(), scope)),
         Line::from(
-            "Evidence explains why a task or goal can move forward. Ctrl-R refreshes projections.",
+            "Evidence explains why a task or goal can move forward. Ctrl-R refreshes state.",
         ),
         Line::from(""),
     ];
     if evidence.is_empty() {
-        lines.push(Line::from("No evidence artifacts are projected yet."));
+        lines.push(Line::from("No evidence artifacts yet."));
         return lines;
     }
     for item in evidence.iter().take(40) {
@@ -2411,8 +2699,8 @@ fn operator_debug_catalog() -> &'static [OperatorDebugCatalogItem] {
         OperatorDebugCatalogItem {
             command: "coat store",
             surface: "Overview / Goals / Graph / Actions",
-            action: "Open projection views",
-            summary: "Read goal-store projections for goals, tasks, plans, events, artifacts, checkpoints, and approvals.",
+            action: "Open stored state views",
+            summary: "Read goal-store state for goals, tasks, plans, events, artifacts, checkpoints, and approvals.",
         },
         OperatorDebugCatalogItem {
             command: "coat scenario",
@@ -2430,7 +2718,7 @@ fn operator_debug_catalog() -> &'static [OperatorDebugCatalogItem] {
             command: "coat tui",
             surface: "Terminal UI",
             action: "Already here",
-            summary: "Terminal dashboard mirrors SPA goal, graph, action, worker, event, and evidence projections.",
+            summary: "Terminal dashboard mirrors SPA goal, graph, action, worker, event, and evidence state.",
         },
     ]
 }
@@ -2509,7 +2797,7 @@ fn adversarial_satisfaction_lines(
         summary.satisfied.as_deref().unwrap_or("-")
     )));
     if summary.satisfaction_reasons.is_empty() {
-        lines.push(Line::from("  reasons: none projected"));
+        lines.push(Line::from("  reasons: none yet"));
     } else {
         for reason in summary.satisfaction_reasons.iter().take(5) {
             lines.push(dashboard_value_line("  reason", reason, value_width));
@@ -2539,7 +2827,7 @@ fn adversarial_task_group_lines(
         )),
     ];
     if rows.is_empty() {
-        lines.push(Line::from("  none projected"));
+        lines.push(Line::from("  none yet"));
         return lines;
     }
     for row in rows.iter().take(12) {
@@ -2579,7 +2867,7 @@ fn adversarial_reference_lines(
         )),
     ];
     if refs.is_empty() {
-        lines.push(Line::from("  none projected"));
+        lines.push(Line::from("  none yet"));
         return lines;
     }
     for reference in refs.iter().take(12) {
@@ -2757,20 +3045,34 @@ fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn chat_context_label(app: &App) -> String {
-    app.selected_goal()
-        .map(|goal| format!("goal {}", truncate_text(&goal.title, 28)))
+    let plan = app
+        .selected_plan()
+        .map(|plan| format!("plan {}", truncate_text(&plan.title, 20)))
+        .or_else(|| {
+            app.selected_plan_id
+                .as_deref()
+                .map(|plan_id| format!("plan {}", short_id(plan_id)))
+        });
+    let goal = app
+        .selected_goal()
+        .map(|goal| format!("goal {}", truncate_text(&goal.title, 20)))
         .or_else(|| {
             app.selected_goal_id
                 .as_deref()
                 .map(|goal_id| format!("goal {}", short_id(goal_id)))
-        })
-        .unwrap_or_else(|| "workspace".to_string())
+        });
+    match (plan, goal) {
+        (Some(plan), Some(goal)) => format!("{plan} / {goal}"),
+        (Some(plan), None) => plan,
+        (None, Some(goal)) => goal,
+        (None, None) => "workspace".to_string(),
+    }
 }
 
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(
-            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter acts  Ctrl-S sends chat  F5 submits draft  Ctrl-D discards  Ctrl-N/P goals  Ctrl-X cancels  Ctrl-R refreshes  Esc quits",
+            "Tab focus  1-0 views  ↑/↓ scroll/select  Enter acts  Ctrl-S sends chat  F5 accepts/submits draft  Ctrl-D discards  Alt-N/P plans  Ctrl-N/P goals  Ctrl-X cancels",
         )
         .style(Style::default().fg(Color::DarkGray)),
         area,
@@ -2791,7 +3093,11 @@ async fn parse_response(response: reqwest::Response) -> anyhow::Result<Value> {
     Ok(value)
 }
 
-fn dashboard_summary(workspace: &Value, goals: &[GoalSummary]) -> DashboardSummary {
+fn dashboard_summary(
+    workspace: &Value,
+    goals: &[GoalSummary],
+    plans: &[PlanSummary],
+) -> DashboardSummary {
     let services = find_first_array(workspace, &["services"]).unwrap_or(&[]);
     let services_ok = services
         .iter()
@@ -2810,10 +3116,219 @@ fn dashboard_summary(workspace: &Value, goals: &[GoalSummary]) -> DashboardSumma
         runners_count: find_first_array(workspace, &["runners", "data"]).map_or(0, <[Value]>::len),
         approvals_count: operator_action_summaries_from_value(workspace).len(),
         events_count: find_first_array(workspace, &["events"]).map_or(0, <[Value]>::len),
-        plans_count: find_first_array(workspace, &["plans"]).map_or(0, <[Value]>::len),
+        plans_count: plans
+            .len()
+            .max(find_first_array(workspace, &["plans"]).map_or(0, <[Value]>::len)),
         chat_backend: chat_backend_label(workspace.get("config").unwrap_or(&Value::Null)),
         latest_goals: goals.iter().take(5).map(goal_label).collect(),
     }
+}
+
+fn plan_summaries_from_value(value: &Value) -> Vec<PlanSummary> {
+    let mut plans = Vec::new();
+    for array in arrays_at_paths(
+        value,
+        &[
+            &["plans"],
+            &["plans", "data"],
+            &["plans", "data", "plans"],
+            &["data", "plans"],
+            &["operator", "plans"],
+        ],
+    ) {
+        plans.extend(array.iter().filter_map(plan_summary_from_value));
+    }
+    dedupe_plan_summaries(plans)
+}
+
+fn plan_summary_from_value(value: &Value) -> Option<PlanSummary> {
+    let id = compact_string_at_paths(
+        value,
+        &[
+            &["plan_id"],
+            &["id"],
+            &["plan", "id"],
+            &["payload_json", "plan_id"],
+            &["payload_json", "id"],
+        ],
+    )?;
+    let title = compact_string_at_paths(
+        value,
+        &[
+            &["title"],
+            &["objective"],
+            &["plan", "title"],
+            &["payload_json", "title"],
+        ],
+    )
+    .unwrap_or_else(|| id.clone());
+    let status = compact_string_at_paths(value, &[&["status"], &["payload_json", "status"]])
+        .map(|status| status_token(&status))
+        .unwrap_or_else(|| "draft".to_string());
+    let phase = plan_phase_from_value(value, &status);
+    let subgoal_count = usize_field_at_paths(
+        value,
+        &[
+            &["subgoal_count"],
+            &["payload_json", "subgoal_count"],
+            &["current", "plan", "subgoals"],
+            &["plan", "subgoals"],
+        ],
+    )
+    .or_else(|| {
+        first_array_at_paths(
+            value,
+            &[&["current", "plan", "subgoals"], &["plan", "subgoals"]],
+        )
+        .map(<[Value]>::len)
+    })
+    .unwrap_or(0);
+    let goal_count = usize_field_at_paths(
+        value,
+        &[
+            &["goal_count"],
+            &["goals_count"],
+            &["payload_json", "goal_count"],
+        ],
+    )
+    .unwrap_or_else(|| {
+        first_array_at_paths(value, &[&["goals"], &["current", "goals"]]).map_or(0, <[Value]>::len)
+    });
+    let open_question_count = usize_field_at_paths(
+        value,
+        &[
+            &["open_question_count"],
+            &["payload_json", "open_question_count"],
+        ],
+    )
+    .unwrap_or_else(|| plan_open_question_count(value));
+    Some(PlanSummary {
+        id,
+        source_plan_id: compact_string_at_paths(
+            value,
+            &[&["source_plan_id"], &["payload_json", "source_plan_id"]],
+        ),
+        title,
+        objective: compact_string_at_paths(
+            value,
+            &[
+                &["objective"],
+                &["plan", "objective"],
+                &["payload_json", "objective"],
+            ],
+        )
+        .unwrap_or_default(),
+        status,
+        mode: compact_string_at_paths(value, &[&["mode"], &["payload_json", "mode"]]),
+        phase,
+        version: usize_field_at_paths(value, &[&["version"], &["payload_json", "version"]])
+            .map(|value| value as u64),
+        subgoal_count,
+        goal_count,
+        open_question_count,
+        compiled_goal_id: compact_string_at_paths(
+            value,
+            &[&["compiled_goal_id"], &["payload_json", "compiled_goal_id"]],
+        ),
+        current_action: compact_string_at_paths(
+            value,
+            &[
+                &["current_action"],
+                &["next_action"],
+                &["payload_json", "current_action"],
+                &["payload_json", "next_action"],
+            ],
+        ),
+        updated_at: compact_string_at_paths(
+            value,
+            &[
+                &["updated_at"],
+                &["updated_at_text"],
+                &["payload_json", "updated_at"],
+            ],
+        ),
+    })
+}
+
+fn plan_phase_from_value(value: &Value, status: &str) -> String {
+    if let Some(phase) = compact_string_at_paths(
+        value,
+        &[
+            &["phase"],
+            &["plan_phase"],
+            &["current_phase"],
+            &["payload_json", "phase"],
+            &["payload_json", "plan_phase"],
+        ],
+    ) {
+        return normalize_plan_phase(&phase);
+    }
+    match status_token(status).as_str() {
+        "needs-questions" => "asking",
+        "draft" => "drafting_plan",
+        "ready-for-review" | "approved" => "accepting",
+        "compiled" => "executing",
+        "satisfied" | "done" | "completed" => "satisfied",
+        "cancelled" | "canceled" | "archived" | "superseded" => "cancelled",
+        _ => "asking",
+    }
+    .to_string()
+}
+
+fn normalize_plan_phase(phase: &str) -> String {
+    match status_token(phase).as_str() {
+        "ask" | "asking" => "asking",
+        "draft-plan" | "drafting-plan" | "planning" => "drafting_plan",
+        "draft-goal" | "drafting-goal" | "draft-goals" | "drafting-goals" => "drafting_goals",
+        "accept" | "accepting" | "review-plan" | "review-goal" => "accepting",
+        "execute" | "executing" | "running" => "executing",
+        "review" | "reviewing" => "reviewing",
+        "satisfied" | "done" | "complete" | "completed" => "satisfied",
+        "cancelled" | "canceled" => "cancelled",
+        other => other,
+    }
+    .to_string()
+}
+
+fn plan_open_question_count(value: &Value) -> usize {
+    first_array_at_paths(value, &[&["current", "questions"], &["questions"]])
+        .map(|questions| {
+            questions
+                .iter()
+                .filter(|question| {
+                    compact_string_at_paths(question, &[&["status"]])
+                        .map(|status| status_token(&status) == "open")
+                        .unwrap_or(true)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn dedupe_plan_summaries(plans: Vec<PlanSummary>) -> Vec<PlanSummary> {
+    let mut deduped = Vec::new();
+    for plan in plans {
+        if deduped
+            .iter()
+            .any(|existing: &PlanSummary| existing.id == plan.id)
+        {
+            continue;
+        }
+        deduped.push(plan);
+    }
+    deduped
+}
+
+fn merge_plan_summaries(
+    mut primary: Vec<PlanSummary>,
+    secondary: Vec<PlanSummary>,
+) -> Vec<PlanSummary> {
+    for plan in secondary {
+        if !primary.iter().any(|existing| existing.id == plan.id) {
+            primary.push(plan);
+        }
+    }
+    primary
 }
 
 fn approval_summaries_from_value(value: &Value) -> Vec<ApprovalSummary> {
@@ -2879,11 +3394,24 @@ fn operator_action_summary_from_value(value: &Value) -> Option<ApprovalSummary> 
         action: compact_string_at_paths(value, &[&["question"], &["title"], &["detail"]])
             .unwrap_or_else(|| "operator action required".to_string()),
         risk: compact_string_at_paths(value, &[&["kind"], &["risk"]]),
+        plan_id: compact_string_at_paths(value, &[&["plan_id"], &["payload_json", "plan_id"]]),
         goal_id: compact_string_at_paths(value, &[&["goal_id"]]),
         task_id: compact_string_at_paths(value, &[&["task_id"]]),
         created_at: compact_string_at_paths(
             value,
             &[&["created_at"], &["payload_json", "created_at"]],
+        ),
+        allowed_actions: strings_at_paths(
+            value,
+            &[&["allowed_actions"], &["payload_json", "allowed_actions"]],
+        ),
+        required_fields: strings_at_paths(
+            value,
+            &[&["required_fields"], &["payload_json", "required_fields"]],
+        ),
+        evidence_refs: strings_at_paths(
+            value,
+            &[&["evidence_refs"], &["payload_json", "evidence_refs"]],
         ),
     })
 }
@@ -2938,6 +3466,7 @@ fn approval_summary_from_value(value: &Value) -> Option<ApprovalSummary> {
         status,
         action,
         risk: compact_string_at_paths(value, &[&["risk"], &["payload_json", "risk"]]),
+        plan_id: compact_string_at_paths(value, &[&["plan_id"], &["payload_json", "plan_id"]]),
         goal_id: compact_string_at_paths(value, &[&["goal_id"], &["payload_json", "goal_id"]]),
         task_id: compact_string_at_paths(value, &[&["task_id"], &["payload_json", "task_id"]]),
         created_at: compact_string_at_paths(
@@ -2948,6 +3477,18 @@ fn approval_summary_from_value(value: &Value) -> Option<ApprovalSummary> {
                 &["payload_json", "created_at"],
                 &["payload_json", "requested_at"],
             ],
+        ),
+        allowed_actions: strings_at_paths(
+            value,
+            &[&["allowed_actions"], &["payload_json", "allowed_actions"]],
+        ),
+        required_fields: strings_at_paths(
+            value,
+            &[&["required_fields"], &["payload_json", "required_fields"]],
+        ),
+        evidence_refs: strings_at_paths(
+            value,
+            &[&["evidence_refs"], &["payload_json", "evidence_refs"]],
         ),
     })
 }
@@ -2987,6 +3528,14 @@ fn task_action_needed_summary(task: &Value) -> Option<ApprovalSummary> {
         },
         action,
         risk: Some("task attention".to_string()),
+        plan_id: compact_string_at_paths(
+            task,
+            &[
+                &["plan_id"],
+                &["payload_json", "plan_id"],
+                &["raw_task", "plan_id"],
+            ],
+        ),
         goal_id: compact_string_at_paths(
             task,
             &[
@@ -3004,6 +3553,16 @@ fn task_action_needed_summary(task: &Value) -> Option<ApprovalSummary> {
                 &["payload_json", "updated_at"],
                 &["payload_json", "created_at"],
             ],
+        ),
+        allowed_actions: vec![
+            "retry".to_string(),
+            "replan".to_string(),
+            "cancel".to_string(),
+        ],
+        required_fields: Vec::new(),
+        evidence_refs: strings_at_paths(
+            task,
+            &[&["evidence_refs"], &["payload_json", "evidence_refs"]],
         ),
     })
 }
@@ -3109,6 +3668,8 @@ fn thunk_action_needed_summary(node: &Value, record: Option<&Value>) -> Option<A
         status,
         action: label,
         risk: Some("human prompt".to_string()),
+        plan_id: compact_string_at_paths(node, &[&["plan_id"]])
+            .or_else(|| record.and_then(|record| compact_string_at_paths(record, &[&["plan_id"]]))),
         goal_id: compact_string_at_paths(node, &[&["goal_id"]])
             .or_else(|| record.and_then(|record| compact_string_at_paths(record, &[&["goal_id"]]))),
         task_id: compact_string_at_paths(node, &[&["task_id"]])
@@ -3116,6 +3677,38 @@ fn thunk_action_needed_summary(node: &Value, record: Option<&Value>) -> Option<A
         created_at: record.and_then(|record| {
             compact_string_at_paths(record, &[&["created_at"], &["payload_json", "created_at"]])
         }),
+        allowed_actions: record
+            .map(|record| {
+                strings_at_paths(
+                    record,
+                    &[&["allowed_actions"], &["payload_json", "allowed_actions"]],
+                )
+            })
+            .filter(|actions| !actions.is_empty())
+            .unwrap_or_else(|| {
+                vec![
+                    "continue".to_string(),
+                    "answer".to_string(),
+                    "add_context".to_string(),
+                    "replan".to_string(),
+                ]
+            }),
+        required_fields: record
+            .map(|record| {
+                strings_at_paths(
+                    record,
+                    &[&["required_fields"], &["payload_json", "required_fields"]],
+                )
+            })
+            .unwrap_or_default(),
+        evidence_refs: record
+            .map(|record| {
+                strings_at_paths(
+                    record,
+                    &[&["evidence_refs"], &["payload_json", "evidence_refs"]],
+                )
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -3145,11 +3738,24 @@ fn thunk_record_action_needed_summary(record: &Value) -> Option<ApprovalSummary>
         status,
         action: label,
         risk: Some("human prompt".to_string()),
+        plan_id: compact_string_at_paths(record, &[&["plan_id"]]),
         goal_id: compact_string_at_paths(record, &[&["goal_id"]]),
         task_id: compact_string_at_paths(record, &[&["task_id"]]),
         created_at: compact_string_at_paths(
             record,
             &[&["created_at"], &["payload_json", "created_at"]],
+        ),
+        allowed_actions: strings_at_paths(
+            record,
+            &[&["allowed_actions"], &["payload_json", "allowed_actions"]],
+        ),
+        required_fields: strings_at_paths(
+            record,
+            &[&["required_fields"], &["payload_json", "required_fields"]],
+        ),
+        evidence_refs: strings_at_paths(
+            record,
+            &[&["evidence_refs"], &["payload_json", "evidence_refs"]],
         ),
     })
 }
@@ -3746,6 +4352,220 @@ fn goal_label(value: &GoalSummary) -> String {
     format!("{} [{}]", value.title, value.status)
 }
 
+fn current_plan_lines(selected: Option<&PlanSummary>, width: u16) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(16).max(18) as usize;
+    let mut lines = vec![Line::from(Span::styled(
+        "current plan",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    match selected {
+        Some(plan) => {
+            lines.push(dashboard_value_line("title", &plan.title, value_width));
+            lines.push(Line::from(vec![
+                Span::raw("phase      "),
+                Span::styled(
+                    plan.phase.clone(),
+                    Style::default().fg(phase_color(&plan.phase)),
+                ),
+                Span::raw(format!(
+                    " status:{} goals:{} questions:{}",
+                    plan.status, plan.goal_count, plan.open_question_count
+                )),
+            ]));
+            if !plan.objective.is_empty() {
+                lines.push(dashboard_value_line(
+                    "objective",
+                    &plan.objective,
+                    value_width,
+                ));
+            }
+            if let Some(action) = plan.current_action.as_deref() {
+                lines.push(dashboard_value_line("action", action, value_width));
+            } else {
+                lines.push(dashboard_value_line(
+                    "action",
+                    default_action_for_phase(&plan.phase),
+                    value_width,
+                ));
+            }
+            lines.push(Line::from(
+                "controls   Alt-N/P plans, Ctrl-N/P goals, Ctrl-T phase mode",
+            ));
+        }
+        None => {
+            lines.push(Line::from("select     Alt-N / Alt-P"));
+            lines.push(Line::from("phase      asking"));
+            lines.push(Line::from("action     Ask, then draft a plan"));
+        }
+    }
+    lines
+}
+
+fn plan_phase_stepper_lines(selected: Option<&PlanSummary>, width: u16) -> Vec<Line<'static>> {
+    let phase = selected.map(|plan| plan.phase.as_str()).unwrap_or("asking");
+    let mut lines = vec![Line::from("")];
+    let steps = [
+        ("asking", "Ask"),
+        ("drafting_plan", "Draft plan"),
+        ("drafting_goals", "Draft goal"),
+        ("accepting", "Accept"),
+        ("executing", "Execute"),
+        ("reviewing", "Review"),
+        ("satisfied", "Satisfied"),
+    ];
+    let spans = steps
+        .iter()
+        .enumerate()
+        .flat_map(|(index, (key, label))| {
+            let mut spans = Vec::new();
+            if index > 0 {
+                spans.push(Span::raw(" -> "));
+            }
+            spans.push(Span::styled(
+                *label,
+                Style::default()
+                    .fg(if *key == phase {
+                        phase_color(phase)
+                    } else {
+                        Color::DarkGray
+                    })
+                    .add_modifier(if *key == phase {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ));
+            spans
+        })
+        .collect::<Vec<_>>();
+    lines.push(Line::from(spans));
+    if let Some(plan) = selected {
+        let value_width = width.saturating_sub(14).max(20) as usize;
+        lines.push(dashboard_value_line(
+            "selected",
+            &format!("{} {}", short_id(&plan.id), plan.title),
+            value_width,
+        ));
+    }
+    lines
+}
+
+fn plan_phase_action_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(15).max(20) as usize;
+    let phase = app.selected_plan_phase();
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "phase actions",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    for action in phase_actions_for(&phase, app.active_goal_draft.is_some()) {
+        lines.push(Line::from(format!("• {action}")));
+    }
+    let plan_actions = app.scoped_action_items();
+    lines.push(Line::from(""));
+    lines.push(dashboard_value_line(
+        "action rows",
+        &format!("{}", plan_actions.len()),
+        value_width,
+    ));
+    for (index, action) in plan_actions.iter().take(5).enumerate() {
+        let marker = if index == app.action_index.min(plan_actions.len().saturating_sub(1)) {
+            ">"
+        } else {
+            " "
+        };
+        lines.push(Line::from(format!(
+            "{marker} {} [{}] {}",
+            action_kind_label(action),
+            action.status,
+            truncate_text(&action.action, value_width)
+        )));
+        if !action.allowed_actions.is_empty() {
+            lines.push(dashboard_value_line(
+                "  buttons",
+                &action.allowed_actions.join(", "),
+                value_width,
+            ));
+        } else {
+            lines.push(dashboard_value_line(
+                "  buttons",
+                tui_action_label(action),
+                value_width,
+            ));
+        }
+    }
+    if plan_actions.len() > 5 {
+        lines.push(Line::from(format!(
+            "+{} more action rows",
+            plan_actions.len() - 5
+        )));
+    }
+    lines
+}
+
+fn phase_actions_for(phase: &str, has_goal_draft: bool) -> Vec<String> {
+    match phase {
+        "asking" => vec![
+            "Answer question: type context, then Ctrl-S".to_string(),
+            "Draft plan: Ctrl-T until Draft plan, then Ctrl-S".to_string(),
+            "Search: Ctrl-T until Search, then Ctrl-S".to_string(),
+        ],
+        "drafting_plan" => vec![
+            "Edit plan draft: ask for a revision in chat".to_string(),
+            "Add goal slot: switch to Draft goal after the plan is clear".to_string(),
+            "Accept plan draft: use the Plans action row when it appears".to_string(),
+        ],
+        "drafting_goals" => {
+            let accept = if has_goal_draft {
+                "Accept goal draft: F5 or Ctrl-G submits it"
+            } else {
+                "Draft goal: Ctrl-T until Draft goal, then Ctrl-S"
+            };
+            vec![
+                accept.to_string(),
+                "Discard visible goal draft: Ctrl-D".to_string(),
+                "Attach to plan phase: keep the current plan selected".to_string(),
+            ]
+        }
+        "accepting" => vec![
+            "Accept selected action row: Enter or a".to_string(),
+            "Reject approval gate: r with optional reason".to_string(),
+            "Submit visible goal draft: F5 or Ctrl-G".to_string(),
+        ],
+        "executing" | "reviewing" => vec![
+            "Continue prompt: Enter on the selected human prompt".to_string(),
+            "Retry blocked task: Enter or Alt-R".to_string(),
+            "Cancel focused goal: Ctrl-X twice".to_string(),
+            "Review evidence: open Evidence view".to_string(),
+        ],
+        "satisfied" => vec![
+            "Review evidence and satisfaction, then draft follow-on work if needed".to_string(),
+        ],
+        "cancelled" => vec!["Select another plan or draft a follow-on plan".to_string()],
+        _ => vec!["Ask for the next step or select an action row".to_string()],
+    }
+}
+
+fn default_action_for_phase(phase: &str) -> &'static str {
+    match phase {
+        "asking" => "answer open question or draft plan",
+        "drafting_plan" => "review plan draft and accept when clear",
+        "drafting_goals" => "draft goals inside the selected plan",
+        "accepting" => "accept staged plan or goal work",
+        "executing" => "watch actions, runners, and evidence",
+        "reviewing" => "review evidence and confirm satisfaction",
+        "satisfied" => "draft follow-on work if needed",
+        "cancelled" => "select another plan",
+        _ => "ask for the next step",
+    }
+}
+
 fn current_goal_lines(
     selected: Option<&GoalSummary>,
     selected_goal_id: Option<&str>,
@@ -3755,7 +4575,7 @@ fn current_goal_lines(
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "current goal",
+            "focused goal",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -3764,6 +4584,16 @@ fn current_goal_lines(
     match selected {
         Some(goal) => {
             lines.push(dashboard_value_line("title", &goal.title, value_width));
+            if let Some(plan_id) = goal.plan_id.as_deref() {
+                lines.push(dashboard_value_line(
+                    "plan",
+                    &short_id(plan_id),
+                    value_width,
+                ));
+            }
+            if let Some(plan_phase_id) = goal.plan_phase_id.as_deref() {
+                lines.push(dashboard_value_line("phase", plan_phase_id, value_width));
+            }
             lines.push(Line::from(format!(
                 "state      {} {}% open:{} blocked:{}",
                 goal.status,
@@ -3780,7 +4610,7 @@ fn current_goal_lines(
                 "action",
                 goal.current_action
                     .as_deref()
-                    .unwrap_or("wait for coordinator projection"),
+                    .unwrap_or("wait for updated state"),
                 value_width,
             ));
             if let Some(evidence) = goal.latest_evidence.as_deref() {
@@ -3799,7 +4629,7 @@ fn current_goal_lines(
                 &short_id(goal_id),
                 value_width,
             ));
-            lines.push(Line::from("status     loading projection"));
+            lines.push(Line::from("status     loading state"));
             lines.push(Line::from("controls   Ctrl-X cancels, Ctrl-O clears"));
         }
         None => {
@@ -4516,6 +5346,25 @@ fn goal_summary_from_value(value: &Value) -> Option<GoalSummary> {
         .to_string();
     Some(GoalSummary {
         id,
+        plan_id: compact_string_at_paths(
+            value,
+            &[
+                &["plan_id"],
+                &["payload_json", "plan_id"],
+                &["goal", "plan_id"],
+                &["spec", "plan_id"],
+            ],
+        ),
+        plan_phase_id: compact_string_at_paths(
+            value,
+            &[
+                &["plan_phase_id"],
+                &["phase_id"],
+                &["payload_json", "plan_phase_id"],
+                &["goal", "plan_phase_id"],
+                &["spec", "plan_phase_id"],
+            ],
+        ),
         title,
         status,
         progress: progress_value(value.get("percent_done").or_else(|| value.get("progress"))),
@@ -4600,6 +5449,26 @@ fn compact_string_at_paths(value: &Value, paths: &[&[&str]]) -> Option<String> {
     paths
         .iter()
         .find_map(|path| value_at_path(value, path).and_then(compact_value_string))
+}
+
+fn strings_at_paths(value: &Value, paths: &[&[&str]]) -> Vec<String> {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(value, path))
+        .map(strings_from_value)
+        .unwrap_or_default()
+}
+
+fn strings_from_value(value: &Value) -> Vec<String> {
+    match value {
+        Value::Array(values) => values.iter().filter_map(compact_value_string).collect(),
+        Value::String(value) => value
+            .split(',')
+            .map(compact_text)
+            .filter(|value| !value.is_empty())
+            .collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => Vec::new(),
+    }
 }
 
 fn compact_value_string(value: &Value) -> Option<String> {
@@ -4703,6 +5572,40 @@ fn status_color(status: &str) -> Color {
         "cancelled" | "canceled" => Color::DarkGray,
         _ => Color::White,
     }
+}
+
+fn phase_color(phase: &str) -> Color {
+    match normalize_plan_phase(phase).as_str() {
+        "asking" => Color::Cyan,
+        "drafting_plan" | "drafting_goals" => Color::Yellow,
+        "accepting" | "reviewing" => Color::Magenta,
+        "executing" => Color::Green,
+        "satisfied" => Color::Green,
+        "cancelled" => Color::DarkGray,
+        _ => Color::White,
+    }
+}
+
+fn plan_header_label(app: &App) -> String {
+    app.selected_plan()
+        .map(|plan| truncate_text(&plan.title, 24))
+        .or_else(|| {
+            app.selected_plan_id
+                .as_deref()
+                .map(|plan_id| short_id(plan_id))
+        })
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn goal_header_label(app: &App) -> String {
+    app.selected_goal()
+        .map(|goal| truncate_text(&goal.title, 24))
+        .or_else(|| {
+            app.selected_goal_id
+                .as_deref()
+                .map(|goal_id| short_id(goal_id))
+        })
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn task_is_open(task: &Value) -> bool {
@@ -4884,6 +5787,10 @@ fn chat_session_id_for(goal_id: Option<&str>) -> String {
         .unwrap_or_else(|| "operator:default".to_string())
 }
 
+fn plan_chat_session_id_for(plan_id: &str) -> String {
+    format!("plan:{}", plan_id.trim())
+}
+
 fn goal_id_after_step(
     goals: &[GoalSummary],
     selected_goal_id: Option<&str>,
@@ -4898,6 +5805,22 @@ fn goal_id_after_step(
     let len = goals.len() as isize;
     let next = (current as isize + step).rem_euclid(len) as usize;
     Some(goals[next].id.clone())
+}
+
+fn plan_id_after_step(
+    plans: &[PlanSummary],
+    selected_plan_id: Option<&str>,
+    step: isize,
+) -> Option<String> {
+    if plans.is_empty() {
+        return None;
+    }
+    let current = selected_plan_id
+        .and_then(|selected| plans.iter().position(|plan| plan.id == selected))
+        .unwrap_or(0);
+    let len = plans.len() as isize;
+    let next = (current as isize + step).rem_euclid(len) as usize;
+    Some(plans[next].id.clone())
 }
 
 fn short_id(value: &str) -> String {
@@ -4950,6 +5873,7 @@ fn chat_lines_from_session(value: &Value) -> Vec<ChatLine> {
 
 fn chat_request_payload(
     session_id: String,
+    plan_id: Option<String>,
     goal_id: Option<String>,
     mode: ChatMode,
     messages: &[ChatLine],
@@ -4965,6 +5889,9 @@ fn chat_request_payload(
             })
         }).collect::<Vec<_>>(),
     });
+    if let Some(plan_id) = plan_id.filter(|value| !value.trim().is_empty()) {
+        payload["plan_id"] = Value::String(plan_id);
+    }
     if let Some(goal_id) = goal_id.filter(|value| !value.trim().is_empty()) {
         payload["goal_id"] = Value::String(goal_id);
     }
@@ -5039,6 +5966,7 @@ fn active_goal_draft_from_response(value: &Value) -> Option<ActiveGoalDraft> {
         goal_spec,
         summary,
         session_id: String::new(),
+        selected_plan_id: None,
         selected_goal_id: None,
     })
 }
@@ -5050,6 +5978,14 @@ fn goal_draft_summary(goal_spec: &Value) -> Option<GoalDraftSummary> {
         return None;
     }
     Some(GoalDraftSummary {
+        plan_id: compact_string_at_paths(
+            goal_spec,
+            &[
+                &["plan_id"],
+                &["payload_json", "plan_id"],
+                &["authoring", "plan_id"],
+            ],
+        ),
         title,
         objective,
         initial_tasks: goal_spec
@@ -5101,6 +6037,11 @@ fn done_criteria_summary(done_criteria: Option<&Value>) -> String {
 
 fn goal_draft_dashboard_lines(summary: &GoalDraftSummary, width: u16) -> Vec<Line<'static>> {
     let value_width = width.saturating_sub(15).max(20) as usize;
+    let plan = summary
+        .plan_id
+        .as_deref()
+        .map(short_id)
+        .unwrap_or_else(|| "selected plan".to_string());
     vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -5113,12 +6054,13 @@ fn goal_draft_dashboard_lines(summary: &GoalDraftSummary, width: u16) -> Vec<Lin
         dashboard_value_line("objective", &summary.objective, value_width),
         Line::from(format!("work items {}", summary.initial_tasks)),
         dashboard_value_line("evidence", &summary.done_criteria, value_width),
+        dashboard_value_line("plan", &plan, value_width),
         Line::from(Span::styled(
-            "submit     F5 or Ctrl-G",
+            "accept     F5 or Ctrl-G submits the staged goal",
             Style::default().fg(Color::Green),
         )),
         Line::from(Span::styled(
-            "discard    Ctrl-D",
+            "discard    Ctrl-D drops the staged draft",
             Style::default().fg(Color::DarkGray),
         )),
     ]
@@ -5164,7 +6106,7 @@ fn action_result_summary(label: &str, ok: bool, value: Option<&Value>) -> Action
         })
         .unwrap_or_else(|| {
             if ok {
-                "gateway accepted the action; refresh projections for follow-up work".to_string()
+                "gateway accepted the action; refresh state for follow-up work".to_string()
             } else {
                 "gateway rejected the action; keep the row selected and retry or replan".to_string()
             }
@@ -5322,15 +6264,25 @@ mod tests {
             "runners": {"data": [{"runner_id": "r1"}]},
             "actions": [{"action_id": "a1"}, {"action_id": "a2"}],
             "events": [{"id": "e1", "message": "event"}],
-            "plans": {"data": []}
+            "plans": {"data": [
+                {
+                    "plan_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
+                    "title": "Operator plan",
+                    "status": "draft",
+                    "mode": "interactive",
+                    "subgoal_count": 2
+                }
+            ]}
         });
 
         let goals = goal_summaries_from_value(&workspace);
-        let summary = dashboard_summary(&workspace, &goals);
+        let plans = plan_summaries_from_value(&workspace);
+        let summary = dashboard_summary(&workspace, &goals, &plans);
 
         assert_eq!(summary.services_ok, 1);
         assert_eq!(summary.services_total, 2);
         assert_eq!(summary.goals_count, 1);
+        assert_eq!(summary.plans_count, 1);
         assert_eq!(summary.runners_count, 1);
         assert_eq!(summary.approvals_count, 2);
         assert_eq!(summary.events_count, 1);
@@ -5339,6 +6291,151 @@ mod tests {
             "runner_registry/openai_compatible/model"
         );
         assert_eq!(summary.latest_goals, vec!["Ship TUI [running]"]);
+    }
+
+    #[test]
+    fn plan_rows_parse_phase_and_action_context() {
+        let workspace = json!({
+            "plans": {
+                "data": {
+                    "plans": [
+                        {
+                            "plan_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756700",
+                            "title": "Ship plan-first TUI",
+                            "objective": "Make the terminal UI lead with plan workflow.",
+                            "status": "needs_questions",
+                            "mode": "interactive",
+                            "version": 3,
+                            "subgoal_count": 4,
+                            "open_question_count": 2,
+                            "next_action": "Answer the release question",
+                            "compiled_goal_id": "018f8f2f-1fd8-7688-bb12-8bfb6b756701"
+                        }
+                    ]
+                }
+            }
+        });
+
+        let plans = plan_summaries_from_value(&workspace);
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].title, "Ship plan-first TUI");
+        assert_eq!(plans[0].status, "needs-questions");
+        assert_eq!(plans[0].phase, "asking");
+        assert_eq!(plans[0].subgoal_count, 4);
+        assert_eq!(plans[0].open_question_count, 2);
+        assert_eq!(
+            plans[0].current_action.as_deref(),
+            Some("Answer the release question")
+        );
+    }
+
+    #[test]
+    fn plans_view_leads_with_phase_actions_and_nested_goal_context() {
+        let plan_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756700";
+        let goal_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756701";
+        let mut app = test_app();
+        app.plans = vec![PlanSummary {
+            id: plan_id.to_string(),
+            title: "Plan-first cleanup".to_string(),
+            objective: "Make TUI work from plan context.".to_string(),
+            status: "draft".to_string(),
+            phase: "drafting_goals".to_string(),
+            goal_count: 1,
+            open_question_count: 0,
+            current_action: Some("Review the staged goal draft".to_string()),
+            ..PlanSummary::default()
+        }];
+        app.selected_plan_id = Some(plan_id.to_string());
+        app.selected_goal_id = Some(goal_id.to_string());
+        app.goals = vec![GoalSummary {
+            id: goal_id.to_string(),
+            plan_id: Some(plan_id.to_string()),
+            plan_phase_id: Some("implementation".to_string()),
+            title: "Simplify TUI actions".to_string(),
+            status: "running".to_string(),
+            ..GoalSummary::default()
+        }];
+        app.active_goal_draft = Some(ActiveGoalDraft {
+            goal_spec: json!({
+                "plan_id": plan_id,
+                "title": "Simplify TUI actions",
+                "objective": "Make action rows clear."
+            }),
+            summary: GoalDraftSummary {
+                plan_id: Some(plan_id.to_string()),
+                title: "Simplify TUI actions".to_string(),
+                objective: "Make action rows clear.".to_string(),
+                initial_tasks: 1,
+                done_criteria: "tests_pass".to_string(),
+            },
+            session_id: plan_chat_session_id_for(plan_id),
+            selected_plan_id: Some(plan_id.to_string()),
+            selected_goal_id: Some(goal_id.to_string()),
+        });
+        app.approvals = vec![ApprovalSummary {
+            id: "thunk:review-draft".to_string(),
+            status: "waiting-input".to_string(),
+            action: "Review staged goal draft".to_string(),
+            plan_id: Some(plan_id.to_string()),
+            goal_id: Some(goal_id.to_string()),
+            allowed_actions: vec!["continue".to_string(), "answer".to_string()],
+            ..ApprovalSummary::default()
+        }];
+
+        let plans = lines_to_plain_text(&plans_dashboard_lines(&app, 120));
+        let overview = lines_to_plain_text(&overview_dashboard_lines(&app, 120));
+        let context = chat_context_label(&app);
+
+        assert!(plans.contains("Workflow: Ask -> Draft plan -> Draft goal -> Accept."));
+        assert!(plans.contains("Draft goal"));
+        assert!(plans.contains("Accept goal draft"));
+        assert!(plans.contains("Review staged goal draft"));
+        assert!(plans.contains("buttons"));
+        assert!(overview.find("current plan").unwrap() < overview.find("focused goal").unwrap());
+        assert!(overview.contains("Plan-first cleanup"));
+        assert!(overview.contains("Simplify TUI actions"));
+        assert!(context.contains("plan Plan-first cleanup"));
+        assert!(context.contains("goal Simplify TUI actions"));
+    }
+
+    #[test]
+    fn plan_scoped_actions_filter_without_selected_goal() {
+        let plan_id = "018f8f2f-1fd8-7688-bb12-8bfb6b756700";
+        let other_plan_id = "028f8f2f-1fd8-7688-bb12-8bfb6b756700";
+        let mut app = test_app();
+        app.selected_plan_id = Some(plan_id.to_string());
+        app.plans = vec![PlanSummary {
+            id: plan_id.to_string(),
+            title: "Current plan".to_string(),
+            phase: "accepting".to_string(),
+            status: "ready-for-review".to_string(),
+            ..PlanSummary::default()
+        }];
+        app.approvals = vec![
+            ApprovalSummary {
+                id: "approval-current-plan".to_string(),
+                status: "pending".to_string(),
+                action: "Accept current plan draft".to_string(),
+                plan_id: Some(plan_id.to_string()),
+                allowed_actions: vec!["approve".to_string(), "reject".to_string()],
+                ..ApprovalSummary::default()
+            },
+            ApprovalSummary {
+                id: "approval-other-plan".to_string(),
+                status: "pending".to_string(),
+                action: "Accept unrelated plan draft".to_string(),
+                plan_id: Some(other_plan_id.to_string()),
+                ..ApprovalSummary::default()
+            },
+        ];
+
+        let actions = lines_to_plain_text(&actions_dashboard_lines(&app, 100));
+
+        assert!(actions.contains("scope selected plan"));
+        assert!(actions.contains("Accept current plan draft"));
+        assert!(actions.contains("approve, reject"));
+        assert!(!actions.contains("Accept unrelated plan draft"));
     }
 
     #[test]
@@ -5532,7 +6629,7 @@ mod tests {
             goal_id: Some(goal_id.to_string()),
             task_id: Some("task-waiting-1".to_string()),
             risk: Some("human prompt".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &thunk, "").expect("continue payload");
@@ -5555,7 +6652,7 @@ mod tests {
             goal_id: Some(goal_id.to_string()),
             task_id: Some("task-blocked-1".to_string()),
             risk: Some("task attention".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &blocked, "").expect("recovery payload");
@@ -5571,7 +6668,7 @@ mod tests {
             goal_id: Some(goal_id.to_string()),
             task_id: None,
             risk: Some("approval required".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &approval, "").expect("approval payload");
@@ -5602,7 +6699,7 @@ mod tests {
             goal_id: Some(goal_id.to_string()),
             task_id: Some("task-waiting-1".to_string()),
             risk: Some("task attention".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         };
         let (path, payload, label) =
             operator_action_request(goal_id, &waiting_task_without_thunk, "")
@@ -5651,28 +6748,20 @@ mod tests {
             id: "thunk:thunk-1".to_string(),
             status: "waiting-input".to_string(),
             action: "Need operator decision".to_string(),
-            goal_id: None,
-            task_id: None,
-            risk: None,
-            created_at: None,
+            ..ApprovalSummary::default()
         };
         let approval = ApprovalSummary {
             id: "approval-1".to_string(),
             status: "pending".to_string(),
             action: "Approve sandbox profile".to_string(),
-            goal_id: None,
-            task_id: None,
-            risk: None,
-            created_at: None,
+            ..ApprovalSummary::default()
         };
         let waiting_task = ApprovalSummary {
             id: "task:task-waiting-1".to_string(),
             status: "waiting-input".to_string(),
             action: "Task is waiting for a materialized thunk".to_string(),
-            goal_id: None,
             task_id: Some("task-waiting-1".to_string()),
-            risk: None,
-            created_at: None,
+            ..ApprovalSummary::default()
         };
 
         assert_eq!(tui_action_label(&thunk), "Continue / Add context");
@@ -5769,6 +6858,16 @@ mod tests {
     }
 
     #[test]
+    fn chat_modes_follow_plan_first_authoring_order() {
+        assert_eq!(ChatMode::General.label(), "ask");
+        assert_eq!(ChatMode::General.next(), ChatMode::Plan);
+        assert_eq!(ChatMode::Plan.label(), "draft plan");
+        assert_eq!(ChatMode::Plan.next(), ChatMode::Goal);
+        assert_eq!(ChatMode::Goal.label(), "draft goal");
+        assert_eq!(ChatMode::Goal.next(), ChatMode::Search);
+    }
+
+    #[test]
     fn debug_catalog_includes_canonical_cli_groups() {
         let rendered = debug_dashboard_lines(100)
             .into_iter()
@@ -5813,7 +6912,7 @@ mod tests {
             risk: Some("critical".to_string()),
             goal_id: Some("018f8f2f-1fd8-7688-bb12-8bfb6b756601".to_string()),
             task_id: Some("118f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         }];
         app.events = vec![EventSummary {
             id: "e-12345678".to_string(),
@@ -5868,7 +6967,7 @@ mod tests {
             risk: Some("task attention".to_string()),
             goal_id: Some("goal-1234".to_string()),
             task_id: Some("task-1234".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         }];
 
         let actions = lines_to_plain_text(&actions_dashboard_lines(&app, 96));
@@ -6377,6 +7476,7 @@ mod tests {
             current_action: Some("review approval: confirm release window".to_string()),
             latest_evidence: Some("cargo test -p coat-cli tui passed".to_string()),
             next_task: Some("Run smoke validation [runnable tester 118f8f2f]".to_string()),
+            ..GoalSummary::default()
         };
 
         let lines = current_goal_lines(Some(&summary), Some(goal_id), 80);
@@ -6443,7 +7543,8 @@ mod tests {
     #[test]
     fn chat_payload_keeps_gateway_scope_and_goal_context() {
         let payload = chat_request_payload(
-            chat_session_id_for(Some("g1")),
+            plan_chat_session_id_for("p1"),
+            Some("p1".to_string()),
             Some("g1".to_string()),
             ChatMode::Plan,
             &[ChatLine {
@@ -6452,7 +7553,8 @@ mod tests {
             }],
         );
 
-        assert_eq!(payload["session_id"], "goal:g1");
+        assert_eq!(payload["session_id"], "plan:p1");
+        assert_eq!(payload["plan_id"], "p1");
         assert_eq!(payload["goal_id"], "g1");
         assert_eq!(payload["mode"], "draft_plan");
         assert_eq!(payload["messages"][0]["role"], "user");
@@ -6464,12 +7566,37 @@ mod tests {
     }
 
     #[test]
+    fn app_chat_session_prefers_plan_context_with_nested_goal_payload() {
+        let mut app = test_app();
+        app.selected_plan_id = Some("p1".to_string());
+        app.selected_goal_id = Some("g1".to_string());
+
+        let payload = chat_request_payload(
+            app.current_session_id(),
+            app.selected_plan_id.clone(),
+            app.selected_goal_id.clone(),
+            ChatMode::Goal,
+            &[ChatLine {
+                role: "user".to_string(),
+                content: "draft the next goal".to_string(),
+            }],
+        );
+
+        assert_eq!(app.current_session_id(), "plan:p1");
+        assert_eq!(payload["session_id"], "plan:p1");
+        assert_eq!(payload["plan_id"], "p1");
+        assert_eq!(payload["goal_id"], "g1");
+        assert_eq!(payload["mode"], "draft_goal");
+    }
+
+    #[test]
     fn selected_goal_controls_chat_session_scope() {
         assert_eq!(chat_session_id_for(Some("g1")), "goal:g1");
         assert_eq!(chat_session_id_for(Some("  ")), "operator:default");
         assert_eq!(chat_session_id_for(None), "operator:default");
         let payload = chat_request_payload(
             chat_session_id_for(None),
+            None,
             None,
             ChatMode::General,
             &[ChatLine {
@@ -6499,6 +7626,7 @@ mod tests {
         ]);
         let payload = chat_request_payload(
             "goal:g1".to_string(),
+            None,
             Some("g1".to_string()),
             ChatMode::Goal,
             &messages,
@@ -6512,6 +7640,7 @@ mod tests {
     fn chat_goal_mode_uses_gateway_goal_draft_contract() {
         let payload = chat_request_payload(
             "operator:default".to_string(),
+            None,
             None,
             ChatMode::Goal,
             &[ChatLine {
@@ -6652,7 +7781,7 @@ mod tests {
             risk: Some("human prompt".to_string()),
             goal_id: app.selected_goal_id.clone(),
             task_id: Some("118f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         }];
         app.input = "Use the validated path".to_string();
 
@@ -6683,7 +7812,7 @@ mod tests {
             risk: Some("approval required".to_string()),
             goal_id: app.selected_goal_id.clone(),
             task_id: None,
-            created_at: None,
+            ..ApprovalSummary::default()
         }];
         app.input = "Network risk is too broad.".to_string();
 
@@ -6820,12 +7949,14 @@ mod tests {
         app.active_goal_draft = Some(ActiveGoalDraft {
             goal_spec: json!({"title": "Clear me"}),
             summary: GoalDraftSummary {
+                plan_id: None,
                 title: "Clear me".to_string(),
                 objective: "Local draft only.".to_string(),
                 initial_tasks: 0,
                 done_criteria: "not specified".to_string(),
             },
             session_id: "operator:default".to_string(),
+            selected_plan_id: None,
             selected_goal_id: None,
         });
 
@@ -6892,7 +8023,7 @@ mod tests {
             risk: Some("task attention".to_string()),
             goal_id: app.selected_goal_id.clone(),
             task_id: Some("118f8f2f-1fd8-7688-bb12-8bfb6b756602".to_string()),
-            created_at: None,
+            ..ApprovalSummary::default()
         }];
         app.input = "Retry after clearing stale wait.".to_string();
 
@@ -7027,6 +8158,7 @@ mod tests {
         app.active_goal_draft =
             active_goal_draft_from_response(&response).map(|draft| ActiveGoalDraft {
                 session_id: app.current_session_id(),
+                selected_plan_id: app.selected_plan_id.clone(),
                 selected_goal_id: app.selected_goal_id.clone(),
                 ..draft
             });
@@ -7061,12 +8193,14 @@ mod tests {
                 "objective": "This draft should not stay active."
             }),
             summary: GoalDraftSummary {
+                plan_id: None,
                 title: "Discard me".to_string(),
                 objective: "This draft should not stay active.".to_string(),
                 initial_tasks: 0,
                 done_criteria: "not specified".to_string(),
             },
             session_id: "operator:default".to_string(),
+            selected_plan_id: None,
             selected_goal_id: None,
         });
 
@@ -7108,12 +8242,14 @@ mod tests {
                 "objective": "This draft belongs to the previous chat context."
             }),
             summary: GoalDraftSummary {
+                plan_id: None,
                 title: "Stale draft".to_string(),
                 objective: "This draft belongs to the previous chat context.".to_string(),
                 initial_tasks: 0,
                 done_criteria: "not specified".to_string(),
             },
             session_id: "operator:default".to_string(),
+            selected_plan_id: None,
             selected_goal_id: None,
         });
 
@@ -7125,6 +8261,7 @@ mod tests {
     #[test]
     fn dashboard_goal_preview_truncates_long_values() {
         let summary = GoalDraftSummary {
+            plan_id: None,
             title: "A very long goal title that should not take over the whole dashboard"
                 .to_string(),
             objective: "A long objective with line breaks\nand repeated spacing that should be compacted before display"

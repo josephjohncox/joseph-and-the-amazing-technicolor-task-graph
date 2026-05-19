@@ -163,6 +163,22 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
 - `GoalSpec.id` is optional in normal authored JSON; the CLI/deserializer assigns a durable workflow key unless an operator intentionally supplies one for idempotency.
 - Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.
+- Treat plans as the high-level workflow and chat workspace. Goals are
+  satisfiable execution units inside a plan unless an operator explicitly
+  creates a standalone goal.
+- The normal operator authoring path is Ask -> Draft plan -> Draft goal ->
+  Accept. Chat can help with each step, but phase changes and accept/submit
+  actions must be explicit backend actions, not free-form chat implications.
+- Actions and interventions happen in plan context first, then optionally
+  narrow to a selected goal, task, draft, prompt, or artifact. Preserve
+  `plan_id` on drafts, goals, action rows, chat sessions, memory events,
+  artifact refs, evidence refs, and operator events whenever a plan is active.
+- Plan-scoped memory and artifacts are isolated by default. Promote facts or
+  artifacts out of a plan only through reviewer, unifier, or explicit operator
+  action.
+- Plan phases should be visible as actionable states: asking, drafting plan,
+  drafting goals, accepting, executing, reviewing, satisfied, or cancelled.
+  Every active phase must expose at least one concrete next action.
 - Non-trivial goals should include `authoring`, `plan.subgoals`, and stable `subgoal_id`s on known `initial_tasks`.
 - Use `GoalProgress`, `TaskQuery`, and `TaskList` for progress and task distribution; do not ask workers to discover subgoals from prose.
 - Initial tasks are coordinator-owned work seeds. Workers may request children, but subgoal creation and routing stay in durable state.

@@ -56,6 +56,7 @@ type ChatMessage = {
 
 type ChatSessionEntry = {
   session_id: string;
+  plan_id?: string | null;
   goal_id: string | null;
   mode: string;
   role: "user" | "assistant";
@@ -69,6 +70,7 @@ type ChatSessionEntry = {
 type ChatRunTrace = {
   run_id: string;
   session_id: string;
+  plan_id: string | null;
   goal_id: string | null;
   mode: string;
   status: "running" | "done" | "error";
@@ -105,10 +107,14 @@ type StoredDraft = {
   kind: string;
   session_id: string;
   run_id: string;
+  plan_id?: string | null;
+  source_plan_id?: string | null;
+  source_goal_id?: string | null;
   status: "active" | "accepted" | "discarded";
   created_at: string;
   updated_at: string;
   expires_at: string;
+  accepted_plan_id?: string | null;
   accepted_goal_id?: string | null;
   payload: JsonMap;
 };
@@ -672,6 +678,270 @@ async function operatorGoalGraph(goalId: string): Promise<JsonMap> {
   };
 }
 
+async function planListProjection(search: string): Promise<JsonMap> {
+  const result = await proxyJson(goalStoreUrl, `/goal-store/plans${search || "?limit=100"}`, { method: "GET" });
+  const plans = rowsFromProxyResult(result, "plans").map(compactPlanProjection);
+  return {
+    generated_at: new Date().toISOString(),
+    plans,
+    data: plans,
+    source: compactProxySource(result),
+  };
+}
+
+async function planDetailProjection(planId: string): Promise<JsonMap> {
+  const result = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" });
+  const plan = asRecord(asRecord(result.data).plan);
+  if (!plan || Object.keys(plan).length === 0) {
+    return {
+      generated_at: new Date().toISOString(),
+      plan_id: planId,
+      found: false,
+      phase: "asking",
+      actions: [],
+      source: compactProxySource(result),
+    };
+  }
+  const projection = compactPlanProjection(plan);
+  return {
+    generated_at: new Date().toISOString(),
+    found: true,
+    plan: {
+      ...plan,
+      ...projection,
+    },
+    phase: projection.phase,
+    actions: projection.actions,
+    source: compactProxySource(result),
+  };
+}
+
+async function planActionList(planId: string): Promise<JsonMap> {
+  const detail = await planDetailProjection(planId);
+  return {
+    generated_at: new Date().toISOString(),
+    plan_id: planId,
+    phase: detail.phase ?? asRecord(detail.plan).phase ?? "asking",
+    actions: rowsFromData(detail.actions ?? asRecord(detail.plan).actions).map((action) => compactPlanAction(action)),
+    source: asRecord(detail.source),
+  };
+}
+
+function compactPlanProjection(row: JsonMap): JsonMap {
+  const current = asRecord(row.current);
+  const planId = String(row.plan_id ?? row.id ?? "").trim();
+  const status = String(row.status ?? "draft");
+  const phase = String(row.phase ?? derivePlanPhase(row));
+  const actions = arrayField(row, "action_items").length
+    ? arrayField(row, "action_items").map((item) => compactPlanAction(item, planId))
+    : derivedPlanActions({
+        planId,
+        phase,
+        status,
+        version: Number(row.version ?? current.version ?? 1),
+        compiledGoalId: row.compiled_goal_id,
+        openQuestionCount: Number(row.open_question_count ?? 0),
+        subgoalCount: Number(row.subgoal_count ?? arrayField(asRecord(current.plan), "subgoals").length),
+        initialTaskCount: Number(row.initial_task_count ?? arrayField(current, "initial_tasks").length),
+      });
+  return compactRecord({
+    plan_id: planId,
+    id: planId,
+    source_plan_id: row.source_plan_id ?? null,
+    title: row.title ?? "Untitled plan",
+    objective: row.objective ?? "",
+    repo: row.repo ?? null,
+    status,
+    phase,
+    mode: row.mode ?? "",
+    version: row.version ?? current.version ?? null,
+    subgoal_count: row.subgoal_count ?? arrayField(asRecord(current.plan), "subgoals").length,
+    initial_task_count: row.initial_task_count ?? arrayField(current, "initial_tasks").length,
+    open_question_count: row.open_question_count ?? arrayField(current, "questions").filter((question) => String(asRecord(question).status ?? "") === "open").length,
+    action_item_count: row.action_item_count ?? actions.length,
+    compiled_goal_id: row.compiled_goal_id ?? null,
+    updated_at: row.updated_at ?? null,
+    actions,
+  });
+}
+
+function compactPlanAction(value: unknown, fallbackPlanId = ""): JsonMap {
+  const record = asRecord(value);
+  const kind = normalizePlanActionKind(record.kind ?? record.action ?? "");
+  const planId = String(record.plan_id ?? fallbackPlanId).trim();
+  const actionId = String(record.action_id ?? stableProjectionId("plan-action", [
+    planId,
+    kind,
+    record.goal_id,
+    record.task_id,
+    record.title,
+  ]));
+  return compactRecord({
+    action_id: actionId,
+    plan_id: planId || null,
+    goal_id: record.goal_id ?? null,
+    task_id: record.task_id ?? null,
+    kind,
+    title: record.title ?? titleForPlanAction(kind),
+    reason: record.reason ?? reasonForPlanAction(kind),
+    allowed_actions: normalizePlanActionValues(arrayField(record, "allowed_actions")).length
+      ? normalizePlanActionValues(arrayField(record, "allowed_actions"))
+      : defaultAllowedPlanActions(kind),
+    required_fields: arrayField(record, "required_fields"),
+    status: record.status ?? "pending",
+    evidence_refs: arrayField(record, "evidence_refs"),
+  });
+}
+
+function derivedPlanActions(input: {
+  planId: string;
+  phase: string;
+  status: string;
+  version: number;
+  compiledGoalId: unknown;
+  openQuestionCount: number;
+  subgoalCount: number;
+  initialTaskCount: number;
+}): JsonMap[] {
+  const suffix = String((input.compiledGoalId ?? input.version) || "current");
+  const action = (kind: string, title: string, reason: string, allowed: string[], requiredFields: string[] = []) => compactPlanAction({
+    action_id: `plan:${input.planId}:${kind}:${suffix}`,
+    plan_id: input.planId,
+    kind,
+    title,
+    reason,
+    allowed_actions: allowed,
+    required_fields: requiredFields,
+    status: "pending",
+  });
+  if (input.phase === "asking") {
+    return [action(
+      "answer_question",
+      input.openQuestionCount > 0 ? "Answer planning question" : "Ask or draft plan",
+      "The plan is waiting for enough operator context before goals are drafted.",
+      ["answer_question", "draft_plan", "draft_goal", "cancel"],
+      input.openQuestionCount > 0 ? ["answer"] : [],
+    )];
+  }
+  if (input.phase === "drafting_plan") {
+    return [action(
+      "review_plan_draft",
+      "Review plan draft",
+      "The plan needs an accepted structure before goals are staged for execution.",
+      ["accept_plan_draft", "draft_goal", "cancel"],
+    )];
+  }
+  if (input.phase === "drafting_goals") {
+    return [action(
+      "review_goal_draft",
+      "Review drafted goals",
+      "The plan has staged goal-shaped work that needs review before execution.",
+      ["accept_goal_into_plan", "draft_goal", "accept_plan_draft", "cancel"],
+    )];
+  }
+  if (input.phase === "reviewing") {
+    return [action(
+      "review_plan_draft",
+      "Review plan for acceptance",
+      "The plan is ready for operator review before accepted goals are submitted.",
+      ["accept_plan_draft", "replan", "cancel"],
+    )];
+  }
+  if (input.phase === "accepting") {
+    if (statusToken(input.status).replaceAll("-", "_") === "ready_for_review") {
+      return [action(
+        "review_plan_draft",
+        "Review plan for acceptance",
+        "The plan is ready for operator review before accepted goals are submitted.",
+        ["accept_plan_draft", "replan", "cancel"],
+      )];
+    }
+    return [action(
+      "submit_goal",
+      "Submit accepted goals",
+      "The plan has been accepted and can be compiled into executable goal work.",
+      ["submit_goal", "draft_goal", "cancel"],
+    )];
+  }
+  if (input.phase === "executing") {
+    return [action(
+      "review_evidence",
+      "Review execution evidence",
+      "The plan has compiled goal work; review evidence before confirming satisfaction.",
+      ["review_evidence", "retry", "replan", "confirm_satisfaction", "cancel"],
+    )];
+  }
+  return [];
+}
+
+function derivePlanPhase(row: JsonMap): string {
+  const status = statusToken(row.status).replaceAll("-", "_");
+  if (status === "needs_questions") return "asking";
+  if (status === "ready_for_review") return "accepting";
+  if (status === "approved") return "accepting";
+  if (status === "compiled") return "executing";
+  if (status === "superseded") return "satisfied";
+  if (status === "archived" || status === "cancelled") return "cancelled";
+  const current = asRecord(row.current);
+  const plan = asRecord(current.plan);
+  const hasGoalShape = Number(row.subgoal_count ?? arrayField(plan, "subgoals").length) > 0
+    || Number(row.initial_task_count ?? arrayField(current, "initial_tasks").length) > 0;
+  return hasGoalShape ? "drafting_goals" : "drafting_plan";
+}
+
+function normalizePlanActionKind(value: unknown): string {
+  const kind = statusToken(value).replaceAll("-", "_");
+  return kind || "review_plan_draft";
+}
+
+function normalizePlanActionValues(values: unknown[]): string[] {
+  return values.map(normalizePlanActionKind).filter(Boolean);
+}
+
+function defaultAllowedPlanActions(kind: string): string[] {
+  if (kind === "answer_question") return ["answer_question", "draft_plan", "draft_goal", "cancel"];
+  if (kind === "review_plan_draft") return ["accept_plan_draft", "replan", "cancel"];
+  if (kind === "review_goal_draft") return ["accept_goal_into_plan", "draft_goal", "accept_plan_draft", "cancel"];
+  if (kind === "submit_goal") return ["submit_goal", "draft_goal", "cancel"];
+  if (kind === "review_evidence") return ["review_evidence", "retry", "replan", "confirm_satisfaction", "cancel"];
+  return [kind, "cancel"].filter((item, index, items) => item && items.indexOf(item) === index);
+}
+
+function titleForPlanAction(kind: string): string {
+  const titles: Record<string, string> = {
+    answer_question: "Answer planning question",
+    review_plan_draft: "Review plan draft",
+    accept_plan_draft: "Accept plan draft",
+    draft_goal: "Draft goal",
+    review_goal_draft: "Review goal draft",
+    accept_goal_into_plan: "Accept goal into plan",
+    submit_goal: "Submit goal",
+    resolve_human_prompt: "Resolve human prompt",
+    approve: "Approve",
+    retry: "Retry",
+    replan: "Replan",
+    cancel: "Cancel",
+    review_evidence: "Review evidence",
+    confirm_satisfaction: "Confirm satisfaction",
+  };
+  return titles[kind] ?? "Review plan action";
+}
+
+function reasonForPlanAction(kind: string): string {
+  const reasons: Record<string, string> = {
+    answer_question: "The plan needs operator input before it can narrow into goals.",
+    review_plan_draft: "Review the staged workflow before goals are accepted or submitted.",
+    accept_plan_draft: "Accept the staged plan structure into durable planning state.",
+    draft_goal: "Draft a satisfiable goal inside the selected plan.",
+    review_goal_draft: "Review staged goal-shaped work before execution.",
+    accept_goal_into_plan: "Attach the goal draft to the plan before submitting it.",
+    submit_goal: "Compile accepted plan work into executable goal work.",
+    review_evidence: "Review execution evidence before deciding satisfaction.",
+    confirm_satisfaction: "Confirm the plan has reached the intended outcome.",
+  };
+  return reasons[kind] ?? "This plan action can move the workflow forward.";
+}
+
 function goalStoreQueryPath(path: string, params: Record<string, string | number | null | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -785,8 +1055,9 @@ async function operatorGoalActionEnvelope(
 }
 
 type OperatorActorRef = {
-  kind: "goal" | "task" | "thunk" | "worker_run" | "review" | "approval" | "event";
+  kind: "plan" | "goal" | "task" | "thunk" | "worker_run" | "review" | "approval" | "event" | "draft";
   id: string;
+  plan_id?: string | null;
   goal_id: string | null;
   task_id: string | null;
 };
@@ -807,8 +1078,11 @@ function operatorEventTypeForTransition(transition: string): string {
     goal_steered: "goal.updated",
     goal_cancelled: "goal.cancelled",
     goal_satisfied: "goal.satisfied",
+    plan_draft_accepted: "plan.updated",
+    plan_action_resolved: "plan.updated",
+    plan_phase_changed: "plan.updated",
   };
-  return eventTypes[transition] ?? "goal.updated";
+  return eventTypes[transition] ?? "workspace.updated";
 }
 
 function goalActor(goalId: string): OperatorActorRef {
@@ -816,6 +1090,26 @@ function goalActor(goalId: string): OperatorActorRef {
     kind: "goal",
     id: goalId,
     goal_id: goalId,
+    task_id: null,
+  };
+}
+
+function planActor(planId: string): OperatorActorRef {
+  return {
+    kind: "plan",
+    id: planId,
+    plan_id: planId,
+    goal_id: null,
+    task_id: null,
+  };
+}
+
+function draftActor(draftId: string, planId?: string | null, goalId?: string | null): OperatorActorRef {
+  return {
+    kind: "draft",
+    id: draftId,
+    plan_id: planId ?? null,
+    goal_id: goalId ?? null,
     task_id: null,
   };
 }
@@ -835,7 +1129,7 @@ async function appendOperatorEvent(input: {
     transition: input.transition,
     idempotency_key: input.idempotencyKey,
     causation_id: input.causationId ?? null,
-    correlation_id: input.correlationId ?? input.actor.goal_id ?? null,
+    correlation_id: input.correlationId ?? input.actor.goal_id ?? input.actor.plan_id ?? null,
     restate_invocation_id: null,
     created_at: new Date().toISOString(),
     payload_json: input.payload,
@@ -1973,6 +2267,7 @@ function buildPlanContinuity(planId: string, planResponse: ProxyResult): JsonMap
   const compiledQuality = asRecord(plan.compiled_quality);
   const qualityNextActions = arrayField(compiledQuality, "suggested_next_actions");
   const status = String(plan.status ?? "");
+  const projection = compactPlanProjection(plan);
 
   return {
     generated_at: new Date().toISOString(),
@@ -1981,10 +2276,12 @@ function buildPlanContinuity(planId: string, planResponse: ProxyResult): JsonMap
     objective: plan.objective ?? "",
     repo: plan.repo ?? null,
     status,
+    phase: projection.phase ?? derivePlanPhase(plan),
     mode: plan.mode ?? "",
     version: plan.version ?? current.version ?? null,
     updated_at: plan.updated_at ?? null,
     compiled_goal_id: plan.compiled_goal_id ?? null,
+    actions: projection.actions ?? [],
     continuity: {
       intake_summary: authoring.intake_summary ?? "",
       plan_summary: goalPlan.summary ?? "",
@@ -2096,6 +2393,276 @@ function planNextActions(input: {
     actions.push("review the plan or compile it into a GoalSpec");
   }
   return actions;
+}
+
+async function acceptStoredPlanDraft(draftId: string, body: unknown): Promise<JsonMap> {
+  cleanupChatDrafts();
+  const record = asRecord(body);
+  const stored = chatDrafts.get(draftId);
+  if (!stored || stored.kind !== "plan_draft") {
+    return {
+      ok: false,
+      status: 404,
+      error: "server-side plan draft is not available",
+      draft_id: draftId,
+      recovery: {
+        actions: ["refresh_chat_session", "draft_plan_again"],
+      },
+    };
+  }
+  if (stored.status === "accepted") {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side plan draft was already accepted",
+      draft_id: draftId,
+      accepted_plan_id: stored.accepted_plan_id ?? null,
+      recovery: {
+        actions: ["select_accepted_plan", "draft_plan_again"],
+      },
+    };
+  }
+  if (stored.status === "discarded") {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side plan draft was discarded",
+      draft_id: draftId,
+      recovery: {
+        actions: ["draft_plan_again"],
+      },
+    };
+  }
+
+  const draft = mergePlanDraftEdits(stored.payload, record);
+  const targetPlanId = String(record.plan_id ?? draft.plan_id ?? stored.plan_id ?? "").trim();
+  const createNew = record.create_new === true || String(record.acceptance ?? "") === "create_plan" || !targetPlanId;
+  const requestBody = createNew
+    ? planDraftRequestForCreate(draft, record)
+    : planRevisionRequestFromPlanDraft(draft, record, "approved");
+  const path = createNew
+    ? "/goal-store/plans"
+    : `/goal-store/plans/${encodeURIComponent(targetPlanId)}/revisions`;
+  const result = await proxyJson(goalStoreUrl, path, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify(requestBody),
+  });
+  const acceptedPlanId = planIdFromPlanResponse(result.data) || targetPlanId || String(asRecord(requestBody).plan_id ?? "");
+  if (result.ok && acceptedPlanId) {
+    markPlanDraftAccepted(draftId, acceptedPlanId);
+  }
+  const operatorEvent = await appendOperatorEvent({
+    transition: "plan_draft_accepted",
+    actor: acceptedPlanId ? planActor(acceptedPlanId) : draftActor(draftId, stored.plan_id, stored.source_goal_id),
+    payload: {
+      draft_id: draftId,
+      plan_id: acceptedPlanId || targetPlanId || null,
+      source_plan_id: draft.source_plan_id ?? stored.source_plan_id ?? null,
+      source_goal_id: draft.source_goal_id ?? stored.source_goal_id ?? null,
+      accepted: result.ok,
+      acceptance_mode: createNew ? "create_plan" : "revise_plan",
+      result,
+    },
+    idempotencyKey: `operator:plan-draft:${draftId}:accept:${createNew ? "create" : targetPlanId}:${operatorRequestId(record)}`,
+    causationId: `plan-draft:${draftId}:accept`,
+    correlationId: acceptedPlanId || targetPlanId || stored.plan_id || stored.source_plan_id || null,
+  });
+  return {
+    ok: result.ok,
+    status: result.status,
+    draft_id: draftId,
+    plan_id: acceptedPlanId || targetPlanId || null,
+    acceptance_mode: createNew ? "create_plan" : "revise_plan",
+    data: result.data,
+    source: compactProxySource(result),
+    operator_event: operatorEvent,
+    actions: acceptedPlanId ? derivedPlanActions({
+      planId: acceptedPlanId,
+      phase: "accepting",
+      status: "approved",
+      version: Number(asRecord(asRecord(result.data).plan).version ?? 1),
+      compiledGoalId: null,
+      openQuestionCount: 0,
+      subgoalCount: rowsFromData(asRecord(draft.plan).subgoals).length,
+      initialTaskCount: rowsFromData(draft.initial_tasks).length,
+    }) : [],
+  };
+}
+
+async function resolvePlanAction(planId: string, actionId: string, body: unknown): Promise<JsonMap> {
+  const record = asRecord(body);
+  const planResponse = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" });
+  const plan = asRecord(asRecord(planResponse.data).plan);
+  if (!plan || Object.keys(plan).length === 0) {
+    return {
+      ok: false,
+      status: planResponse.status || 404,
+      error: "plan was not found",
+      plan_id: planId,
+      action_id: actionId,
+      recovery: {
+        actions: ["refresh_plans", "select_plan"],
+      },
+    };
+  }
+  const action = findPlanAction(plan, actionId);
+  const kind = normalizePlanActionKind(record.resolution ?? record.action ?? action.kind ?? actionId.split(":")[2] ?? "");
+  let result: ProxyResult | JsonMap;
+  if (kind === "submit_goal") {
+    result = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}/compile`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        plan_id: planId,
+        strict_review: record.strict_review ?? true,
+        human_steered: record.human_steered ?? true,
+        enable_branching: record.enable_branching ?? false,
+      }),
+    });
+  } else if (kind === "review_evidence") {
+    result = {
+      ok: true,
+      status: 200,
+      data: {
+        accepted: true,
+        plan_id: planId,
+        action_id: actionId,
+        resolution: "review_evidence",
+      },
+    };
+  } else {
+    const status = statusForResolvedPlanAction(kind);
+    result = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}/revisions`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(planRevisionRequestFromExistingPlan(plan, record, status)),
+    });
+  }
+  const ok = Boolean((result as JsonMap).ok);
+  const status = Number((result as JsonMap).status ?? 0);
+  const operatorEvent = await appendOperatorEvent({
+    transition: "plan_action_resolved",
+    actor: planActor(planId),
+    payload: {
+      plan_id: planId,
+      action_id: actionId,
+      resolution: kind,
+      request: record,
+      result,
+    },
+    idempotencyKey: `operator:plan:${planId}:action:${actionId}:${kind}:${operatorRequestId(record)}`,
+    causationId: actionId,
+    correlationId: planId,
+  });
+  return {
+    ok,
+    status,
+    accepted: ok,
+    plan_id: planId,
+    action_id: actionId,
+    resolution: kind,
+    result,
+    operator_event: operatorEvent,
+  };
+}
+
+function mergePlanDraftEdits(baseDraft: JsonMap, editedDraft: JsonMap): JsonMap {
+  if (editedDraft.compact === true) {
+    return JSON.parse(JSON.stringify(baseDraft)) as JsonMap;
+  }
+  const base = JSON.parse(JSON.stringify(baseDraft)) as JsonMap;
+  return compactRecord({
+    ...base,
+    ...editedDraft,
+    authoring: Object.keys(asRecord(editedDraft.authoring)).length
+      ? { ...asRecord(base.authoring), ...asRecord(editedDraft.authoring) }
+      : asRecord(base.authoring),
+    plan: Object.keys(asRecord(editedDraft.plan)).length
+      ? { ...asRecord(base.plan), ...asRecord(editedDraft.plan) }
+      : asRecord(base.plan),
+  });
+}
+
+function planDraftRequestForCreate(draft: JsonMap, options: JsonMap): JsonMap {
+  return compactRecord({
+    plan_id: options.create_new === true ? undefined : draft.plan_id,
+    source_plan_id: draft.source_plan_id ?? null,
+    title: draft.title ?? "Untitled plan",
+    objective: draft.objective ?? draft.prompt ?? "",
+    repo: draft.repo ?? null,
+    prompt: draft.prompt ?? draft.objective ?? "",
+    mode: draft.mode ?? "interactive",
+    status: options.status ?? "approved",
+    author: options.operator ?? draft.author ?? "operator",
+    summary: options.summary ?? draft.summary ?? "Operator accepted plan draft.",
+    authoring: asRecord(draft.authoring),
+    plan: asRecord(draft.plan),
+    initial_tasks: rowsFromData(draft.initial_tasks),
+    questions: rowsFromData(draft.questions),
+    decisions: rowsFromData(draft.decisions),
+  });
+}
+
+function planRevisionRequestFromPlanDraft(draft: JsonMap, options: JsonMap, status: string): JsonMap {
+  return compactRecord({
+    author: options.operator ?? draft.author ?? "operator",
+    summary: options.summary ?? draft.summary ?? "Operator accepted plan draft.",
+    operator_message: options.response_summary ?? options.note ?? "Accepted staged plan draft.",
+    status: options.status ?? status,
+    authoring: asRecord(draft.authoring),
+    plan: asRecord(draft.plan),
+    initial_tasks: rowsFromData(draft.initial_tasks),
+    questions: rowsFromData(draft.questions),
+    decisions: rowsFromData(draft.decisions),
+  });
+}
+
+function planRevisionRequestFromExistingPlan(plan: JsonMap, options: JsonMap, status: string): JsonMap {
+  const current = asRecord(plan.current);
+  return compactRecord({
+    author: options.operator ?? "operator",
+    summary: options.summary ?? titleForPlanAction(String(options.resolution ?? options.action ?? "")),
+    operator_message: options.response_summary ?? options.note ?? "Operator resolved plan action.",
+    status,
+    authoring: Object.keys(asRecord(options.authoring)).length ? asRecord(options.authoring) : asRecord(current.authoring),
+    plan: Object.keys(asRecord(options.plan)).length ? asRecord(options.plan) : asRecord(current.plan),
+    initial_tasks: Array.isArray(options.initial_tasks) ? options.initial_tasks : arrayField(current, "initial_tasks"),
+    questions: Array.isArray(options.questions) ? options.questions : arrayField(current, "questions"),
+    decisions: Array.isArray(options.decisions) ? options.decisions : arrayField(current, "decisions"),
+  });
+}
+
+function statusForResolvedPlanAction(kind: string): string {
+  if (kind === "accept_plan_draft" || kind === "accept_goal_into_plan") return "approved";
+  if (kind === "replan" || kind === "draft_goal" || kind === "answer_question") return "draft";
+  if (kind === "cancel") return "archived";
+  if (kind === "confirm_satisfaction") return "superseded";
+  return "ready_for_review";
+}
+
+function findPlanAction(plan: JsonMap, actionId: string): JsonMap {
+  const planId = String(plan.id ?? plan.plan_id ?? "").trim();
+  return arrayField(plan, "action_items")
+    .map(asRecord)
+    .find((action) => String(action.action_id ?? "") === actionId)
+    ?? derivedPlanActions({
+      planId,
+      phase: String(plan.phase ?? derivePlanPhase(plan)),
+      status: String(plan.status ?? "draft"),
+      version: Number(plan.version ?? 1),
+      compiledGoalId: plan.compiled_goal_id,
+      openQuestionCount: Number(plan.open_question_count ?? 0),
+      subgoalCount: Number(plan.subgoal_count ?? arrayField(asRecord(asRecord(plan.current).plan), "subgoals").length),
+      initialTaskCount: Number(plan.initial_task_count ?? arrayField(asRecord(plan.current), "initial_tasks").length),
+    }).find((action) => String(action.action_id ?? "") === actionId)
+    ?? {};
+}
+
+function planIdFromPlanResponse(value: unknown): string {
+  const record = asRecord(value);
+  const plan = asRecord(record.plan);
+  return String(plan.id ?? plan.plan_id ?? record.plan_id ?? "").trim();
 }
 
 function buildAgentActivity(
@@ -2574,17 +3141,22 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
   const request = asRecord(payload);
   const mode = String(request.mode ?? "general");
   const goalId = String(request.goal_id ?? "");
-  const sessionId = String(request.session_id ?? (goalId ? `goal:${goalId}` : "operator:default"));
+  const planId = String(request.plan_id ?? "").trim();
+  const sessionId = String(request.session_id ?? (planId ? `plan:${planId}` : goalId ? `goal:${goalId}` : "operator:default"));
   const runId = String(request.run_id ?? crypto.randomUUID());
   const prompt = String(request.prompt ?? "").trim();
   const messages = await chatMessagesForRequest(sessionId, request, prompt);
   if (!messages.length) {
     throw new Error("chat request requires a prompt or at least one message");
   }
-  beginChatRun(runId, sessionId, goalId || null, mode);
+  beginChatRun(runId, sessionId, planId || null, goalId || null, mode);
   try {
-    updateChatRun(runId, "loading_goal_context", goalId ? { goal_id: goalId } : { scope: "operator" });
-    const context = await chatContext(goalId);
+    updateChatRun(runId, "loading_plan_context", compactRecord({
+      plan_id: planId || null,
+      goal_id: goalId || null,
+      scope: planId ? "plan" : goalId ? "goal" : "operator",
+    }));
+    const context = await chatContext(goalId, planId);
     updateChatRun(runId, "resolving_backend");
     const backend = await resolveChatBackend();
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user") ?? null;
@@ -2596,14 +3168,16 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
       updateChatRun(runId, "using_stub", { reason: stubChatReason() });
       response = stubChat(mode, messages, context);
     }
-    response = compactChatDraftResponse(response, sessionId, runId);
+    response = compactChatDraftResponse(response, sessionId, runId, context);
     updateChatRun(runId, "journaling_turns", {
       provider: response.provider ?? null,
       model: response.model ?? null,
     });
-    const chatLog = await appendChatTurn(sessionId, goalId || null, mode, latestUserMessage, response);
+    const chatLog = await appendChatTurn(sessionId, planId || null, goalId || null, mode, latestUserMessage, response);
     const result = {
       ...response,
+      plan_id: planId || null,
+      goal_id: goalId || null,
       session_id: sessionId,
       run_id: runId,
       chat_log: chatLog,
@@ -2631,12 +3205,13 @@ async function chatMessagesForRequest(sessionId: string, request: JsonMap, promp
   return chatMessagesFrom(request.messages);
 }
 
-function beginChatRun(runId: string, sessionId: string, goalId: string | null, mode: string): ChatRunTrace {
+function beginChatRun(runId: string, sessionId: string, planId: string | null, goalId: string | null, mode: string): ChatRunTrace {
   cleanupChatRuns();
   const now = new Date().toISOString();
   const trace: ChatRunTrace = {
     run_id: runId,
     session_id: sessionId,
+    plan_id: planId,
     goal_id: goalId,
     mode,
     status: "running",
@@ -2712,6 +3287,8 @@ function compactChatRunTrace(trace: ChatRunTrace | null): JsonMap | null {
   }
   return {
     run_id: trace.run_id,
+    plan_id: trace.plan_id,
+    goal_id: trace.goal_id,
     status: trace.status,
     stage: trace.stage,
     started_at: trace.started_at,
@@ -2730,7 +3307,7 @@ function cleanupChatRuns(): void {
   }
 }
 
-function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: string): JsonMap {
+function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: string, context: JsonMap): JsonMap {
   cleanupChatDrafts();
   const drafts = asRecord(response.drafts);
   const compactDrafts: JsonMap = {};
@@ -2739,16 +3316,36 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
   for (const [kind, value] of Object.entries(drafts)) {
     const draft = asRecord(value);
     if (kind === "goal_spec" && Object.keys(draft).length > 0) {
-      const stored = storeChatDraft(kind, sessionId, runId, draft);
-      const compact = compactGoalSpecDraft(draft, stored.draft_id);
+      const contextualDraft = attachPlanContextToGoalDraft(draft, context);
+      const stored = storeChatDraft(kind, sessionId, runId, contextualDraft, context);
+      const compact = compactGoalSpecDraft(contextualDraft, stored.draft_id);
       compactDrafts[kind] = compact;
       draftRefs[kind] = {
         draft_id: stored.draft_id,
         kind,
         status: stored.status,
+        plan_id: stored.plan_id ?? null,
+        source_goal_id: stored.source_goal_id ?? null,
         expires_at: stored.expires_at,
       };
       draftSummary[kind] = goalDraftSummary(compact);
+      continue;
+    }
+    if (kind === "plan_draft" && Object.keys(draft).length > 0) {
+      const contextualDraft = attachPlanContextToPlanDraft(draft, context);
+      const stored = storeChatDraft(kind, sessionId, runId, contextualDraft, context);
+      const compact = compactPlanDraft(contextualDraft, stored.draft_id);
+      compactDrafts[kind] = compact;
+      draftRefs[kind] = {
+        draft_id: stored.draft_id,
+        kind,
+        status: stored.status,
+        plan_id: stored.plan_id ?? null,
+        source_plan_id: stored.source_plan_id ?? null,
+        source_goal_id: stored.source_goal_id ?? null,
+        expires_at: stored.expires_at,
+      };
+      draftSummary[kind] = planDraftSummary(compact);
       continue;
     }
     compactDrafts[kind] = compactGenericDraft(value, kind);
@@ -2758,6 +3355,8 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
     provider: response.provider ?? null,
     model: response.model ?? null,
     mode: response.mode ?? null,
+    plan_id: context.plan_id ?? null,
+    goal_id: context.goal_id ?? null,
     assistant: String(response.assistant ?? ""),
     drafts: compactDrafts,
     draft_refs: draftRefs,
@@ -2767,18 +3366,25 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
   });
 }
 
-function storeChatDraft(kind: string, sessionId: string, runId: string, payload: JsonMap): StoredDraft {
+function storeChatDraft(kind: string, sessionId: string, runId: string, payload: JsonMap, context: JsonMap): StoredDraft {
   const now = Date.now();
   const timestamp = new Date(now).toISOString();
+  const planId = String(payload.plan_id ?? context.plan_id ?? "").trim() || null;
+  const sourcePlanId = String(payload.source_plan_id ?? context.plan_id ?? "").trim() || null;
+  const sourceGoalId = String(payload.source_goal_id ?? context.goal_id ?? "").trim() || null;
   const stored: StoredDraft = {
     draft_id: crypto.randomUUID(),
     kind,
     session_id: sessionId,
     run_id: runId,
+    plan_id: planId,
+    source_plan_id: sourcePlanId,
+    source_goal_id: sourceGoalId,
     status: "active",
     created_at: timestamp,
     updated_at: timestamp,
     expires_at: new Date(now + chatDraftTtlMs).toISOString(),
+    accepted_plan_id: null,
     accepted_goal_id: null,
     payload: JSON.parse(JSON.stringify(payload)) as JsonMap,
   };
@@ -2793,6 +3399,16 @@ function markChatDraftAccepted(draftId: string, goalId: string): void {
   }
   draft.status = "accepted";
   draft.accepted_goal_id = goalId;
+  draft.updated_at = new Date().toISOString();
+}
+
+function markPlanDraftAccepted(draftId: string, planId: string): void {
+  const draft = chatDrafts.get(draftId);
+  if (!draft) {
+    return;
+  }
+  draft.status = "accepted";
+  draft.accepted_plan_id = planId;
   draft.updated_at = new Date().toISOString();
 }
 
@@ -2815,18 +3431,28 @@ function chatDraftSummariesForSession(sessionId: string): JsonMap[] {
 function chatDraftSummary(draft: StoredDraft): JsonMap {
   const compact = draft.kind === "goal_spec"
     ? compactGoalSpecDraft(draft.payload, draft.draft_id)
-    : compactGenericDraft(draft.payload, draft.kind);
+    : draft.kind === "plan_draft"
+      ? compactPlanDraft(draft.payload, draft.draft_id)
+      : compactGenericDraft(draft.payload, draft.kind);
   return compactRecord({
     draft_id: draft.draft_id,
     kind: draft.kind,
     status: draft.status,
     session_id: draft.session_id,
     run_id: draft.run_id,
+    plan_id: draft.plan_id ?? null,
+    source_plan_id: draft.source_plan_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
     created_at: draft.created_at,
     updated_at: draft.updated_at,
     expires_at: draft.expires_at,
+    accepted_plan_id: draft.accepted_plan_id ?? null,
     accepted_goal_id: draft.accepted_goal_id ?? null,
-    summary: draft.kind === "goal_spec" ? goalDraftSummary(compact) : genericDraftSummary(compact, draft.kind),
+    summary: draft.kind === "goal_spec"
+      ? goalDraftSummary(compact)
+      : draft.kind === "plan_draft"
+        ? planDraftSummary(compact)
+        : genericDraftSummary(compact, draft.kind),
   });
 }
 
@@ -2864,6 +3490,9 @@ function compactGoalSpecDraft(draft: JsonMap, draftId: string): JsonMap {
     draft_id: draftId,
     kind: "goal_spec",
     compact: true,
+    plan_id: draft.plan_id ?? null,
+    plan_phase_id: draft.plan_phase_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
     title: String(draft.title ?? "Untitled goal draft"),
     objective: String(draft.objective ?? ""),
     repo: draft.repo ?? null,
@@ -2882,6 +3511,71 @@ function compactGoalSpecDraft(draft: JsonMap, draftId: string): JsonMap {
     }),
     initial_tasks: initialTasks,
     done_criteria: asRecord(draft.done_criteria),
+  });
+}
+
+function compactPlanDraft(draft: JsonMap, draftId: string): JsonMap {
+  const authoring = asRecord(draft.authoring);
+  const plan = asRecord(draft.plan);
+  return compactRecord({
+    draft_id: draftId,
+    kind: "plan_draft",
+    compact: true,
+    plan_id: draft.plan_id ?? null,
+    source_plan_id: draft.source_plan_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
+    phase: "drafting_plan",
+    title: String(draft.title ?? "Untitled plan draft"),
+    objective: String(draft.objective ?? draft.prompt ?? ""),
+    prompt: truncateText(String(draft.prompt ?? draft.objective ?? ""), 360),
+    mode: draft.mode ?? "interactive",
+    status: draft.status ?? "draft",
+    authoring: compactRecord({
+      intake_summary: authoring.intake_summary ?? draft.objective ?? null,
+      acceptance_evidence: arrayField(authoring, "acceptance_evidence"),
+      constraints: arrayField(authoring, "constraints"),
+      out_of_scope: arrayField(authoring, "out_of_scope"),
+      assumptions: arrayField(authoring, "assumptions"),
+      open_questions: arrayField(authoring, "open_questions"),
+    }),
+    summary: String(draft.objective ?? draft.prompt ?? draft.summary ?? plan.summary ?? ""),
+    plan_summary: plan.summary ?? null,
+    subgoal_count: rowsFromData(plan.subgoals).length,
+    initial_task_count: rowsFromData(draft.initial_tasks).length,
+    question_count: rowsFromData(draft.questions).length,
+    decision_count: rowsFromData(draft.decisions).length,
+    allowed_actions: [
+      "accept_plan_draft",
+      "edit_plan_draft",
+      "discard_draft",
+      "draft_goal",
+    ],
+  });
+}
+
+function attachPlanContextToPlanDraft(draft: JsonMap, context: JsonMap): JsonMap {
+  const planId = String(draft.plan_id ?? context.plan_id ?? "").trim();
+  const sourcePlanId = String(draft.source_plan_id ?? context.plan_id ?? "").trim();
+  const sourceGoalId = String(draft.source_goal_id ?? context.goal_id ?? "").trim();
+  return compactRecord({
+    ...draft,
+    plan_id: planId || undefined,
+    source_plan_id: sourcePlanId || undefined,
+    source_goal_id: sourceGoalId || undefined,
+    prompt: String(draft.prompt ?? draft.objective ?? ""),
+    mode: draft.mode ?? "interactive",
+    status: draft.status ?? "draft",
+  });
+}
+
+function attachPlanContextToGoalDraft(draft: JsonMap, context: JsonMap): JsonMap {
+  const planId = String(draft.plan_id ?? context.plan_id ?? "").trim();
+  const sourceGoalId = String(draft.source_goal_id ?? context.goal_id ?? "").trim();
+  return compactRecord({
+    ...draft,
+    plan_id: planId || undefined,
+    plan_phase_id: draft.plan_phase_id ?? asRecord(context.plan).phase ?? undefined,
+    source_goal_id: sourceGoalId || undefined,
   });
 }
 
@@ -2908,10 +3602,26 @@ function goalDraftSummary(draft: JsonMap): JsonMap {
   const plan = asRecord(draft.plan);
   return compactRecord({
     draft_id: draft.draft_id ?? null,
+    plan_id: draft.plan_id ?? null,
     title: draft.title ?? null,
     objective_preview: truncateText(String(draft.objective ?? ""), 220),
     subgoal_count: rowsFromData(plan.subgoals).length,
     initial_task_count: rowsFromData(draft.initial_tasks).length,
+  });
+}
+
+function planDraftSummary(draft: JsonMap): JsonMap {
+  return compactRecord({
+    draft_id: draft.draft_id ?? null,
+    plan_id: draft.plan_id ?? null,
+    source_plan_id: draft.source_plan_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
+    title: draft.title ?? null,
+    phase: draft.phase ?? "drafting_plan",
+    preview: truncateText(String(draft.summary ?? draft.objective ?? draft.prompt ?? ""), 220),
+    subgoal_count: draft.subgoal_count ?? 0,
+    initial_task_count: draft.initial_task_count ?? 0,
+    actions: draft.allowed_actions ?? ["accept_plan_draft", "discard_draft"],
   });
 }
 
@@ -2965,6 +3675,7 @@ async function chatSession(sessionId: string, includeEntries = false): Promise<J
 
 async function appendChatTurn(
   sessionId: string,
+  planId: string | null,
   goalId: string | null,
   mode: string,
   userMessage: ChatMessage | null,
@@ -2975,18 +3686,20 @@ async function appendChatTurn(
   if (userMessage?.content) {
     entries.push({
       session_id: sessionId,
+      plan_id: planId,
       goal_id: goalId,
       mode,
       role: "user",
       content: userMessage.content,
       created_at: createdAt,
-      payload_json: { source: "control_gateway" },
+      payload_json: { source: "control_gateway", plan_id: planId, goal_id: goalId },
     });
   }
   const assistant = String(response.assistant ?? "").trim();
   if (assistant) {
     entries.push({
       session_id: sessionId,
+      plan_id: planId,
       goal_id: goalId,
       mode,
       role: "assistant",
@@ -3026,6 +3739,8 @@ async function appendChatTurn(
 function chatAssistantTurnPayload(response: JsonMap): JsonMap {
   return {
     source: "control_gateway",
+    plan_id: response.plan_id ?? asRecord(response.context).plan_id ?? null,
+    goal_id: response.goal_id ?? asRecord(response.context).goal_id ?? null,
     draft_refs: asRecord(response.draft_refs),
     draft_summary: asRecord(response.draft_summary),
     chat_backend: asRecord(response.chat_backend),
@@ -3055,6 +3770,7 @@ async function appendChatEntriesToGoalStore(entries: ChatSessionEntry[]): Promis
 function goalStoreChatTurnBody(entry: ChatSessionEntry): JsonMap {
   return {
     session_id: entry.session_id,
+    plan_id: entry.plan_id ?? undefined,
     goal_id: uuidOrUndefined(entry.goal_id),
     mode: entry.mode,
     role: entry.role,
@@ -3125,9 +3841,11 @@ async function readChatSessionEntriesFromGoalStore(sessionId: string): Promise<{
 
 function chatEntryFromGoalStoreTurn(value: unknown): ChatSessionEntry {
   const record = asRecord(value);
+  const payload = asRecord(record.payload_json);
   const role = record.role === "assistant" ? "assistant" : "user";
   return {
     session_id: String(record.session_id ?? ""),
+    plan_id: typeof record.plan_id === "string" ? record.plan_id : typeof payload.plan_id === "string" ? payload.plan_id : null,
     goal_id: typeof record.goal_id === "string" ? record.goal_id : null,
     mode: String(record.mode ?? "general"),
     role,
@@ -3135,7 +3853,7 @@ function chatEntryFromGoalStoreTurn(value: unknown): ChatSessionEntry {
     created_at: String(record.created_at ?? ""),
     provider: typeof record.provider === "string" ? record.provider : undefined,
     model: typeof record.model === "string" ? record.model : null,
-    payload_json: asRecord(record.payload_json),
+    payload_json: payload,
   };
 }
 
@@ -3170,8 +3888,10 @@ async function readChatSessionEntriesFromJsonl(sessionId: string): Promise<{ ent
     if (!role || !content) {
       continue;
     }
+    const payload = asRecord(record.payload_json);
     entries.push({
       session_id: String(record.session_id),
+      plan_id: typeof record.plan_id === "string" ? record.plan_id : typeof payload.plan_id === "string" ? payload.plan_id : null,
       goal_id: typeof record.goal_id === "string" ? record.goal_id : null,
       mode: String(record.mode ?? "general"),
       role,
@@ -3179,7 +3899,7 @@ async function readChatSessionEntriesFromJsonl(sessionId: string): Promise<{ ent
       created_at: String(record.created_at ?? ""),
       provider: typeof record.provider === "string" ? record.provider : undefined,
       model: typeof record.model === "string" ? record.model : null,
-      payload_json: asRecord(record.payload_json),
+      payload_json: payload,
     });
   }
   return {
@@ -3200,18 +3920,30 @@ function chatLogStatus(backend: string, durable: boolean, error?: string): JsonM
   };
 }
 
-async function chatContext(goalId: string): Promise<JsonMap> {
+async function chatContext(goalId: string, planId = ""): Promise<JsonMap> {
   const context: JsonMap = {
+    plan_id: planId || null,
     goal_id: goalId || null,
-    engine_boundary: "The chat assistant drafts and explains. Durable mutations still require explicit workflow, plan, memory, or approval API calls.",
+    workflow_model: "Ask -> Draft plan -> Draft goal -> Accept. Plans are workflow/chat context; goals are satisfiable contracts inside a plan.",
+    engine_boundary: "The chat assistant drafts and explains. Durable mutations still require explicit plan, goal, memory, or approval API calls.",
     available_actions: [
+      "ask",
       "draft_plan",
       "draft_goal",
+      "accept_plan_draft",
+      "accept_goal_draft",
       "draft_steering_directive",
       "explain_goal_state",
       "summarize_next_actions",
     ],
   };
+  if (planId) {
+    try {
+      context.plan = compactPlanContext(await planContinuity(planId));
+    } catch (error) {
+      context.plan_error = error instanceof Error ? error.message : String(error);
+    }
+  }
   if (!goalId) {
     return context;
   }
@@ -3221,6 +3953,22 @@ async function chatContext(goalId: string): Promise<JsonMap> {
     context.goal_error = error instanceof Error ? error.message : String(error);
   }
   return context;
+}
+
+function compactPlanContext(continuity: JsonMap): JsonMap {
+  const continuityRecord = asRecord(continuity.continuity);
+  return compactRecord({
+    plan_id: continuity.plan_id ?? null,
+    title: continuity.title ?? null,
+    objective: continuity.objective ?? null,
+    status: continuity.status ?? null,
+    phase: continuity.phase ?? null,
+    mode: continuity.mode ?? null,
+    compiled_goal_id: continuity.compiled_goal_id ?? null,
+    counts: asRecord(continuity.counts),
+    actions: rowsFromData(continuity.actions).slice(0, 12).map((action) => compactPlanAction(action)),
+    next_actions: arrayField(continuityRecord, "next_actions"),
+  });
 }
 
 function compactGoalContext(snapshot: JsonMap): JsonMap {
@@ -3507,20 +4255,29 @@ function controlChatSystemPrompt(mode: string, context: JsonMap): string {
   return [
     "<coat_chat_assistant>",
     "  <role>You are the COAT control-plane chat assistant.</role>",
-    "  <mission>Help the operator author goals, durable plans, steering directives, memory notes, and review requests.</mission>",
+    "  <mission>Help the operator move through Ask -> Draft plan -> Draft goal -> Accept using explicit plan actions and staged drafts.</mission>",
     "  <authority>",
     "    <rule>This request is operator chat assistance for a user request. You MUST NOT treat it as a durable task run or claim runner task dispatch.</rule>",
     "    <rule>You MUST NOT claim that durable state changed unless the caller provides a successful backend result.</rule>",
     "    <rule>You MUST treat all mutations as requiring explicit backend forms, API calls, or MCP tools.</rule>",
     "    <rule>You MUST treat any subagent request as a COAT durable child-task request, not native model delegation.</rule>",
     "  </authority>",
+    "  <plan_first_model>",
+    "    <rule>A plan is the high-level workflow and chat context. It owns phase, action items, memory scope, artifacts, evidence, and staged drafts.</rule>",
+    "    <rule>A goal is a satisfiable execution contract inside a plan. A goal MUST NOT be described as the whole workflow when a plan is selected.</rule>",
+    "    <rule>Actions and interventions MUST be framed in the selected plan context first, then narrowed to a goal or task when applicable.</rule>",
+    "    <rule>Plan phases are explicit product states: asking, drafting_plan, drafting_goals, accepting, executing, reviewing, satisfied, cancelled.</rule>",
+    "  </plan_first_model>",
     "  <output_contract>",
     "    <rule>You MUST return one JSON object.</rule>",
     "    <rule>The JSON object MUST have keys: assistant string, drafts object.</rule>",
     "    <rule>Draft payloads MUST be valid JSON under drafts.</rule>",
-    "    <rule>Assistant prose MUST be concise and operational.</rule>",
+    "    <rule>Assistant prose MUST be concise and operational. It should name the next explicit button/action, not ask the operator to paste JSON.</rule>",
     "  </output_contract>",
     "  <drafting_rules>",
+    "    <rule>Plan drafts MUST preserve plan_id when revising the selected plan and source_plan_id/source_goal_id when drafting follow-on work.</rule>",
+    "    <rule>Plan drafts MUST include staged action intent such as accept_plan_draft, draft_goal, discard_draft, or ask_follow_up; they MUST NOT claim acceptance happened.</rule>",
+    "    <rule>Goal drafts created inside a selected plan MUST include plan_id and SHOULD include plan_phase_id/source_goal_id when known.</rule>",
     "    <rule>Goals MUST include objective, evidence, constraints, budget, done criteria, execution, memory, research, approval, and stop conditions when known.</rule>",
     "    <rule>Steering drafts MUST be explicit about goal_id, task_id when known, operator intent, directive kind, and approval risk.</rule>",
     "    <rule>Memory drafts MUST preserve provenance and MUST NOT write unreviewed branch conclusions as durable facts.</rule>",
@@ -3677,7 +4434,7 @@ function stubChatReason(): string {
 
 function stubAssistantText(mode: string): string {
   if (mode === "draft_goal") {
-    return "Goal draft ready. Review the fields, then accept or discard it.";
+    return "Goal draft ready. Review it in the selected plan, then accept, submit, or discard it.";
   }
   if (mode === "draft_steering") {
     return "Drafted a steering directive that can be reviewed before it changes durable workflow state.";
@@ -3688,15 +4445,15 @@ function stubAssistantText(mode: string): string {
   if (mode === "explain_state") {
     return "Prepared a state-oriented response from the available backend projection.";
   }
-  return "Drafted a durable plan payload with subgoal structure, acceptance evidence, and review gates.";
+  return "Plan draft ready. Review the staged workflow, then accept, edit, or discard it.";
 }
 
 function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
   if (mode === "draft_goal") {
-    return { goal_spec: goalSpecDraft(prompt) };
+    return { goal_spec: goalSpecDraft(prompt, context) };
   }
   if (mode === "draft_plan") {
-    return { plan_draft: planDraft(prompt) };
+    return { plan_draft: planDraft(prompt, context) };
   }
   if (mode === "draft_steering") {
     return { steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")) };
@@ -3711,14 +4468,19 @@ function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
     return {};
   }
   return {
-    plan_draft: planDraft(prompt),
+    plan_draft: planDraft(prompt, context),
     steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")),
   };
 }
 
-function goalSpecDraft(prompt: string): JsonMap {
+function goalSpecDraft(prompt: string, context: JsonMap = {}): JsonMap {
   const objective = prompt || "Define the objective in concrete, testable terms.";
+  const planId = String(context.plan_id ?? "").trim();
+  const sourceGoalId = String(context.goal_id ?? "").trim();
   return {
+    plan_id: planId || undefined,
+    plan_phase_id: asRecord(context.plan).phase ?? undefined,
+    source_goal_id: sourceGoalId || undefined,
     title: shortTitle(objective),
     objective,
     repo: null,
@@ -3763,9 +4525,14 @@ function goalSpecDraft(prompt: string): JsonMap {
   };
 }
 
-function planDraft(prompt: string): JsonMap {
+function planDraft(prompt: string, context: JsonMap = {}): JsonMap {
   const objective = prompt || "Refine this rough request into a durable plan.";
+  const planId = String(context.plan_id ?? "").trim();
+  const sourceGoalId = String(context.goal_id ?? "").trim();
   return {
+    plan_id: planId || undefined,
+    source_plan_id: planId || undefined,
+    source_goal_id: sourceGoalId || undefined,
     title: shortTitle(objective),
     objective,
     repo: null,
@@ -4013,7 +4780,7 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
   }
 
   if (req.method === "GET" && url.pathname === "/api/plans") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/plans${url.search}`, { method: "GET" }));
+    sendJson(res, 200, await planListProjection(url.search));
     return;
   }
 
@@ -4029,12 +4796,32 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (segments[0] === "api" && segments[1] === "plans" && segments[2]) {
     const planId = decodeURIComponent(segments[2]);
+    if (segments[2] === "drafts" && segments[3] && segments[4] === "accept") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "plan draft acceptance requires POST" });
+        return;
+      }
+      sendJson(res, 200, await acceptStoredPlanDraft(decodeURIComponent(segments[3]), await readJson(req)));
+      return;
+    }
     if (req.method === "GET" && segments[3] === "continuity") {
       sendJson(res, 200, await planContinuity(planId));
       return;
     }
+    if (req.method === "GET" && segments[3] === "actions") {
+      sendJson(res, 200, await planActionList(planId));
+      return;
+    }
+    if (segments[3] === "actions" && segments[4] && segments[5] === "resolve") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "plan action resolution requires POST" });
+        return;
+      }
+      sendJson(res, 200, await resolvePlanAction(planId, decodeURIComponent(segments[4]), await readJson(req)));
+      return;
+    }
     if (req.method === "GET" && segments.length === 3) {
-      sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" }));
+      sendJson(res, 200, await planDetailProjection(planId));
       return;
     }
     if (req.method === "POST" && segments[3] === "revisions") {

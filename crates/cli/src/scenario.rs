@@ -269,10 +269,11 @@ fn default_true() -> bool {
 
 fn default_required_visible_terms() -> Vec<String> {
     [
+        "plan",
         "goal",
         "subgoal",
         "task",
-        "thunk",
+        "human prompt",
         "fork",
         "review",
         "evidence",
@@ -2995,6 +2996,8 @@ fn operator_flow_check(
     let key = normalize_action_key(assertion);
     let pass = if key.contains("ask_default") || key.contains("ask_does_not_create_draft") {
         operator_flow_has_ask_without_draft(spec)
+    } else if key.contains("plan_first") || key.contains("phase_actions") {
+        operator_flow_has_plan_first_phase_actions(spec)
     } else if key.contains("draft_lifecycle") || key.contains("draft_accept_discard_submit") {
         operator_flow_has_draft_lifecycle(spec)
     } else if key.contains("selected_goal") {
@@ -3019,6 +3022,7 @@ fn operator_flow_check(
         json!({
             "assertion": assertion,
             "ask_without_draft": operator_flow_has_ask_without_draft(spec),
+            "plan_first_phase_actions": operator_flow_has_plan_first_phase_actions(spec),
             "draft_lifecycle": operator_flow_has_draft_lifecycle(spec),
             "selected_goal": operator_flow_has_selected_goal(projection),
             "action_controls": operator_flow_has_action_controls(spec, projection),
@@ -3028,6 +3032,101 @@ fn operator_flow_check(
         }),
         format!("operator flow check {assertion:?} failed"),
     )
+}
+
+fn operator_flow_has_plan_first_phase_actions(spec: &ScenarioSpec) -> bool {
+    let action_text = spec
+        .actions
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            (
+                index,
+                serde_json::to_string(&json!({
+                    "id": action.id,
+                    "payload": action.payload,
+                    "body": action.body,
+                    "event": action.event,
+                    "expect": action.expect,
+                    "kind": action_name(action),
+                }))
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let first_matching = |predicate: &dyn Fn(&ScenarioAction) -> bool| {
+        spec.actions
+            .iter()
+            .enumerate()
+            .find(|(_, action)| predicate(action))
+            .map(|(index, _)| index)
+    };
+    let event_type = |action: &ScenarioAction| {
+        action
+            .event
+            .get("event_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let event_mode = |action: &ScenarioAction| {
+        action
+            .event
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let event_kind = |action: &ScenarioAction| {
+        action
+            .event
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let ask = first_matching(&|action| {
+        event_type(action) == "operator.chat.ask" || event_mode(action) == "ask"
+    });
+    let draft_plan = first_matching(&|action| {
+        event_type(action) == "operator.plan.draft.created"
+            || event_mode(action) == "draft_plan"
+            || event_kind(action) == "plan"
+    });
+    let accept_plan = first_matching(&|action| {
+        event_type(action) == "operator.plan.draft.accepted"
+            || action.id.eq_ignore_ascii_case("accept_plan_draft")
+    });
+    let draft_goal = first_matching(&|action| {
+        event_type(action) == "operator.goal.draft.created"
+            || event_mode(action) == "draft_goal"
+            || event_kind(action) == "goal"
+    });
+    let accept_goal = first_matching(&|action| {
+        event_type(action) == "operator.draft.accepted"
+            || action.id.eq_ignore_ascii_case("accept_draft")
+            || action.id.eq_ignore_ascii_case("accept_goal_into_plan")
+    });
+    let phase_actions = action_text.iter().filter(|(_, text)| {
+        text.contains("phase_action")
+            || text.contains("allowed_actions")
+            || text.contains("accept_plan_draft")
+            || text.contains("accept_goal_into_plan")
+    });
+    ask.zip(draft_plan)
+        .zip(accept_plan)
+        .zip(draft_goal)
+        .zip(accept_goal)
+        .is_some_and(
+            |((((ask, draft_plan), accept_plan), draft_goal), accept_goal)| {
+                ask < draft_plan
+                    && draft_plan < accept_plan
+                    && accept_plan < draft_goal
+                    && draft_goal < accept_goal
+            },
+        )
+        && phase_actions.count() >= 2
 }
 
 fn operator_flow_has_ask_without_draft(spec: &ScenarioSpec) -> bool {
@@ -3102,6 +3201,8 @@ fn operator_flow_has_action_controls(spec: &ScenarioSpec, projection: &ScenarioP
     let has_action_surface = text.contains("action_queue")
         || text.contains("human_queue")
         || text.contains("approval")
+        || text.contains("human_prompt")
+        || text.contains("human prompt")
         || text.contains("delayed_compute_thunk");
     let has_resume_control = text.contains("continue")
         || text.contains("add-context")
@@ -5476,6 +5577,7 @@ mod tests {
         assert_eq!(verdict.status, "passed", "{:?}", verdict.findings);
         for check_name in [
             "scenario_check:ask_default_no_draft",
+            "scenario_check:plan_first_phase_actions",
             "scenario_check:draft_accept_discard_submit",
             "scenario_check:selected_goal_visible",
             "scenario_check:action_cards_visible",
@@ -5491,6 +5593,29 @@ mod tests {
                 verdict.checks
             );
         }
+    }
+
+    #[test]
+    fn operator_flow_rejects_goal_draft_before_plan_acceptance() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/e2e/operator_usability_workbench.json");
+        let mut spec = read_spec(&path).expect("operator usability spec");
+        let draft_goal = spec
+            .actions
+            .iter()
+            .position(|action| action.id == "draft_goal")
+            .expect("goal draft action");
+        let accept_plan = spec
+            .actions
+            .iter()
+            .position(|action| action.id == "accept_plan_draft")
+            .expect("plan accept action");
+        spec.actions.swap(draft_goal, accept_plan);
+        let verdict = evaluate(&spec, &spec.fixtures.projection);
+        assert_eq!(verdict.status, "failed");
+        assert!(verdict.checks.iter().any(|check| {
+            check.name == "scenario_check:plan_first_phase_actions" && !check.passed
+        }));
     }
 
     #[test]

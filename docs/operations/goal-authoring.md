@@ -85,6 +85,18 @@ Run goal authoring as a short actor/critic loop before submitting anything durab
 
 Use `coat plan` when the request needs the normal chat-style planning phase before it should become an executable goal. A durable plan is versioned and can hold open questions, answers, decisions, subgoals, and proposed initial tasks.
 
+The default authoring workflow is Ask -> Draft plan -> Draft goal -> Accept.
+The plan is the high-level workflow and chat workspace. Goals are satisfiable
+contracts inside that plan. Operators should be able to re-enter any plan or
+goal, ask questions, draft follow-on goals or plans, stage them, and accept or
+discard them with explicit actions.
+
+Actions and interventions are plan-scoped first. A goal, task, human prompt,
+memory write, artifact, evidence ref, or event can narrow that context, but it
+should still carry the active `plan_id` whenever it belongs to a plan. This lets
+the SPA, TUI, CLI, MCP tools, and notifications show the same workflow without
+requiring copied UUIDs or chat archaeology.
+
 Planning mode is appropriate when:
 
 - the operator request is ambiguous;
@@ -118,6 +130,11 @@ coat plan compile \
 ```
 
 Then lint and submit the compiled goal explicitly. Do not treat a planning-mode transcript as worker instructions after compilation; transfer the durable parts into `GoalSpec.authoring`, `GoalSpec.plan`, and `GoalSpec.initial_tasks`.
+
+Accepting is staged. Accepting a plan draft revises or approves the plan.
+Accepting a goal draft either stages it into the plan or submits it as a goal,
+depending on the explicit operator action selected. Do not collapse those into
+one ambiguous "send chat" operation.
 
 Use plan branching when the operator wants competing approaches without
 rewriting the original planning history. Create a new plan with

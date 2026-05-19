@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanActionKind",
+  "type": "string",
+  "enum": [
+    "answer_question",
+    "review_plan_draft",
+    "accept_plan_draft",
+    "draft_goal",
+    "review_goal_draft",
+    "accept_goal_into_plan",
+    "submit_goal",
+    "resolve_human_prompt",
+    "approve",
+    "retry",
+    "replan",
+    "cancel",
+    "review_evidence",
+    "confirm_satisfaction"
+  ]
+}

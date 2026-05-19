@@ -3,7 +3,7 @@
   "schema_version": "scenario-spec/v1",
   "id": "operator_usability_workbench",
   "title": "Operator usability workbench",
-  "description": "Exercise the simplified operator path: ask without creating a draft, draft/edit/discard/accept a goal, submit it, resolve human actions, see worker runs and evidence, and complete with a selected goal projection.",
+  "description": "Exercise the plan-first operator path: ask without creating a draft, draft and accept a plan, draft/edit/discard/accept a goal inside that plan, submit it, resolve human actions, see worker runs and evidence, and complete with a selected goal projection.",
   "determinism": {
     "mode": "stub_projection_replay",
     "projection_mode": "fixture_replay",
@@ -53,11 +53,50 @@
       }
     },
     {
+      "id": "draft_plan",
+      "type": "emit_external_event",
+      "description": "The operator explicitly drafts a plan before goal drafting.",
+      "event": {
+        "event_type": "operator.plan.draft.created",
+        "plan_id": "00000000-0000-4000-8000-000000004200",
+        "plan_phase": "drafting_plan",
+        "kind": "plan",
+        "mode": "draft_plan",
+        "draft_ref": "fixture://plans/operator-usability-workbench",
+        "title": "Operator usability plan",
+        "allowed_actions": ["edit_plan", "add_goal_slot", "accept_plan_draft", "discard_draft"]
+      },
+      "expect": {
+        "plan_draft_created": true,
+        "plan_phase": "drafting_plan",
+        "phase_action": "accept_plan_draft"
+      }
+    },
+    {
+      "id": "accept_plan_draft",
+      "type": "emit_external_event",
+      "description": "The operator accepts the plan draft before creating goal drafts.",
+      "event": {
+        "event_type": "operator.plan.draft.accepted",
+        "plan_id": "00000000-0000-4000-8000-000000004200",
+        "plan_phase": "accepting",
+        "draft_ref": "fixture://plans/operator-usability-workbench",
+        "allowed_actions": ["draft_goal", "hold_for_later"]
+      },
+      "expect": {
+        "plan_draft_visible": false,
+        "plan_phase": "drafting_goals",
+        "phase_action": "draft_goal"
+      }
+    },
+    {
       "id": "draft_goal",
       "type": "emit_external_event",
-      "description": "The operator explicitly switches to Draft goal.",
+      "description": "The operator explicitly switches to Draft goal after accepting the plan draft.",
       "event": {
-        "event_type": "operator.draft.created",
+        "event_type": "operator.goal.draft.created",
+        "plan_id": "00000000-0000-4000-8000-000000004200",
+        "plan_phase": "drafting_goals",
         "kind": "goal",
         "mode": "draft_goal",
         "draft_ref": "fixture://drafts/operator-usability-workbench",
@@ -74,6 +113,7 @@
       "description": "A draft can be discarded without changing the selected goal.",
       "event": {
         "event_type": "operator.draft.discarded",
+        "plan_id": "00000000-0000-4000-8000-000000004200",
         "draft_ref": "fixture://drafts/operator-usability-workbench"
       },
       "expect": {
@@ -86,7 +126,9 @@
       "type": "emit_external_event",
       "description": "The operator drafts a replacement goal and reviews it.",
       "event": {
-        "event_type": "operator.draft.created",
+        "event_type": "operator.goal.draft.created",
+        "plan_id": "00000000-0000-4000-8000-000000004200",
+        "plan_phase": "drafting_goals",
         "kind": "goal",
         "mode": "draft_goal",
         "draft_ref": "fixture://drafts/operator-usability-workbench-v2",
@@ -103,6 +145,8 @@
       "description": "The operator accepts the reviewed draft before submit.",
       "event": {
         "event_type": "operator.draft.accepted",
+        "plan_id": "00000000-0000-4000-8000-000000004200",
+        "plan_phase": "accepting",
         "draft_ref": "fixture://drafts/operator-usability-workbench-v2",
         "accepted_goal_id": "00000000-0000-4000-8000-000000004201"
       },
@@ -242,7 +286,7 @@
       "failed": 0,
       "cancelled": 0
     },
-    "required_events": ["operator.chat.ask", "operator.draft.created", "operator.draft.discarded", "operator.draft.accepted", "goal_submitted", "approval_granted", "delayed_compute_thunk_resumed", "goal_satisfied"],
+    "required_events": ["operator.chat.ask", "operator.plan.draft.created", "operator.plan.draft.accepted", "operator.goal.draft.created", "operator.draft.discarded", "operator.draft.accepted", "goal_submitted", "approval_granted", "delayed_compute_thunk_resumed", "goal_satisfied"],
     "forbidden_events": ["raw_json_required", "goal_id_pasted_by_operator", "live_provider_called"],
     "required_artifacts": ["artifact://scenarios/operator_usability_workbench/usability-report.json"],
     "satisfaction": {
@@ -259,6 +303,14 @@
       "kind": "operator_flow",
       "description": "Ask mode answers without creating a draft.",
       "assertion": "ask_default_does_not_create_draft",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "plan_first_phase_actions",
+      "kind": "operator_flow",
+      "description": "The operator path uses Ask -> Draft plan -> Draft goal -> Accept with explicit phase actions.",
+      "assertion": "plan_first_phase_actions",
       "expected": true,
       "required": true
     },
@@ -304,7 +356,7 @@
     }
   ],
   "usability_coherence": {
-    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "required_visible_terms": ["plan", "goal", "subgoal", "task", "human prompt", "fork", "review", "evidence", "action", "completed"],
     "blocked_operator_action_required": true,
     "completed_evidence_required": true,
     "completed_satisfaction_rationale_required": true
@@ -351,7 +403,9 @@
       ],
       "events": [
         { "event_type": "operator.chat.ask", "scenario_id": "operator_usability_workbench" },
-        { "event_type": "operator.draft.created", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "operator.plan.draft.created", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "operator.plan.draft.accepted", "scenario_id": "operator_usability_workbench" },
+        { "event_type": "operator.goal.draft.created", "scenario_id": "operator_usability_workbench" },
         { "event_type": "operator.draft.discarded", "scenario_id": "operator_usability_workbench" },
         { "event_type": "operator.draft.accepted", "scenario_id": "operator_usability_workbench" },
         { "event_type": "goal_submitted", "scenario_id": "operator_usability_workbench" },
@@ -438,19 +492,23 @@
           "surface": "chat",
           "default_mode": "ask",
           "ask": "answer saved without a draft",
-          "draft": "draft goal is explicit"
+          "draft": "draft plan and draft goal are explicit"
         },
         "draft_review": {
           "surface": "draft_review",
+          "plan_id": "00000000-0000-4000-8000-000000004200",
+          "plan_phase": "drafting_goals",
           "states": ["created", "discarded", "accepted", "submitted"],
           "actions": ["edit", "discard", "accept draft", "submit goal"]
         },
         "action_queue": {
           "surface": "action_queue",
+          "plan_id": "00000000-0000-4000-8000-000000004200",
+          "plan_phase": "executing",
           "pending_count": 0,
           "resolved": [
             {
-              "kind": "delayed_compute_thunk",
+              "kind": "human_prompt",
               "actions": ["continue", "answer", "add-context", "replan", "cancel"]
             },
             {
@@ -475,11 +533,11 @@
         },
         "task_graph": {
           "surface": "task_graph",
-          "nodes": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"]
+          "nodes": ["plan", "goal", "subgoal", "task", "human prompt", "fork", "review", "evidence", "action", "completed"]
         },
         "usability_coherence": {
           "surface": "usability_coherence",
-          "visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+          "visible_terms": ["plan", "goal", "subgoal", "task", "human prompt", "fork", "review", "evidence", "action", "completed"],
           "completed_goal": {
             "status": "completed",
             "evidence_artifacts": ["artifact://scenarios/operator_usability_workbench/usability-report.json"],
@@ -487,7 +545,7 @@
           }
         }
       },
-      "transitions": ["ask_workspace_default", "draft_goal", "discard_draft", "draft_goal_again", "accept_draft", "submit_goal", "request_human_action", "approve_gate", "resume_with_context", "complete_worker_run", "validate_goal"],
+      "transitions": ["ask_workspace_default", "draft_plan", "accept_plan_draft", "draft_goal", "discard_draft", "draft_goal_again", "accept_draft", "submit_goal", "request_human_action", "approve_gate", "resume_with_context", "complete_worker_run", "validate_goal"],
       "raw": {
         "satisfaction": {
           "rationale": "The operator asked without creating a draft, explicitly accepted a reviewed draft, resolved thunk and approval action cards, saw worker/evidence output, and reached done."

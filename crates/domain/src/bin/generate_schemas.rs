@@ -59,29 +59,29 @@ use coat_domain::{
     OperatorActionResolutionKind, OperatorActorKind, OperatorActorRef, OperatorEvent,
     OperatorEventAppendRequest, OperatorEventAppendResponse, OperatorEventListResponse,
     OperatorEvidence, OperatorGoalDetail, OperatorGoalSummary, OperatorGraph, OperatorTransition,
-    OperatorTransitionRejection, OperatorWorkerRun, OperatorWorkspaceSnapshot,
-    PlanCandidateSelection, PlanCandidateSelectionRequest, PlanCandidateSelectionResponse,
-    PlanCandidateVote, PlanCandidateVoteRequest, PlanCandidateVoteResponse, PlanCompileRequest,
-    PlanCompileResult, PlanDecision, PlanDraftRequest, PlanQuestion, PlanRevision,
-    PlanRevisionRequest, PlanStatus, PlanningMode, ProtocolMetadata, ResearchOutput,
-    ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest, ResultChannelPolicy,
-    RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride,
-    ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding, ReviewObjective,
-    ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound, ReviewSubagentProfile,
-    RunnerDispatchCandidate, RunnerDispatchDecision, RunnerDispatchRejection,
-    RunnerDispatchRequest, RunnerPoolDemand, RunnerPoolSupply, RunnerRegistration,
-    RunnerScalingDecision, RunnerScalingRequest, RunnerStatus, SandboxAttestation, SandboxBackend,
-    SandboxIsolationProfile, SandboxLaunchPlan, SandboxNetworkPlan, SandboxProfile,
-    SandboxResourcePlan, SandboxSecurityPlan, SandboxSnapshotStrategy, SatisfactionReport,
-    ScheduleKind, ScheduleSpec, SecretRef, SourceArtifact, SqsEventSource, StandardReviewCheck,
-    SteeringDirective, StyleDoctrine, SubagentDelegationMode, SubagentDelegationPolicy,
-    SubgoalProgress, SubgoalSpec, TaskList, TaskNode, TaskPriority, TaskProgress, TaskPurpose,
-    TaskPurposeKind, TaskQuery, TaskRecord, TestCommandEvidence, TimeoutEvent, TimeoutPolicy,
-    TriggeredGoalRequest, TriggeredGoalResponse, TriggeredGoalStatus, UserPrincipalRef,
-    ValidationGate, ValidationGateResult, ValidationReport, ValidationRequest, VectorMemoryPolicy,
-    WaitRef, WaitRefKind, WebSearchProviderKind, WebSearchRequest, WebSearchResponse,
-    WebSearchRoutingMode, WebSearchRoutingPreference, WebSearchStatus, WebhookAuthKind,
-    WebhookAuthPolicy, WebhookEventSource,
+    OperatorTransitionRejection, OperatorWorkerRun, OperatorWorkspaceSnapshot, PlanActionItem,
+    PlanActionKind, PlanActionStatus, PlanCandidateSelection, PlanCandidateSelectionRequest,
+    PlanCandidateSelectionResponse, PlanCandidateVote, PlanCandidateVoteRequest,
+    PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult, PlanDecision,
+    PlanDraftRequest, PlanPhase, PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus,
+    PlanningMode, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord,
+    RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewDoctrine,
+    ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride, ReviewDoctrinePreset,
+    ReviewEvidenceRequirement, ReviewFinding, ReviewObjective, ReviewObjectiveResult, ReviewOutput,
+    ReviewPolicy, ReviewRound, ReviewSubagentProfile, RunnerDispatchCandidate,
+    RunnerDispatchDecision, RunnerDispatchRejection, RunnerDispatchRequest, RunnerPoolDemand,
+    RunnerPoolSupply, RunnerRegistration, RunnerScalingDecision, RunnerScalingRequest,
+    RunnerStatus, SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
+    SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan, SandboxSecurityPlan,
+    SandboxSnapshotStrategy, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
+    SourceArtifact, SqsEventSource, StandardReviewCheck, SteeringDirective, StyleDoctrine,
+    SubagentDelegationMode, SubagentDelegationPolicy, SubgoalProgress, SubgoalSpec, TaskList,
+    TaskNode, TaskPriority, TaskProgress, TaskPurpose, TaskPurposeKind, TaskQuery, TaskRecord,
+    TestCommandEvidence, TimeoutEvent, TimeoutPolicy, TriggeredGoalRequest, TriggeredGoalResponse,
+    TriggeredGoalStatus, UserPrincipalRef, ValidationGate, ValidationGateResult, ValidationReport,
+    ValidationRequest, VectorMemoryPolicy, WaitRef, WaitRefKind, WebSearchProviderKind,
+    WebSearchRequest, WebSearchResponse, WebSearchRoutingMode, WebSearchRoutingPreference,
+    WebSearchStatus, WebhookAuthKind, WebhookAuthPolicy, WebhookEventSource,
 };
 use schemars::schema_for;
 
@@ -220,7 +220,23 @@ fn main() -> anyhow::Result<()> {
         "planning-mode.schema.json",
         schema_for!(PlanningMode),
     )?;
+    write_schema(&out_dir, "plan-phase.schema.json", schema_for!(PlanPhase))?;
     write_schema(&out_dir, "plan-status.schema.json", schema_for!(PlanStatus))?;
+    write_schema(
+        &out_dir,
+        "plan-action-kind.schema.json",
+        schema_for!(PlanActionKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-action-status.schema.json",
+        schema_for!(PlanActionStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-action-item.schema.json",
+        schema_for!(PlanActionItem),
+    )?;
     write_schema(
         &out_dir,
         "plan-question.schema.json",

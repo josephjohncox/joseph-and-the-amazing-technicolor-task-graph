@@ -80,16 +80,16 @@ export function GoalContextBar(props: {
             type="button"
             className="goal-context-trigger"
             aria-expanded={props.open}
-            aria-label={props.selectedGoal ? `Current goal: ${props.selectedGoal.title}, ${selectedState?.label ?? "state pending"}` : "Select current goal"}
+            aria-label={props.selectedGoal ? `Goal focus: ${props.selectedGoal.title}, ${selectedState?.label ?? "state pending"}` : "Select goal focus"}
             data-testid="goal-context-trigger"
           >
             <div>
-              <span className="goal-context-kicker">Current goal</span>
+              <span className="goal-context-kicker">Goal focus</span>
               <strong>{props.selectedGoal?.title || "Select a goal"}</strong>
               {props.selectedGoal ? (
                 <small>{done}% · {props.selectedGoal.openTasks} open · {props.selectedGoal.blockedTasks} blocked · {selectedState?.label}</small>
               ) : (
-                <small>Chat, graph, actions, memory, and the action queue use this context</small>
+                <small>Nested focus inside the current plan</small>
               )}
             </div>
             <span className={clsx("operator-state-pill", selectedState ? stateTone(selectedState.key) : "muted")}>

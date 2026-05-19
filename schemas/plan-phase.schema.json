@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlanPhase",
+  "type": "string",
+  "enum": [
+    "asking",
+    "drafting_plan",
+    "drafting_goals",
+    "accepting",
+    "executing",
+    "reviewing",
+    "satisfied",
+    "cancelled"
+  ]
+}

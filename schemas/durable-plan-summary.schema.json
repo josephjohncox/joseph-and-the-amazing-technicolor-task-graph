@@ -3,6 +3,12 @@
   "title": "DurablePlanSummary",
   "type": "object",
   "properties": {
+    "action_item_count": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 0,
+      "minimum": 0
+    },
     "compiled_goal_id": {
       "type": [
         "string",
@@ -25,6 +31,10 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0
+    },
+    "phase": {
+      "$ref": "#/$defs/PlanPhase",
+      "default": "asking"
     },
     "plan_id": {
       "type": "string",
@@ -78,6 +88,19 @@
     "open_question_count"
   ],
   "$defs": {
+    "PlanPhase": {
+      "type": "string",
+      "enum": [
+        "asking",
+        "drafting_plan",
+        "drafting_goals",
+        "accepting",
+        "executing",
+        "reviewing",
+        "satisfied",
+        "cancelled"
+      ]
+    },
     "PlanStatus": {
       "type": "string",
       "enum": [

@@ -95,6 +95,8 @@ export type ComputeGraphSnapshot = {
 export type ChatResponse = {
   provider?: string;
   model?: string | null;
+  plan_id?: string | null;
+  goal_id?: string | null;
   assistant?: string;
   drafts?: JsonRecord;
   draft_refs?: JsonRecord;
@@ -113,6 +115,7 @@ export type ChatRunTrace = {
   run_id?: string;
   found?: boolean;
   session_id?: string;
+  plan_id?: string | null;
   goal_id?: string | null;
   mode?: string;
   status?: string;
@@ -171,6 +174,7 @@ export type OperatorGoalDetail = {
 export type OperatorAction = {
   action_id?: string;
   kind?: string;
+  plan_id?: string;
   goal_id?: string;
   task_id?: string | null;
   title?: string;
@@ -180,6 +184,66 @@ export type OperatorAction = {
   approval?: JsonRecord | null;
   thunk?: JsonRecord | null;
   payload_json?: JsonRecord;
+};
+
+export type PlanPhase =
+  | "asking"
+  | "drafting_plan"
+  | "drafting_goals"
+  | "accepting"
+  | "executing"
+  | "reviewing"
+  | "satisfied"
+  | "cancelled";
+
+export type PlanAction = {
+  action_id?: string;
+  plan_id?: string;
+  goal_id?: string | null;
+  task_id?: string | null;
+  kind?: string;
+  title?: string;
+  reason?: string;
+  allowed_actions?: string[];
+  required_fields?: string[];
+  status?: string;
+  evidence_refs?: JsonRecord[];
+};
+
+export type PlanSummary = {
+  plan_id?: string;
+  id?: string;
+  source_plan_id?: string | null;
+  title?: string;
+  objective?: string;
+  status?: string;
+  phase?: PlanPhase | string;
+  mode?: string;
+  version?: number;
+  subgoal_count?: number;
+  initial_task_count?: number;
+  open_question_count?: number;
+  action_item_count?: number;
+  compiled_goal_id?: string | null;
+  updated_at?: string | null;
+  actions?: PlanAction[];
+};
+
+export type PlanListResponse = {
+  generated_at?: string;
+  plans?: PlanSummary[];
+  data?: PlanSummary[];
+  source?: JsonRecord;
+};
+
+export type PlanDetailResponse = {
+  generated_at?: string;
+  found?: boolean;
+  plan_id?: string;
+  plan?: PlanSummary & JsonRecord;
+  phase?: PlanPhase | string;
+  actions?: PlanAction[];
+  source?: JsonRecord;
 };
 
 export type OperatorEvent = {

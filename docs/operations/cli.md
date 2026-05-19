@@ -187,8 +187,12 @@ Ratatui and Crossterm for terminal rendering and keyboard handling, and it
 talks to the same backend routes used by the TypeScript SPA:
 
 - `GET /api/operator/workspace`
+- `GET /api/plans`
+- `GET /api/plans/:plan_id/actions`
 - `GET /api/chat/session`
 - `POST /api/chat`
+- `POST /api/plans/drafts/:draft_id/accept`
+- `POST /api/plans/:plan_id/actions/:action_id/resolve`
 - `POST /api/operator/goals` only when the operator explicitly accepts a goal draft
 
 The operator workspace projection includes the sanitized chat/backend summary
@@ -199,25 +203,23 @@ The TUI never calls model providers directly. Chat requests are operator-chat
 requests routed through the control gateway, which handles backend selection,
 chat-turn journaling, and stub fallback policy. Chat defaults to `Ask` so an
 operator can ask about selected state before creating durable work. Drafting is
-explicit: switch to `Draft goal`, `Draft plan`, or search/research authoring
-when the next response should produce a reviewable payload. Chat alone is a
-drafting surface; pressing `F5` or `Ctrl-G` accepts only the last `drafts.goal_spec`
-payload through the same gateway endpoint used by the SPA and regular CLI.
-When a chat turn returns a goal draft, the TUI shows the exact draft summary in
-two places before acceptance: the chat log receives a `Goal draft ready`
-preview, and the left dashboard shows an `active goal draft`
-section with title, objective, initial task count, done criteria, and the
-accept binding. The draft stays visible until the operator accepts it with
-`F5`/`Ctrl-G` or discards it with `Ctrl-D`. After acceptance, the chat log
-echoes the accepted goal id and the same draft summary, selects that goal, and
-reloads the goal-scoped session.
+explicit and plan-first: switch through `Ask`, `Draft plan`, `Draft goal`, then
+accept or submit the staged work with visible action bindings. Chat alone is a
+drafting surface; plan draft acceptance and goal submission are explicit gateway
+mutations.
 
-Goal context is selected in the TUI, not retyped into every prompt. `Ctrl-N`
-and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the selection, and
-`Ctrl-R` refreshes the dashboard projection. When
-a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
-same goal id to `/api/chat`; without a selected goal it uses the operator
-workspace session.
+When a chat turn returns a plan draft or goal draft, the TUI shows the exact
+summary before acceptance. Plan drafts can be accepted into durable plan state,
+and goal drafts can be accepted into the selected plan or submitted as
+executable goals. The draft stays visible until the operator accepts it with
+the relevant action binding or discards it with `Ctrl-D`.
+
+Plan context is selected first; goal context is nested inside the selected
+plan. `Ctrl-N` and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the
+nested goal focus, and `Ctrl-R` refreshes the dashboard projection. With a
+selected plan, chat uses `plan:<plan_id>` as the session and sends `plan_id` to
+`/api/chat`; a selected goal is included as nested focus instead of replacing
+the plan workspace.
 
 The left control panel is organized around operator intent, not CLI coverage:
 Overview, Goals, Graph, Actions, Approvals, Events, Workers, Evidence,
@@ -280,7 +282,7 @@ Key bindings:
   queue row.
 - `r` in the Actions or Approvals view: reject the selected approval gate,
   using the current input as the optional rejection reason.
-- `Ctrl-T`: switch chat mode across general, goal, plan, and search.
+- `Ctrl-T`: switch chat mode across Ask, Draft plan, Draft goal, and Search.
 - `Ctrl-N`, `Ctrl-P`: cycle to the next or previous projected goal.
 - `Ctrl-O`: clear the selected goal and return chat to the operator workspace session.
 - `Ctrl-R`: refresh the dashboard projection for the current goal.
@@ -289,7 +291,7 @@ Key bindings:
   select the action queue row.
 - `PageUp`, `PageDown`, `Home`, `End`: scroll the focused control view or
   chat history.
-- `F5` or `Ctrl-G`: accept the last chat-authored GoalSpec draft and select the returned goal.
+- `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.
 - `Ctrl-D`: discard the active chat-authored GoalSpec draft.
 - `Alt-R`: restart the selected blocked task work from Actions, or restart
   blocked work for the selected goal from another panel.

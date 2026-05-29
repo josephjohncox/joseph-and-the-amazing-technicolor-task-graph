@@ -26,9 +26,9 @@ use coat_domain::{
     ComputeGraphNodeStatus, ComputeGraphSnapshot, ContinuationBoundary, ContinuationRef,
     ContinuationResumeAction, ControlLoopPolicy, DelayedComputeThunk, DelayedComputeThunkKind,
     DelayedComputeThunkRequest, DelayedComputeThunkResumeRecord, DelayedComputeThunkResumeRequest,
-    DelayedComputeThunkStatus, DeviceAuthProvider, DurablePlan, DurablePlanListResponse,
-    DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy, EmbeddingProviderKind,
-    EphemeralRunnerTemplateRef, EventGoalRoute, EventRouteMode, EventSource,
+    DelayedComputeThunkStatus, DeviceAuthProvider, DurableEventEnvelope, DurablePlan,
+    DurablePlanListResponse, DurablePlanResponse, DurablePlanSummary, EmbeddingPolicy,
+    EmbeddingProviderKind, EphemeralRunnerTemplateRef, EventGoalRoute, EventRouteMode, EventSource,
     EventSourceApprovalListResponse, EventSourceApprovalRecord, EventSourceApprovalRecordRequest,
     EventSourceApprovalRecordResponse, EventSourceApprovalStatus, EventSourceKind,
     ExecutionProfile, ExecutorGuardrailPolicy, ExternalEvent, GenericEventSource, GitResultPolicy,
@@ -55,18 +55,23 @@ use coat_domain::{
     MemorySearchResponse, MemoryStoreRef, MemoryWriteRequest, MemoryWriteResponse, MissedRunPolicy,
     ModelRoute, NativeSubagentSpawnPolicy, NotificationPolicy, NotificationRequest,
     ObjectStorageArtifactRef, ObjectStoragePolicy, ObjectStoreKind, ObjectStoreRef,
-    OidcDelegationPolicy, PlanCandidateSelection, PlanCandidateSelectionRequest,
+    OidcDelegationPolicy, OperatorAction, OperatorActionKind, OperatorActionResolution,
+    OperatorActionResolutionKind, OperatorActorKind, OperatorActorRef, OperatorEvent,
+    OperatorEventAppendRequest, OperatorEventAppendResponse, OperatorEventListResponse,
+    OperatorEvidence, OperatorGoalDetail, OperatorGoalSummary, OperatorGraph, OperatorTransition,
+    OperatorTransitionRejection, OperatorWorkerRun, OperatorWorkspaceSnapshot, PlanActionItem,
+    PlanActionKind, PlanActionStatus, PlanCandidateSelection, PlanCandidateSelectionRequest,
     PlanCandidateSelectionResponse, PlanCandidateVote, PlanCandidateVoteRequest,
     PlanCandidateVoteResponse, PlanCompileRequest, PlanCompileResult, PlanDecision,
-    PlanDraftRequest, PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus, PlanningMode,
-    ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord, RestartRequest,
-    ResultChannelPolicy, RetrievalFusion, ReviewDoctrine, ReviewDoctrineCoveragePolicy,
-    ReviewDoctrineOverride, ReviewDoctrinePreset, ReviewEvidenceRequirement, ReviewFinding,
-    ReviewObjective, ReviewObjectiveResult, ReviewOutput, ReviewPolicy, ReviewRound,
-    ReviewSubagentProfile, RunnerDispatchCandidate, RunnerDispatchDecision,
-    RunnerDispatchRejection, RunnerDispatchRequest, RunnerPoolDemand, RunnerPoolSupply,
-    RunnerRegistration, RunnerScalingDecision, RunnerScalingRequest, RunnerStatus,
-    SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
+    PlanDraftRequest, PlanPhase, PlanQuestion, PlanRevision, PlanRevisionRequest, PlanStatus,
+    PlanningMode, ProtocolMetadata, ResearchOutput, ResearchPolicy, RestartPolicy, RestartRecord,
+    RestartRequest, ResultChannelPolicy, RetrievalFusion, ReviewDoctrine,
+    ReviewDoctrineCoveragePolicy, ReviewDoctrineOverride, ReviewDoctrinePreset,
+    ReviewEvidenceRequirement, ReviewFinding, ReviewObjective, ReviewObjectiveResult, ReviewOutput,
+    ReviewPolicy, ReviewRound, ReviewSubagentProfile, RunnerDispatchCandidate,
+    RunnerDispatchDecision, RunnerDispatchRejection, RunnerDispatchRequest, RunnerPoolDemand,
+    RunnerPoolSupply, RunnerRegistration, RunnerScalingDecision, RunnerScalingRequest,
+    RunnerStatus, SandboxAttestation, SandboxBackend, SandboxIsolationProfile, SandboxLaunchPlan,
     SandboxNetworkPlan, SandboxProfile, SandboxResourcePlan, SandboxSecurityPlan,
     SandboxSnapshotStrategy, SatisfactionReport, ScheduleKind, ScheduleSpec, SecretRef,
     SourceArtifact, SqsEventSource, StandardReviewCheck, SteeringDirective, StyleDoctrine,
@@ -215,7 +220,23 @@ fn main() -> anyhow::Result<()> {
         "planning-mode.schema.json",
         schema_for!(PlanningMode),
     )?;
+    write_schema(&out_dir, "plan-phase.schema.json", schema_for!(PlanPhase))?;
     write_schema(&out_dir, "plan-status.schema.json", schema_for!(PlanStatus))?;
+    write_schema(
+        &out_dir,
+        "plan-action-kind.schema.json",
+        schema_for!(PlanActionKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-action-status.schema.json",
+        schema_for!(PlanActionStatus),
+    )?;
+    write_schema(
+        &out_dir,
+        "plan-action-item.schema.json",
+        schema_for!(PlanActionItem),
+    )?;
     write_schema(
         &out_dir,
         "plan-question.schema.json",
@@ -682,6 +703,101 @@ fn main() -> anyhow::Result<()> {
         &out_dir,
         "goal-store-approval-list-response.schema.json",
         schema_for!(GoalStoreApprovalListResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-workspace-snapshot.schema.json",
+        schema_for!(OperatorWorkspaceSnapshot),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-goal-summary.schema.json",
+        schema_for!(OperatorGoalSummary),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-goal-detail.schema.json",
+        schema_for!(OperatorGoalDetail),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-graph.schema.json",
+        schema_for!(OperatorGraph),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-action.schema.json",
+        schema_for!(OperatorAction),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-action-kind.schema.json",
+        schema_for!(OperatorActionKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-action-resolution.schema.json",
+        schema_for!(OperatorActionResolution),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-action-resolution-kind.schema.json",
+        schema_for!(OperatorActionResolutionKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-event.schema.json",
+        schema_for!(OperatorEvent),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-evidence.schema.json",
+        schema_for!(OperatorEvidence),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-worker-run.schema.json",
+        schema_for!(OperatorWorkerRun),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-actor-kind.schema.json",
+        schema_for!(OperatorActorKind),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-actor-ref.schema.json",
+        schema_for!(OperatorActorRef),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-transition.schema.json",
+        schema_for!(OperatorTransition),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-transition-rejection.schema.json",
+        schema_for!(OperatorTransitionRejection),
+    )?;
+    write_schema(
+        &out_dir,
+        "durable-event-envelope.schema.json",
+        schema_for!(DurableEventEnvelope),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-event-append-request.schema.json",
+        schema_for!(OperatorEventAppendRequest),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-event-append-response.schema.json",
+        schema_for!(OperatorEventAppendResponse),
+    )?;
+    write_schema(
+        &out_dir,
+        "operator-event-list-response.schema.json",
+        schema_for!(OperatorEventListResponse),
     )?;
     write_schema(
         &out_dir,

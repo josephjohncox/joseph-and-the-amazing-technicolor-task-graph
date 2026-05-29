@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorActionResolution",
+  "type": "object",
+  "properties": {
+    "action_id": {
+      "type": "string"
+    },
+    "answer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifact_refs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      }
+    },
+    "operator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload_json": {
+      "default": null
+    },
+    "resolution": {
+      "$ref": "#/$defs/OperatorActionResolutionKind"
+    },
+    "response_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "action_id",
+    "resolution"
+  ],
+  "$defs": {
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "OperatorActionResolutionKind": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "answer",
+        "add_context",
+        "approve",
+        "reject",
+        "retry",
+        "replan",
+        "create_thunk",
+        "cancel_goal",
+        "accept_draft",
+        "discard_draft",
+        "select_branch"
+      ]
+    }
+  }
+}

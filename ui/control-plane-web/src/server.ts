@@ -11,6 +11,7 @@
  * - docs/design-docs/120-durable-planning-mode.md
  */
 import http from "node:http";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -55,6 +56,7 @@ type ChatMessage = {
 
 type ChatSessionEntry = {
   session_id: string;
+  plan_id?: string | null;
   goal_id: string | null;
   mode: string;
   role: "user" | "assistant";
@@ -68,6 +70,7 @@ type ChatSessionEntry = {
 type ChatRunTrace = {
   run_id: string;
   session_id: string;
+  plan_id: string | null;
   goal_id: string | null;
   mode: string;
   status: "running" | "done" | "error";
@@ -104,16 +107,16 @@ type StoredDraft = {
   kind: string;
   session_id: string;
   run_id: string;
+  plan_id?: string | null;
+  source_plan_id?: string | null;
+  source_goal_id?: string | null;
+  status: "active" | "accepted" | "discarded";
   created_at: string;
+  updated_at: string;
   expires_at: string;
+  accepted_plan_id?: string | null;
+  accepted_goal_id?: string | null;
   payload: JsonMap;
-};
-
-type FollowUpItem = {
-  plan: string;
-  path: string;
-  index: number;
-  text: string;
 };
 
 const port = Number(process.env.PORT ?? "9090");
@@ -420,7 +423,7 @@ async function healthCheck(service: ServiceRef): Promise<ProxyResult & { name: s
   return { name: service.name, ...result };
 }
 
-async function overview(): Promise<JsonMap> {
+async function backendProjection(): Promise<JsonMap> {
   const [health, runnerStatus, threads, eventSources, events, triggers] = await Promise.all([
     Promise.all(services.map(healthCheck)),
     proxyJson(runnerRegistryUrl, "/runners/status", { method: "GET" }),
@@ -433,17 +436,13 @@ async function overview(): Promise<JsonMap> {
     proxyJson(goalStoreUrl, "/goal-store/goals?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/tasks?limit=100", { method: "GET" }),
   ]);
-  const [plans, approvals, followUps] = await Promise.all([
+  const [plans, approvals] = await Promise.all([
     proxyJson(goalStoreUrl, "/goal-store/plans?limit=25", { method: "GET" }),
     proxyJson(goalStoreUrl, "/goal-store/approvals?limit=50", { method: "GET" }),
-    durablePlanFollowUps(false),
   ]);
 
   return {
     generated_at: new Date().toISOString(),
-    control_surface: "coat-control-plane-web",
-    authority_note:
-      "This gateway reads projections and submits workflow signals; Restate and the Rust services remain authoritative.",
     services: health,
     runner_status: normalizeRunnerStatusResult(runnerStatus),
     human_threads: threads,
@@ -454,12 +453,33 @@ async function overview(): Promise<JsonMap> {
     agents,
     plans,
     approvals,
-    follow_ups: followUps,
   };
 }
 
 async function runnerStatus(): Promise<ProxyResult> {
   return normalizeRunnerStatusResult(await proxyJson(runnerRegistryUrl, "/runners/status", { method: "GET" }));
+}
+
+function operatorGatewayConfig(): JsonMap {
+  return {
+    gateway_token_required: Boolean(gatewayToken),
+    endpoints: {
+      restate_ingress: restateIngress,
+      goal_store: goalStoreUrl,
+      event_gateway: eventGatewayUrl,
+      notifier: notifierUrl,
+      runner_registry: runnerRegistryUrl,
+      memory_gateway: memoryGatewayUrl,
+      restate_admin: restateAdminUrl,
+    },
+    chat_backend: {
+      mode: chatBackendMode,
+      provider: controlChatProvider || null,
+      model_configured: Boolean(chatModel),
+      completions_url_configured: Boolean(chatCompletionsUrl),
+      runner_registry_discovery: chatRunnerDiscoveryEnabled(),
+    },
+  };
 }
 
 function normalizeRunnerStatusResult(result: ProxyResult): ProxyResult {
@@ -496,7 +516,6 @@ function normalizeRunnerRow(value: unknown): JsonMap {
   const nodeId = stringField(row, "node_id") || stringField(registration, "node_id");
   const endpoint = stringField(row, "endpoint") || stringField(registration, "endpoint");
   const runtime = stringField(labels, "runtime");
-  const lane = stringField(labels, "lane");
   const pool = stringField(labels, "pool");
   const displayName = stringField(row, "display_name")
     || stringField(labels, "display_name")
@@ -511,7 +530,6 @@ function normalizeRunnerRow(value: unknown): JsonMap {
     endpoint,
     display_name: displayName,
     runtime: runtime || null,
-    lane: lane || null,
     pool: pool || null,
     labels,
     roles: arrayField(registration, "roles"),
@@ -535,99 +553,9 @@ function stringField(record: JsonMap, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-async function durablePlanFollowUps(includeEmpty: boolean): Promise<JsonMap> {
-  const planList = await proxyJson(goalStoreUrl, "/goal-store/plans?limit=100", { method: "GET" });
-  const planRows = rowsFromData(planList.data);
-  const plans: JsonMap[] = [];
-  const items: JsonMap[] = [];
-
-  for (const row of planRows) {
-    const planId = stringField(row, "plan_id") || stringField(row, "id");
-    if (!planId) {
-      continue;
-    }
-    const continuity = await planContinuity(planId);
-    const continuityBody = asRecord(continuity.continuity);
-    const nextActions = arrayField(continuityBody, "next_actions").map(String).filter((item) => item.trim());
-    const title = String(continuity.title ?? row.title ?? planId);
-    nextActions.forEach((text, index) => {
-      items.push({
-        source: "durable_plan_continuity",
-        plan: title,
-        plan_id: planId,
-        path: `goal-store/plans/${planId}`,
-        index,
-        text,
-      });
-    });
-    if (includeEmpty || nextActions.length > 0) {
-      plans.push({
-        source: "durable_plan_continuity",
-        plan_id: planId,
-        path: `goal-store/plans/${planId}`,
-        title,
-        status: continuity.status ?? row.status ?? "",
-        follow_ups: nextActions,
-        next_actions: nextActions,
-        continuity,
-      });
-    }
-  }
-
-  return {
-    source: "durable_plan_continuity",
-    source_status: {
-      ok: planList.ok,
-      status: planList.status,
-      url: planList.url,
-    },
-    plan_count: plans.length,
-    follow_up_count: items.length,
-    next_action_count: items.length,
-    items,
-    plans,
-  };
-}
-
-function followUpDraftPlan(payload: unknown): JsonMap {
-  const item = followUpItemFromPayload(payload);
-  return {
-    mode: "draft_plan",
-    item,
-    prompt: followUpDraftPrompt(item),
-  };
-}
-
-function followUpItemFromPayload(payload: unknown): FollowUpItem {
-  const body = asRecord(payload);
-  const source = Object.keys(asRecord(body.item)).length > 0 ? asRecord(body.item) : body;
-  const text = String(source.text ?? source.follow_up ?? source.followup ?? "").trim();
-  if (!text) {
-    throw new Error("follow-up text is required");
-  }
-  const rawIndex = Number(source.index ?? source.follow_up_index ?? 0);
-  return {
-    plan: String(source.plan ?? source.title ?? source.source_plan ?? "Execution plan"),
-    path: String(source.path ?? source.source_path ?? ""),
-    index: Number.isFinite(rawIndex) && rawIndex >= 0 ? Math.floor(rawIndex) : 0,
-    text,
-  };
-}
-
-function followUpDraftPrompt(item: FollowUpItem): string {
-  return `<task>
-  <mode>draft_durable_plan</mode>
-  <instruction>MUST turn this durable continuation item into a concrete durable plan draft for COAT. MUST preserve the source plan and path. MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates, and next implementation steps. MUST identify any questions that block execution.</instruction>
-  <source_plan>${escapeXml(item.plan)}</source_plan>
-  <source_path>${escapeXml(item.path)}</source_path>
-  <follow_up_index>${item.index}</follow_up_index>
-  <follow_up>${escapeXml(item.text)}</follow_up>
-</task>`;
-}
-
-async function goalSnapshot(goalId: string): Promise<JsonMap> {
+async function composedGoalSnapshot(goalId: string): Promise<JsonMap> {
   const encodedGoalId = encodeURIComponent(goalId);
-  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph, humanThreads, goalChatSession] = await Promise.all([
+  const [goal, tasks, events, artifacts, checkpoints, approvals, workflowStatus, progress, computeGraph, humanThreads, goalChatSession, operatorActions, operatorTimeline, operatorWorkerRunsResult, operatorEvidenceResult] = await Promise.all([
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/tasks`, { method: "GET" }),
     proxyJson(goalStoreUrl, `/goal-store/goals/${encodedGoalId}/events`, { method: "GET" }),
@@ -639,6 +567,10 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     workflowReadPost(goalId, "compute_graph", {}),
     proxyJson(notifierUrl, "/threads", { method: "GET" }),
     chatSession(`goal:${goalId}`),
+    proxyJson(goalStoreUrl, goalStoreActionsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTimelinePath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreWorkerRunsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreEvidencePath(goalId), { method: "GET" }),
   ]);
   const agentActivity = buildAgentActivity(tasks.data, progress.data, events.data, artifacts.data);
   const agentContext = buildAgentContext(goalId, agentActivity, goalChatSession, humanThreads.data);
@@ -656,12 +588,1485 @@ async function goalSnapshot(goalId: string): Promise<JsonMap> {
     approvals,
     human_threads: humanThreads,
     chat_session: goalChatSession,
+    operator_actions: operatorActions,
+    operator_timeline: operatorTimeline,
+    operator_worker_runs: operatorWorkerRunsResult,
+    operator_evidence: operatorEvidenceResult,
     agent_activity: agentActivity,
     agent_context: agentContext,
   };
 }
 
-async function streamGoalState(req: any, res: any, goalId: string): Promise<void> {
+async function operatorWorkspace(
+  goalId?: string | null,
+  eventFilter: { eventType?: string | null; since?: string | null } = {},
+): Promise<JsonMap> {
+  const operatorEventParams = new URLSearchParams({ limit: "100" });
+  if (goalId) operatorEventParams.set("goal_id", goalId);
+  if (eventFilter.eventType) operatorEventParams.set("event_type", eventFilter.eventType);
+  if (eventFilter.since) operatorEventParams.set("since", eventFilter.since);
+  const operatorEventPath = `/goal-store/operator-events?${operatorEventParams.toString()}`;
+  const [backendProjectionResult, goalsResult, approvalsResult, tasksResult, actionQueueResult, operatorEventsResult, timelineResult, workerRunsResult, evidenceResult, runnersResult, selectedGoal] = await Promise.all([
+    backendProjection(),
+    proxyJson(goalStoreUrl, "/goal-store/goals?limit=100", { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreApprovalsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTasksPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreActionsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, operatorEventPath, { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTimelinePath(goalId, 100, eventFilter.eventType, eventFilter.since), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreWorkerRunsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreEvidencePath(goalId), { method: "GET" }),
+    runnerStatus(),
+    goalId ? composedGoalSnapshot(goalId) : Promise.resolve(null),
+  ]);
+  const goalRows = rowsFromProxyResult(goalsResult, "goals");
+  const taskRows = filterRowsByGoalId(rowsFromProxyResult(tasksResult, "tasks"), goalId);
+  const approvalRows = filterRowsByGoalId(rowsFromProxyResult(approvalsResult, "approvals"), goalId);
+  const selectedGoalId = goalId ?? null;
+  const selectedSnapshot = selectedGoal;
+  const actions = mergeOperatorRows(
+    filterRowsByGoalId(rowsFromProxyResult(actionQueueResult, "actions"), goalId).map(normalizeOperatorAction),
+    operatorActionsFromRows(approvalRows, taskRows, selectedSnapshot),
+    "action_id",
+  ).map(ensureOperatorActionRecovery);
+  const durableEvents = filterRowsByGoalId(rowsFromProxyResult(timelineResult, "events").map(normalizeOperatorEvent), goalId);
+  const projectedWorkerRuns = filterRowsByGoalId(rowsFromProxyResult(workerRunsResult, "worker_runs").map(normalizeOperatorWorkerRun), goalId);
+  const projectedEvidence = filterRowsByGoalId(rowsFromProxyResult(evidenceResult, "evidence").map(normalizeOperatorEvidence), goalId);
+  return {
+    generated_at: new Date().toISOString(),
+    selected_goal_id: selectedGoalId,
+    goals: goalRows.map(operatorGoalSummary),
+    selected_goal: selectedSnapshot ? operatorGoalDetail(selectedSnapshot) : null,
+    actions,
+    events: [
+      ...(durableEvents.length ? durableEvents : filterRowsByGoalId(operatorEventsFromDurableEvents(operatorEventsResult.data), goalId)),
+      ...(goalId ? [] : operatorEventsFromBackendProjection(backendProjectionResult)),
+    ],
+    event_sources: backendProjectionResult.event_sources ?? null,
+    human_threads: backendProjectionResult.human_threads ?? null,
+    worker_runs: projectedWorkerRuns.length ? projectedWorkerRuns : operatorWorkerRuns(taskRows),
+    evidence: projectedEvidence.length ? projectedEvidence : selectedSnapshot ? operatorEvidenceFromSnapshot(selectedSnapshot) : [],
+    services: backendProjectionResult.services ?? [],
+    runners: runnersResult,
+    config: operatorGatewayConfig(),
+    source: {
+      restate: "durable_orchestration",
+      postgres_goal_store: "operator_event_log_and_projection",
+      gateway: "api_and_sse_projection",
+    },
+  };
+}
+
+async function operatorGoalList(search: string): Promise<JsonMap> {
+  const result = await proxyJson(goalStoreUrl, `/goal-store/goals${search || "?limit=100"}`, { method: "GET" });
+  return {
+    generated_at: new Date().toISOString(),
+    goals: rowsFromProxyResult(result, "goals").map((goal) => operatorGoalSummary(goal)),
+    source: result,
+  };
+}
+
+async function operatorGoalGraph(goalId: string): Promise<JsonMap> {
+  const snapshot = await composedGoalSnapshot(goalId);
+  const graph = asRecord(asRecord(snapshot.workflow_compute_graph).data ?? snapshot.workflow_compute_graph);
+  return {
+    generated_at: new Date().toISOString(),
+    goal_id: goalId,
+    graph,
+    tasks: arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks"),
+    actions: operatorActionsFromSnapshot(snapshot).map(ensureOperatorActionRecovery),
+  };
+}
+
+async function planListProjection(search: string): Promise<JsonMap> {
+  const result = await proxyJson(goalStoreUrl, `/goal-store/plans${search || "?limit=100"}`, { method: "GET" });
+  const plans = rowsFromProxyResult(result, "plans").map(compactPlanProjection);
+  return {
+    generated_at: new Date().toISOString(),
+    plans,
+    data: plans,
+    source: compactProxySource(result),
+  };
+}
+
+async function planDetailProjection(planId: string): Promise<JsonMap> {
+  const result = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" });
+  const plan = asRecord(asRecord(result.data).plan);
+  if (!plan || Object.keys(plan).length === 0) {
+    return {
+      generated_at: new Date().toISOString(),
+      plan_id: planId,
+      found: false,
+      phase: "asking",
+      actions: [],
+      source: compactProxySource(result),
+    };
+  }
+  const projection = compactPlanProjection(plan);
+  return {
+    generated_at: new Date().toISOString(),
+    found: true,
+    plan: {
+      ...plan,
+      ...projection,
+    },
+    phase: projection.phase,
+    actions: projection.actions,
+    source: compactProxySource(result),
+  };
+}
+
+async function planActionList(planId: string): Promise<JsonMap> {
+  const detail = await planDetailProjection(planId);
+  return {
+    generated_at: new Date().toISOString(),
+    plan_id: planId,
+    phase: detail.phase ?? asRecord(detail.plan).phase ?? "asking",
+    actions: rowsFromData(detail.actions ?? asRecord(detail.plan).actions).map((action) => compactPlanAction(action)),
+    source: asRecord(detail.source),
+  };
+}
+
+function compactPlanProjection(row: JsonMap): JsonMap {
+  const current = asRecord(row.current);
+  const planId = String(row.plan_id ?? row.id ?? "").trim();
+  const status = String(row.status ?? "draft");
+  const phase = String(row.phase ?? derivePlanPhase(row));
+  const actions = arrayField(row, "action_items").length
+    ? arrayField(row, "action_items").map((item) => compactPlanAction(item, planId))
+    : derivedPlanActions({
+        planId,
+        phase,
+        status,
+        version: Number(row.version ?? current.version ?? 1),
+        compiledGoalId: row.compiled_goal_id,
+        openQuestionCount: Number(row.open_question_count ?? 0),
+        subgoalCount: Number(row.subgoal_count ?? arrayField(asRecord(current.plan), "subgoals").length),
+        initialTaskCount: Number(row.initial_task_count ?? arrayField(current, "initial_tasks").length),
+      });
+  return compactRecord({
+    plan_id: planId,
+    id: planId,
+    source_plan_id: row.source_plan_id ?? null,
+    title: row.title ?? "Untitled plan",
+    objective: row.objective ?? "",
+    repo: row.repo ?? null,
+    status,
+    phase,
+    mode: row.mode ?? "",
+    version: row.version ?? current.version ?? null,
+    subgoal_count: row.subgoal_count ?? arrayField(asRecord(current.plan), "subgoals").length,
+    initial_task_count: row.initial_task_count ?? arrayField(current, "initial_tasks").length,
+    open_question_count: row.open_question_count ?? arrayField(current, "questions").filter((question) => String(asRecord(question).status ?? "") === "open").length,
+    action_item_count: row.action_item_count ?? actions.length,
+    compiled_goal_id: row.compiled_goal_id ?? null,
+    updated_at: row.updated_at ?? null,
+    actions,
+  });
+}
+
+function compactPlanAction(value: unknown, fallbackPlanId = ""): JsonMap {
+  const record = asRecord(value);
+  const kind = normalizePlanActionKind(record.kind ?? record.action ?? "");
+  const planId = String(record.plan_id ?? fallbackPlanId).trim();
+  const actionId = String(record.action_id ?? stableProjectionId("plan-action", [
+    planId,
+    kind,
+    record.goal_id,
+    record.task_id,
+    record.title,
+  ]));
+  return compactRecord({
+    action_id: actionId,
+    plan_id: planId || null,
+    goal_id: record.goal_id ?? null,
+    task_id: record.task_id ?? null,
+    kind,
+    title: record.title ?? titleForPlanAction(kind),
+    reason: record.reason ?? reasonForPlanAction(kind),
+    allowed_actions: normalizePlanActionValues(arrayField(record, "allowed_actions")).length
+      ? normalizePlanActionValues(arrayField(record, "allowed_actions"))
+      : defaultAllowedPlanActions(kind),
+    required_fields: arrayField(record, "required_fields"),
+    status: record.status ?? "pending",
+    evidence_refs: arrayField(record, "evidence_refs"),
+  });
+}
+
+function derivedPlanActions(input: {
+  planId: string;
+  phase: string;
+  status: string;
+  version: number;
+  compiledGoalId: unknown;
+  openQuestionCount: number;
+  subgoalCount: number;
+  initialTaskCount: number;
+}): JsonMap[] {
+  const suffix = String((input.compiledGoalId ?? input.version) || "current");
+  const action = (kind: string, title: string, reason: string, allowed: string[], requiredFields: string[] = []) => compactPlanAction({
+    action_id: `plan:${input.planId}:${kind}:${suffix}`,
+    plan_id: input.planId,
+    kind,
+    title,
+    reason,
+    allowed_actions: allowed,
+    required_fields: requiredFields,
+    status: "pending",
+  });
+  if (input.phase === "asking") {
+    return [action(
+      "answer_question",
+      input.openQuestionCount > 0 ? "Answer planning question" : "Ask or draft plan",
+      "The plan is waiting for enough operator context before goals are drafted.",
+      ["answer_question", "draft_plan", "draft_goal", "cancel"],
+      input.openQuestionCount > 0 ? ["answer"] : [],
+    )];
+  }
+  if (input.phase === "drafting_plan") {
+    return [action(
+      "review_plan_draft",
+      "Review plan draft",
+      "The plan needs an accepted structure before goals are staged for execution.",
+      ["accept_plan_draft", "draft_goal", "cancel"],
+    )];
+  }
+  if (input.phase === "drafting_goals") {
+    return [action(
+      "review_goal_draft",
+      "Review drafted goals",
+      "The plan has staged goal-shaped work that needs review before execution.",
+      ["accept_goal_into_plan", "draft_goal", "accept_plan_draft", "cancel"],
+    )];
+  }
+  if (input.phase === "reviewing") {
+    return [action(
+      "review_plan_draft",
+      "Review plan for acceptance",
+      "The plan is ready for operator review before accepted goals are submitted.",
+      ["accept_plan_draft", "replan", "cancel"],
+    )];
+  }
+  if (input.phase === "accepting") {
+    if (statusToken(input.status).replaceAll("-", "_") === "ready_for_review") {
+      return [action(
+        "review_plan_draft",
+        "Review plan for acceptance",
+        "The plan is ready for operator review before accepted goals are submitted.",
+        ["accept_plan_draft", "replan", "cancel"],
+      )];
+    }
+    return [action(
+      "submit_goal",
+      "Submit accepted goals",
+      "The plan has been accepted and can be compiled into executable goal work.",
+      ["submit_goal", "draft_goal", "cancel"],
+    )];
+  }
+  if (input.phase === "executing") {
+    return [action(
+      "review_evidence",
+      "Review execution evidence",
+      "The plan has compiled goal work; review evidence before confirming satisfaction.",
+      ["review_evidence", "retry", "replan", "confirm_satisfaction", "cancel"],
+    )];
+  }
+  return [];
+}
+
+function derivePlanPhase(row: JsonMap): string {
+  const status = statusToken(row.status).replaceAll("-", "_");
+  if (status === "needs_questions") return "asking";
+  if (status === "ready_for_review") return "accepting";
+  if (status === "approved") return "accepting";
+  if (status === "compiled") return "executing";
+  if (status === "superseded") return "satisfied";
+  if (status === "archived" || status === "cancelled") return "cancelled";
+  const current = asRecord(row.current);
+  const plan = asRecord(current.plan);
+  const hasGoalShape = Number(row.subgoal_count ?? arrayField(plan, "subgoals").length) > 0
+    || Number(row.initial_task_count ?? arrayField(current, "initial_tasks").length) > 0;
+  return hasGoalShape ? "drafting_goals" : "drafting_plan";
+}
+
+function normalizePlanActionKind(value: unknown): string {
+  const kind = statusToken(value).replaceAll("-", "_");
+  return kind || "review_plan_draft";
+}
+
+function normalizePlanActionValues(values: unknown[]): string[] {
+  return values.map(normalizePlanActionKind).filter(Boolean);
+}
+
+function defaultAllowedPlanActions(kind: string): string[] {
+  if (kind === "answer_question") return ["answer_question", "draft_plan", "draft_goal", "cancel"];
+  if (kind === "review_plan_draft") return ["accept_plan_draft", "replan", "cancel"];
+  if (kind === "review_goal_draft") return ["accept_goal_into_plan", "draft_goal", "accept_plan_draft", "cancel"];
+  if (kind === "submit_goal") return ["submit_goal", "draft_goal", "cancel"];
+  if (kind === "review_evidence") return ["review_evidence", "retry", "replan", "confirm_satisfaction", "cancel"];
+  return [kind, "cancel"].filter((item, index, items) => item && items.indexOf(item) === index);
+}
+
+function titleForPlanAction(kind: string): string {
+  const titles: Record<string, string> = {
+    answer_question: "Answer planning question",
+    review_plan_draft: "Review plan draft",
+    accept_plan_draft: "Accept plan draft",
+    draft_goal: "Draft goal",
+    review_goal_draft: "Review goal draft",
+    accept_goal_into_plan: "Accept goal into plan",
+    submit_goal: "Submit goal",
+    resolve_human_prompt: "Resolve human prompt",
+    approve: "Approve",
+    retry: "Retry",
+    replan: "Replan",
+    cancel: "Cancel",
+    review_evidence: "Review evidence",
+    confirm_satisfaction: "Confirm satisfaction",
+  };
+  return titles[kind] ?? "Review plan action";
+}
+
+function reasonForPlanAction(kind: string): string {
+  const reasons: Record<string, string> = {
+    answer_question: "The plan needs operator input before it can narrow into goals.",
+    review_plan_draft: "Review the staged workflow before goals are accepted or submitted.",
+    accept_plan_draft: "Accept the staged plan structure into durable planning state.",
+    draft_goal: "Draft a satisfiable goal inside the selected plan.",
+    review_goal_draft: "Review staged goal-shaped work before execution.",
+    accept_goal_into_plan: "Attach the goal draft to the plan before submitting it.",
+    submit_goal: "Compile accepted plan work into executable goal work.",
+    review_evidence: "Review execution evidence before deciding satisfaction.",
+    confirm_satisfaction: "Confirm the plan has reached the intended outcome.",
+  };
+  return reasons[kind] ?? "This plan action can move the workflow forward.";
+}
+
+function goalStoreQueryPath(path: string, params: Record<string, string | number | null | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && String(value).trim()) {
+      search.set(key, String(value));
+    }
+  }
+  const suffix = search.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
+function goalStoreActionsPath(goalId?: string | null, limit = 200): string {
+  return goalStoreQueryPath("/goal-store/actions", { limit, goal_id: goalId });
+}
+
+function goalStoreApprovalsPath(goalId?: string | null, limit = 100): string {
+  return goalStoreQueryPath("/goal-store/approvals", { limit, goal_id: goalId });
+}
+
+function goalStoreTasksPath(goalId?: string | null, limit = 200): string {
+  return goalStoreQueryPath("/goal-store/tasks", { limit, goal_id: goalId });
+}
+
+function goalStoreTimelinePath(goalId?: string | null, limit = 100, eventType?: string | null, since?: string | null): string {
+  return goalStoreQueryPath("/goal-store/operator-timeline", {
+    limit,
+    goal_id: goalId,
+    event_type: eventType,
+    since,
+  });
+}
+
+function goalStoreWorkerRunsPath(goalId?: string | null, limit = 100): string {
+  return goalStoreQueryPath("/goal-store/operator-worker-runs", { limit, goal_id: goalId });
+}
+
+function goalStoreEvidencePath(goalId?: string | null, limit = 100): string {
+  return goalStoreQueryPath("/goal-store/operator-evidence", { limit, goal_id: goalId });
+}
+
+async function submitOperatorGoalSpec(input: unknown, causationId = "operator_goal_submit"): Promise<JsonMap> {
+  const resolved = goalSpecWithId(input);
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const { goalId, spec, draftId } = resolved;
+  const specRecord = asRecord(spec);
+  const result = await workflowMutationEnvelope(goalId, "run", spec);
+  if (draftId && Boolean((result as JsonMap).ok)) {
+    markChatDraftAccepted(draftId, goalId);
+  }
+  const operatorEvent = await appendOperatorEvent({
+    transition: draftId ? "draft_accepted" : "submit_goal",
+    actor: goalActor(goalId),
+    payload: {
+      goal_id: goalId,
+      draft_id: draftId ?? null,
+      title: specRecord.title ?? "Untitled goal",
+      objective: specRecord.objective ?? "",
+      accepted: Boolean((result as JsonMap).ok),
+      result,
+    },
+    idempotencyKey: draftId
+      ? `operator:goal:${goalId}:draft:${draftId}:accept`
+      : `operator:goal:${goalId}:submit:${stableValueDigest(spec)}`,
+    causationId,
+    correlationId: goalId,
+  });
+  return {
+    ...result,
+    goal_id: goalId,
+    result,
+    operator_event: operatorEvent,
+    active_state: activeStateFromActionEnvelope(result as ProxyResult),
+  };
+}
+
+async function operatorGoalActionEnvelope(
+  goalId: string,
+  action: string,
+  body: unknown,
+  causationId = `operator_goal_${action}`,
+): Promise<JsonMap> {
+  const handler = action === "select-branch" ? "select_branch" : action;
+  if (!workflowHandlers.has(handler)) {
+    return { ok: false, status: 400, error: `unsupported operator goal action: ${action}`, goal_id: goalId, action };
+  }
+  const result = await workflowMutationEnvelope(goalId, handler, body);
+  const operatorEvent = await appendOperatorEvent({
+    transition: transitionForGoalAction(action),
+    actor: goalActor(goalId),
+    payload: {
+      goal_id: goalId,
+      action,
+      request: asRecord(body),
+      accepted: Boolean((result as JsonMap).ok),
+      result,
+    },
+    idempotencyKey: `operator:goal:${goalId}:${handler}:${operatorRequestId(body)}`,
+    causationId,
+    correlationId: goalId,
+  });
+  return {
+    ...result,
+    goal_id: goalId,
+    action,
+    result,
+    operator_event: operatorEvent,
+    active_state: activeStateFromActionEnvelope(result as ProxyResult),
+  };
+}
+
+type OperatorActorRef = {
+  kind: "plan" | "goal" | "task" | "thunk" | "worker_run" | "review" | "approval" | "event" | "draft";
+  id: string;
+  plan_id?: string | null;
+  goal_id: string | null;
+  task_id: string | null;
+};
+
+function operatorEventTypeForTransition(transition: string): string {
+  const eventTypes: Record<string, string> = {
+    submit_goal: "goal.updated",
+    draft_accepted: "goal.updated",
+    task_dispatched: "task.updated",
+    worker_result_received: "worker.completed",
+    task_blocked: "task.updated",
+    thunk_created: "thunk.created",
+    thunk_resumed: "task.updated",
+    approval_requested: "approval.requested",
+    approval_resolved: "task.updated",
+    review_completed: "review.completed",
+    branch_selected: "task.updated",
+    goal_steered: "goal.updated",
+    goal_cancelled: "goal.cancelled",
+    goal_satisfied: "goal.satisfied",
+    plan_draft_accepted: "plan.updated",
+    plan_action_resolved: "plan.updated",
+    plan_phase_changed: "plan.updated",
+  };
+  return eventTypes[transition] ?? "workspace.updated";
+}
+
+function goalActor(goalId: string): OperatorActorRef {
+  return {
+    kind: "goal",
+    id: goalId,
+    goal_id: goalId,
+    task_id: null,
+  };
+}
+
+function planActor(planId: string): OperatorActorRef {
+  return {
+    kind: "plan",
+    id: planId,
+    plan_id: planId,
+    goal_id: null,
+    task_id: null,
+  };
+}
+
+function draftActor(draftId: string, planId?: string | null, goalId?: string | null): OperatorActorRef {
+  return {
+    kind: "draft",
+    id: draftId,
+    plan_id: planId ?? null,
+    goal_id: goalId ?? null,
+    task_id: null,
+  };
+}
+
+async function appendOperatorEvent(input: {
+  transition: string;
+  actor: OperatorActorRef;
+  payload: JsonMap;
+  idempotencyKey: string;
+  causationId?: string | null;
+  correlationId?: string | null;
+}): Promise<JsonMap> {
+  const event = {
+    event_id: stableProjectionId("operator-event", [stableValueDigest(input.idempotencyKey)]),
+    event_type: operatorEventTypeForTransition(input.transition),
+    actor: input.actor,
+    transition: input.transition,
+    idempotency_key: input.idempotencyKey,
+    causation_id: input.causationId ?? null,
+    correlation_id: input.correlationId ?? input.actor.goal_id ?? input.actor.plan_id ?? null,
+    restate_invocation_id: null,
+    created_at: new Date().toISOString(),
+    payload_json: input.payload,
+  };
+  const result = await proxyJson(goalStoreUrl, "/goal-store/operator-events", {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ event }),
+  });
+  if (!result.ok) {
+    console.warn("append operator event failed", result.status, result.data);
+  }
+  return {
+    ok: result.ok,
+    status: result.status,
+    event,
+    data: result.data,
+  };
+}
+
+function transitionForResolvedAction(kind: string, resolution: string): string {
+  if (resolution === "accept_draft") return "draft_accepted";
+  if (resolution === "approve" || resolution === "reject") return "approval_resolved";
+  if (resolution === "create_thunk") return "thunk_created";
+  if (kind === "thunk" && ["continue", "answer", "add_context"].includes(resolution)) return "thunk_resumed";
+  if (resolution === "cancel_goal" || kind === "cancel") return "goal_cancelled";
+  return "goal_steered";
+}
+
+function defaultResolutionForActionKind(kind: string): string {
+  const actionKind = actionResolutionKind(kind);
+  if (actionKind === "approval") return "approve";
+  if (actionKind === "thunk") return "continue";
+  if (actionKind === "draft") return "accept_draft";
+  if (actionKind === "task") return "retry";
+  if (actionKind === "cancel") return "cancel_goal";
+  return "continue";
+}
+
+function transitionForGoalAction(action: string): string {
+  if (action === "cancel") return "goal_cancelled";
+  if (action === "select-branch" || action === "select_branch") return "branch_selected";
+  if (action === "approve") return "approval_resolved";
+  if (action === "resume_thunk") return "thunk_resumed";
+  if (action === "run") return "submit_goal";
+  return "goal_steered";
+}
+
+function actorForResolvedAction(parsed: { kind: string; goalId: string; targetId: string }, record: JsonMap, goalId: string): OperatorActorRef {
+  const taskId = record.task_id ? String(record.task_id) : null;
+  if (parsed.kind === "approval" || record.approval_id) {
+    const approvalId = String(record.approval_id ?? parsed.targetId);
+    return { kind: "approval", id: approvalId, goal_id: goalId, task_id: taskId };
+  }
+  if (parsed.kind === "thunk" || record.thunk_id) {
+    const thunkId = String(record.thunk_id ?? parsed.targetId);
+    return { kind: "thunk", id: thunkId, goal_id: goalId, task_id: taskId };
+  }
+  if (taskId || parsed.kind === "task") {
+    const id = taskId ?? parsed.targetId;
+    return { kind: "task", id, goal_id: goalId, task_id: id };
+  }
+  return goalActor(goalId);
+}
+
+async function operatorActionList(goalId?: string | null): Promise<JsonMap> {
+  const [actionQueueResult, approvalsResult, tasksResult, selectedGoal] = await Promise.all([
+    proxyJson(goalStoreUrl, goalStoreActionsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreApprovalsPath(goalId), { method: "GET" }),
+    proxyJson(goalStoreUrl, goalStoreTasksPath(goalId), { method: "GET" }),
+    goalId ? composedGoalSnapshot(goalId) : Promise.resolve(null),
+  ]);
+  const projected = filterRowsByGoalId(rowsFromProxyResult(actionQueueResult, "actions"), goalId).map(normalizeOperatorAction);
+  const fallback = operatorActionsFromRows(
+    filterRowsByGoalId(rowsFromProxyResult(approvalsResult, "approvals"), goalId),
+    filterRowsByGoalId(rowsFromProxyResult(tasksResult, "tasks"), goalId),
+    selectedGoal,
+  );
+  return {
+    generated_at: new Date().toISOString(),
+    actions: mergeOperatorRows(projected, fallback, "action_id").map(ensureOperatorActionRecovery),
+    source: {
+      action_queue: compactProxySource(actionQueueResult),
+      fallback_approvals: compactProxySource(approvalsResult),
+      fallback_tasks: compactProxySource(tasksResult),
+    },
+  };
+}
+
+function compactProxySource(result: ProxyResult): JsonMap {
+  return {
+    ok: result.ok,
+    status: result.status,
+    url: result.url,
+  };
+}
+
+function rowsFromProxyResult(result: ProxyResult, key: string): JsonMap[] {
+  const data = result.data;
+  if (Array.isArray(data)) {
+    return data.map(asRecord);
+  }
+  const record = asRecord(data);
+  const direct = arrayField(record, key);
+  if (direct.length) {
+    return direct.map(asRecord);
+  }
+  const nestedData = record.data;
+  if (Array.isArray(nestedData)) {
+    return nestedData.map(asRecord);
+  }
+  const nestedRows = arrayField(asRecord(nestedData), key);
+  return nestedRows.map(asRecord);
+}
+
+function filterRowsByGoalId(rows: JsonMap[], goalId?: string | null): JsonMap[] {
+  const expectedGoalId = String(goalId ?? "").trim();
+  if (!expectedGoalId) {
+    return rows;
+  }
+  return rows.filter((row) => rowGoalId(row) === expectedGoalId);
+}
+
+function rowGoalId(row: JsonMap): string {
+  const payload = asRecord(row.payload_json);
+  const actor = asRecord(row.actor);
+  return String(row.goal_id ?? payload.goal_id ?? actor.goal_id ?? "").trim();
+}
+
+function mergeOperatorRows(primary: JsonMap[], fallback: JsonMap[], idKey: string): JsonMap[] {
+  const merged = new Map<string, JsonMap>();
+  for (const row of primary.concat(fallback)) {
+    const id = String(row[idKey] ?? stableValueDigest(row));
+    if (!merged.has(id)) {
+      merged.set(id, row);
+    }
+  }
+  return [...merged.values()];
+}
+
+function normalizeOperatorAction(row: JsonMap): JsonMap {
+  const kind = normalizeOperatorActionKind(row.kind);
+  const goalId = String(row.goal_id ?? "").trim();
+  const taskId = String(row.task_id ?? "").trim();
+  const approval = asRecord(row.approval);
+  const thunk = asRecord(row.thunk);
+  const payload = asRecord(row.payload_json);
+  const approvalId = String(row.approval_id ?? approval.approval_id ?? payload.approval_id ?? "").trim();
+  const thunkId = String(row.thunk_id ?? thunk.id ?? thunk.thunk_id ?? payload.thunk_id ?? "").trim();
+  const draftId = String(payload.draft_id ?? row.draft_id ?? "").trim();
+  const sourceActionId = String(row.action_id ?? "").trim();
+  const status = String(row.status ?? payload.task_status ?? "").trim();
+  const allowedResolutions = actionableOperatorResolutions(
+    kind,
+    status,
+    normalizeOperatorResolutions(arrayField(row, "allowed_resolutions")),
+  );
+  return {
+    ...row,
+    kind,
+    action_id: normalizedOperatorActionId(kind, goalId, taskId, approvalId, thunkId, draftId, sourceActionId),
+    source_action_id: sourceActionId || undefined,
+    goal_id: goalId || row.goal_id,
+    task_id: taskId || row.task_id || null,
+    status: row.status ?? "pending",
+    approval: approvalId && !Object.keys(approval).length ? { approval_id: approvalId, goal_id: goalId || row.goal_id, task_id: taskId || row.task_id || null } : row.approval,
+    thunk: thunkId && !Object.keys(thunk).length ? { thunk_id: thunkId, goal_id: goalId || row.goal_id, task_id: taskId || row.task_id || null } : row.thunk,
+    allowed_resolutions: allowedResolutions,
+    recovery: operatorActionRowRecovery(row, kind, status, allowedResolutions),
+    payload_json: row.payload_json ?? {},
+  };
+}
+
+function operatorActionRowRecovery(row: JsonMap, kind: string, status: string, allowedResolutions: string[]): JsonMap {
+  const existing = asRecord(row.recovery);
+  if (Object.keys(existing).length) {
+    return existing;
+  }
+  const targetKind = actionResolutionKind(kind);
+  const suggested = allowedResolutions.length ? allowedResolutions : recoveryResolutionsFor(targetKind, "");
+  return compactRecord({
+    reason: "operator_action_available",
+    message: "This action-needed row can move forward through one of the listed coordinator actions.",
+    target_kind: targetKind || kind || null,
+    target_id: row.task_id ?? row.approval_id ?? row.thunk_id ?? null,
+    status: status || String(row.status ?? "pending"),
+    suggested_resolutions: suggested,
+    actions: ["refresh_actions", "inspect_actor", ...suggested],
+  });
+}
+
+function ensureOperatorActionRecovery(row: JsonMap): JsonMap {
+  if (Object.keys(asRecord(row.recovery)).length) {
+    return row;
+  }
+  const kind = normalizeOperatorActionKind(row.kind);
+  const payload = asRecord(row.payload_json);
+  const status = String(row.status ?? payload.task_status ?? "").trim();
+  const allowedResolutions = actionableOperatorResolutions(
+    kind,
+    status,
+    normalizeOperatorResolutions(arrayField(row, "allowed_resolutions")),
+  );
+  return {
+    ...row,
+    allowed_resolutions: allowedResolutions,
+    recovery: operatorActionRowRecovery(row, kind, status, allowedResolutions),
+  };
+}
+
+function normalizeOperatorActionKind(value: unknown): string {
+  const token = statusToken(value);
+  if (token === "accept-draft") return "accept_draft";
+  if (token === "resume-thunk") return "resume_thunk";
+  if (token === "resolve-approval") return "resolve_approval";
+  if (token === "restart-task") return "restart_task";
+  if (token === "replan-task") return "replan_task";
+  if (token === "select-branch") return "select_branch";
+  if (token === "cancel-goal") return "cancel_goal";
+  return token.replaceAll("-", "_") || "continue";
+}
+
+function normalizeOperatorResolutions(values: unknown[]): string[] {
+  return values
+    .map((value) => statusToken(value).replaceAll("-", "_"))
+    .filter(Boolean);
+}
+
+function actionableOperatorResolutions(kind: string, status: string, resolutions: string[]): string[] {
+  const ordered = [...resolutions];
+  const statusKey = statusToken(status).replaceAll("-", "_");
+  const ensure = (value: string) => {
+    if (!ordered.includes(value)) ordered.push(value);
+  };
+  if (["restart_task", "replan_task", "task"].includes(kind) || ["blocked", "failed", "waiting_input", "waiting_approval"].includes(statusKey)) {
+    ensure("retry");
+    ensure("replan");
+    ensure("create_thunk");
+    ensure("cancel_goal");
+  }
+  if (kind === "resume_thunk" || kind === "thunk" || statusKey === "waiting_input") {
+    ensure("continue");
+    ensure("answer");
+    ensure("add_context");
+  }
+  if (kind === "resolve_approval" || kind === "approval" || statusKey === "waiting_approval") {
+    ensure("approve");
+    ensure("reject");
+    ensure("add_context");
+    ensure("cancel_goal");
+  }
+  return ordered;
+}
+
+function normalizedOperatorActionId(
+  kind: string,
+  goalId: string,
+  taskId: string,
+  approvalId: string,
+  thunkId: string,
+  draftId: string,
+  sourceActionId: string,
+): string {
+  if (goalId && approvalId && kind === "resolve_approval") {
+    return `approval:${goalId}:${approvalId}`;
+  }
+  if (goalId && thunkId && kind === "resume_thunk") {
+    return `thunk:${goalId}:${thunkId}`;
+  }
+  if (goalId && draftId && kind === "accept_draft") {
+    return `draft:${goalId}:${draftId}`;
+  }
+  if (goalId && taskId) {
+    return `task:${goalId}:${taskId}`;
+  }
+  return sourceActionId || stableProjectionId("action", [kind, goalId, taskId, approvalId, thunkId, draftId]);
+}
+
+function normalizeOperatorEvent(row: JsonMap): JsonMap {
+  return {
+    ...row,
+    event_id: String(row.event_id ?? stableProjectionId("operator-event", [
+      row.event_type,
+      row.goal_id,
+      row.task_id,
+      row.created_at,
+      row.title,
+    ])),
+    event_type: String(row.event_type ?? "event"),
+    goal_id: row.goal_id ?? null,
+    task_id: row.task_id ?? null,
+    title: String(row.title ?? row.event_type ?? "Event"),
+    detail: String(row.detail ?? ""),
+    created_at: row.created_at ?? null,
+    payload_json: row.payload_json ?? row,
+  };
+}
+
+function normalizeOperatorWorkerRun(row: JsonMap): JsonMap {
+  return {
+    ...row,
+    run_id: String(row.run_id ?? stableProjectionId("worker-run", [
+      row.goal_id,
+      row.task_id,
+      row.worker,
+      row.status,
+    ])),
+    goal_id: row.goal_id ?? null,
+    task_id: row.task_id ?? null,
+    worker: row.worker ?? "planner",
+    status: row.status ?? "unknown",
+    summary: row.summary ?? "",
+    payload_json: row.payload_json ?? row,
+  };
+}
+
+function normalizeOperatorEvidence(row: JsonMap): JsonMap {
+  return {
+    ...row,
+    evidence_id: String(row.evidence_id ?? row.uri ?? stableProjectionId("evidence", [
+      row.goal_id,
+      row.task_id,
+      row.created_at,
+      row.title,
+    ])),
+    goal_id: row.goal_id ?? null,
+    task_id: row.task_id ?? null,
+    title: String(row.title ?? "Evidence"),
+    uri: row.uri ?? null,
+    created_at: row.created_at ?? null,
+    payload_json: row.payload_json ?? row,
+  };
+}
+
+async function resolveOperatorAction(actionId: string, body: unknown): Promise<JsonMap> {
+  const record = asRecord(body);
+  const parsed = parseOperatorActionId(actionId);
+  const goalId = String(record.goal_id ?? parsed.goalId ?? "");
+  if (!goalId) {
+    return {
+      ok: false,
+      status: 400,
+      error: "goal_id is required to resolve an operator action",
+      action_id: actionId,
+      recovery: {
+        actions: ["select_goal", "refresh_actions"],
+      },
+    };
+  }
+  const resolution = normalizeOperatorResolution(record.resolution ?? record.intent ?? defaultResolutionForActionKind(parsed.kind));
+  if (!isValidOperatorActionResolution(parsed.kind, resolution)) {
+    return invalidOperatorActionResolution(actionId, goalId, parsed, resolution);
+  }
+  const responseSummary = String(record.response_summary ?? record.answer ?? record.context ?? "Operator resolved the action.").trim();
+  let result: JsonMap;
+  if (resolution === "approve" || resolution === "reject") {
+    const approvalId = String(record.approval_id ?? parsed.targetId ?? "");
+    if (!approvalId) {
+      return {
+        ok: false,
+        status: 400,
+        error: "approval_id is required for approval resolution",
+        action_id: actionId,
+        goal_id: goalId,
+        recovery: {
+          actions: ["refresh_actions", "choose_approval"],
+        },
+      };
+    }
+    result = await workflowMutationEnvelope(goalId, "approve", {
+      approval_id: approvalId,
+      approved: resolution !== "reject",
+      note: responseSummary,
+    });
+  } else if (resolution === "accept_draft" || resolution === "discard_draft") {
+    const draftId = String(record.draft_id ?? asRecord(record.payload_json).draft_id ?? parsed.targetId ?? "").trim();
+    if (!draftId) {
+      return {
+        ok: false,
+        status: 400,
+        error: "draft_id is required for draft actions",
+        action_id: actionId,
+        goal_id: goalId,
+        recovery: {
+          actions: ["refresh_actions", "choose_draft"],
+        },
+      };
+    }
+    if (resolution === "discard_draft") {
+      markChatDraftDiscarded(draftId);
+      result = {
+        ok: true,
+        status: 200,
+        data: {
+          handler: "discard_draft",
+          draft_id: draftId,
+          discarded: true,
+        },
+      };
+    } else {
+      result = await submitOperatorGoalSpec(
+        {
+          ...record,
+          draft_id: draftId,
+        },
+        "operator_action_accept_draft",
+      );
+    }
+  } else if (parsed.kind === "thunk" && ["continue", "answer", "add_context"].includes(resolution)) {
+    const thunkId = String(record.thunk_id ?? parsed.targetId ?? "");
+    if (!thunkId) {
+      return {
+        ok: false,
+        status: 400,
+        error: "thunk_id is required for continuation resume",
+        action_id: actionId,
+        goal_id: goalId,
+        recovery: {
+          actions: ["refresh_actions", "choose_continuation"],
+        },
+      };
+    }
+    result = await workflowMutationEnvelope(goalId, "resume_thunk", {
+      thunk_id: thunkId,
+      responder: String(record.operator ?? "operator"),
+      response_summary: responseSummary,
+      artifact_refs: Array.isArray(record.artifact_refs) ? record.artifact_refs : [],
+    });
+  } else if (resolution === "cancel_goal" || parsed.kind === "cancel") {
+    result = await workflowMutationEnvelope(goalId, "cancel", responseSummary || "Operator cancelled the goal.");
+  } else if (resolution === "add_context") {
+    result = await workflowMutationEnvelope(goalId, "steer", {
+      id: String(record.directive_id ?? crypto.randomUUID()),
+      goal_id: goalId,
+      task_id: record.task_id ?? (parsed.kind === "task" ? parsed.targetId : null),
+      operator: record.operator ?? "operator",
+      message: responseSummary || "Operator added context.",
+      kind: {
+        add_context: {
+          target_kind: parsed.kind || "goal",
+          target_id: parsed.targetId || null,
+          approval_id: parsed.kind === "approval" ? parsed.targetId : record.approval_id ?? null,
+          context: responseSummary || null,
+          artifact_refs: Array.isArray(record.artifact_refs) ? record.artifact_refs : [],
+        },
+      },
+    });
+  } else if (resolution === "replan") {
+    result = await workflowMutationEnvelope(goalId, "steer", {
+      id: crypto.randomUUID(),
+      goal_id: goalId,
+      task_id: record.task_id ?? parsed.targetId ?? null,
+      operator: record.operator ?? "operator",
+      message: responseSummary || "Operator requested replan.",
+      kind: {
+        request_replan: {
+          reason: responseSummary || "Operator requested replan.",
+        },
+      },
+    });
+  } else if (resolution === "create_thunk") {
+    const taskId = String(record.task_id ?? parsed.targetId ?? "").trim();
+    result = await workflowMutationEnvelope(goalId, "create_thunk", createRecoveryThunkRequest(goalId, taskId, actionId, responseSummary));
+  } else {
+    result = await workflowMutationEnvelope(goalId, "restart", {
+      goal_id: goalId,
+      scope: record.task_id || parsed.targetId ? "task" : "goal",
+      reason: "operator_requested",
+      message: responseSummary || "Operator requested restart.",
+      task_id: record.task_id ?? parsed.targetId ?? null,
+      reset_attempts: true,
+      preserve_artifacts: true,
+      operator: record.operator ?? "operator",
+    });
+  }
+  const operatorEvent = await appendOperatorEvent({
+    transition: transitionForResolvedAction(parsed.kind, resolution),
+    actor: actorForResolvedAction(parsed, record, goalId),
+    payload: {
+      action_id: actionId,
+      goal_id: goalId,
+      resolution,
+      request: record,
+      result,
+    },
+    idempotencyKey: `operator:action:${actionId}:${resolution}:${operatorRequestId(record)}`,
+    causationId: actionId,
+    correlationId: goalId,
+  });
+  return {
+    ok: Boolean(result.ok),
+    status: result.status ?? 0,
+    action_id: actionId,
+    goal_id: goalId,
+    resolution,
+    result,
+    accepted: Boolean(result.ok),
+    recovery: operatorActionRecovery(result, parsed, resolution),
+    operator_event: operatorEvent,
+    active_state: activeStateFromActionEnvelope(result),
+  };
+}
+
+function createRecoveryThunkRequest(goalId: string, taskId: string, actionId: string, responseSummary: string): JsonMap {
+  const normalizedActionId = actionId.replace(/[^A-Za-z0-9_.:-]+/g, "-");
+  return {
+    goal_id: goalId,
+    task_id: taskId || null,
+    kind: "human_input",
+    reason: responseSummary || "Operator requested a concrete recovery prompt for action-needed work.",
+    requested_input: "Choose the recovery path for this blocked, waiting, or failed work.",
+    wait_ref: {
+      kind: "human_thread",
+      reference: `thread://operator/action/${normalizedActionId}`,
+    },
+    continuation: {
+      continuation_id: `operator-action/${normalizedActionId}/create-thunk`,
+      boundary: "task_dispatch",
+      state_ref: taskId ? `goal/${goalId}/task/${taskId}` : `goal/${goalId}`,
+      resume_actions: ["apply_feedback", "mark_runnable", "replan", "cancel"],
+    },
+    timeout_seconds: 3600,
+  };
+}
+
+function parseOperatorActionId(actionId: string): { kind: string; goalId: string; targetId: string } {
+  const [kind = "", goalId = "", ...targetParts] = actionId.split(":");
+  return { kind, goalId, targetId: targetParts.join(":") };
+}
+
+function normalizeOperatorResolution(value: unknown): string {
+  const resolution = statusToken(value).replaceAll("-", "_");
+  if (resolution === "cancel") return "cancel_goal";
+  if (resolution === "restart") return "retry";
+  return resolution;
+}
+
+function isValidOperatorActionResolution(kind: string, resolution: string): boolean {
+  return validOperatorActionResolutions(kind).includes(resolution);
+}
+
+function validOperatorActionResolutions(kind: string): string[] {
+  const actionKind = actionResolutionKind(kind);
+  if (actionKind === "approval") return ["approve", "reject", "add_context", "cancel_goal"];
+  if (actionKind === "thunk") return ["continue", "answer", "add_context", "replan", "create_thunk", "cancel_goal"];
+  if (actionKind === "draft") return ["accept_draft", "discard_draft"];
+  if (actionKind === "task" || actionKind === "goal") return ["retry", "replan", "create_thunk", "add_context", "cancel_goal"];
+  if (actionKind === "cancel") return ["cancel_goal"];
+  return [];
+}
+
+function actionResolutionKind(kind: string): string {
+  const normalized = normalizeOperatorActionKind(kind);
+  if (normalized === "resolve_approval" || normalized === "approval") return "approval";
+  if (normalized === "resume_thunk" || normalized === "thunk") return "thunk";
+  if (normalized === "accept_draft" || normalized === "draft") return "draft";
+  if (["restart_task", "replan_task", "task"].includes(normalized)) return "task";
+  if (normalized === "cancel_goal" || normalized === "cancel") return "cancel";
+  if (normalized === "goal") return "goal";
+  return normalized;
+}
+
+function invalidOperatorActionResolution(
+  actionId: string,
+  goalId: string,
+  parsed: { kind: string; goalId: string; targetId: string },
+  resolution: string,
+): JsonMap {
+  const suggested = validOperatorActionResolutions(parsed.kind);
+  return {
+    ok: false,
+    status: 400,
+    accepted: false,
+    error: "invalid operator action resolution",
+    action_id: actionId,
+    goal_id: goalId,
+    resolution,
+    recovery: compactRecord({
+      reason: "invalid_operator_action_resolution",
+      message: "This operator action cannot use the requested resolution. Refresh the action queue, inspect the target actor, then choose one of the listed recovery actions.",
+      target_kind: parsed.kind || null,
+      target_id: parsed.targetId || null,
+      attempted_resolution: resolution || null,
+      suggested_resolutions: suggested,
+      actions: ["refresh_actions", "inspect_actor", ...suggested],
+    }),
+  };
+}
+
+function firstGoalId(rows: JsonMap[]): string {
+  return String(rows[0]?.goal_id ?? rows[0]?.id ?? "").trim();
+}
+
+function operatorGoalSummary(row: JsonMap): JsonMap {
+  const goalId = String(row.goal_id ?? row.id ?? "");
+  return {
+    goal_id: goalId,
+    id: goalId,
+    title: row.title ?? "Untitled goal",
+    objective: row.objective ?? "",
+    status: row.status ?? "unknown",
+    percent_done: row.percent_done ?? 0,
+    open_tasks: row.open_tasks ?? 0,
+    blocked_tasks: row.blocked_tasks ?? 0,
+    failed_tasks: row.failed_tasks ?? 0,
+    satisfied: row.satisfied === true,
+    updated_at: row.updated_at ?? row.updated_at_text ?? null,
+  };
+}
+
+function operatorGoalDetail(snapshot: JsonMap): JsonMap {
+  const goal = asRecord(asRecord(snapshot.goal_store_goal).data ?? snapshot.goal_store_goal);
+  const goalRecord = Object.keys(asRecord(goal.goal)).length ? asRecord(goal.goal) : goal;
+  const summary = operatorGoalSummary(goalRecord);
+  return {
+    summary,
+    progress: asRecord(asRecord(snapshot.workflow_progress).data ?? snapshot.workflow_progress),
+    graph: asRecord(asRecord(snapshot.workflow_compute_graph).data ?? snapshot.workflow_compute_graph),
+    tasks: arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks"),
+    actions: operatorActionsFromSnapshot(snapshot),
+    events: operatorTimelineFromSnapshot(snapshot),
+    worker_runs: operatorWorkerRunsFromSnapshot(snapshot),
+    evidence: operatorEvidenceRowsFromSnapshot(snapshot),
+    snapshot,
+  };
+}
+
+function operatorActionsFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_actions) as ProxyResult, "actions")
+    .map(normalizeOperatorAction);
+  return mergeOperatorRows(projected, operatorActionsFromRows([], [], snapshot), "action_id").map(ensureOperatorActionRecovery);
+}
+
+function operatorTimelineFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_timeline) as ProxyResult, "events")
+    .map(normalizeOperatorEvent);
+  return projected.length ? projected : operatorEventsFromDurableEvents(asRecord(snapshot.operator_events).data);
+}
+
+function operatorWorkerRunsFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_worker_runs) as ProxyResult, "worker_runs")
+    .map(normalizeOperatorWorkerRun);
+  if (projected.length) {
+    return projected;
+  }
+  const taskRows = arrayField(asRecord(asRecord(snapshot.tasks).data ?? snapshot.tasks), "tasks").map(asRecord);
+  return operatorWorkerRuns(taskRows);
+}
+
+function operatorEvidenceRowsFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  const projected = rowsFromProxyResult(asRecord(snapshot.operator_evidence) as ProxyResult, "evidence")
+    .map(normalizeOperatorEvidence);
+  return projected.length ? projected : operatorEvidenceFromSnapshot(snapshot);
+}
+
+function operatorActionsFromRows(approvals: JsonMap[], tasks: JsonMap[], snapshot: JsonMap | null): JsonMap[] {
+  const actions: JsonMap[] = [];
+  for (const approval of approvals) {
+    const status = String(approval.status ?? "");
+    if (status && status !== "pending") continue;
+    const goalId = String(approval.goal_id ?? "");
+    const approvalId = String(approval.approval_id ?? approval.id ?? "");
+    if (!goalId || !approvalId) continue;
+    actions.push({
+      action_id: `approval:${goalId}:${approvalId}`,
+      kind: "resolve_approval",
+      goal_id: goalId,
+      task_id: approval.task_id ?? null,
+      title: "Approval required",
+      question: approval.requested_action ?? approval.reason ?? "Approve or reject this request.",
+      status: "pending",
+      allowed_resolutions: ["approve", "reject", "add_context", "cancel_goal"],
+      approval,
+      payload_json: approval,
+    });
+  }
+
+  const statusPayload = asRecord(asRecord(snapshot ?? {}).workflow_status);
+  const progressPayload = asRecord(asRecord(snapshot ?? {}).workflow_progress);
+  const computeGraphPayload = asRecord(asRecord(snapshot ?? {}).workflow_compute_graph);
+  const statusData = asRecord(statusPayload.data ?? statusPayload);
+  const progressData = asRecord(progressPayload.data ?? progressPayload);
+  const computeGraphData = asRecord(computeGraphPayload.data ?? computeGraphPayload);
+  const thunks = arrayField(statusData, "delayed_compute_thunks")
+    .concat(arrayField(progressData, "delayed_compute_thunks"))
+    .concat(computeGraphThunkActions(computeGraphData, String(asRecord(snapshot ?? {}).goal_id ?? "")));
+  const seenThunkIds = new Set<string>();
+  for (const thunkValue of thunks) {
+    const thunk = asRecord(thunkValue);
+    const status = String(thunk.status ?? "");
+    const normalizedStatus = statusToken(status);
+    const thunkId = String(thunk.id ?? thunk.thunk_id ?? "");
+    const goalId = String(thunk.goal_id ?? asRecord(snapshot ?? {}).goal_id ?? "");
+    if (!thunkId || !goalId || seenThunkIds.has(thunkId) || ["done", "resolved", "cancelled"].includes(normalizedStatus)) continue;
+    seenThunkIds.add(thunkId);
+    actions.push({
+      action_id: `thunk:${goalId}:${thunkId}`,
+      kind: "resume_thunk",
+      goal_id: goalId,
+      task_id: thunk.task_id ?? null,
+      title: "Input needed",
+      question: thunk.requested_input ?? thunk.reason ?? "Continue this delayed work.",
+      status: status || "pending",
+      allowed_resolutions: ["continue", "answer", "add_context", "replan", "cancel_goal"],
+      thunk,
+      payload_json: thunk,
+    });
+  }
+
+  const tasksPayload = asRecord(asRecord(snapshot ?? {}).tasks);
+  const taskRows = tasks.length ? tasks : arrayField(asRecord(tasksPayload.data ?? tasksPayload), "tasks");
+  for (const taskValue of taskRows) {
+    const task = asRecord(taskValue);
+    const status = String(task.status ?? "");
+    if (!["blocked", "failed", "waiting_input", "waiting-input"].includes(status)) continue;
+    const goalId = String(task.goal_id ?? asRecord(snapshot ?? {}).goal_id ?? "");
+    const taskId = String(task.task_id ?? task.id ?? "");
+    if (!goalId || !taskId) continue;
+    actions.push({
+      action_id: `task:${goalId}:${taskId}`,
+      kind: "restart_task",
+      goal_id: goalId,
+      task_id: taskId,
+      title: status.includes("waiting") ? "Task waiting" : "Recover task",
+      question: task.title ?? task.current_prompt ?? "Restart, replan, or cancel this work.",
+      status,
+      allowed_resolutions: ["retry", "replan", "create_thunk", "add_context", "cancel_goal"],
+      payload_json: task,
+    });
+  }
+  return actions;
+}
+
+function computeGraphThunkActions(graph: JsonMap, fallbackGoalId: string): JsonMap[] {
+  return arrayField(graph, "nodes")
+    .map(asRecord)
+    .filter((node) => {
+      const kind = String(node.kind ?? "").toLowerCase();
+      const status = statusToken(node.status);
+      return (kind === "delayed_compute_thunk" || kind === "thunk") && !["done", "resolved", "cancelled"].includes(status);
+    })
+    .map((node) => ({
+      id: node.thunk_id ?? node.id,
+      thunk_id: node.thunk_id ?? node.id,
+      goal_id: node.goal_id ?? fallbackGoalId,
+      task_id: node.task_id ?? null,
+      status: node.status ?? "pending",
+      requested_input: node.requested_input ?? node.label ?? null,
+      reason: node.reason ?? node.label ?? null,
+      wait_ref: node.wait_ref ?? null,
+      continuation_id: node.continuation_id ?? null,
+      source: "compute_graph",
+      payload_json: node,
+    }));
+}
+
+function operatorEventsFromBackendProjection(value: JsonMap): JsonMap[] {
+  return arrayField(asRecord(asRecord(value.recent_events).data ?? value.recent_events), "events")
+    .map(asRecord)
+    .map((event, index) => ({
+      event_id: String(event.event_id ?? event.id ?? event.sequence ?? stableProjectionId("backend-event", [
+        event.kind,
+        event.event_type,
+        event.goal_id,
+        event.task_id,
+        event.created_at,
+        event.message,
+        index,
+      ])),
+      event_type: String(event.kind ?? event.event_type ?? "event"),
+      goal_id: event.goal_id ?? null,
+      task_id: event.task_id ?? null,
+      title: String(event.message ?? event.kind ?? "Event"),
+      detail: String(event.actor ?? event.source ?? ""),
+      created_at: event.created_at ?? null,
+      payload_json: event,
+    }));
+}
+
+function operatorEventsFromDurableEvents(value: unknown): JsonMap[] {
+  return arrayField(asRecord(value), "events")
+    .map(asRecord)
+    .map((event, index) => {
+      const actor = asRecord(event.actor);
+      return {
+        event_id: String(event.event_id ?? stableProjectionId("operator-event", [
+          event.event_type,
+          event.transition,
+          actor.goal_id,
+          actor.task_id,
+          event.created_at,
+          index,
+        ])),
+        event_type: String(event.event_type ?? "event"),
+        goal_id: actor.goal_id ?? null,
+        task_id: actor.task_id ?? null,
+        title: titleForOperatorEvent(String(event.event_type ?? "event"), String(event.transition ?? "")),
+        detail: detailForOperatorEvent(event),
+        created_at: event.created_at ?? null,
+        payload_json: event,
+      };
+    });
+}
+
+function titleForOperatorEvent(eventType: string, transition: string): string {
+  if (transition === "submit_goal") return "Goal submitted";
+  if (transition === "draft_accepted") return "Draft accepted";
+  if (transition === "thunk_resumed") return "Input provided";
+  if (transition === "approval_resolved") return "Approval resolved";
+  if (transition === "goal_cancelled") return "Goal cancelled";
+  if (transition === "goal_satisfied") return "Goal satisfied";
+  if (transition === "review_completed") return "Review completed";
+  if (eventType === "worker.completed") return "Worker completed";
+  return transition.replaceAll("_", " ") || eventType;
+}
+
+function detailForOperatorEvent(event: JsonMap): string {
+  const payload = asRecord(event.payload_json);
+  const request = asRecord(payload.request);
+  return String(payload.summary ?? payload.message ?? request.response_summary ?? request.answer ?? "");
+}
+
+function operatorEvidenceFromSnapshot(snapshot: JsonMap): JsonMap[] {
+  return arrayField(asRecord(asRecord(snapshot.artifacts).data ?? snapshot.artifacts), "artifacts")
+    .map(asRecord)
+    .map((artifact, index) => {
+      const ref = asRecord(artifact.artifact);
+      const checkpoint = asRecord(artifact.checkpoint);
+      return {
+        evidence_id: String(ref.uri ?? checkpoint.id ?? stableProjectionId("evidence", [
+          artifact.goal_id ?? snapshot.goal_id,
+          artifact.task_id,
+          artifact.created_at,
+          ref.description,
+          checkpoint.label,
+          index,
+        ])),
+        goal_id: artifact.goal_id ?? snapshot.goal_id ?? null,
+        task_id: artifact.task_id ?? null,
+        title: String(ref.description ?? checkpoint.label ?? "Evidence"),
+        uri: ref.uri ?? null,
+        checkpoint: Object.keys(checkpoint).length ? checkpoint : null,
+        created_at: artifact.created_at ?? null,
+        payload_json: artifact,
+      };
+    });
+}
+
+function operatorWorkerRuns(tasks: JsonMap[]): JsonMap[] {
+  return tasks.map((task, index) => ({
+    run_id: String(task.run_id ?? task.task_id ?? task.id ?? stableProjectionId("worker-run", [
+      task.goal_id,
+      task.role,
+      task.status,
+      task.title,
+      index,
+    ])),
+    goal_id: task.goal_id ?? null,
+    task_id: task.task_id ?? task.id ?? null,
+    worker: task.role ?? "planner",
+    status: task.status ?? "unknown",
+    summary: task.title ?? task.current_prompt ?? "",
+    started_at: task.started_at ?? null,
+    finished_at: task.finished_at ?? null,
+    payload_json: task,
+  }));
+}
+
+function stableProjectionId(prefix: string, parts: unknown[]): string {
+  const body = parts
+    .map((part) => String(part ?? "").trim())
+    .filter(Boolean)
+    .join(":")
+    .replace(/[^A-Za-z0-9_.:-]+/g, "-")
+    .slice(0, 160);
+  return `${prefix}:${body || "unknown"}`;
+}
+
+function stableValueDigest(value: unknown): string {
+  return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 24);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (!value || typeof value !== "object") {
+    return JSON.stringify(value ?? null) ?? "null";
+  }
+  const record = value as JsonMap;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+}
+
+function operatorRequestId(value: unknown): string {
+  const record = asRecord(value);
+  return String(record.request_id ?? record.idempotency_key ?? stableValueDigest(value));
+}
+
+function operatorActionRecovery(result: JsonMap, parsed: { kind: string; goalId: string; targetId: string }, resolution: string): JsonMap | null {
+  const status = Number(result.status ?? 0);
+  if (Boolean(result.ok) || status < 400) {
+    return null;
+  }
+  const reason = status === 409
+    ? "coordinator_rejected_current_action_state"
+    : "coordinator_action_resolution_failed";
+  return compactRecord({
+    reason,
+    message: status === 409
+      ? "The coordinator did not accept this action in the current state. Refresh the goal projection, then retry a concrete recovery action."
+      : "The coordinator could not resolve this action. Refresh the projection, inspect the target state, then choose a concrete recovery action.",
+    status,
+    target_kind: parsed.kind || null,
+    target_id: parsed.targetId || null,
+    attempted_resolution: resolution,
+    suggested_resolutions: recoveryResolutionsFor(parsed.kind, resolution),
+    actions: ["refresh_actions", "inspect_actor", ...recoveryResolutionsFor(parsed.kind, resolution)],
+  });
+}
+
+function recoveryResolutionsFor(kind: string, attemptedResolution: string): string[] {
+  const candidates = kind === "thunk"
+    ? ["continue", "answer", "add_context", "replan", "create_thunk", "cancel_goal"]
+    : kind === "approval"
+      ? ["approve", "reject", "add_context", "cancel_goal"]
+      : ["retry", "replan", "create_thunk", "add_context", "cancel_goal"];
+  return candidates.filter((candidate) => candidate !== attemptedResolution);
+}
+
+function activeStateFromActionEnvelope(result: unknown): JsonMap | null {
+  const record = asRecord(result);
+  const data = asRecord(record.data);
+  const active = asRecord(record.active_state ?? data.active_state);
+  return Object.keys(active).length ? active : null;
+}
+
+async function streamOperatorState(req: any, res: any, url: URL): Promise<void> {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
@@ -672,17 +2077,61 @@ async function streamGoalState(req: any, res: any, goalId: string): Promise<void
   req.on("close", () => {
     closed = true;
   });
-
+  const goalId = url.searchParams.get("goal_id");
+  const eventTypeFilter = url.searchParams.get("event_type");
+  const eventSince = url.searchParams.get("since") ?? url.searchParams.get("event_since");
+  const lastEventId = String(req.headers["last-event-id"] ?? "").trim();
   const started = Date.now();
-  let sequence = 0;
+  let sequence = Number(url.searchParams.get("sequence") ?? 0) || 0;
+  let lastFingerprint = "";
   while (!closed && Date.now() - started < 5 * 60 * 1000) {
     try {
-      const snapshot = await goalSnapshot(goalId);
-      res.write(`event: snapshot\n`);
-      res.write(`id: ${sequence}\n`);
-      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      const workspace = await operatorWorkspace(goalId, {
+        eventType: eventTypeFilter,
+        since: eventSince,
+      });
+      const fingerprint = operatorStreamFingerprint(workspace);
+      if (fingerprint !== lastFingerprint) {
+        const eventName = operatorStreamEventName(workspace, eventTypeFilter);
+        const eventId = stableProjectionId("operator-stream", [eventName, fingerprint]);
+        const eventPayload = {
+          ...workspace,
+          stream: {
+            event_id: eventId,
+            projection_id: stableProjectionId("operator-projection", [fingerprint]),
+            event_type: eventName,
+            filters: {
+              goal_id: goalId,
+              event_type: eventTypeFilter,
+              since: eventSince,
+              last_event_id: lastEventId || null,
+            },
+            emitted_at: new Date().toISOString(),
+          },
+        };
+        res.write(`event: ${eventName}\n`);
+        res.write(`id: ${eventId}\n`);
+        res.write(`retry: 1500\n`);
+        res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
+        lastFingerprint = fingerprint;
+      } else {
+        const heartbeatId = stableProjectionId("operator-stream-heartbeat", [goalId, sequence]);
+        res.write(`event: stream.heartbeat\n`);
+        res.write(`id: ${heartbeatId}\n`);
+        res.write(`data: ${JSON.stringify({
+          goal_id: goalId,
+          projection_id: stableProjectionId("operator-projection", [fingerprint]),
+          filters: {
+            goal_id: goalId,
+            event_type: eventTypeFilter,
+            since: eventSince,
+            last_event_id: lastEventId || null,
+          },
+          generated_at: new Date().toISOString(),
+        })}\n\n`);
+      }
     } catch (error) {
-      res.write(`event: error\n`);
+      res.write(`event: stream.error\n`);
       res.write(`id: ${sequence}\n`);
       res.write(`data: ${JSON.stringify({ error: errorMessage(error), goal_id: goalId })}\n\n`);
     }
@@ -690,14 +2139,80 @@ async function streamGoalState(req: any, res: any, goalId: string): Promise<void
     await sleep(1_500);
   }
   if (!closed) {
-    res.write(`event: done\n`);
-    res.write(`data: ${JSON.stringify({ goal_id: goalId, reason: "stream_ttl_elapsed" })}\n\n`);
+    res.write(`event: stream.done\n`);
+    res.write(`id: ${sequence}\n`);
+    res.write(`data: ${JSON.stringify({ reason: "stream_ttl_elapsed", goal_id: goalId })}\n\n`);
     res.end();
   }
 }
 
+function operatorStreamFingerprint(workspace: JsonMap): string {
+  return JSON.stringify(stripVolatileProjectionFields(workspace));
+}
+
+function stripVolatileProjectionFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripVolatileProjectionFields);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as JsonMap;
+  const stable: JsonMap = {};
+  for (const [key, nestedValue] of Object.entries(record)) {
+    if (key === "generated_at") {
+      continue;
+    }
+    stable[key] = stripVolatileProjectionFields(nestedValue);
+  }
+  return stable;
+}
+
+function operatorStreamEventName(workspace: JsonMap, explicitEventType?: string | null): string {
+  if (explicitEventType) {
+    return explicitEventType;
+  }
+  const actions = arrayField(workspace, "actions").map(asRecord);
+  if (actions.some((action) => String(action.kind ?? "") === "resume_thunk")) {
+    return "action.required";
+  }
+  if (actions.some((action) => String(action.kind ?? "") === "resolve_approval")) {
+    return "approval.requested";
+  }
+  if (actions.length > 0) {
+    return "action.required";
+  }
+
+  const selectedGoal = asRecord(workspace.selected_goal);
+  const summary = asRecord(selectedGoal.summary);
+  const status = statusToken(summary.status);
+  if (summary.satisfied === true || status === "done" || status === "satisfied") {
+    return "goal.satisfied";
+  }
+  if (status === "cancelled") {
+    return "goal.cancelled";
+  }
+
+  const workerRuns = arrayField(workspace, "worker_runs").map(asRecord);
+  if (workerRuns.some((run) => ["running", "runnable", "waiting-input", "waiting-approval"].includes(statusToken(run.status)))) {
+    return "task.updated";
+  }
+  if (workerRuns.some((run) => ["done", "failed", "blocked"].includes(statusToken(run.status)))) {
+    return "worker.completed";
+  }
+  return goalIdFromWorkspace(workspace) ? "goal.updated" : "workspace.updated";
+}
+
+function statusToken(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replaceAll("_", "-");
+}
+
+function goalIdFromWorkspace(workspace: JsonMap): string {
+  return String(workspace.selected_goal_id ?? asRecord(asRecord(workspace.selected_goal).summary).goal_id ?? "").trim();
+}
+
 async function goalAgentContext(goalId: string, taskId: string | null): Promise<JsonMap> {
-  const snapshot = await goalSnapshot(goalId);
+  const snapshot = await composedGoalSnapshot(goalId);
   const context = asRecord(snapshot.agent_context);
   if (!taskId) {
     return context;
@@ -752,6 +2267,7 @@ function buildPlanContinuity(planId: string, planResponse: ProxyResult): JsonMap
   const compiledQuality = asRecord(plan.compiled_quality);
   const qualityNextActions = arrayField(compiledQuality, "suggested_next_actions");
   const status = String(plan.status ?? "");
+  const projection = compactPlanProjection(plan);
 
   return {
     generated_at: new Date().toISOString(),
@@ -760,10 +2276,12 @@ function buildPlanContinuity(planId: string, planResponse: ProxyResult): JsonMap
     objective: plan.objective ?? "",
     repo: plan.repo ?? null,
     status,
+    phase: projection.phase ?? derivePlanPhase(plan),
     mode: plan.mode ?? "",
     version: plan.version ?? current.version ?? null,
     updated_at: plan.updated_at ?? null,
     compiled_goal_id: plan.compiled_goal_id ?? null,
+    actions: projection.actions ?? [],
     continuity: {
       intake_summary: authoring.intake_summary ?? "",
       plan_summary: goalPlan.summary ?? "",
@@ -875,6 +2393,276 @@ function planNextActions(input: {
     actions.push("review the plan or compile it into a GoalSpec");
   }
   return actions;
+}
+
+async function acceptStoredPlanDraft(draftId: string, body: unknown): Promise<JsonMap> {
+  cleanupChatDrafts();
+  const record = asRecord(body);
+  const stored = chatDrafts.get(draftId);
+  if (!stored || stored.kind !== "plan_draft") {
+    return {
+      ok: false,
+      status: 404,
+      error: "server-side plan draft is not available",
+      draft_id: draftId,
+      recovery: {
+        actions: ["refresh_chat_session", "draft_plan_again"],
+      },
+    };
+  }
+  if (stored.status === "accepted") {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side plan draft was already accepted",
+      draft_id: draftId,
+      accepted_plan_id: stored.accepted_plan_id ?? null,
+      recovery: {
+        actions: ["select_accepted_plan", "draft_plan_again"],
+      },
+    };
+  }
+  if (stored.status === "discarded") {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side plan draft was discarded",
+      draft_id: draftId,
+      recovery: {
+        actions: ["draft_plan_again"],
+      },
+    };
+  }
+
+  const draft = mergePlanDraftEdits(stored.payload, record);
+  const targetPlanId = String(record.plan_id ?? draft.plan_id ?? stored.plan_id ?? "").trim();
+  const createNew = record.create_new === true || String(record.acceptance ?? "") === "create_plan" || !targetPlanId;
+  const requestBody = createNew
+    ? planDraftRequestForCreate(draft, record)
+    : planRevisionRequestFromPlanDraft(draft, record, "approved");
+  const path = createNew
+    ? "/goal-store/plans"
+    : `/goal-store/plans/${encodeURIComponent(targetPlanId)}/revisions`;
+  const result = await proxyJson(goalStoreUrl, path, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify(requestBody),
+  });
+  const acceptedPlanId = planIdFromPlanResponse(result.data) || targetPlanId || String(asRecord(requestBody).plan_id ?? "");
+  if (result.ok && acceptedPlanId) {
+    markPlanDraftAccepted(draftId, acceptedPlanId);
+  }
+  const operatorEvent = await appendOperatorEvent({
+    transition: "plan_draft_accepted",
+    actor: acceptedPlanId ? planActor(acceptedPlanId) : draftActor(draftId, stored.plan_id, stored.source_goal_id),
+    payload: {
+      draft_id: draftId,
+      plan_id: acceptedPlanId || targetPlanId || null,
+      source_plan_id: draft.source_plan_id ?? stored.source_plan_id ?? null,
+      source_goal_id: draft.source_goal_id ?? stored.source_goal_id ?? null,
+      accepted: result.ok,
+      acceptance_mode: createNew ? "create_plan" : "revise_plan",
+      result,
+    },
+    idempotencyKey: `operator:plan-draft:${draftId}:accept:${createNew ? "create" : targetPlanId}:${operatorRequestId(record)}`,
+    causationId: `plan-draft:${draftId}:accept`,
+    correlationId: acceptedPlanId || targetPlanId || stored.plan_id || stored.source_plan_id || null,
+  });
+  return {
+    ok: result.ok,
+    status: result.status,
+    draft_id: draftId,
+    plan_id: acceptedPlanId || targetPlanId || null,
+    acceptance_mode: createNew ? "create_plan" : "revise_plan",
+    data: result.data,
+    source: compactProxySource(result),
+    operator_event: operatorEvent,
+    actions: acceptedPlanId ? derivedPlanActions({
+      planId: acceptedPlanId,
+      phase: "accepting",
+      status: "approved",
+      version: Number(asRecord(asRecord(result.data).plan).version ?? 1),
+      compiledGoalId: null,
+      openQuestionCount: 0,
+      subgoalCount: rowsFromData(asRecord(draft.plan).subgoals).length,
+      initialTaskCount: rowsFromData(draft.initial_tasks).length,
+    }) : [],
+  };
+}
+
+async function resolvePlanAction(planId: string, actionId: string, body: unknown): Promise<JsonMap> {
+  const record = asRecord(body);
+  const planResponse = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" });
+  const plan = asRecord(asRecord(planResponse.data).plan);
+  if (!plan || Object.keys(plan).length === 0) {
+    return {
+      ok: false,
+      status: planResponse.status || 404,
+      error: "plan was not found",
+      plan_id: planId,
+      action_id: actionId,
+      recovery: {
+        actions: ["refresh_plans", "select_plan"],
+      },
+    };
+  }
+  const action = findPlanAction(plan, actionId);
+  const kind = normalizePlanActionKind(record.resolution ?? record.action ?? action.kind ?? actionId.split(":")[2] ?? "");
+  let result: ProxyResult | JsonMap;
+  if (kind === "submit_goal") {
+    result = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}/compile`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        plan_id: planId,
+        strict_review: record.strict_review ?? true,
+        human_steered: record.human_steered ?? true,
+        enable_branching: record.enable_branching ?? false,
+      }),
+    });
+  } else if (kind === "review_evidence") {
+    result = {
+      ok: true,
+      status: 200,
+      data: {
+        accepted: true,
+        plan_id: planId,
+        action_id: actionId,
+        resolution: "review_evidence",
+      },
+    };
+  } else {
+    const status = statusForResolvedPlanAction(kind);
+    result = await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}/revisions`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(planRevisionRequestFromExistingPlan(plan, record, status)),
+    });
+  }
+  const ok = Boolean((result as JsonMap).ok);
+  const status = Number((result as JsonMap).status ?? 0);
+  const operatorEvent = await appendOperatorEvent({
+    transition: "plan_action_resolved",
+    actor: planActor(planId),
+    payload: {
+      plan_id: planId,
+      action_id: actionId,
+      resolution: kind,
+      request: record,
+      result,
+    },
+    idempotencyKey: `operator:plan:${planId}:action:${actionId}:${kind}:${operatorRequestId(record)}`,
+    causationId: actionId,
+    correlationId: planId,
+  });
+  return {
+    ok,
+    status,
+    accepted: ok,
+    plan_id: planId,
+    action_id: actionId,
+    resolution: kind,
+    result,
+    operator_event: operatorEvent,
+  };
+}
+
+function mergePlanDraftEdits(baseDraft: JsonMap, editedDraft: JsonMap): JsonMap {
+  if (editedDraft.compact === true) {
+    return JSON.parse(JSON.stringify(baseDraft)) as JsonMap;
+  }
+  const base = JSON.parse(JSON.stringify(baseDraft)) as JsonMap;
+  return compactRecord({
+    ...base,
+    ...editedDraft,
+    authoring: Object.keys(asRecord(editedDraft.authoring)).length
+      ? { ...asRecord(base.authoring), ...asRecord(editedDraft.authoring) }
+      : asRecord(base.authoring),
+    plan: Object.keys(asRecord(editedDraft.plan)).length
+      ? { ...asRecord(base.plan), ...asRecord(editedDraft.plan) }
+      : asRecord(base.plan),
+  });
+}
+
+function planDraftRequestForCreate(draft: JsonMap, options: JsonMap): JsonMap {
+  return compactRecord({
+    plan_id: options.create_new === true ? undefined : draft.plan_id,
+    source_plan_id: draft.source_plan_id ?? null,
+    title: draft.title ?? "Untitled plan",
+    objective: draft.objective ?? draft.prompt ?? "",
+    repo: draft.repo ?? null,
+    prompt: draft.prompt ?? draft.objective ?? "",
+    mode: draft.mode ?? "interactive",
+    status: options.status ?? "approved",
+    author: options.operator ?? draft.author ?? "operator",
+    summary: options.summary ?? draft.summary ?? "Operator accepted plan draft.",
+    authoring: asRecord(draft.authoring),
+    plan: asRecord(draft.plan),
+    initial_tasks: rowsFromData(draft.initial_tasks),
+    questions: rowsFromData(draft.questions),
+    decisions: rowsFromData(draft.decisions),
+  });
+}
+
+function planRevisionRequestFromPlanDraft(draft: JsonMap, options: JsonMap, status: string): JsonMap {
+  return compactRecord({
+    author: options.operator ?? draft.author ?? "operator",
+    summary: options.summary ?? draft.summary ?? "Operator accepted plan draft.",
+    operator_message: options.response_summary ?? options.note ?? "Accepted staged plan draft.",
+    status: options.status ?? status,
+    authoring: asRecord(draft.authoring),
+    plan: asRecord(draft.plan),
+    initial_tasks: rowsFromData(draft.initial_tasks),
+    questions: rowsFromData(draft.questions),
+    decisions: rowsFromData(draft.decisions),
+  });
+}
+
+function planRevisionRequestFromExistingPlan(plan: JsonMap, options: JsonMap, status: string): JsonMap {
+  const current = asRecord(plan.current);
+  return compactRecord({
+    author: options.operator ?? "operator",
+    summary: options.summary ?? titleForPlanAction(String(options.resolution ?? options.action ?? "")),
+    operator_message: options.response_summary ?? options.note ?? "Operator resolved plan action.",
+    status,
+    authoring: Object.keys(asRecord(options.authoring)).length ? asRecord(options.authoring) : asRecord(current.authoring),
+    plan: Object.keys(asRecord(options.plan)).length ? asRecord(options.plan) : asRecord(current.plan),
+    initial_tasks: Array.isArray(options.initial_tasks) ? options.initial_tasks : arrayField(current, "initial_tasks"),
+    questions: Array.isArray(options.questions) ? options.questions : arrayField(current, "questions"),
+    decisions: Array.isArray(options.decisions) ? options.decisions : arrayField(current, "decisions"),
+  });
+}
+
+function statusForResolvedPlanAction(kind: string): string {
+  if (kind === "accept_plan_draft" || kind === "accept_goal_into_plan") return "approved";
+  if (kind === "replan" || kind === "draft_goal" || kind === "answer_question") return "draft";
+  if (kind === "cancel") return "archived";
+  if (kind === "confirm_satisfaction") return "superseded";
+  return "ready_for_review";
+}
+
+function findPlanAction(plan: JsonMap, actionId: string): JsonMap {
+  const planId = String(plan.id ?? plan.plan_id ?? "").trim();
+  return arrayField(plan, "action_items")
+    .map(asRecord)
+    .find((action) => String(action.action_id ?? "") === actionId)
+    ?? derivedPlanActions({
+      planId,
+      phase: String(plan.phase ?? derivePlanPhase(plan)),
+      status: String(plan.status ?? "draft"),
+      version: Number(plan.version ?? 1),
+      compiledGoalId: plan.compiled_goal_id,
+      openQuestionCount: Number(plan.open_question_count ?? 0),
+      subgoalCount: Number(plan.subgoal_count ?? arrayField(asRecord(asRecord(plan.current).plan), "subgoals").length),
+      initialTaskCount: Number(plan.initial_task_count ?? arrayField(asRecord(plan.current), "initial_tasks").length),
+    }).find((action) => String(action.action_id ?? "") === actionId)
+    ?? {};
+}
+
+function planIdFromPlanResponse(value: unknown): string {
+  const record = asRecord(value);
+  const plan = asRecord(record.plan);
+  return String(plan.id ?? plan.plan_id ?? record.plan_id ?? "").trim();
 }
 
 function buildAgentActivity(
@@ -1151,7 +2939,7 @@ async function workflowMutationEnvelope(goalId: string, handler: string, body: u
       active_state_available: activeState.status === "fresh",
       active_state_unavailable_reads: activeState.unavailableReads,
       active_state_error: activeState.error ?? null,
-      stream_url: `/api/goals/${encodeURIComponent(goalId)}/stream`,
+      stream_url: `/api/operator/stream?goal_id=${encodeURIComponent(goalId)}`,
     },
   };
 }
@@ -1164,7 +2952,7 @@ async function readActiveGoalState(goalId: string, maxAttempts: number): Promise
   const attempts = Math.max(1, maxAttempts);
   for (let index = 0; index < attempts; index += 1) {
     try {
-      const snapshot = await goalSnapshot(goalId);
+      const snapshot = await composedGoalSnapshot(goalId);
       const activeState = activeStateHealth(snapshot);
       if (activeState.status === "fresh") {
         return {
@@ -1353,17 +3141,22 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
   const request = asRecord(payload);
   const mode = String(request.mode ?? "general");
   const goalId = String(request.goal_id ?? "");
-  const sessionId = String(request.session_id ?? (goalId ? `goal:${goalId}` : "operator:default"));
+  const planId = String(request.plan_id ?? "").trim();
+  const sessionId = String(request.session_id ?? (planId ? `plan:${planId}` : goalId ? `goal:${goalId}` : "operator:default"));
   const runId = String(request.run_id ?? crypto.randomUUID());
   const prompt = String(request.prompt ?? "").trim();
   const messages = await chatMessagesForRequest(sessionId, request, prompt);
   if (!messages.length) {
     throw new Error("chat request requires a prompt or at least one message");
   }
-  beginChatRun(runId, sessionId, goalId || null, mode);
+  beginChatRun(runId, sessionId, planId || null, goalId || null, mode);
   try {
-    updateChatRun(runId, "loading_goal_context", goalId ? { goal_id: goalId } : { scope: "operator" });
-    const context = await chatContext(goalId);
+    updateChatRun(runId, "loading_plan_context", compactRecord({
+      plan_id: planId || null,
+      goal_id: goalId || null,
+      scope: planId ? "plan" : goalId ? "goal" : "operator",
+    }));
+    const context = await chatContext(goalId, planId);
     updateChatRun(runId, "resolving_backend");
     const backend = await resolveChatBackend();
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user") ?? null;
@@ -1375,14 +3168,16 @@ async function controlChat(payload: unknown): Promise<JsonMap> {
       updateChatRun(runId, "using_stub", { reason: stubChatReason() });
       response = stubChat(mode, messages, context);
     }
-    response = compactChatDraftResponse(response, sessionId, runId);
+    response = compactChatDraftResponse(response, sessionId, runId, context);
     updateChatRun(runId, "journaling_turns", {
       provider: response.provider ?? null,
       model: response.model ?? null,
     });
-    const chatLog = await appendChatTurn(sessionId, goalId || null, mode, latestUserMessage, response);
+    const chatLog = await appendChatTurn(sessionId, planId || null, goalId || null, mode, latestUserMessage, response);
     const result = {
       ...response,
+      plan_id: planId || null,
+      goal_id: goalId || null,
       session_id: sessionId,
       run_id: runId,
       chat_log: chatLog,
@@ -1410,12 +3205,13 @@ async function chatMessagesForRequest(sessionId: string, request: JsonMap, promp
   return chatMessagesFrom(request.messages);
 }
 
-function beginChatRun(runId: string, sessionId: string, goalId: string | null, mode: string): ChatRunTrace {
+function beginChatRun(runId: string, sessionId: string, planId: string | null, goalId: string | null, mode: string): ChatRunTrace {
   cleanupChatRuns();
   const now = new Date().toISOString();
   const trace: ChatRunTrace = {
     run_id: runId,
     session_id: sessionId,
+    plan_id: planId,
     goal_id: goalId,
     mode,
     status: "running",
@@ -1491,6 +3287,8 @@ function compactChatRunTrace(trace: ChatRunTrace | null): JsonMap | null {
   }
   return {
     run_id: trace.run_id,
+    plan_id: trace.plan_id,
+    goal_id: trace.goal_id,
     status: trace.status,
     stage: trace.stage,
     started_at: trace.started_at,
@@ -1509,7 +3307,7 @@ function cleanupChatRuns(): void {
   }
 }
 
-function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: string): JsonMap {
+function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: string, context: JsonMap): JsonMap {
   cleanupChatDrafts();
   const drafts = asRecord(response.drafts);
   const compactDrafts: JsonMap = {};
@@ -1518,15 +3316,36 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
   for (const [kind, value] of Object.entries(drafts)) {
     const draft = asRecord(value);
     if (kind === "goal_spec" && Object.keys(draft).length > 0) {
-      const stored = storeChatDraft(kind, sessionId, runId, draft);
-      const compact = compactGoalSpecDraft(draft, stored.draft_id);
+      const contextualDraft = attachPlanContextToGoalDraft(draft, context);
+      const stored = storeChatDraft(kind, sessionId, runId, contextualDraft, context);
+      const compact = compactGoalSpecDraft(contextualDraft, stored.draft_id);
       compactDrafts[kind] = compact;
       draftRefs[kind] = {
         draft_id: stored.draft_id,
         kind,
+        status: stored.status,
+        plan_id: stored.plan_id ?? null,
+        source_goal_id: stored.source_goal_id ?? null,
         expires_at: stored.expires_at,
       };
       draftSummary[kind] = goalDraftSummary(compact);
+      continue;
+    }
+    if (kind === "plan_draft" && Object.keys(draft).length > 0) {
+      const contextualDraft = attachPlanContextToPlanDraft(draft, context);
+      const stored = storeChatDraft(kind, sessionId, runId, contextualDraft, context);
+      const compact = compactPlanDraft(contextualDraft, stored.draft_id);
+      compactDrafts[kind] = compact;
+      draftRefs[kind] = {
+        draft_id: stored.draft_id,
+        kind,
+        status: stored.status,
+        plan_id: stored.plan_id ?? null,
+        source_plan_id: stored.source_plan_id ?? null,
+        source_goal_id: stored.source_goal_id ?? null,
+        expires_at: stored.expires_at,
+      };
+      draftSummary[kind] = planDraftSummary(compact);
       continue;
     }
     compactDrafts[kind] = compactGenericDraft(value, kind);
@@ -1536,6 +3355,8 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
     provider: response.provider ?? null,
     model: response.model ?? null,
     mode: response.mode ?? null,
+    plan_id: context.plan_id ?? null,
+    goal_id: context.goal_id ?? null,
     assistant: String(response.assistant ?? ""),
     drafts: compactDrafts,
     draft_refs: draftRefs,
@@ -1545,19 +3366,94 @@ function compactChatDraftResponse(response: JsonMap, sessionId: string, runId: s
   });
 }
 
-function storeChatDraft(kind: string, sessionId: string, runId: string, payload: JsonMap): StoredDraft {
+function storeChatDraft(kind: string, sessionId: string, runId: string, payload: JsonMap, context: JsonMap): StoredDraft {
   const now = Date.now();
+  const timestamp = new Date(now).toISOString();
+  const planId = String(payload.plan_id ?? context.plan_id ?? "").trim() || null;
+  const sourcePlanId = String(payload.source_plan_id ?? context.plan_id ?? "").trim() || null;
+  const sourceGoalId = String(payload.source_goal_id ?? context.goal_id ?? "").trim() || null;
   const stored: StoredDraft = {
     draft_id: crypto.randomUUID(),
     kind,
     session_id: sessionId,
     run_id: runId,
-    created_at: new Date(now).toISOString(),
+    plan_id: planId,
+    source_plan_id: sourcePlanId,
+    source_goal_id: sourceGoalId,
+    status: "active",
+    created_at: timestamp,
+    updated_at: timestamp,
     expires_at: new Date(now + chatDraftTtlMs).toISOString(),
+    accepted_plan_id: null,
+    accepted_goal_id: null,
     payload: JSON.parse(JSON.stringify(payload)) as JsonMap,
   };
   chatDrafts.set(stored.draft_id, stored);
   return stored;
+}
+
+function markChatDraftAccepted(draftId: string, goalId: string): void {
+  const draft = chatDrafts.get(draftId);
+  if (!draft) {
+    return;
+  }
+  draft.status = "accepted";
+  draft.accepted_goal_id = goalId;
+  draft.updated_at = new Date().toISOString();
+}
+
+function markPlanDraftAccepted(draftId: string, planId: string): void {
+  const draft = chatDrafts.get(draftId);
+  if (!draft) {
+    return;
+  }
+  draft.status = "accepted";
+  draft.accepted_plan_id = planId;
+  draft.updated_at = new Date().toISOString();
+}
+
+function markChatDraftDiscarded(draftId: string): void {
+  const draft = chatDrafts.get(draftId);
+  if (!draft) {
+    return;
+  }
+  draft.status = "discarded";
+  draft.updated_at = new Date().toISOString();
+}
+
+function chatDraftSummariesForSession(sessionId: string): JsonMap[] {
+  return [...chatDrafts.values()]
+    .filter((draft) => draft.session_id === sessionId)
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+    .map(chatDraftSummary);
+}
+
+function chatDraftSummary(draft: StoredDraft): JsonMap {
+  const compact = draft.kind === "goal_spec"
+    ? compactGoalSpecDraft(draft.payload, draft.draft_id)
+    : draft.kind === "plan_draft"
+      ? compactPlanDraft(draft.payload, draft.draft_id)
+      : compactGenericDraft(draft.payload, draft.kind);
+  return compactRecord({
+    draft_id: draft.draft_id,
+    kind: draft.kind,
+    status: draft.status,
+    session_id: draft.session_id,
+    run_id: draft.run_id,
+    plan_id: draft.plan_id ?? null,
+    source_plan_id: draft.source_plan_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
+    created_at: draft.created_at,
+    updated_at: draft.updated_at,
+    expires_at: draft.expires_at,
+    accepted_plan_id: draft.accepted_plan_id ?? null,
+    accepted_goal_id: draft.accepted_goal_id ?? null,
+    summary: draft.kind === "goal_spec"
+      ? goalDraftSummary(compact)
+      : draft.kind === "plan_draft"
+        ? planDraftSummary(compact)
+        : genericDraftSummary(compact, draft.kind),
+  });
 }
 
 function cleanupChatDrafts(): void {
@@ -1594,6 +3490,9 @@ function compactGoalSpecDraft(draft: JsonMap, draftId: string): JsonMap {
     draft_id: draftId,
     kind: "goal_spec",
     compact: true,
+    plan_id: draft.plan_id ?? null,
+    plan_phase_id: draft.plan_phase_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
     title: String(draft.title ?? "Untitled goal draft"),
     objective: String(draft.objective ?? ""),
     repo: draft.repo ?? null,
@@ -1612,6 +3511,71 @@ function compactGoalSpecDraft(draft: JsonMap, draftId: string): JsonMap {
     }),
     initial_tasks: initialTasks,
     done_criteria: asRecord(draft.done_criteria),
+  });
+}
+
+function compactPlanDraft(draft: JsonMap, draftId: string): JsonMap {
+  const authoring = asRecord(draft.authoring);
+  const plan = asRecord(draft.plan);
+  return compactRecord({
+    draft_id: draftId,
+    kind: "plan_draft",
+    compact: true,
+    plan_id: draft.plan_id ?? null,
+    source_plan_id: draft.source_plan_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
+    phase: "drafting_plan",
+    title: String(draft.title ?? "Untitled plan draft"),
+    objective: String(draft.objective ?? draft.prompt ?? ""),
+    prompt: truncateText(String(draft.prompt ?? draft.objective ?? ""), 360),
+    mode: draft.mode ?? "interactive",
+    status: draft.status ?? "draft",
+    authoring: compactRecord({
+      intake_summary: authoring.intake_summary ?? draft.objective ?? null,
+      acceptance_evidence: arrayField(authoring, "acceptance_evidence"),
+      constraints: arrayField(authoring, "constraints"),
+      out_of_scope: arrayField(authoring, "out_of_scope"),
+      assumptions: arrayField(authoring, "assumptions"),
+      open_questions: arrayField(authoring, "open_questions"),
+    }),
+    summary: String(draft.objective ?? draft.prompt ?? draft.summary ?? plan.summary ?? ""),
+    plan_summary: plan.summary ?? null,
+    subgoal_count: rowsFromData(plan.subgoals).length,
+    initial_task_count: rowsFromData(draft.initial_tasks).length,
+    question_count: rowsFromData(draft.questions).length,
+    decision_count: rowsFromData(draft.decisions).length,
+    allowed_actions: [
+      "accept_plan_draft",
+      "edit_plan_draft",
+      "discard_draft",
+      "draft_goal",
+    ],
+  });
+}
+
+function attachPlanContextToPlanDraft(draft: JsonMap, context: JsonMap): JsonMap {
+  const planId = String(draft.plan_id ?? context.plan_id ?? "").trim();
+  const sourcePlanId = String(draft.source_plan_id ?? context.plan_id ?? "").trim();
+  const sourceGoalId = String(draft.source_goal_id ?? context.goal_id ?? "").trim();
+  return compactRecord({
+    ...draft,
+    plan_id: planId || undefined,
+    source_plan_id: sourcePlanId || undefined,
+    source_goal_id: sourceGoalId || undefined,
+    prompt: String(draft.prompt ?? draft.objective ?? ""),
+    mode: draft.mode ?? "interactive",
+    status: draft.status ?? "draft",
+  });
+}
+
+function attachPlanContextToGoalDraft(draft: JsonMap, context: JsonMap): JsonMap {
+  const planId = String(draft.plan_id ?? context.plan_id ?? "").trim();
+  const sourceGoalId = String(draft.source_goal_id ?? context.goal_id ?? "").trim();
+  return compactRecord({
+    ...draft,
+    plan_id: planId || undefined,
+    plan_phase_id: draft.plan_phase_id ?? asRecord(context.plan).phase ?? undefined,
+    source_goal_id: sourceGoalId || undefined,
   });
 }
 
@@ -1638,10 +3602,26 @@ function goalDraftSummary(draft: JsonMap): JsonMap {
   const plan = asRecord(draft.plan);
   return compactRecord({
     draft_id: draft.draft_id ?? null,
+    plan_id: draft.plan_id ?? null,
     title: draft.title ?? null,
     objective_preview: truncateText(String(draft.objective ?? ""), 220),
     subgoal_count: rowsFromData(plan.subgoals).length,
     initial_task_count: rowsFromData(draft.initial_tasks).length,
+  });
+}
+
+function planDraftSummary(draft: JsonMap): JsonMap {
+  return compactRecord({
+    draft_id: draft.draft_id ?? null,
+    plan_id: draft.plan_id ?? null,
+    source_plan_id: draft.source_plan_id ?? null,
+    source_goal_id: draft.source_goal_id ?? null,
+    title: draft.title ?? null,
+    phase: draft.phase ?? "drafting_plan",
+    preview: truncateText(String(draft.summary ?? draft.objective ?? draft.prompt ?? ""), 220),
+    subgoal_count: draft.subgoal_count ?? 0,
+    initial_task_count: draft.initial_task_count ?? 0,
+    actions: draft.allowed_actions ?? ["accept_plan_draft", "discard_draft"],
   });
 }
 
@@ -1678,6 +3658,7 @@ function chatRole(value: string): ChatMessage["role"] {
 
 async function chatSession(sessionId: string, includeEntries = false): Promise<JsonMap> {
   const { entries, chatLog } = await readChatSessionEntries(sessionId);
+  cleanupChatDrafts();
   return compactRecord({
     session_id: sessionId,
     durable: Boolean(chatLog.durable),
@@ -1687,12 +3668,14 @@ async function chatSession(sessionId: string, includeEntries = false): Promise<J
       content: entry.content,
       created_at: entry.created_at,
     })),
+    drafts: chatDraftSummariesForSession(sessionId),
     entries: includeEntries ? entries : undefined,
   });
 }
 
 async function appendChatTurn(
   sessionId: string,
+  planId: string | null,
   goalId: string | null,
   mode: string,
   userMessage: ChatMessage | null,
@@ -1703,18 +3686,20 @@ async function appendChatTurn(
   if (userMessage?.content) {
     entries.push({
       session_id: sessionId,
+      plan_id: planId,
       goal_id: goalId,
       mode,
       role: "user",
       content: userMessage.content,
       created_at: createdAt,
-      payload_json: { source: "control_gateway" },
+      payload_json: { source: "control_gateway", plan_id: planId, goal_id: goalId },
     });
   }
   const assistant = String(response.assistant ?? "").trim();
   if (assistant) {
     entries.push({
       session_id: sessionId,
+      plan_id: planId,
       goal_id: goalId,
       mode,
       role: "assistant",
@@ -1754,6 +3739,8 @@ async function appendChatTurn(
 function chatAssistantTurnPayload(response: JsonMap): JsonMap {
   return {
     source: "control_gateway",
+    plan_id: response.plan_id ?? asRecord(response.context).plan_id ?? null,
+    goal_id: response.goal_id ?? asRecord(response.context).goal_id ?? null,
     draft_refs: asRecord(response.draft_refs),
     draft_summary: asRecord(response.draft_summary),
     chat_backend: asRecord(response.chat_backend),
@@ -1783,6 +3770,7 @@ async function appendChatEntriesToGoalStore(entries: ChatSessionEntry[]): Promis
 function goalStoreChatTurnBody(entry: ChatSessionEntry): JsonMap {
   return {
     session_id: entry.session_id,
+    plan_id: entry.plan_id ?? undefined,
     goal_id: uuidOrUndefined(entry.goal_id),
     mode: entry.mode,
     role: entry.role,
@@ -1853,9 +3841,11 @@ async function readChatSessionEntriesFromGoalStore(sessionId: string): Promise<{
 
 function chatEntryFromGoalStoreTurn(value: unknown): ChatSessionEntry {
   const record = asRecord(value);
+  const payload = asRecord(record.payload_json);
   const role = record.role === "assistant" ? "assistant" : "user";
   return {
     session_id: String(record.session_id ?? ""),
+    plan_id: typeof record.plan_id === "string" ? record.plan_id : typeof payload.plan_id === "string" ? payload.plan_id : null,
     goal_id: typeof record.goal_id === "string" ? record.goal_id : null,
     mode: String(record.mode ?? "general"),
     role,
@@ -1863,7 +3853,7 @@ function chatEntryFromGoalStoreTurn(value: unknown): ChatSessionEntry {
     created_at: String(record.created_at ?? ""),
     provider: typeof record.provider === "string" ? record.provider : undefined,
     model: typeof record.model === "string" ? record.model : null,
-    payload_json: asRecord(record.payload_json),
+    payload_json: payload,
   };
 }
 
@@ -1898,8 +3888,10 @@ async function readChatSessionEntriesFromJsonl(sessionId: string): Promise<{ ent
     if (!role || !content) {
       continue;
     }
+    const payload = asRecord(record.payload_json);
     entries.push({
       session_id: String(record.session_id),
+      plan_id: typeof record.plan_id === "string" ? record.plan_id : typeof payload.plan_id === "string" ? payload.plan_id : null,
       goal_id: typeof record.goal_id === "string" ? record.goal_id : null,
       mode: String(record.mode ?? "general"),
       role,
@@ -1907,7 +3899,7 @@ async function readChatSessionEntriesFromJsonl(sessionId: string): Promise<{ ent
       created_at: String(record.created_at ?? ""),
       provider: typeof record.provider === "string" ? record.provider : undefined,
       model: typeof record.model === "string" ? record.model : null,
-      payload_json: asRecord(record.payload_json),
+      payload_json: payload,
     });
   }
   return {
@@ -1928,27 +3920,55 @@ function chatLogStatus(backend: string, durable: boolean, error?: string): JsonM
   };
 }
 
-async function chatContext(goalId: string): Promise<JsonMap> {
+async function chatContext(goalId: string, planId = ""): Promise<JsonMap> {
   const context: JsonMap = {
+    plan_id: planId || null,
     goal_id: goalId || null,
-    engine_boundary: "The chat assistant drafts and explains. Durable mutations still require explicit workflow, plan, memory, or approval API calls.",
+    workflow_model: "Ask -> Draft plan -> Draft goal -> Accept. Plans are workflow/chat context; goals are satisfiable contracts inside a plan.",
+    engine_boundary: "The chat assistant drafts and explains. Durable mutations still require explicit plan, goal, memory, or approval API calls.",
     available_actions: [
+      "ask",
       "draft_plan",
       "draft_goal",
+      "accept_plan_draft",
+      "accept_goal_draft",
       "draft_steering_directive",
       "explain_goal_state",
       "summarize_next_actions",
     ],
   };
+  if (planId) {
+    try {
+      context.plan = compactPlanContext(await planContinuity(planId));
+    } catch (error) {
+      context.plan_error = error instanceof Error ? error.message : String(error);
+    }
+  }
   if (!goalId) {
     return context;
   }
   try {
-    context.goal = compactGoalContext(await goalSnapshot(goalId));
+    context.goal = compactGoalContext(await composedGoalSnapshot(goalId));
   } catch (error) {
     context.goal_error = error instanceof Error ? error.message : String(error);
   }
   return context;
+}
+
+function compactPlanContext(continuity: JsonMap): JsonMap {
+  const continuityRecord = asRecord(continuity.continuity);
+  return compactRecord({
+    plan_id: continuity.plan_id ?? null,
+    title: continuity.title ?? null,
+    objective: continuity.objective ?? null,
+    status: continuity.status ?? null,
+    phase: continuity.phase ?? null,
+    mode: continuity.mode ?? null,
+    compiled_goal_id: continuity.compiled_goal_id ?? null,
+    counts: asRecord(continuity.counts),
+    actions: rowsFromData(continuity.actions).slice(0, 12).map((action) => compactPlanAction(action)),
+    next_actions: arrayField(continuityRecord, "next_actions"),
+  });
 }
 
 function compactGoalContext(snapshot: JsonMap): JsonMap {
@@ -2235,20 +4255,29 @@ function controlChatSystemPrompt(mode: string, context: JsonMap): string {
   return [
     "<coat_chat_assistant>",
     "  <role>You are the COAT control-plane chat assistant.</role>",
-    "  <mission>Help the operator author goals, durable plans, steering directives, memory notes, and review requests.</mission>",
+    "  <mission>Help the operator move through Ask -> Draft plan -> Draft goal -> Accept using explicit plan actions and staged drafts.</mission>",
     "  <authority>",
     "    <rule>This request is operator chat assistance for a user request. You MUST NOT treat it as a durable task run or claim runner task dispatch.</rule>",
     "    <rule>You MUST NOT claim that durable state changed unless the caller provides a successful backend result.</rule>",
     "    <rule>You MUST treat all mutations as requiring explicit backend forms, API calls, or MCP tools.</rule>",
     "    <rule>You MUST treat any subagent request as a COAT durable child-task request, not native model delegation.</rule>",
     "  </authority>",
+    "  <plan_first_model>",
+    "    <rule>A plan is the high-level workflow and chat context. It owns phase, action items, memory scope, artifacts, evidence, and staged drafts.</rule>",
+    "    <rule>A goal is a satisfiable execution contract inside a plan. A goal MUST NOT be described as the whole workflow when a plan is selected.</rule>",
+    "    <rule>Actions and interventions MUST be framed in the selected plan context first, then narrowed to a goal or task when applicable.</rule>",
+    "    <rule>Plan phases are explicit product states: asking, drafting_plan, drafting_goals, accepting, executing, reviewing, satisfied, cancelled.</rule>",
+    "  </plan_first_model>",
     "  <output_contract>",
     "    <rule>You MUST return one JSON object.</rule>",
     "    <rule>The JSON object MUST have keys: assistant string, drafts object.</rule>",
     "    <rule>Draft payloads MUST be valid JSON under drafts.</rule>",
-    "    <rule>Assistant prose MUST be concise and operational.</rule>",
+    "    <rule>Assistant prose MUST be concise and operational. It should name the next explicit button/action, not ask the operator to paste JSON.</rule>",
     "  </output_contract>",
     "  <drafting_rules>",
+    "    <rule>Plan drafts MUST preserve plan_id when revising the selected plan and source_plan_id/source_goal_id when drafting follow-on work.</rule>",
+    "    <rule>Plan drafts MUST include staged action intent such as accept_plan_draft, draft_goal, discard_draft, or ask_follow_up; they MUST NOT claim acceptance happened.</rule>",
+    "    <rule>Goal drafts created inside a selected plan MUST include plan_id and SHOULD include plan_phase_id/source_goal_id when known.</rule>",
     "    <rule>Goals MUST include objective, evidence, constraints, budget, done criteria, execution, memory, research, approval, and stop conditions when known.</rule>",
     "    <rule>Steering drafts MUST be explicit about goal_id, task_id when known, operator intent, directive kind, and approval risk.</rule>",
     "    <rule>Memory drafts MUST preserve provenance and MUST NOT write unreviewed branch conclusions as durable facts.</rule>",
@@ -2405,7 +4434,7 @@ function stubChatReason(): string {
 
 function stubAssistantText(mode: string): string {
   if (mode === "draft_goal") {
-    return "Goal draft ready. Review the fields, then accept or discard it.";
+    return "Goal draft ready. Review it in the selected plan, then accept, submit, or discard it.";
   }
   if (mode === "draft_steering") {
     return "Drafted a steering directive that can be reviewed before it changes durable workflow state.";
@@ -2416,15 +4445,15 @@ function stubAssistantText(mode: string): string {
   if (mode === "explain_state") {
     return "Prepared a state-oriented response from the available backend projection.";
   }
-  return "Drafted a durable plan payload with subgoal structure, acceptance evidence, and review gates.";
+  return "Plan draft ready. Review the staged workflow, then accept, edit, or discard it.";
 }
 
 function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
   if (mode === "draft_goal") {
-    return { goal_spec: goalSpecDraft(prompt) };
+    return { goal_spec: goalSpecDraft(prompt, context) };
   }
   if (mode === "draft_plan") {
-    return { plan_draft: planDraft(prompt) };
+    return { plan_draft: planDraft(prompt, context) };
   }
   if (mode === "draft_steering") {
     return { steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")) };
@@ -2439,14 +4468,19 @@ function stubDrafts(mode: string, prompt: string, context: JsonMap): JsonMap {
     return {};
   }
   return {
-    plan_draft: planDraft(prompt),
+    plan_draft: planDraft(prompt, context),
     steering_directive: steeringDraft(prompt, String(context.goal_id ?? "")),
   };
 }
 
-function goalSpecDraft(prompt: string): JsonMap {
+function goalSpecDraft(prompt: string, context: JsonMap = {}): JsonMap {
   const objective = prompt || "Define the objective in concrete, testable terms.";
+  const planId = String(context.plan_id ?? "").trim();
+  const sourceGoalId = String(context.goal_id ?? "").trim();
   return {
+    plan_id: planId || undefined,
+    plan_phase_id: asRecord(context.plan).phase ?? undefined,
+    source_goal_id: sourceGoalId || undefined,
     title: shortTitle(objective),
     objective,
     repo: null,
@@ -2491,9 +4525,14 @@ function goalSpecDraft(prompt: string): JsonMap {
   };
 }
 
-function planDraft(prompt: string): JsonMap {
+function planDraft(prompt: string, context: JsonMap = {}): JsonMap {
   const objective = prompt || "Refine this rough request into a durable plan.";
+  const planId = String(context.plan_id ?? "").trim();
+  const sourceGoalId = String(context.goal_id ?? "").trim();
   return {
+    plan_id: planId || undefined,
+    source_plan_id: planId || undefined,
+    source_goal_id: sourceGoalId || undefined,
     title: shortTitle(objective),
     objective,
     repo: null,
@@ -2667,37 +4706,62 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   const segments = url.pathname.split("/").filter(Boolean);
 
-  if (req.method === "GET" && url.pathname === "/api/config") {
-    sendJson(res, 200, {
-      gateway_token_required: Boolean(gatewayToken),
-      endpoints: {
-        restate_ingress: restateIngress,
-        goal_store: goalStoreUrl,
-        event_gateway: eventGatewayUrl,
-        notifier: notifierUrl,
-        runner_registry: runnerRegistryUrl,
-        memory_gateway: memoryGatewayUrl,
-        restate_admin: restateAdminUrl,
-      },
-      chat_backend: {
-        mode: chatBackendMode,
-        provider: controlChatProvider || null,
-        model_configured: Boolean(chatModel),
-        completions_url_configured: Boolean(chatCompletionsUrl),
-        runner_registry_discovery: chatRunnerDiscoveryEnabled(),
-      },
-    });
+  if (req.method === "GET" && url.pathname === "/api/operator/stream") {
+    await streamOperatorState(req, res, url);
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/overview") {
-    sendJson(res, 200, await overview());
+  if (req.method === "GET" && url.pathname === "/api/operator/workspace") {
+    sendJson(res, 200, await operatorWorkspace(url.searchParams.get("goal_id")));
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/runners") {
-    sendJson(res, 200, await runnerStatus());
+  if (req.method === "GET" && url.pathname === "/api/operator/goals") {
+    sendJson(res, 200, await operatorGoalList(url.search));
     return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/operator/goals") {
+    const result = await submitOperatorGoalSpec(await readJson(req));
+    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/operator/actions") {
+    sendJson(res, 200, await operatorActionList(url.searchParams.get("goal_id")));
+    return;
+  }
+
+  if (segments[0] === "api" && segments[1] === "operator" && segments[2] === "actions" && segments[3] && segments[4] === "resolve") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "operator action resolution requires POST" });
+      return;
+    }
+    const result = await resolveOperatorAction(decodeURIComponent(segments[3]), await readJson(req));
+    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
+    return;
+  }
+
+  if (segments[0] === "api" && segments[1] === "operator" && segments[2] === "goals" && segments[3]) {
+    const goalId = decodeURIComponent(segments[3]);
+    if (req.method === "GET" && segments.length === 4) {
+      sendJson(res, 200, operatorGoalDetail(await composedGoalSnapshot(goalId)));
+      return;
+    }
+    if (req.method === "GET" && segments[4] === "graph") {
+      sendJson(res, 200, await operatorGoalGraph(goalId));
+      return;
+    }
+    if (req.method === "GET" && segments[4] === "agent-context") {
+      sendJson(res, 200, await goalAgentContext(goalId, url.searchParams.get("task_id")));
+      return;
+    }
+    if (req.method === "POST" && segments[4]) {
+      const action = segments[4];
+      const result = await operatorGoalActionEnvelope(goalId, action, await readJson(req));
+      sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
+      return;
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/chat") {
@@ -2715,24 +4779,8 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
     return;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/follow-ups") {
-    const includeEmpty = url.searchParams.get("include_empty") === "true";
-    sendJson(res, 200, await durablePlanFollowUps(includeEmpty));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/follow-ups/draft-plan") {
-    sendJson(res, 200, followUpDraftPlan(await readJson(req)));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/goals") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/goals${url.search}`, { method: "GET" }));
-    return;
-  }
-
   if (req.method === "GET" && url.pathname === "/api/plans") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/plans${url.search}`, { method: "GET" }));
+    sendJson(res, 200, await planListProjection(url.search));
     return;
   }
 
@@ -2748,12 +4796,32 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
 
   if (segments[0] === "api" && segments[1] === "plans" && segments[2]) {
     const planId = decodeURIComponent(segments[2]);
+    if (segments[2] === "drafts" && segments[3] && segments[4] === "accept") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "plan draft acceptance requires POST" });
+        return;
+      }
+      sendJson(res, 200, await acceptStoredPlanDraft(decodeURIComponent(segments[3]), await readJson(req)));
+      return;
+    }
     if (req.method === "GET" && segments[3] === "continuity") {
       sendJson(res, 200, await planContinuity(planId));
       return;
     }
+    if (req.method === "GET" && segments[3] === "actions") {
+      sendJson(res, 200, await planActionList(planId));
+      return;
+    }
+    if (segments[3] === "actions" && segments[4] && segments[5] === "resolve") {
+      if (req.method !== "POST") {
+        sendJson(res, 405, { error: "plan action resolution requires POST" });
+        return;
+      }
+      sendJson(res, 200, await resolvePlanAction(planId, decodeURIComponent(segments[4]), await readJson(req)));
+      return;
+    }
     if (req.method === "GET" && segments.length === 3) {
-      sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/plans/${encodeURIComponent(planId)}`, { method: "GET" }));
+      sendJson(res, 200, await planDetailProjection(planId));
       return;
     }
     if (req.method === "POST" && segments[3] === "revisions") {
@@ -2776,67 +4844,11 @@ async function routeApi(req: any, res: any, url: URL): Promise<void> {
     }
   }
 
-  if (req.method === "GET" && url.pathname === "/api/agents") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/tasks${url.search}`, { method: "GET" }));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/approvals") {
-    sendJson(res, 200, await proxyJson(goalStoreUrl, `/goal-store/approvals${url.search}`, { method: "GET" }));
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/goals/submit") {
-    const { goalId, spec } = goalSpecWithId(await readJson(req));
-    const result = await workflowMutationEnvelope(goalId, "run", spec);
-    sendJson(res, workflowMutationHttpStatus(result as ProxyResult), result);
-    return;
-  }
-
-  if (segments[0] === "api" && segments[1] === "goals" && segments[2]) {
-    const goalId = decodeURIComponent(segments[2]);
-    if (req.method === "GET" && segments[3] === "stream") {
-      await streamGoalState(req, res, goalId);
-      return;
-    }
-    if (req.method === "GET" && segments.length === 3) {
-      sendJson(res, 200, await goalSnapshot(goalId));
-      return;
-    }
-    if (req.method === "GET" && segments[3] === "agent-context") {
-      sendJson(res, 200, await goalAgentContext(goalId, url.searchParams.get("task_id")));
-      return;
-    }
-    if (req.method === "POST" && segments.length === 4) {
-      const handler = segments[3];
-      if (!workflowHandlers.has(handler)) {
-        sendJson(res, 400, { error: `unsupported workflow handler: ${handler}` });
-        return;
-      }
-      const body = await readJson(req);
-      const result = workflowReadHandlers.has(handler)
-        ? await workflowReadPost(goalId, handler, body)
-        : await workflowMutationEnvelope(goalId, handler, body);
-      sendJson(res, workflowReadHandlers.has(handler) ? 200 : workflowMutationHttpStatus(result as ProxyResult), result);
-      return;
-    }
-  }
-
   if (req.method === "POST" && segments[0] === "api" && segments[1] === "research" && segments[2] === "apply") {
     const body = await readJson(req);
     const record = asRecord(body);
     const goalId = String(record.goal_id ?? "");
     sendJson(res, 200, await applyResearchOutput(goalId, body));
-    return;
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/human/threads") {
-    sendJson(res, 200, await proxyJson(notifierUrl, "/threads", { method: "GET" }));
-    return;
-  }
-
-  if (req.method === "GET" && segments[0] === "api" && segments[1] === "human" && segments[2] === "threads" && segments[3]) {
-    sendJson(res, 200, await proxyJson(notifierUrl, `/threads/${encodeURIComponent(decodeURIComponent(segments[3]))}`, { method: "GET" }));
     return;
   }
 
@@ -2953,23 +4965,77 @@ function goalIdFromSpec(body: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function goalSpecWithId(body: unknown): { goalId: string; spec: unknown } {
+type GoalSpecResolveResult =
+  | { ok: true; goalId: string; spec: JsonMap; draftId: string | null }
+  | { ok: false; status: number; error: string; detail?: string; draft_id?: string; recovery?: JsonMap };
+
+function goalSpecWithId(body: unknown): GoalSpecResolveResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new Error("goal spec must be a JSON object");
+    return {
+      ok: false,
+      status: 400,
+      error: "goal spec must be a JSON object",
+    };
   }
+  const draftId = draftIdFromSubmitRecord(body as JsonMap);
   const record = resolveGoalDraftForSubmit(body as JsonMap);
+  if (isGoalSpecResolveError(record)) {
+    return record;
+  }
   const goalId = goalIdFromSpec(record) ?? crypto.randomUUID();
-  return { goalId, spec: normalizeGoalSpecForSubmit(record, goalId) };
+  return { ok: true, goalId, spec: normalizeGoalSpecForSubmit(record, goalId), draftId };
 }
 
-function resolveGoalDraftForSubmit(record: JsonMap): JsonMap {
+function isGoalSpecResolveError(value: JsonMap | { ok: false; status: number; error: string }): value is { ok: false; status: number; error: string } {
+  return asRecord(value).ok === false && typeof asRecord(value).error === "string";
+}
+
+function draftIdFromSubmitRecord(record: JsonMap): string | null {
   const draftId = String(record.draft_id ?? asRecord(record.draft_ref).draft_id ?? "").trim();
+  return draftId || null;
+}
+
+function resolveGoalDraftForSubmit(record: JsonMap): JsonMap | { ok: false; status: number; error: string; detail?: string; draft_id?: string; recovery?: JsonMap } {
+  const draftId = draftIdFromSubmitRecord(record);
   const stored = draftId ? chatDrafts.get(draftId) : undefined;
-  if (stored?.kind === "goal_spec") {
+  if (stored?.kind === "goal_spec" && stored.status === "accepted") {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side draft was already accepted",
+      detail: "Select the accepted goal or create a new draft before submitting again.",
+      draft_id: draftId ?? undefined,
+      recovery: {
+        accepted_goal_id: stored.accepted_goal_id ?? null,
+        actions: ["select_accepted_goal", "draft_goal_again"],
+      },
+    };
+  }
+  if (stored?.kind === "goal_spec" && stored.status === "active") {
     return mergeGoalDraftEdits(stored.payload, record);
   }
-  if (record.compact === true || (draftId && !record.root_budget)) {
-    return expandCompactGoalDraft(record);
+  if (draftId) {
+    return {
+      ok: false,
+      status: 409,
+      error: "server-side draft is not available",
+      detail: "Refresh chat history or ask the assistant to create a new goal draft. The gateway will not submit a compact UI-owned draft when the server-owned draft payload is missing.",
+      draft_id: draftId,
+      recovery: {
+        actions: ["refresh_chat_session", "draft_goal_again", "submit_full_goal_spec"],
+      },
+    };
+  }
+  if (record.compact === true) {
+    return {
+      ok: false,
+      status: 400,
+      error: "compact goal drafts require a server-side draft_id",
+      detail: "Submit the full GoalSpec or use the draft_id returned by /api/chat. Compact draft payloads are review summaries, not durable source-of-truth state.",
+      recovery: {
+        actions: ["draft_goal_again", "submit_full_goal_spec"],
+      },
+    };
   }
   return record;
 }
@@ -3242,13 +5308,21 @@ async function routeMcp(req: any, res: any): Promise<void> {
 function mcpTools(): unknown[] {
   return [
     {
-      name: "coat_overview",
-      description: "Read service health, runner status, notification threads, event sources, recent events, and triggers.",
-      inputSchema: { type: "object", additionalProperties: false, properties: {} },
+      name: "coat_operator_workspace",
+      description: "Read the compact COAT operator workspace: goals, selected goal, actions, events, worker runs, evidence, service health, runners, event sources, and human threads.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          goal_id: { type: "string" },
+          event_type: { type: "string" },
+          since: { type: "string" },
+        },
+      },
     },
     {
-      name: "coat_goal_snapshot",
-      description: "Read a goal snapshot from Restate workflow handlers and the goal-store projection.",
+      name: "coat_operator_goal",
+      description: "Read the product-shaped operator goal detail for one goal.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -3257,26 +5331,34 @@ function mcpTools(): unknown[] {
       },
     },
     {
-      name: "coat_human_threads",
-      description: "List local human feedback and approval notification threads.",
-      inputSchema: { type: "object", additionalProperties: false, properties: {} },
-    },
-    {
-      name: "coat_approval_queue",
-      description: "List projected durable approval records across goals.",
-      inputSchema: { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1 } } },
-    },
-    {
-      name: "coat_agent_activity",
-      description: "Read projected task/agent rows globally or for one goal, including prompt payloads when projected.",
+      name: "coat_operator_actions",
+      description: "List product-shaped operator actions across goals or for one selected goal.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
-        properties: { goal_id: { type: "string" }, limit: { type: "integer", minimum: 1 } },
+        properties: { goal_id: { type: "string" } },
       },
     },
     {
-      name: "coat_agent_context",
+      name: "coat_operator_action_resolve",
+      description: "Resolve a product-shaped operator action such as approval, continuation, retry, replan, or cancel.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["action_id", "goal_id", "resolution"],
+        properties: {
+          action_id: { type: "string" },
+          goal_id: { type: "string" },
+          resolution: { type: "string" },
+          response_summary: { type: "string" },
+          approval_id: { type: "string" },
+          thunk_id: { type: "string" },
+          task_id: { type: "string" },
+        },
+      },
+    },
+    {
+      name: "coat_operator_agent_context",
       description: "Read drill-down task context for a goal from existing task, chat-session, artifact, and notification-thread projections.",
       inputSchema: {
         type: "object",
@@ -3336,32 +5418,8 @@ function mcpTools(): unknown[] {
       },
     },
     {
-      name: "coat_follow_ups",
-      description: "List durable plan-continuity next actions through the legacy follow-up response shape.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        properties: { include_empty: { type: "boolean" } },
-      },
-    },
-    {
-      name: "coat_follow_up_draft_plan",
-      description: "Turn one durable continuation item into the standard structured draft-plan prompt without mutating durable state.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["text"],
-        properties: {
-          plan: { type: "string" },
-          path: { type: "string" },
-          index: { type: "number" },
-          text: { type: "string" },
-        },
-      },
-    },
-    {
-      name: "coat_steer_goal",
-      description: "Submit a SteeringDirective to GoalWorkflow/steer.",
+      name: "coat_operator_goal_steer",
+      description: "Submit a SteeringDirective through the operator goal action surface.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -3370,24 +5428,9 @@ function mcpTools(): unknown[] {
       },
     },
     {
-      name: "coat_goal_submit",
-      description: "Submit a GoalSpec to GoalWorkflow/run. If id is omitted, the gateway assigns one before submission.",
+      name: "coat_operator_goal_submit",
+      description: "Submit a GoalSpec through the operator goal surface. If id is omitted, the gateway assigns one before submission.",
       inputSchema: { type: "object", additionalProperties: true },
-    },
-    {
-      name: "coat_approve_goal",
-      description: "Approve or reject a durable HumanApproval request for a goal.",
-      inputSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["goal_id", "approval_id", "approved"],
-        properties: {
-          goal_id: { type: "string" },
-          approval_id: { type: "string" },
-          approved: { type: "boolean" },
-          note: { type: "string" },
-        },
-      },
     },
     {
       name: "coat_chat_assist",
@@ -3417,11 +5460,6 @@ function mcpTools(): unknown[] {
         required: ["goal_id"],
         properties: { goal_id: { type: "string" } },
       },
-    },
-    {
-      name: "coat_runner_list",
-      description: "List registered runners and status from the runner registry.",
-      inputSchema: { type: "object", additionalProperties: false, properties: { status: { type: "boolean" } } },
     },
     {
       name: "coat_runner_register",
@@ -3513,32 +5551,33 @@ function mcpTools(): unknown[] {
 }
 
 async function callMcpTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-  if (name === "coat_overview") {
-    return overview();
+  if (name === "coat_operator_workspace") {
+    return operatorWorkspace(
+      typeof args.goal_id === "string" ? args.goal_id : null,
+      {
+        eventType: typeof args.event_type === "string" ? args.event_type : null,
+        since: typeof args.since === "string" ? args.since : null,
+      },
+    );
   }
-  if (name === "coat_goal_snapshot") {
+  if (name === "coat_operator_goal") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
     }
-    return goalSnapshot(goalId);
+    return operatorGoalDetail(await composedGoalSnapshot(goalId));
   }
-  if (name === "coat_human_threads") {
-    return proxyJson(notifierUrl, "/threads", { method: "GET" });
+  if (name === "coat_operator_actions") {
+    return operatorActionList(typeof args.goal_id === "string" ? args.goal_id : null);
   }
-  if (name === "coat_approval_queue") {
-    const limit = typeof args.limit === "number" ? args.limit : 50;
-    return proxyJson(goalStoreUrl, `/goal-store/approvals?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
-  }
-  if (name === "coat_agent_activity") {
-    const goalId = typeof args.goal_id === "string" ? args.goal_id : "";
-    const limit = typeof args.limit === "number" ? args.limit : 100;
-    if (goalId) {
-      return goalSnapshot(goalId);
+  if (name === "coat_operator_action_resolve") {
+    const actionId = String(args.action_id ?? "");
+    if (!actionId) {
+      throw new Error("action_id is required");
     }
-    return proxyJson(goalStoreUrl, `/goal-store/tasks?limit=${encodeURIComponent(String(limit))}`, { method: "GET" });
+    return resolveOperatorAction(actionId, args);
   }
-  if (name === "coat_agent_context") {
+  if (name === "coat_operator_agent_context") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
@@ -3593,34 +5632,15 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
     }
     return planContinuity(planId);
   }
-  if (name === "coat_follow_ups") {
-    return durablePlanFollowUps(args.include_empty === true);
-  }
-  if (name === "coat_follow_up_draft_plan") {
-    return followUpDraftPlan(args);
-  }
-  if (name === "coat_steer_goal") {
+  if (name === "coat_operator_goal_steer") {
     const goalId = String(args.goal_id ?? "");
     if (!goalId) {
       throw new Error("goal_id is required");
     }
-    return workflowPost(goalId, "steer", args.directive ?? {});
+    return operatorGoalActionEnvelope(goalId, "steer", args.directive ?? {}, "mcp_steer_goal");
   }
-  if (name === "coat_goal_submit") {
-    const { goalId, spec } = goalSpecWithId(args);
-    return workflowPost(goalId, "run", spec);
-  }
-  if (name === "coat_approve_goal") {
-    const goalId = String(args.goal_id ?? "");
-    const approvalId = String(args.approval_id ?? "");
-    if (!goalId || !approvalId) {
-      throw new Error("goal_id and approval_id are required");
-    }
-    return workflowPost(goalId, "approve", {
-      approval_id: approvalId,
-      approved: args.approved === true,
-      note: typeof args.note === "string" ? args.note : null,
-    });
+  if (name === "coat_operator_goal_submit") {
+    return submitOperatorGoalSpec(args, "mcp_goal_submit");
   }
   if (name === "coat_chat_assist") {
     return controlChat(args);
@@ -3643,11 +5663,6 @@ async function callMcpTool(name: string, args: Record<string, unknown>): Promise
       throw new Error("goal_id is required");
     }
     return proxyJson(goalStoreUrl, `/goal-store/goals/${encodeURIComponent(goalId)}/checkpoints`, { method: "GET" });
-  }
-  if (name === "coat_runner_list") {
-    return args.status === false
-      ? proxyJson(runnerRegistryUrl, "/runners", { method: "GET" })
-      : runnerStatus();
   }
   if (name === "coat_runner_register") {
     return proxyJson(runnerRegistryUrl, "/runners", {

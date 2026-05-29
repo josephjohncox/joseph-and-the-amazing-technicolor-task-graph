@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorActorRef",
+  "type": "object",
+  "properties": {
+    "goal_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/OperatorActorKind"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "kind",
+    "id"
+  ],
+  "$defs": {
+    "OperatorActorKind": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "thunk",
+        "worker_run",
+        "review",
+        "approval",
+        "event"
+      ]
+    }
+  }
+}

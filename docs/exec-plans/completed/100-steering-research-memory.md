@@ -42,8 +42,8 @@ Add human-steered continuity, sourced research tasks, and durable fork/join memo
 
 ## Follow-Ups
 
-- Coordinate live memory adapter and browser memory workflow proof through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Run live Graphiti/Zep and Qdrant adapter tests in CI once those service URLs and credentials are approved for the test environment.
+None currently. ResearchMemory and UIE2E follow-ups are superseded by
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

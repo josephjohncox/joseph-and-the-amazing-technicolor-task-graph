@@ -23,6 +23,8 @@ Safe defaults:
   With no action flags, this helper only prints help.
   Evidence cleanup removes known generated run directories under target/.
   No shortcut mode deletes Compose volumes; --delete-volumes must be explicit.
+  Read-model records seeded into goal-store are cleared by resetting the local
+  stack/volumes, not by deleting evidence files.
 
 Actions:
   --mode scenario          Remove generated scenario evidence for known specs.
@@ -42,9 +44,11 @@ Options:
   --bootstrap-out PATH      Bootstrap evidence dir. Default: target/coat-scenarios/bootstrap.
   --bootstrap-specs LIST    Bootstrap specs for --bootstrap-out.
   --bootstrap-extra-out PATH
-                            Extra bootstrap evidence dir. Default: target/coat-bootstrap-scenarios.
+                            Extra generated bootstrap evidence dir. Default: target/coat-bootstrap-scenarios.
   --bootstrap-extra-specs LIST
                             Specs for --bootstrap-extra-out.
+  --bootstrap-live-out PATH
+                            Live coordinator bootstrap evidence dir. Default: target/coat-scenarios/live-bootstrap.
   --env-file PATH           Pass a provider env file to docker compose down.
   --restate-cloud           Include the Restate Cloud compose overlay.
   --restate-cloud-env-file PATH
@@ -75,9 +79,10 @@ dry_run=${COAT_RESET_DRY_RUN:-0}
 scenario_out=${COAT_RESET_SCENARIO_OUT:-${COAT_SCENARIO_E2E_OUT:-target/coat-scenarios}}
 scenario_specs=${COAT_RESET_SCENARIO_SPECS:-${COAT_SCENARIO_E2E_SPECS:-scenarios/e2e/*.json}}
 bootstrap_out=${COAT_RESET_BOOTSTRAP_OUT:-${COAT_BOOTSTRAP_SCENARIO_OUT:-target/coat-scenarios/bootstrap}}
-bootstrap_specs=${COAT_RESET_BOOTSTRAP_SPECS:-"scenarios/e2e/goal_lifecycle_basic.json scenarios/e2e/blocked_and_resumed.json scenarios/e2e/fanout_until_done.json"}
+bootstrap_specs=${COAT_RESET_BOOTSTRAP_SPECS:-${COAT_SCENARIO_E2E_SPECS:-scenarios/e2e/*.json}}
 bootstrap_extra_out=${COAT_RESET_BOOTSTRAP_EXTRA_OUT:-target/coat-bootstrap-scenarios}
-bootstrap_extra_specs=${COAT_RESET_BOOTSTRAP_EXTRA_SPECS:-${COAT_BOOTSTRAP_SCENARIO_SPECS:-"scenarios/e2e/bootstrap_basic.json scenarios/e2e/bootstrap_human_input_thunk_resume.json scenarios/e2e/bootstrap_approval.json scenarios/e2e/bootstrap_fanout.json scenarios/e2e/bootstrap_fork_join.json scenarios/e2e/bootstrap_signal_driven.json scenarios/e2e/blocked_and_resumed.json"}}
+bootstrap_extra_specs=${COAT_RESET_BOOTSTRAP_EXTRA_SPECS:-${COAT_SCENARIO_E2E_SPECS:-scenarios/e2e/*.json}}
+bootstrap_live_out=${COAT_RESET_BOOTSTRAP_LIVE_OUT:-${COAT_BOOTSTRAP_LIVE_OUT:-target/coat-scenarios/live-bootstrap}}
 compose_env_file=${COAT_RESET_COMPOSE_ENV_FILE:-}
 restate_cloud=0
 restate_cloud_env_file=${COAT_RESET_RESTATE_CLOUD_ENV_FILE:-infra/compose/restate-cloud.env}
@@ -162,6 +167,11 @@ while [ "$#" -gt 0 ]; do
       shift
       [ "$#" -gt 0 ] || fail "--bootstrap-extra-specs requires a quoted list"
       bootstrap_extra_specs=$1
+      ;;
+    --bootstrap-live-out)
+      shift
+      [ "$#" -gt 0 ] || fail "--bootstrap-live-out requires a path"
+      bootstrap_live_out=$1
       ;;
     --env-file)
       shift
@@ -355,8 +365,9 @@ fi
 if [ "$clear_bootstrap" = "1" ]; then
   remove_scenario_run_dirs "bootstrap evidence" "$bootstrap_out" "$bootstrap_specs"
   if [ "$bootstrap_extra_out" != "$bootstrap_out" ]; then
-    remove_scenario_run_dirs "bootstrap evidence compatibility" "$bootstrap_extra_out" "$bootstrap_extra_specs"
+    remove_scenario_run_dirs "extra bootstrap evidence" "$bootstrap_extra_out" "$bootstrap_extra_specs"
   fi
+  remove_generated_dir "live bootstrap evidence" "$bootstrap_live_out"
 fi
 
 log "reset complete"

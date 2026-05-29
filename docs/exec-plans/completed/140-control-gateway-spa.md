@@ -32,9 +32,9 @@ Add an optional web gateway and TypeScript SPA for operator visibility, steering
 
 ## Follow-Ups
 
-- Coordinate full Compose browser E2E and token-broker smoke timing through `docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
-- Extend browser-level smoke tests from gateway-backed contract checks to a full Compose harness once CI can run the stack.
-- Add a token-broker-backed multi-user MCP smoke test once a broker implementation is selected.
+None currently. UIE2E follow-ups and backend-first operator cleanup are
+superseded by
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

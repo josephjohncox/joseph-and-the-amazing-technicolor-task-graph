@@ -190,8 +190,8 @@ check_command_line 'coat runner <list|status|register|dispatch|capacity-plan>'
 check_command_line 'coat tool <list|call|web-search>'
 check_command_line 'coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>'
 check_command_line 'coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>'
-check_command_line 'coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>'
-check_command_line 'coat scenario <list|run|report>'
+check_command_line 'coat store <policy|goals|plans|tasks|events|operator-events|artifacts|checkpoints|approvals>'
+check_command_line 'coat scenario <list|run|seed|report>'
 check_command_line 'coat setup <login|sso|model-index|config|local-auth|chat-client>'
 check_command_line 'coat tui'
 
@@ -202,22 +202,14 @@ if [ -f "$root/.envrc" ] && grep -nE '^export COAT_(RESTATE|COORDINATOR|SANDBOX|
 fi
 
 plan_count="$(find "$root/docs/exec-plans/active" -maxdepth 1 -type f -name '*.md' | wc -l | tr -d ' ')"
-if [ "$plan_count" -lt 1 ]; then
-  printf 'expected at least one active execution plan, found %s\n' "$plan_count" >&2
-  exit 1
+if [ "$plan_count" -gt 0 ]; then
+  for plan in "$root"/docs/exec-plans/active/*.md; do
+    if ! grep -q '^## Follow-Ups$' "$plan"; then
+      printf 'active execution plan missing ## Follow-Ups: %s\n' "$plan" >&2
+      exit 1
+    fi
+  done
 fi
-
-if [ ! -f "$root/docs/exec-plans/active/160-live-durable-runtime-and-execution.md" ]; then
-  printf 'missing live durable runtime master plan in docs/exec-plans/active\n' >&2
-  exit 1
-fi
-
-for plan in "$root"/docs/exec-plans/active/*.md; do
-  if ! grep -q '^## Follow-Ups$' "$plan"; then
-    printf 'active execution plan missing ## Follow-Ups: %s\n' "$plan" >&2
-    exit 1
-  fi
-done
 
 documented_entrypoints="
 crates/cli/src/main.rs

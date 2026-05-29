@@ -11,7 +11,7 @@ session mechanics.
 ## Status
 
 Completed on 2026-05-12. Remaining live-runtime UI proof work is preserved in
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md` under the
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md` under the
 `UIE2E` workstream.
 
 ## Product Questions

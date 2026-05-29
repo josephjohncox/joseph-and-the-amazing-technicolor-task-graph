@@ -10,7 +10,7 @@ tasks, not native hidden subagents inside Codex, Claude Code, or a model runner.
 ## Status
 
 Completed on 2026-05-12. Live provider execution remains governed by
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`; this plan
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`; this plan
 adds the typed shortcut surface, operator visibility, and gateway drill-down.
 
 ## Product Questions
@@ -37,7 +37,7 @@ adds the typed shortcut surface, operator visibility, and gateway drill-down.
 - Personas and model labels are task-local inputs to the shortcut; they do not
   redefine global runner roles.
 - Agent-to-agent context is exposed by gateway projection and MCP through
-  `coat_agent_context`, using prompt/session/thread refs and compact task
+  `coat_operator_agent_context`, using prompt/session/thread refs and compact task
   metadata.
 - The TUI gets a dedicated Adversarial tab for satisfaction, actor candidates,
   critic checks, research, unification, votes, and context refs.

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorTransitionRejection",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "#/$defs/OperatorActorRef"
+    },
+    "current_status": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "recovery_hints": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorRecoveryHint"
+      }
+    },
+    "transition": {
+      "$ref": "#/$defs/OperatorTransition"
+    }
+  },
+  "required": [
+    "actor",
+    "transition",
+    "current_status",
+    "message"
+  ],
+  "$defs": {
+    "OperatorActorKind": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "thunk",
+        "worker_run",
+        "review",
+        "approval",
+        "event"
+      ]
+    },
+    "OperatorActorRef": {
+      "type": "object",
+      "properties": {
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/OperatorActorKind"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ]
+    },
+    "OperatorRecoveryHint": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "label",
+        "reason"
+      ]
+    },
+    "OperatorTransition": {
+      "type": "string",
+      "enum": [
+        "submit_goal",
+        "draft_accepted",
+        "task_dispatched",
+        "worker_result_received",
+        "task_blocked",
+        "thunk_created",
+        "thunk_resumed",
+        "approval_requested",
+        "approval_resolved",
+        "review_completed",
+        "branch_selected",
+        "goal_steered",
+        "goal_cancelled",
+        "goal_satisfied"
+      ]
+    }
+  }
+}

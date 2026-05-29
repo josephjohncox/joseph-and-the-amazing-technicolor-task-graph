@@ -1151,6 +1151,7 @@ enum StoreSubcommand {
     Plans(StoreUrlArgs),
     AllTasks(StoreUrlArgs),
     Approvals(StoreApprovalsArgs),
+    OperatorEvents(StoreOperatorEventsArgs),
     EventSourceApprovals(StoreEventSourceApprovalsArgs),
     Goal(StoreGoalArgs),
     Tasks(StoreGoalArgs),
@@ -1195,6 +1196,22 @@ struct StoreApprovalsArgs {
     goal_id: Option<Uuid>,
     #[arg(long)]
     status: Vec<String>,
+    #[arg(long)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+struct StoreOperatorEventsArgs {
+    #[arg(
+        long,
+        env = "COAT_GOAL_STORE_URL",
+        default_value = "http://localhost:9088"
+    )]
+    goal_store_url: String,
+    #[arg(long)]
+    goal_id: Option<Uuid>,
+    #[arg(long)]
+    event_type: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
 }
@@ -2528,8 +2545,10 @@ fn print_command_map() {
     println!("  coat tool <list|call|web-search>");
     println!("  coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>");
     println!("  coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>");
-    println!("  coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>");
-    println!("  coat scenario <list|run|report>");
+    println!(
+        "  coat store <policy|goals|plans|tasks|events|operator-events|artifacts|checkpoints|approvals>"
+    );
+    println!("  coat scenario <list|run|seed|report>");
     println!("  coat setup <login|sso|model-index|config|local-auth|chat-client>");
 }
 
@@ -3310,6 +3329,33 @@ async fn store(args: StoreCommand) -> anyhow::Result<()> {
             get_url(
                 &format!(
                     "{}/goal-store/approvals{}",
+                    args.goal_store_url.trim_end_matches('/'),
+                    query
+                ),
+                None,
+            )
+            .await
+        }
+        StoreSubcommand::OperatorEvents(mut args) => {
+            args.goal_store_url = effective_goal_store_url(&args.goal_store_url)?;
+            let mut params = Vec::new();
+            if let Some(goal_id) = args.goal_id {
+                params.push(format!("goal_id={goal_id}"));
+            }
+            if let Some(event_type) = args.event_type {
+                params.push(format!("event_type={event_type}"));
+            }
+            if let Some(limit) = args.limit {
+                params.push(format!("limit={limit}"));
+            }
+            let query = if params.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", params.join("&"))
+            };
+            get_url(
+                &format!(
+                    "{}/goal-store/operator-events{}",
                     args.goal_store_url.trim_end_matches('/'),
                     query
                 ),
@@ -4259,7 +4305,9 @@ fn command_project_init_check(command: &Commands) -> ProjectInitCheck {
             | DeploySubcommand::Restate(_) => ProjectInitCheck::Durable,
         },
         Commands::Scenario(command) => match &command.command {
-            scenario::ScenarioSubcommand::Run(_) => ProjectInitCheck::Durable,
+            scenario::ScenarioSubcommand::Run(_) | scenario::ScenarioSubcommand::Seed(_) => {
+                ProjectInitCheck::Durable
+            }
             scenario::ScenarioSubcommand::List(_) | scenario::ScenarioSubcommand::Report(_) => {
                 ProjectInitCheck::WarnOnly
             }
@@ -12077,7 +12125,7 @@ mod tests {
     }
 
     #[test]
-    fn scenario_cli_parses_list_run_and_report() {
+    fn scenario_cli_parses_list_run_seed_and_report() {
         let list = Cli::try_parse_from(["coat", "scenario", "list"]).expect("parse scenario list");
         assert!(matches!(
             list.command,
@@ -12101,6 +12149,22 @@ mod tests {
             run.command,
             Some(Commands::Scenario(ref scenario))
                 if matches!(scenario.command, super::scenario::ScenarioSubcommand::Run(_))
+        ));
+
+        let seed = Cli::try_parse_from([
+            "coat",
+            "scenario",
+            "seed",
+            "--file",
+            "scenarios/e2e/basic.json",
+            "--goal-store-url",
+            "http://localhost:9088",
+        ])
+        .expect("parse scenario seed");
+        assert!(matches!(
+            seed.command,
+            Some(Commands::Scenario(ref scenario))
+                if matches!(scenario.command, super::scenario::ScenarioSubcommand::Seed(_))
         ));
 
         let report = Cli::try_parse_from([

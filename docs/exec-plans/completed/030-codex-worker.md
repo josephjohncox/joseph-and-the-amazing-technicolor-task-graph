@@ -28,7 +28,8 @@ Wrap Codex as a bounded coding worker behind the shared `AgentRunRequest -> Agen
 
 ## Follow-Ups
 
-- Run env-gated live Codex App Server and MCP fallback smoke with approved auth, sandbox, and workspace gates, then archive thread/turn IDs, checkpoint refs, git refs, and artifact manifests as replay fixtures.
+None currently. CodexWorker follow-ups are superseded by
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

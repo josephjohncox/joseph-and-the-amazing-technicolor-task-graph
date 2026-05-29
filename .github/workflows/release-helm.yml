@@ -32,7 +32,7 @@ jobs:
     name: Package Helm chart
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref }}
 
@@ -75,12 +75,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Package chart
+        shell: bash
         run: |
+          set -euo pipefail
           cargo build -p coat-cli
-          target/debug/coat deploy chart package \
-            --chart-version "${{ steps.version.outputs.version }}" \
-            --app-version "${{ steps.version.outputs.app_version }}" \
+          package_args=(
+            --chart-version "${{ steps.version.outputs.version }}"
             --release-url "https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v${{ steps.version.outputs.version }}"
+          )
+          if [ -n "${{ steps.version.outputs.app_version }}" ]; then
+            package_args+=(--app-version "${{ steps.version.outputs.app_version }}")
+          fi
+          target/debug/coat deploy chart package "${package_args[@]}"
 
       - name: Print Rust compiler cache stats
         if: always()
@@ -107,7 +113,6 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.app_version }}
         run: |
           set -euo pipefail
-          app_version="${APP_VERSION:-$CHART_VERSION}"
           tmp_dir="$(mktemp -d)"
           trap 'rm -rf "$tmp_dir"' EXIT
           chart="${tmp_dir}/jattg-${CHART_VERSION}.tgz"
@@ -119,6 +124,13 @@ jobs:
             --dir "${tmp_dir}"
           expected_sha="$(cut -d ' ' -f 1 "${chart}.sha256")"
           printf '%s  %s\n' "${expected_sha}" "${chart}" | shasum -a 256 -c -
+          app_version="${APP_VERSION:-}"
+          if [ -z "${app_version}" ]; then
+            app_version="$(helm show chart "${chart}" | awk -F': *' '$1 == "appVersion" { gsub(/^"|"$/, "", $2); print $2; exit }')"
+          fi
+          if [ -z "${app_version}" ]; then
+            app_version="${CHART_VERSION}"
+          fi
 
           target/debug/coat deploy chart lint --chart "${chart}"
           target/debug/coat deploy chart template \

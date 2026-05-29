@@ -4,15 +4,22 @@ CARGO ?= cargo
 NPM ?= npm
 NODE ?= node
 BUF ?= buf
+HELM ?= helm
 COAT ?= $(COAT_BIN_DIR)/coat
 BUF_GENERATE_HOME ?= $(CURDIR)/target/buf-home
+NODE_MIN_VERSION ?= 22.12.0
 SCENARIO_E2E_OUT ?= target/coat-scenarios
 SCENARIO_E2E_SPECS ?= scenarios/e2e/*.json
 SCENARIO_E2E_STACK ?= auto
 SCENARIO_E2E_SERVICES ?=
 SCENARIO_E2E_KEEP_STACK ?= 1
+ifneq ($(strip $(stack)),)
+SCENARIO_E2E_STACK := $(stack)
+endif
 BOOTSTRAP_SCENARIO_SPECS ?= \
 	scenarios/e2e/bootstrap_basic.json \
+	scenarios/e2e/bootstrap_running.json \
+	scenarios/e2e/bootstrap_pending_action.json \
 	scenarios/e2e/bootstrap_human_input_thunk_resume.json \
 	scenarios/e2e/bootstrap_approval.json \
 	scenarios/e2e/bootstrap_fanout.json \
@@ -21,6 +28,7 @@ BOOTSTRAP_SCENARIO_SPECS ?= \
 	scenarios/e2e/bootstrap_blocked_retry_recovery.json \
 	scenarios/e2e/bootstrap_cancelled_queue_history.json \
 	scenarios/e2e/bootstrap_memory_research_evidence.json \
+	scenarios/e2e/operator_usability_workbench.json \
 	scenarios/e2e/blocked_and_resumed.json \
 	scenarios/e2e/goal_lifecycle_basic.json
 BOOTSTRAP_SCENARIO_OUT ?= target/coat-scenarios/bootstrap
@@ -42,6 +50,10 @@ RESET_DRY_RUN ?= 0
 RESET_BOOTSTRAP ?= 0
 RESET_ARGS ?=
 RESET_COMPOSE_ENV_FILE ?=
+EXERCISE_MODE ?= quick
+EXERCISE_OUT ?= target/coat-scenarios/latest
+EXERCISE_ARGS ?=
+RUNTIME_LIVE_SCAFFOLD_OUT ?= target/coat-runtime-live-scaffold
 
 COAT_BUILD_PROFILE ?= debug
 ifeq ($(COAT_BUILD_PROFILE),release)
@@ -70,14 +82,17 @@ NPM_CI_FLAGS ?= --prefer-offline --no-audit --fund=false
 
 .PHONY: \
 	build coat-cli coat-cli-release coat-path \
-	ci ci-rust fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
+	ci ci-rust ci-node ci-pr fmt fmt-check test check schemas proto-lint proto-format proto-check docs-check \
 	proto-sdk-generate proto-sdk-check \
 	event-gateway-smoke event-gateway-compose-smoke eventops-sqs-smoke runner-smoke compose-runner-smoke \
+	exercise-system exercise-quick exercise-demo exercise-e2e exercise-ui exercise-full exercise-dry-run \
+	runtime-live-scaffold \
 	scenario-e2e scenario-e2e-stack scenario-e2e-ui scenario-e2e-ui-live \
 	bootstrap-scenarios task-graph-validation validate-task-graph-bootstraps \
-	reset-help scenario-reset scenario-reset-dry-run bootstrap-reset bootstrap-reset-dry-run compose-reset compose-reset-dry-run \
+	bootstrap-goals bootstrap-fixture-goals \
+	reset-help reset-smoke scenario-reset scenario-reset-dry-run bootstrap-reset bootstrap-reset-dry-run compose-reset compose-reset-dry-run \
 	release-binary-smoke release-helm-smoke \
-	ts-install sidecars-build control-web-build control-web-smoke ts-build \
+	node-version-check ts-install sidecars-build control-web-build control-web-smoke ts-build \
 	helm-lint helm-package \
 	compose-config compose-cloud-config compose-up compose-cloud-up compose-down compose-cloud-down \
 	k8s-render
@@ -103,6 +118,36 @@ runner-smoke:
 
 compose-runner-smoke:
 	sh scripts/coat-compose-runner-smoke.sh
+
+runtime-live-scaffold:
+	COAT_RUNTIME_LIVE_SCAFFOLD_OUT="$(RUNTIME_LIVE_SCAFFOLD_OUT)" \
+	sh scripts/coat-runtime-live-scaffold.sh
+
+exercise-system:
+	COAT_EXERCISE_OUT="$(EXERCISE_OUT)" \
+	sh scripts/coat-exercise-system.sh --mode "$(EXERCISE_MODE)" $(EXERCISE_ARGS)
+
+exercise-quick:
+	$(MAKE) exercise-system EXERCISE_MODE=quick
+
+exercise-demo:
+	$(MAKE) exercise-system EXERCISE_MODE=demo
+
+exercise-e2e:
+	$(MAKE) exercise-system EXERCISE_MODE=e2e
+
+exercise-ui:
+	$(MAKE) exercise-system EXERCISE_MODE=ui
+
+exercise-full:
+	$(MAKE) exercise-system EXERCISE_MODE=full
+
+exercise-dry-run:
+	$(MAKE) exercise-quick EXERCISE_ARGS=--dry-run
+	$(MAKE) exercise-demo EXERCISE_ARGS=--dry-run
+	$(MAKE) exercise-e2e EXERCISE_ARGS=--dry-run
+	$(MAKE) exercise-ui EXERCISE_ARGS=--dry-run
+	$(MAKE) exercise-full EXERCISE_ARGS=--dry-run
 
 scenario-e2e: coat-cli
 	COAT="$(COAT)" \
@@ -136,11 +181,24 @@ scenario-e2e-ui-live: control-web-build
 	exit $$status
 
 bootstrap-scenarios: coat-cli
-	$(MAKE) scenario-e2e \
-		SCENARIO_E2E_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
-		SCENARIO_E2E_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
-		SCENARIO_E2E_STACK=never \
-		SCENARIO_E2E_KEEP_STACK=0
+	COAT="$(COAT)" \
+	COAT_BOOTSTRAP_SCENARIO_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_BOOTSTRAP_SCENARIO_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+	COAT_BOOTSTRAP_SCENARIO_GATEWAY_URL="http://127.0.0.1:0" \
+	COAT_BOOTSTRAP_SEED_GOALS=false \
+	sh scripts/coat-bootstrap-scenarios.sh
+
+bootstrap-goals: coat-cli
+	COAT="$(COAT)" \
+	sh scripts/coat-bootstrap-live-scenarios.sh
+
+bootstrap-fixture-goals: coat-cli
+	COAT="$(COAT)" \
+	COAT_BOOTSTRAP_SCENARIO_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_BOOTSTRAP_SCENARIO_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
+	COAT_BOOTSTRAP_SCENARIO_GATEWAY_URL="http://127.0.0.1:0" \
+	COAT_BOOTSTRAP_SEED_GOALS=true \
+	sh scripts/coat-bootstrap-scenarios.sh
 
 task-graph-validation: coat-cli
 	@set -eu; \
@@ -159,6 +217,15 @@ validate-task-graph-bootstraps: bootstrap-scenarios task-graph-validation
 reset-help:
 	sh scripts/coat-local-reset.sh --help
 
+reset-smoke:
+	sh -n scripts/coat-local-reset.sh scripts/coat-bootstrap-scenarios.sh scripts/coat-bootstrap-live-scenarios.sh scripts/coat-scenario-e2e.sh scripts/coat-local-provider-setup.sh scripts/coat-exercise-system.sh scripts/coat-runtime-live-scaffold.sh
+	$(MAKE) reset-help
+	$(MAKE) exercise-dry-run
+	$(MAKE) runtime-live-scaffold
+	$(MAKE) scenario-reset-dry-run
+	$(MAKE) bootstrap-reset-dry-run
+	$(MAKE) compose-reset-dry-run
+
 scenario-reset:
 	@set -eu; \
 	args="--mode scenario"; \
@@ -167,7 +234,7 @@ scenario-reset:
 	COAT_RESET_SCENARIO_OUT="$(SCENARIO_E2E_OUT)" \
 	COAT_RESET_BOOTSTRAP_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
 	COAT_RESET_SCENARIO_SPECS="$(SCENARIO_E2E_SPECS)" \
-	COAT_RESET_BOOTSTRAP_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_RESET_BOOTSTRAP_SPECS="$(SCENARIO_E2E_SPECS)" \
 	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
 
 scenario-reset-dry-run:
@@ -178,7 +245,7 @@ bootstrap-reset:
 	args="--mode bootstrap"; \
 	if [ "$(RESET_DRY_RUN)" = "1" ]; then args="$$args --dry-run"; fi; \
 	COAT_RESET_BOOTSTRAP_OUT="$(BOOTSTRAP_SCENARIO_OUT)" \
-	COAT_RESET_BOOTSTRAP_SPECS="$(BOOTSTRAP_SCENARIO_SPECS)" \
+	COAT_RESET_BOOTSTRAP_SPECS="$(SCENARIO_E2E_SPECS)" \
 	sh scripts/coat-local-reset.sh $$args $(RESET_ARGS)
 
 bootstrap-reset-dry-run:
@@ -251,14 +318,17 @@ proto-sdk-check: proto-sdk-generate
 docs-check:
 	sh scripts/coat-doc-gardener.sh
 
-ts-install:
+node-version-check:
+	@$(NODE) -e 'const min = "$(NODE_MIN_VERSION)".split(".").map(Number); const got = process.versions.node.split(".").map(Number); const ok = got[0] > min[0] || (got[0] === min[0] && (got[1] > min[1] || (got[1] === min[1] && got[2] >= min[2]))); if (!ok) { console.error("Node " + process.versions.node + " is too old; COAT TypeScript builds require >= $(NODE_MIN_VERSION). Run `nvm use`, install the version in .nvmrc, or set NODE=/path/to/node."); process.exit(1); } console.log("Node " + process.versions.node + " satisfies >= $(NODE_MIN_VERSION)");'
+
+ts-install: node-version-check
 	@set -eu; \
 	for dir in $(TS_DIRS); do \
 		echo "installing $$dir"; \
 		$(NPM) ci --prefix "$$dir" $(NPM_CI_FLAGS); \
 	done
 
-sidecars-build:
+sidecars-build: node-version-check
 	@set -eu; \
 	for dir in $(SIDECAR_DIRS); do \
 		echo "building $$dir"; \
@@ -272,7 +342,7 @@ sidecars-build:
 		fi; \
 	done
 
-control-web-build:
+control-web-build: node-version-check
 	@set -eu; \
 	dir=ui/control-plane-web; \
 	echo "building $$dir"; \
@@ -285,6 +355,11 @@ control-web-smoke: control-web-build
 	$(NPM) run --prefix ui/control-plane-web smoke
 
 ts-build: sidecars-build control-web-build
+
+ci-node: ts-install
+	$(MAKE) sidecars-build
+	$(MAKE) control-web-build
+	$(NPM) run --prefix ui/control-plane-web smoke
 
 helm-lint:
 	$(COAT) deploy chart lint
@@ -344,8 +419,9 @@ release-binary-smoke:
 
 release-helm-smoke: coat-cli
 	@test -n "$(CHART_VERSION)" || { echo "CHART_VERSION is required, for example: make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0"; exit 2; }
-	@app_version="$(APP_VERSION)"; \
-	if [ -z "$$app_version" ]; then app_version="$(CHART_VERSION)"; fi; \
+	@set -eu; \
+	app_version="$(APP_VERSION)"; \
+	helm_bin="$(HELM)"; \
 	release="$(RELEASE)"; \
 	if [ -z "$$release" ]; then release="jattg-smoke"; fi; \
 	namespace="$(NAMESPACE)"; \
@@ -365,17 +441,28 @@ release-helm-smoke: coat-cli
 	fi; \
 	expected_sha="$$(cut -d ' ' -f 1 "$$chart.sha256")"; \
 	printf '%s  %s\n' "$$expected_sha" "$$chart" | shasum -a 256 -c -; \
-	$(COAT_BIN_DIR)/coat deploy chart lint --chart "$$chart"; \
-	$(COAT_BIN_DIR)/coat deploy chart template --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --output "$$tmp_dir/rendered.yaml"; \
+	if [ -z "$$app_version" ] && command -v "$$helm_bin" >/dev/null 2>&1; then \
+		app_version="$$("$$helm_bin" show chart "$$chart" | awk -F': *' '$$1 == "appVersion" { gsub(/^"|"$$/, "", $$2); print $$2; exit }')"; \
+	fi; \
+	if [ -z "$$app_version" ]; then app_version="$(CHART_VERSION)"; fi; \
+	$(COAT_BIN_DIR)/coat deploy chart lint --helm "$$helm_bin" --chart "$$chart"; \
+	$(COAT_BIN_DIR)/coat deploy chart template --helm "$$helm_bin" --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --output "$$tmp_dir/rendered.yaml"; \
 	test -s "$$tmp_dir/rendered.yaml"; \
-	$(COAT_BIN_DIR)/coat deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --dry-run; \
+	if [ "$${HELM_SMOKE_UPGRADE_DRY_RUN:-false}" = "true" ]; then \
+		$(COAT_BIN_DIR)/coat deploy chart upgrade --helm "$$helm_bin" --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --dry-run; \
+	else \
+		echo "skipped Helm upgrade dry-run; set HELM_SMOKE_UPGRADE_DRY_RUN=true on a cluster-capable runner"; \
+	fi; \
 	if [ "$${HELM_SMOKE_APPLY:-false}" = "true" ]; then \
-		$(COAT_BIN_DIR)/coat deploy chart upgrade --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --wait --timeout "$${HELM_SMOKE_TIMEOUT:-5m}"; \
+		$(COAT_BIN_DIR)/coat deploy chart upgrade --helm "$$helm_bin" --release "$$release" --namespace "$$namespace" --chart "$$chart" --set "global.imageTag=$$app_version" --wait --timeout "$${HELM_SMOKE_TIMEOUT:-5m}"; \
 		$(COAT_BIN_DIR)/coat deploy cluster status --namespace "$$namespace" --timeout "$${CLUSTER_SMOKE_TIMEOUT:-180s}"; \
 	fi; \
 	echo "smoked published Helm chart $(CHART_VERSION) with image tag $$app_version"
 
-ci: ci-rust proto-check docs-check ts-install ts-build control-web-smoke
+ci: ci-rust proto-check docs-check runtime-live-scaffold ci-node
+	git diff --check
+
+ci-pr: ci-rust proto-check docs-check runtime-live-scaffold reset-smoke validate-task-graph-bootstraps ci-node scenario-e2e scenario-e2e-ui
 	git diff --check
 
 compose-config:

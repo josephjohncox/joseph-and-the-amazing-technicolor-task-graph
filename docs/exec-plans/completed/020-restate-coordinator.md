@@ -28,8 +28,8 @@ Make Restate the durable outer loop for goals and task-tree state.
 
 ## Follow-Ups
 
-- Complete the env-gated Docker Testcontainers restart/resume proof; the deterministic RuntimeVerifier scaffold and projection counters exist, but the live Restate harness remains open.
-- Wire transition/projection observation assertions into the live harness and exported OpenTelemetry spans once a sink is selected.
+None currently. RuntimeVerifier follow-ups are superseded by
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
 
 ## Acceptance
 

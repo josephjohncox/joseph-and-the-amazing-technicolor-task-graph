@@ -33,8 +33,8 @@ coat runner <list|status|register|dispatch|capacity-plan>
 coat tool <list|call|web-search>
 coat memory <write|search|context|join|retract|edit|preview-edit|repair|events>
 coat event <sources|register|ingest|emit|webhook|poll-sqs|trigger|triggers>
-coat store <policy|goals|plans|tasks|events|artifacts|checkpoints|approvals>
-coat scenario <list|run|report>
+coat store <policy|goals|plans|tasks|events|operator-events|artifacts|checkpoints|approvals>
+coat scenario <list|run|seed|report>
 coat setup <login|sso|model-index|config|local-auth|chat-client>
 coat tui
 ```
@@ -139,6 +139,12 @@ should create normal durable plans, goals, branch groups, reviews, votes,
 research tasks, approvals, or steering directives; they must not introduce a
 second orchestration path.
 
+`coat scenario run` is the deterministic evidence harness. `coat scenario seed`
+is only for local/operator fixture bootstrapping: it writes a scenario fixture
+projection to the goal-store read model so the SPA and TUI can show sample goals
+without live model credentials. Real work still goes through goal submission and
+Restate-owned coordinator state.
+
 Recommended shortcuts:
 
 - `strict_review`: draft or steer an actor task, run compile/test evidence,
@@ -180,48 +186,59 @@ state.
 Ratatui and Crossterm for terminal rendering and keyboard handling, and it
 talks to the same backend routes used by the TypeScript SPA:
 
-- `GET /api/config`
-- `GET /api/overview`
+- `GET /api/operator/workspace`
+- `GET /api/plans`
+- `GET /api/plans/:plan_id/actions`
 - `GET /api/chat/session`
 - `POST /api/chat`
-- `POST /api/goals/submit` only when the operator explicitly accepts a goal draft
+- `POST /api/plans/drafts/:draft_id/accept`
+- `POST /api/plans/:plan_id/actions/:action_id/resolve`
+- `POST /api/operator/goals` only when the operator explicitly accepts a goal draft
+
+The operator workspace projection includes the sanitized chat/backend summary
+needed for dashboard status; the TUI does not require a separate config read
+for normal startup.
 
 The TUI never calls model providers directly. Chat requests are operator-chat
 requests routed through the control gateway, which handles backend selection,
-chat-turn journaling, and stub fallback policy. Chat alone is a drafting
-surface; pressing `F5` or `Ctrl-G` accepts only the last `drafts.goal_spec`
-payload through the same gateway endpoint used by the SPA and regular CLI.
-When a chat turn returns a goal draft, the TUI shows the exact draft summary in
-two places before acceptance: the chat log receives a `Goal draft ready`
-preview, and the left dashboard shows an `active goal draft`
-section with title, objective, initial task count, done criteria, and the
-accept binding. The draft stays visible until the operator accepts it with
-`F5`/`Ctrl-G` or discards it with `Ctrl-D`. After acceptance, the chat log
-echoes the accepted goal id and the same draft summary, selects that goal, and
-reloads the goal-scoped session.
+chat-turn journaling, and stub fallback policy. Chat defaults to `Ask` so an
+operator can ask about selected state before creating durable work. Drafting is
+explicit and plan-first: switch through `Ask`, `Draft plan`, `Draft goal`, then
+accept or submit the staged work with visible action bindings. Chat alone is a
+drafting surface; plan draft acceptance and goal submission are explicit gateway
+mutations.
 
-Goal context is selected in the TUI, not retyped into every prompt. `Ctrl-N`
-and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the selection, and
-`Ctrl-R` refreshes the dashboard projection. When
-a goal is selected, chat uses `goal:<goal_id>` as the session and sends the
-same goal id to `/api/chat`; without a selected goal it uses the operator
-workspace session.
+When a chat turn returns a plan draft or goal draft, the TUI shows the exact
+summary before acceptance. Plan drafts can be accepted into durable plan state,
+and goal drafts can be accepted into the selected plan or submitted as
+executable goals. The draft stays visible until the operator accepts it with
+the relevant action binding or discards it with `Ctrl-D`.
+
+Plan context is selected first; goal context is nested inside the selected
+plan. `Ctrl-N` and `Ctrl-P` cycle through projected goals, `Ctrl-O` clears the
+nested goal focus, and `Ctrl-R` refreshes the dashboard projection. With a
+selected plan, chat uses `plan:<plan_id>` as the session and sends `plan_id` to
+`/api/chat`; a selected goal is included as nested focus instead of replacing
+the plan workspace.
 
 The left control panel is organized around operator intent, not CLI coverage:
-Overview, Goals, Approvals, Events, Adversarial, and secondary command help.
-Overview shows service health, runner count, selected-goal state, blockers,
-next action, evidence, and any active goal draft. Goals is the navigable goal
-list. Approvals is an action queue: approval rows can be approved directly,
+Overview, Goals, Graph, Actions, Approvals, Events, Workers, Evidence,
+Adversarial, and Debug. Overview shows service health, runner count,
+selected-goal state, blockers, next action, evidence, and any active goal
+draft. Goals is the navigable goal list. Graph shows projected tasks,
+subgoals, waits, and continuation nodes. Actions is the primary action queue:
 waiting continuations render a human prompt with a concrete question, explicit
 actions, and a focused context field, and blocked or failed task rows retry the
-recoverable work through the coordinator restart path. Events shows recent gateway or goal-store events, plus registered event
-sources when the projection includes them. Adversarial shows actor, critic,
-research, vote, and unifier context for actor/critic workflows. Command help is
-a secondary reference for raw CLI names and contract inspection; normal
-operation should happen through selected-goal navigation, direct human-queue
-actions, and intent-grouped recovery or review controls. Both the chat panel
-and the control panel render scroll progress and a scrollbar when content
-exceeds the visible area.
+recoverable work through the coordinator restart path. Approvals focuses on
+approval gates and approve/reject decisions. Events shows recent gateway or
+goal-store events, plus registered event sources when the projection includes
+them. Workers and Evidence expose run state and proof artifacts. Adversarial
+shows actor, critic, research, vote, and unifier context for actor/critic
+workflows. Debug is the secondary reference for raw CLI names and contract
+inspection; normal operation should happen through selected-goal navigation,
+direct action-queue controls, and intent-grouped recovery or review controls.
+Both the chat panel and the control panel render scroll progress and a
+scrollbar when content exceeds the visible area.
 
 Human prompts are the terminal form of delayed compute thunks and approval or
 recovery waits. The TUI should show the prompt title, why the coordinator is
@@ -251,11 +268,21 @@ coat tui --control-gateway-url http://localhost:9090
 Key bindings:
 
 - `Tab`, `Shift-Tab`: move focus across dashboard, chat, and input panels.
-- `Left`, `Right`, or `1` through `6` while the control panel is focused:
-  switch Overview, Goals, Approvals, Events, Adversarial, and Commands.
-- `Enter`: send the chat input to `/api/chat` only when the input panel is focused; from another panel it focuses the input first.
-- `Enter` or `a` in the Approvals view: apply the selected action queue row.
-- `Ctrl-T`: switch chat mode across general, goal, plan, and search.
+- `Left`, `Right`, or `1` through `0` while the control panel is focused:
+  switch Overview, Goals, Graph, Actions, Approvals, Events, Workers, Evidence,
+  Adversarial, and Debug.
+- `Enter`: activate the focused row or panel control. In the Goals view it opens
+  the selected goal graph. In Actions and Approvals it applies the selected
+  queue item. In the input panel it shows the send hint instead of submitting,
+  so navigation and chat do not fight each other.
+- `Ctrl-S`: send the chat input to `/api/chat`.
+- Modified `Enter`, when the terminal reports it as `Ctrl-Enter` or a similar
+  control-modified enter event: send the chat input to `/api/chat`.
+- `Enter` or `a` in the Actions or Approvals view: apply the selected action
+  queue row.
+- `r` in the Actions or Approvals view: reject the selected approval gate,
+  using the current input as the optional rejection reason.
+- `Ctrl-T`: switch chat mode across Ask, Draft plan, Draft goal, and Search.
 - `Ctrl-N`, `Ctrl-P`: cycle to the next or previous projected goal.
 - `Ctrl-O`: clear the selected goal and return chat to the operator workspace session.
 - `Ctrl-R`: refresh the dashboard projection for the current goal.
@@ -264,8 +291,11 @@ Key bindings:
   select the action queue row.
 - `PageUp`, `PageDown`, `Home`, `End`: scroll the focused control view or
   chat history.
-- `F5` or `Ctrl-G`: accept the last chat-authored GoalSpec draft and select the returned goal.
+- `F5` or `Ctrl-G`: submit the last chat-authored GoalSpec draft and select the returned goal.
 - `Ctrl-D`: discard the active chat-authored GoalSpec draft.
+- `Alt-R`: restart the selected blocked task work from Actions, or restart
+  blocked work for the selected goal from another panel.
+- `Ctrl-X`: cancel the selected goal through the gateway.
 - `Ctrl-U`: clear the input.
 - `Esc`, `Ctrl-C`, or `q` with an empty input: quit.
 
@@ -336,8 +366,26 @@ reviewer to distinguish a real workflow failure from a harness or fixture
 failure. Use
 `docs/exec-plans/completed/170-usability-coherence-evaluation.md` as the
 scenario usability rubric for operator comprehension and SPA/TUI coherence.
-Residual UIE2E runtime proof belongs in
-`docs/exec-plans/active/160-live-durable-runtime-and-execution.md`.
+Deferred external proof gates are recorded in
+`docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`.
+
+For a single operator-facing exercise command, use the wrapper targets:
+
+```sh
+make exercise-quick
+make exercise-demo
+make exercise-e2e
+make exercise-ui
+make exercise-full
+```
+
+These targets call `scripts/coat-exercise-system.sh`, which composes the
+existing reset, bootstrap, scenario, event, runner, SQS, and UI helpers. It
+writes `target/coat-scenarios/latest/system-exercise.json` for quick review and
+stores per-step logs under `target/coat-scenarios/latest/system-exercise/`.
+Use `EXERCISE_ARGS=--keep-going` to continue after a failed step when collecting
+all failures in one local run, or `EXERCISE_ARGS=--dry-run` to inspect the
+commands without executing them.
 
 ## Local Compose Preflight
 

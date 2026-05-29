@@ -118,7 +118,7 @@ When a service boundary or public contract changes, update the relevant design d
 - `coat-runner-registry` for runner capacity and routing visibility;
 - `coat-memory-gateway` for semantic memory search, context packs, writes, joins, and repairs.
 
-The gateway exposes `GET /` for the SPA, `/api/*` for dashboards, and `POST /mcp` for MCP-compatible tools such as `coat_overview`, `coat_goal_snapshot`, `coat_agent_activity`, `coat_human_threads`, `coat_steer_goal`, `coat_memory_search`, and `coat_event_sources`.
+The gateway exposes `GET /` for the SPA, `/api/operator/*` for the operator state machine, and `POST /mcp` for MCP-compatible tools such as `coat_operator_workspace`, `coat_operator_goal`, `coat_operator_actions`, `coat_operator_action_resolve`, `coat_operator_goal_steer`, `coat_memory_search`, and `coat_event_sources`.
 
 It is not a scheduler and must never write Restate state, goal-store projections, runner state, or memory stores directly. Browser edits become workflow signals, event-gateway calls, notification calls, or memory-gateway calls. Removing the gateway must not affect durable execution.
 

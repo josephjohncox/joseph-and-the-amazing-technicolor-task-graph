@@ -39,6 +39,7 @@ recoverable action-needed states, not terminal workflow failures.
 - Strong sandbox and guardrails guide: `docs/design-docs/100-strong-sandboxing-guardrails.md`
 - Control gateway and SPA guide: `docs/design-docs/110-control-gateway-spa.md`
 - Durable planning mode guide: `docs/design-docs/120-durable-planning-mode.md`
+- Completed master execution plan: `docs/exec-plans/completed/160-live-durable-runtime-and-execution.md`
 - Chat client MCP/skill integration: `docs/operations/chat-client-integration.md`
 - Local observability guide: `docs/operations/local-observability.md`
 - Model and runner cluster guide: `docs/operations/model-runner-clusters.md`
@@ -106,6 +107,8 @@ Update docs when behavior or public contracts change.
 - Ephemeral Kubernetes Jobs may provide burst runner or Restate executor capacity, but Restate/coordinator state remains authoritative.
 - Backend Kubernetes provisioning should use Rust control-plane clients (`kube`/`k8s-openapi`) from coordinator/executor services; rendered manifests are operator fixtures and escape hatches.
 - The TypeScript control gateway and SPA are optional operator surfaces; they must use backend APIs and must not own durable workflow state.
+- The compact operator API is `/api/operator/*`, with `/api/operator/stream` as a projection-only SSE stream. Removed overview, snapshot, runner-list, human-thread, and follow-up helper routes are not compatibility targets once the operator replacement path exists.
+- The MCP operator surface mirrors the compact operator API. Prefer `coat_operator_workspace`, `coat_operator_goal`, `coat_operator_actions`, `coat_operator_action_resolve`, `coat_operator_agent_context`, `coat_operator_goal_submit`, and `coat_operator_goal_steer`; do not reintroduce old overview/snapshot/activity/helper MCP tool names.
 - Standard configuration is JSON: project profiles live in `.coat/project.json`, user or node defaults live in `~/.coat/config.json`, one-off profile selection uses `coat --config-profile ...`, and raw secrets stay in env vars, SecretRefs, secret stores, or auth brokers. Do not duplicate service endpoint defaults in direnv.
 
 ## Subagent Routing
@@ -160,6 +163,22 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Good goals are executable contracts: objective, evidence, constraints, memory context, research needs, execution profile, budgets, and approval risks.
 - `GoalSpec.id` is optional in normal authored JSON; the CLI/deserializer assigns a durable workflow key unless an operator intentionally supplies one for idempotency.
 - Use durable plans for chat-style planning before execution; revise and compile plans into `GoalSpec` instead of treating planning prose as worker-owned state.
+- Treat plans as the high-level workflow and chat workspace. Goals are
+  satisfiable execution units inside a plan unless an operator explicitly
+  creates a standalone goal.
+- The normal operator authoring path is Ask -> Draft plan -> Draft goal ->
+  Accept. Chat can help with each step, but phase changes and accept/submit
+  actions must be explicit backend actions, not free-form chat implications.
+- Actions and interventions happen in plan context first, then optionally
+  narrow to a selected goal, task, draft, prompt, or artifact. Preserve
+  `plan_id` on drafts, goals, action rows, chat sessions, memory events,
+  artifact refs, evidence refs, and operator events whenever a plan is active.
+- Plan-scoped memory and artifacts are isolated by default. Promote facts or
+  artifacts out of a plan only through reviewer, unifier, or explicit operator
+  action.
+- Plan phases should be visible as actionable states: asking, drafting plan,
+  drafting goals, accepting, executing, reviewing, satisfied, or cancelled.
+  Every active phase must expose at least one concrete next action.
 - Non-trivial goals should include `authoring`, `plan.subgoals`, and stable `subgoal_id`s on known `initial_tasks`.
 - Use `GoalProgress`, `TaskQuery`, and `TaskList` for progress and task distribution; do not ask workers to discover subgoals from prose.
 - Initial tasks are coordinator-owned work seeds. Workers may request children, but subgoal creation and routing stay in durable state.
@@ -268,6 +287,11 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 - Run the bootstrap scenario shell script with `sh scripts/coat-scenario-e2e.sh`
   when you need deterministic stub-stack scenario evidence under
   `target/coat-scenarios`.
+- Run the system exercise wrapper with `sh scripts/coat-exercise-system.sh
+  --mode quick` for a no-Compose docs/script reset smoke, or use `make
+  exercise-demo`, `make exercise-e2e`, `make exercise-ui`, and `make
+  exercise-full` when you need navigable local scenario state and broader
+  operator evidence.
 - Inspect local Compose logs with `coat deploy local logs --follow coordinator runner-registry control-web`.
 - Validate Kubernetes with `coat deploy cluster apply --dry-run=client` when `kubectl` is available.
 
@@ -333,5 +357,11 @@ Ephemeral runner Jobs should use the `jattg-agent-toolbox` image unless they nee
 
 ## Current Build State
 
-The first scaffold includes buildable contracts, service stubs, deployment manifests, and sidecar adapters.
-Live Codex, OpenAI Agents SDK, and staff-engineer integrations are intentionally gated by environment and verification.
+The scaffold includes buildable contracts, service stubs, deployment manifests,
+sidecar adapters, a compact operator API, first-wave actor state-machine tests,
+goal-store operator projections, simplified SPA/TUI operator surfaces, MCP
+operator tools, and scenario exercise wrappers.
+
+Live Restate restart/resume, Codex App Server, kind/k3d executor Jobs, OpenAI
+Agents SDK, and staff-engineer integrations remain gated by environment and
+verification until the active master plan records direct evidence.

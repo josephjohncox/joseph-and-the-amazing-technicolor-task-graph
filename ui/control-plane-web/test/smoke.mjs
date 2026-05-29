@@ -55,9 +55,7 @@ try {
   await assertArchitectureGuardrails();
   await assertMemoryReplacementDiffRender();
   await assertOperatorWorkflowRender();
-  await assertOverviewApi();
-  await assertFollowUpsApi();
-  await assertFollowUpDraftApi();
+  await assertOperatorWorkspaceApi();
   await assertChatApi();
   await assertDurableChatSessionApi();
   await assertChatApiDiscoversRegisteredModel();
@@ -66,7 +64,6 @@ try {
   await assertBackendBackedControlSurfaces();
   await assertMcpTools();
   await assertMcpChatAssistBehavior();
-  await assertMcpFollowUpDraftBehavior();
   await assertMcpApplyResearchOutputBehavior();
   console.log("coat-control-plane-web smoke passed");
 } catch (error) {
@@ -150,11 +147,10 @@ async function assertClientScript() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "client script returns ok");
   const script = await response.text();
-  for (const expected of ["Task Graph Manager", "Current goal", "Clear selection", "Cancel goal", "Open graph", "Ask or draft", "New durable goal", "Planning draft", "Active draft", "Live state", "Streaming", "Goal draft", "Goal draft ready", "Discard", "Accept draft", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "History:", "Operator Actions", "Operator actions", "Explain graph", "Next outcomes", "Shared Memory", "Technicolor", "Planning queue", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Continuations", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
+  for (const expected of ["Task Graph Manager", "Current plan", "Clear selection", "Cancel goal", "Ask", "Plan", "Goal draft", "Plan draft", "Live state", "Streaming", "Goal draft ready", "Discard", "Accept", "Search request", "Chat activity", "Assistant", "Context:", "Draft:", "Shared Memory", "Technicolor", "Plan workflow", "theme-control", "Graph legend", "All tasks steady", "Evidence", "Next action", "Why blocked", "Review evidence", "Request review", "Research gap", "Action needed", "Reviewing", "Satisfied", "Human prompts", "Add context", "Continue", "Approve and continue", "Retry work", "Replan", "Clear notice", "Approvals", "Recovery", "Stopped history", "Completed", "Auto"]) {
     assert(script.includes(expected), `client script includes ${expected}`);
   }
-  assert(script.includes("Clear the local goal selection. This does not cancel the goal."), "client script explains clear selection is local-only");
-  assert(script.includes("Stop this durable goal through the coordinator."), "client script explains cancel stops a durable goal");
+  assert(script.includes("Cancel this goal."), "client script labels goal cancellation directly");
   assert(!script.includes("Clear local history"), "client script distinguishes local clear from goal cancellation");
   assert(!script.includes(">Thunks<"), "client script does not expose thunk wording in queue filters");
   assert(!script.includes("Response summary"), "client script does not expose generic response-summary continuation copy");
@@ -169,7 +165,7 @@ async function assertStylesheet() {
   const response = await fetch(`${baseUrl}${match[1]}`);
   assert(response.ok, "stylesheet returns ok");
   const css = await response.text();
-  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".draft-review-dock", ".goal-draft-editor", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".queue-filter", ".queue-group", ".action-result-controls", ".queue-history-card", ".danger-note", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".human-prompt-card", ".human-prompt-actions", ".react-flow__node.task-node"]) {
+  for (const expected of ["data-theme=dark", "--status-running", "--status-waiting-input", "--state-action-needed", ".theme-control", ".mode-toggle", ".quick-prompts", ".secondary-mode-details", ".goal-draft-editor", ".draft-editor-header", ".coat-chat-container", "overscroll-behavior", ".outcome-list", ".graph-filter", ".queue-filter", ".queue-group", ".action-result-controls", ".queue-history-card", ".danger-note", ".graph-status-panel", ".operator-state-row", ".evidence-next-panel", ".operator-state-pill", ".compiler-control-panel", ".control-grid", ".continuation-card", ".human-prompt-card", ".human-prompt-actions", ".react-flow__node.task-node"]) {
     assert(css.includes(expected), `stylesheet includes ${expected}`);
   }
 }
@@ -188,12 +184,53 @@ async function assertArchitectureGuardrails() {
   }
 
   const appSource = await readFile(new URL("../src/spa/App.tsx", import.meta.url), "utf8");
+  const actionPanelSource = await readFile(new URL("../src/spa/features/operator-action-panels.tsx", import.meta.url), "utf8");
+  const dashboardRoutesSource = await readFile(new URL("../src/spa/features/operator-dashboard-routes.tsx", import.meta.url), "utf8");
+  const chatDraftSource = await readFile(new URL("../src/spa/features/chat-draft-panel.tsx", import.meta.url), "utf8");
   const apiSource = await readFile(new URL("../src/spa/api.ts", import.meta.url), "utf8");
   const serverSource = await readFile(new URL("../src/server.ts", import.meta.url), "utf8");
+  const operatorSurfaceSource = `${appSource}\n${actionPanelSource}\n${dashboardRoutesSource}`;
   const designDoc = await readFile(new URL("../../../docs/design-docs/110-control-gateway-spa.md", import.meta.url), "utf8");
+  const removedGoalRoute = "/api/" + "goals";
+  const removedApprovalRoute = "/api/" + "approvals";
+  const removedAgentRoute = "/api/" + "agents";
+  const removedFollowUpsRoute = "/api/" + "follow-ups";
+  const removedOverviewRoute = "/api/" + "overview";
+  const removedRunnersRoute = "/api/" + "runners";
+  const removedHumanThreadsRoute = "/api/" + "human/threads";
 
   assert(apiSource.includes('"/api/chat"'), "SPA chat API remains gateway-owned");
-  assert(appSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
+  assert(apiSource.includes("/api/operator/actions"), "SPA has compact operator action API helpers");
+  assert(apiSource.includes('"actions"'), "SPA row parser recognizes operator action lists");
+  assert(apiSource.includes("operatorGoalDetail("), "SPA API client exposes operator goal detail as the selected-goal contract");
+  assert(!apiSource.includes("export function goals("), "SPA API client does not hide operator goals behind old helper names");
+  assert(!apiSource.includes("export function approvals("), "SPA API client does not hide operator actions behind old helper names");
+  assert(!apiSource.includes("operatorGoalSnapshot("), "SPA API client does not expose raw snapshots as the selected-goal contract");
+  assert(!apiSource.includes(removedGoalRoute), "SPA API client does not call removed goal routes");
+  assert(!apiSource.includes(removedApprovalRoute), "SPA API client does not call removed approval routes");
+  assert(!apiSource.includes(removedAgentRoute), "SPA API client does not call removed agent routes");
+  assert(!apiSource.includes(removedFollowUpsRoute), "SPA API client does not call removed follow-up helper routes");
+  assert(!apiSource.includes(removedOverviewRoute), "SPA API client does not call removed overview route");
+  assert(!apiSource.includes(removedRunnersRoute), "SPA API client does not call removed runner list route");
+  assert(!apiSource.includes(removedHumanThreadsRoute), "SPA API client does not call removed human thread route");
+  assert(!serverSource.includes(`url.pathname === "${removedGoalRoute}"`), "gateway does not keep removed goal-list route");
+  assert(!serverSource.includes(`url.pathname === "${removedGoalRoute}/submit"`), "gateway does not keep removed goal-submit route");
+  assert(!serverSource.includes(`url.pathname === "${removedApprovalRoute}"`), "gateway does not keep removed approval route");
+  assert(!serverSource.includes(`url.pathname === "${removedAgentRoute}"`), "gateway does not keep removed agent route");
+  assert(!serverSource.includes(`url.pathname === "${removedFollowUpsRoute}"`), "gateway does not keep removed follow-up route");
+  assert(!serverSource.includes(`url.pathname === "${removedOverviewRoute}"`), "gateway does not keep removed overview route");
+  assert(!serverSource.includes(`url.pathname === "${removedRunnersRoute}"`), "gateway does not keep removed runner route");
+  assert(!serverSource.includes(`url.pathname === "${removedHumanThreadsRoute}"`), "gateway does not keep removed human thread route");
+  assert(!serverSource.includes(`coat_follow_ups`), "gateway MCP surface does not keep removed follow-up tools");
+  assert(operatorSurfaceSource.includes("operatorActions("), "SPA reads action queue through /api/operator/actions");
+  assert(operatorSurfaceSource.includes("resolveOperatorAction("), "SPA resolves human prompts through /api/operator/actions/{id}/resolve");
+  assert(chatDraftSource.includes("@chatscope/chat-ui-kit-react"), "SPA chat UI remains a React component over backend chat");
+  assert(appSource.includes("<ChatDraftPanel"), "SPA renders chat and draft flow through the feature module");
+  assert(chatDraftSource.includes("Draft goal") && chatDraftSource.includes("Ask"), "SPA exposes Ask and Draft goal as explicit modes");
+  assert(
+    chatDraftSource.includes("Accept plan") && chatDraftSource.includes("Accept into plan") && chatDraftSource.includes("Discard"),
+    "SPA draft lifecycle has visible accept and discard controls",
+  );
   assert(!appSource.includes("@ai-sdk/react"), "SPA does not call AI SDK useChat directly");
   assert(!appSource.includes("assistant-ui"), "SPA does not replace chat with assistant-ui directly");
   assert(serverSource.includes('url.pathname === "/api/chat"'), "gateway owns /api/chat handling");
@@ -207,19 +244,7 @@ async function assertMemoryReplacementDiffRender() {
     configFile: false,
     root: packageRoot,
     logLevel: "silent",
-    plugins: [
-      react(),
-      {
-        name: "coat-memory-diff-render-smoke",
-        enforce: "post",
-        transform(code, id) {
-          if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { MemoryDiffTable, PreviewStatus, memoryEditPayload, previewReady };`;
-          }
-          return null;
-        },
-      },
-    ],
+    plugins: [react()],
     optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, hmr: false },
     appType: "custom",
@@ -231,7 +256,7 @@ async function assertMemoryReplacementDiffRender() {
       PreviewStatus,
       memoryEditPayload,
       previewReady,
-    } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+    } = await viteServer.ssrLoadModule("/src/spa/features/memory-view.tsx");
 
     assert(typeof MemoryDiffTable === "function", "memory diff render smoke can load MemoryDiffTable");
     assert(typeof PreviewStatus === "function", "memory diff render smoke can load PreviewStatus");
@@ -332,7 +357,7 @@ async function assertOperatorWorkflowRender() {
         enforce: "post",
         transform(code, id) {
           if (id.split("?")[0].endsWith("/src/spa/App.tsx")) {
-            return `${code}\nexport { ActionResultCard, BlockerInsightPanel, CommandPanel, CompilerControlPanel, ComputeGraphDetails, ContinuationQueue, Dashboard, DraftReviewDock, EventSourcesPanel, EvidenceNextActionPanel, GoalContextBar, GoalList, GraphStatusPanel, MemoryEventsTable, OperatorActionList, QueueFilterBar, RunnersView, SubgoalPlanPanel, TaskSummary, actionNeededItemsFromApprovals, actionNeededItemsFromSnapshot, computeGraphNodes, computeNodeMatchesGraphFilter, continuationRowsFromSnapshot, eventSourceTableRow, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, goalSnapshotHasProjectedTasks, goalSubgoalsFromSnapshotOrDraft, mergeSubmittedGoalRows, queueGroupForItem, queueGroupsForItems, queueItemsFromSnapshot, runnerTableRow, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
+            return `${code}\nexport { ActiveGoalRuntimeBar, ChatDraftPanel, ComputeGraphDetails, GoalContextBar, GoalList, GraphStatusPanel, SubgoalPlanPanel, TaskSummary, computeGraphNodes, computeNodeMatchesGraphFilter, goalDraftFromChatResponse, goalIdFromSubmitResponse, goalRowsWithSelected, composedSnapshotHasProjectedTasks, goalSubgoalsFromComposedSnapshotOrDraft, mergeSubmittedGoalRows, selectedGoalIdFromLocation, selectedGoalSummary, taskMatchesGraphFilter, taskRowsFromGoalDraft, taskStatusCounts };`;
           }
           return null;
         },
@@ -345,47 +370,81 @@ async function assertOperatorWorkflowRender() {
 
   try {
     const {
-      CommandPanel,
-      BlockerInsightPanel,
-      CompilerControlPanel,
-      ComputeGraphDetails,
-      ContinuationQueue,
-      Dashboard,
-      DraftReviewDock,
-      EventSourcesPanel,
-      EvidenceNextActionPanel,
+      ChatDraftPanel,
+      ActiveGoalRuntimeBar,
+      BlockerInsightPanel: appBlockerInsightPanel,
+      CompilerControlPanel: appCompilerControlPanel,
+      ComputeGraphDetails: appComputeGraphDetails,
+      ContinuationQueue: appContinuationQueue,
+      EvidenceNextActionPanel: appEvidenceNextActionPanel,
       GoalContextBar,
-      GoalList,
-      GraphStatusPanel,
-      MemoryEventsTable,
-      OperatorActionList,
-      ActionResultCard,
-      QueueFilterBar,
-      RunnersView,
-      SubgoalPlanPanel,
-      TaskSummary,
-      actionNeededItemsFromApprovals,
-      actionNeededItemsFromSnapshot,
-      computeGraphNodes,
-      computeNodeMatchesGraphFilter,
-      continuationRowsFromSnapshot,
-      eventSourceTableRow,
+      GoalList: appGoalList,
+      GraphStatusPanel: appGraphStatusPanel,
+      MemoryEventsTable: appMemoryEventsTable,
+      OperatorActionList: appOperatorActionList,
+      ActionResultCard: appActionResultCard,
+      QueueFilterBar: appQueueFilterBar,
+      SubgoalPlanPanel: appSubgoalPlanPanel,
+      TaskSummary: appTaskSummary,
+      actionNeededItemsFromApprovals: appActionNeededItemsFromApprovals,
+      actionNeededItemsFromComposedSnapshot: appActionNeededItemsFromComposedSnapshot,
+      computeGraphNodes: appComputeGraphNodes,
+      computeNodeMatchesGraphFilter: appComputeNodeMatchesGraphFilter,
+      continuationRowsFromComposedSnapshot: appContinuationRowsFromComposedSnapshot,
       goalDraftFromChatResponse,
       goalIdFromSubmitResponse,
-      goalRowsWithSelected,
-      goalSnapshotHasProjectedTasks,
-      goalSubgoalsFromSnapshotOrDraft,
-      mergeSubmittedGoalRows,
-      queueGroupForItem,
-      queueGroupsForItems,
-      queueItemsFromSnapshot,
-      runnerTableRow,
+      goalRowsWithSelected: appGoalRowsWithSelected,
+      composedSnapshotHasProjectedTasks: appComposedSnapshotHasProjectedTasks,
+      goalSubgoalsFromComposedSnapshotOrDraft: appGoalSubgoalsFromComposedSnapshotOrDraft,
+      mergeSubmittedGoalRows: appMergeSubmittedGoalRows,
+      queueGroupForItem: appQueueGroupForItem,
+      queueGroupsForItems: appQueueGroupsForItems,
+      queueItemsFromComposedSnapshot: appQueueItemsFromComposedSnapshot,
       selectedGoalIdFromLocation,
-      selectedGoalSummary,
-      taskMatchesGraphFilter,
-      taskRowsFromGoalDraft,
-      taskStatusCounts,
+      selectedGoalSummary: appSelectedGoalSummary,
+      taskMatchesGraphFilter: appTaskMatchesGraphFilter,
+      taskRowsFromGoalDraft: appTaskRowsFromGoalDraft,
+      taskStatusCounts: appTaskStatusCounts,
     } = await viteServer.ssrLoadModule("/src/spa/App.tsx");
+    const actionPanels = await viteServer.ssrLoadModule("/src/spa/features/operator-action-panels.tsx");
+    const graphPanels = await viteServer.ssrLoadModule("/src/spa/features/goal-graph-panel.tsx");
+    const controlPanels = await viteServer.ssrLoadModule("/src/spa/features/operator-control-panel.tsx");
+    const memoryPanels = await viteServer.ssrLoadModule("/src/spa/features/memory-view.tsx");
+    const dashboardRoutes = await viteServer.ssrLoadModule("/src/spa/features/operator-dashboard-routes.tsx");
+    const Dashboard = dashboardRoutes.Dashboard;
+    const EventSourcesPanel = dashboardRoutes.EventSourcesPanel;
+    const RunnersView = dashboardRoutes.RunnersView;
+    const eventSourceTableRow = dashboardRoutes.eventSourceTableRow;
+    const runnerTableRow = dashboardRoutes.runnerTableRow;
+    const CompilerControlPanel = appCompilerControlPanel ?? controlPanels.CompilerControlPanel;
+    const MemoryEventsTable = appMemoryEventsTable ?? memoryPanels.MemoryEventsTable;
+    const ComputeGraphDetails = appComputeGraphDetails ?? graphPanels.ComputeGraphDetails;
+    const GoalList = appGoalList ?? graphPanels.GoalList;
+    const GraphStatusPanel = appGraphStatusPanel ?? graphPanels.GraphStatusPanel;
+    const SubgoalPlanPanel = appSubgoalPlanPanel ?? graphPanels.SubgoalPlanPanel;
+    const TaskSummary = appTaskSummary ?? graphPanels.TaskSummary;
+    const computeGraphNodes = appComputeGraphNodes ?? graphPanels.computeGraphNodes;
+    const computeNodeMatchesGraphFilter = appComputeNodeMatchesGraphFilter ?? graphPanels.computeNodeMatchesGraphFilter;
+    const goalRowsWithSelected = appGoalRowsWithSelected ?? graphPanels.goalRowsWithSelected;
+    const composedSnapshotHasProjectedTasks = appComposedSnapshotHasProjectedTasks ?? graphPanels.composedSnapshotHasProjectedTasks;
+    const goalSubgoalsFromComposedSnapshotOrDraft = appGoalSubgoalsFromComposedSnapshotOrDraft ?? graphPanels.goalSubgoalsFromComposedSnapshotOrDraft;
+    const mergeSubmittedGoalRows = appMergeSubmittedGoalRows ?? graphPanels.mergeSubmittedGoalRows;
+    const selectedGoalSummary = appSelectedGoalSummary ?? graphPanels.selectedGoalSummary;
+    const taskMatchesGraphFilter = appTaskMatchesGraphFilter ?? graphPanels.taskMatchesGraphFilter;
+    const taskRowsFromGoalDraft = appTaskRowsFromGoalDraft ?? graphPanels.taskRowsFromGoalDraft;
+    const taskStatusCounts = appTaskStatusCounts ?? graphPanels.taskStatusCounts;
+    const BlockerInsightPanel = appBlockerInsightPanel ?? actionPanels.BlockerInsightPanel;
+    const EvidenceNextActionPanel = appEvidenceNextActionPanel ?? actionPanels.EvidenceNextActionPanel;
+    const OperatorActionList = appOperatorActionList ?? actionPanels.OperatorActionList;
+    const ActionResultCard = appActionResultCard ?? actionPanels.ActionResultCard;
+    const QueueFilterBar = appQueueFilterBar ?? actionPanels.QueueFilterBar;
+    const queueGroupForItem = appQueueGroupForItem ?? actionPanels.queueGroupForItem;
+    const queueGroupsForItems = appQueueGroupsForItems ?? actionPanels.queueGroupsForItems;
+    const ContinuationQueue = appContinuationQueue ?? actionPanels.ContinuationQueue;
+    const actionNeededItemsFromApprovals = appActionNeededItemsFromApprovals ?? actionPanels.actionNeededItemsFromApprovals;
+    const actionNeededItemsFromComposedSnapshot = appActionNeededItemsFromComposedSnapshot ?? actionPanels.actionNeededItemsFromComposedSnapshot;
+    const continuationRowsFromComposedSnapshot = appContinuationRowsFromComposedSnapshot ?? actionPanels.continuationRowsFromComposedSnapshot;
+    const queueItemsFromComposedSnapshot = appQueueItemsFromComposedSnapshot ?? actionPanels.queueItemsFromComposedSnapshot;
     const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 
     const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
@@ -442,15 +501,20 @@ async function assertOperatorWorkflowRender() {
         approval_id: "approval-source-github",
       },
     ];
-    const overview = {
-      runner_status: { data: runnerRows },
-      approvals: { data: approvals },
-      recent_events: {
-        data: [
-          { event_type: "TaskStarted", goal_id: goalId },
-          { event_type: "ApprovalRequested", goal_id: goalId },
-        ],
-      },
+    const workspace = {
+      runners: { data: runnerRows },
+      actions: approvals.map((approval) => ({
+        action_id: `approval:${approval.goal_id}:${approval.approval_id}`,
+        kind: "resolve_approval",
+        title: "Approval required",
+        goal_id: approval.goal_id,
+        status: "waiting-approval",
+        approval,
+      })),
+      events: [
+        { event_type: "TaskStarted", goal_id: goalId },
+        { event_type: "ApprovalRequested", goal_id: goalId },
+      ],
       event_sources: { sources: eventSources },
     };
 
@@ -511,10 +575,11 @@ async function assertOperatorWorkflowRender() {
       savedAt: "2026-05-12T12:00:00.000Z",
       response: chatGoalDraftResponse,
       goalDraft,
+      planDraft: null,
       runId: "chat-run-smoke",
     };
     const commandMarkup = renderToStaticMarkup(
-      React.createElement(CommandPanel, {
+      React.createElement(ChatDraftPanel, {
         messages: [
           { role: "assistant", content: "Ready." },
           { role: "user", content: "Ship chat goal submit." },
@@ -528,42 +593,56 @@ async function assertOperatorWorkflowRender() {
         latestResponse: chatGoalDraftResponse,
         chatRun: { run_id: "chat-run-smoke", status: "done", steps: [{ stage: "journaling_turns" }] },
         goalDraft,
+        planDraft: null,
         goalSubmitBusy: false,
         goalSubmitError: null,
         goalSubmitResult: undefined,
+        selectedPlanId: "plan-smoke",
+        selectedPlan: { title: "Smoke plan", phase: "drafting_goals" },
         selectedGoalId: "",
+        selectedGoal: null,
         sessionId: "operator:default",
         mode: "draft_goal",
         onDraftKindChange: () => {},
         onInputChange: () => {},
         onSend: () => {},
         onSubmitGoalDraft: () => {},
+        onAcceptGoalIntoPlan: () => {},
         onDiscardGoalDraft: () => {},
+        onAcceptPlanDraft: () => {},
+        onDiscardPlanDraft: () => {},
         onUpdateGoalDraftField: () => {},
         onClear: () => {},
       }),
     );
-    for (const expected of ["Ask or draft", "New durable goal", "Assistant", "Context: workspace", "Draft: Goal draft", "History: operator:default", "Draft review", "Evidence requirements"]) {
+    for (const expected of ["Review goal draft", "Plan: Smoke plan", "Goal focus: none", "Assistant", "Draft: Goal draft", "Evidence requirements", "Edit draft"]) {
       assert(commandMarkup.includes(expected), `command panel goal-submit markup includes ${expected}`);
     }
-    assert(!commandMarkup.includes("Accept draft"), "command panel leaves submit controls to the active draft dock");
+    assert(commandMarkup.includes("Accept into plan"), "command panel exposes a direct draft acceptance action");
+    assert(!commandMarkup.includes("operator:default"), "command panel hides raw chat session ids");
     assertNoCliCoverageOrDebugInventory(commandMarkup, "command panel goal-submit markup");
     assert(!commandMarkup.includes("<pre>"), "command panel does not render raw draft JSON inline");
     assert(!commandMarkup.includes("&quot;initial_tasks&quot;"), "command panel does not render raw GoalSpec JSON inline");
 
-    const dockMarkup = renderToStaticMarkup(
-      React.createElement(DraftReviewDock, {
-        activeDraft,
-        goalDraft,
-        goalSubmitBusy: false,
-        goalSubmitError: null,
-        goalSubmitResult: undefined,
-        onSubmitGoalDraft: () => {},
-        onDiscardGoalDraft: () => {},
+    const runtimeMarkup = renderToStaticMarkup(
+      React.createElement(ActiveGoalRuntimeBar, {
+        view: {
+          stateLabel: "Running",
+          title: "Operator workflow smoke",
+          streamStatus: "live",
+          streamUpdatedLabel: "updated now",
+          streamError: "",
+          taskCount: 4,
+          actionCount: 1,
+          actionBusy: false,
+        },
+        onOpenGraph: () => {},
+        onOpenQueue: () => {},
+        onOpenControls: () => {},
       }),
     );
-    for (const expected of ["Active draft", "Goal draft", "Goal draft ready", "operator:default", "Discard", "Accept draft"]) {
-      assert(dockMarkup.includes(expected), `draft review dock markup includes ${expected}`);
+    for (const expected of ["Selected goal active state", "Live state", "Streaming", "Action queue", "Goal controls"]) {
+      assert(runtimeMarkup.includes(expected), `active runtime bar includes ${expected}`);
     }
 
     const pendingGoalRows = mergeSubmittedGoalRows([], {
@@ -575,19 +654,19 @@ async function assertOperatorWorkflowRender() {
     const draftTaskRows = taskRowsFromGoalDraft("018f8f2f-1fd8-7688-bb12-8bfb6b756999", goalDraft);
     assertEqual(draftTaskRows.length, 1, "submitted draft exposes seeded task rows before projection");
     assertEqual(draftTaskRows[0].subgoal_id, "sg-submit", "submitted draft task preserves subgoal id");
-    assertEqual(goalSnapshotHasProjectedTasks({
+    assertEqual(composedSnapshotHasProjectedTasks({
       goal_store_goal: { data: { goal: { payload_json: { title: "Projection shell" } } } },
       workflow_status: { data: { status: "submitted" } },
       workflow_compute_graph: { data: { nodes: [], edges: [] } },
       tasks: { data: { tasks: [] } },
       agent_activity: [],
     }), false, "projection shell without task content keeps submitted-draft fallback");
-    assertEqual(goalSnapshotHasProjectedTasks({
+    assertEqual(composedSnapshotHasProjectedTasks({
       agent_activity: [{ task_id: "projected-task", status: "running" }],
     }), true, "projected task content retires submitted-draft fallback");
-    const draftSubgoals = goalSubgoalsFromSnapshotOrDraft(undefined, goalDraft);
+    const draftSubgoals = goalSubgoalsFromComposedSnapshotOrDraft(undefined, goalDraft);
     assertEqual(draftSubgoals.length, 2, "submitted draft exposes subgoals before projection");
-    const projectedSubgoals = goalSubgoalsFromSnapshotOrDraft({
+    const projectedSubgoals = goalSubgoalsFromComposedSnapshotOrDraft({
       goal_store_goal: {
         data: {
           goal: {
@@ -621,10 +700,10 @@ async function assertOperatorWorkflowRender() {
         onOpenGraph: () => {},
       }),
     );
-    for (const expected of ["Current goal", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Cancel goal"]) {
+    for (const expected of ["Goal focus", "Ship chat goal submit", "0% · 1 open · 0 blocked · Waiting", "Cancel goal"]) {
       assert(goalContextMarkup.includes(expected), `goal context picker includes ${expected}`);
     }
-    assert(goalContextMarkup.includes("Stop this durable goal through the coordinator."), "goal picker labels cancellation as a durable stop");
+    assert(goalContextMarkup.includes("Cancel this goal."), "goal picker labels cancellation directly");
     const subgoalMarkup = renderToStaticMarkup(React.createElement(SubgoalPlanPanel, { subgoals: draftSubgoals, source: "submitted draft" }));
     for (const expected of ["Subgoals", "submitted draft", "Submit drafted GoalSpec", "Project graph state"]) {
       assert(subgoalMarkup.includes(expected), `subgoal panel markup includes ${expected}`);
@@ -632,7 +711,7 @@ async function assertOperatorWorkflowRender() {
 
     const dashboardMarkup = renderToStaticMarkup(
       React.createElement(Dashboard, {
-        overview,
+        workspace,
         goals,
         selectedGoalId: goalId,
         onSelectGoal: () => {},
@@ -647,9 +726,12 @@ async function assertOperatorWorkflowRender() {
       "pending · approval-source-github",
       "Goal attention",
       "Runners",
+      "Runs",
+      "Approval",
     ]) {
       assert(dashboardMarkup.includes(expected), `operator dashboard markup includes ${expected}`);
     }
+    assert(!dashboardMarkup.includes("resolve_approval"), "operator dashboard renders direct action labels instead of raw action kinds");
     assertNoAmbiguousLaneCopy(dashboardMarkup, "operator dashboard");
 
     const goalListMarkup = renderToStaticMarkup(React.createElement(GoalList, { goals, selectedGoalId: goalId, onSelect: () => {} }));
@@ -694,7 +776,7 @@ async function assertOperatorWorkflowRender() {
       "Reviewing",
       "Satisfied",
       "approval gate",
-      "waiting continuation",
+      "human prompt",
     ]) {
       assert(graphStatusMarkup.includes(expected), `graph status markup includes ${expected}`);
     }
@@ -727,7 +809,7 @@ async function assertOperatorWorkflowRender() {
     assert(taskSummaryMarkup.includes("waiting_input: 1"), "task summary renders waiting input status");
     assert(taskSummaryMarkup.includes("ranking: +2 · 2 up · 0 down · promoted"), "task summary renders ranking vote state");
     assert(taskSummaryMarkup.includes("mechanisms: 1 open · 1 ratify"), "task summary renders mechanism round state");
-    assert(taskSummaryMarkup.includes("compute graph: 3 nodes · 2 edges · 1 thunks"), "task summary renders compute graph counters");
+    assert(taskSummaryMarkup.includes("workflow graph: 3 nodes · 2 edges · 1 continuations"), "task summary renders workflow graph counters");
 
     const computeGraphSnapshot = {
       workflow_compute_graph: {
@@ -797,13 +879,13 @@ async function assertOperatorWorkflowRender() {
       "Need operator answer",
       "Operator must choose the next validation path.",
       "Provide the missing input and resume the continuation.",
-      "Controls",
+      "Open actions",
     ]) {
       assert(blockerMarkup.includes(expected), `blocker insight markup includes ${expected}`);
     }
     const emptyBlockerMarkup = renderToStaticMarkup(React.createElement(BlockerInsightPanel, { items: [], onOpenControls: () => {} }));
-    assert(emptyBlockerMarkup.includes("No blockers projected"), "empty blocker panel explains stable state");
-    const actionItems = actionNeededItemsFromSnapshot({
+    assert(emptyBlockerMarkup.includes("No blockers"), "empty blocker panel explains stable state");
+    const actionItems = actionNeededItemsFromComposedSnapshot({
       goal_id: goalId,
       agent_activity: [
         {
@@ -869,7 +951,7 @@ async function assertOperatorWorkflowRender() {
     assertEqual(waitingTaskItem?.thunkId, "", "waiting task without projected continuation cannot resume");
     assertEqual(thunkActionItem?.kind, "thunk", "projected continuation becomes a thunk action item");
     assertEqual(thunkActionItem?.continuationId, "real-continuation", "thunk action preserves continuation id");
-    const queueItems = queueItemsFromSnapshot({
+    const queueItems = queueItemsFromComposedSnapshot({
       goal_id: goalId,
       agent_activity: [
         { goal_id: goalId, task_id: "task-blocked", title: "Blocked task", status: "blocked" },
@@ -918,8 +1000,8 @@ async function assertOperatorWorkflowRender() {
       ),
     );
     for (const expected of [
-      "Operator actions",
-      "Primary actions",
+      "Actions",
+      "Primary operator actions",
       "Review evidence",
       "Request review",
       "Research gap",
@@ -967,7 +1049,7 @@ async function assertOperatorWorkflowRender() {
         },
       },
     };
-    const continuationRows = continuationRowsFromSnapshot(continuationSnapshot);
+    const continuationRows = continuationRowsFromComposedSnapshot(continuationSnapshot);
     assertEqual(continuationRows.length, 1, "only open continuation thunks are actionable");
     assertEqual(continuationRows[0].reason, "Need operator answer", "continuation row preserves reason");
     assertEqual(continuationRows[0].taskId, "task-plan", "continuation row preserves task id");
@@ -979,14 +1061,14 @@ async function assertOperatorWorkflowRender() {
       ),
     );
     for (const expected of [
-      "Continuations",
+      "Human prompts",
       "Need operator answer",
       "task Ref task-plan",
       "continuation Ref operator-answer",
       "webhook_correlation · Ref input",
-      "Continuation",
-      "Optional context for the agent before continuing.",
-      "Context for resume",
+      "Human prompt",
+      "Add context for the agent, or leave blank and press Continue.",
+      "Context",
       "Continue",
       "Add context",
     ]) {
@@ -997,7 +1079,7 @@ async function assertOperatorWorkflowRender() {
         React.createElement(ContinuationQueue, { goalId, snapshot: { workflow_compute_graph: { data: { nodes: [], edges: [], open_thunks: 0 } } } }),
       ),
     );
-    assert(emptyContinuationMarkup.includes("Continuations clear"), "empty continuation queue renders stable empty state");
+    assert(emptyContinuationMarkup.includes("Human prompts clear"), "empty human prompt queue renders stable empty state");
 
     const approvalItems = approvals.map((approval) => ({
       key: `approval:${approval.approval_id}`,
@@ -1113,11 +1195,11 @@ async function assertOperatorWorkflowRender() {
         }),
       ),
     );
-    assert(thunkMarkup.includes("Need rollout decision"), "action queue renders waiting continuation text");
-    assert(thunkMarkup.includes("Continuation"), "action queue renders a concrete continuation prompt");
-    assert(thunkMarkup.includes("Optional context for the agent before continuing."), "action queue explains the continuation choices");
-    assert(thunkMarkup.includes("Context for resume"), "action queue labels continuation context clearly");
-    assert(thunkMarkup.includes("Add context"), "action queue renders context input for continuations");
+    assert(thunkMarkup.includes("Need rollout decision"), "action queue renders human prompt text");
+    assert(thunkMarkup.includes("Human prompt"), "action queue renders a concrete human prompt");
+    assert(thunkMarkup.includes("Add context for the agent, or leave blank and press Continue."), "action queue explains human prompt choices");
+    assert(thunkMarkup.includes("Context"), "action queue labels human prompt context clearly");
+    assert(thunkMarkup.includes("Add context"), "action queue renders context input for human prompts");
     assert(thunkMarkup.includes(">Continue<"), "action queue renders one-click continue command");
     assert(thunkMarkup.includes(">Add context<"), "action queue renders context command");
     assert(!thunkMarkup.includes(">Retry<"), "continuation cards do not render retry actions");
@@ -1174,21 +1256,21 @@ async function assertOperatorWorkflowRender() {
     ];
     assertEqual(queueGroupForItem(mixedQueueItems[0]), "approvals", "queue grouping identifies approvals");
     assertEqual(queueGroupForItem(mixedQueueItems[1]), "blocked", "queue grouping identifies blocked work");
-    assertEqual(queueGroupForItem(mixedQueueItems[2]), "thunks", "queue grouping identifies continuations");
+    assertEqual(queueGroupForItem(mixedQueueItems[2]), "thunks", "queue grouping identifies human prompts");
     assertEqual(queueGroupForItem(mixedQueueItems[3]), "cancelled", "queue grouping identifies cancelled history");
-    assertEqual(queueGroupsForItems(mixedQueueItems).length, 4, "queue grouping keeps approvals, recovery work, continuations, and stopped history separate");
+    assertEqual(queueGroupsForItems(mixedQueueItems).length, 4, "queue grouping keeps approvals, recovery work, human prompts, and stopped history separate");
     const queueFilterMarkup = renderToStaticMarkup(React.createElement(QueueFilterBar, { items: mixedQueueItems, active: "all", onChange: () => {} }));
-    for (const expected of [">All<span>4</span>", ">Approvals<span>1</span>", ">Recovery<span>1</span>", ">Continuations<span>1</span>", ">Stopped<span>1</span>"]) {
+    for (const expected of [">All<span>4</span>", ">Approvals<span>1</span>", ">Recovery<span>1</span>", ">Human prompts<span>1</span>", ">Stopped<span>1</span>"]) {
       assert(queueFilterMarkup.includes(expected), `queue filter markup includes ${expected}`);
     }
     assert(queueFilterMarkup.includes("blocked or failed work that can be retried, replanned, or turned into a prompt"), "queue filter explains recovery actions");
-    assert(queueFilterMarkup.includes("waiting prompts that can be resumed by an operator"), "queue filter explains continuations without thunk wording");
+    assert(queueFilterMarkup.includes("questions or decisions that need an operator"), "queue filter explains human prompts without thunk wording");
     const mixedQueueMarkup = renderToStaticMarkup(
       React.createElement(QueryClientProvider, { client: new QueryClient() },
         React.createElement(OperatorActionList, { items: mixedQueueItems }),
       ),
     );
-    for (const expected of ["Approvals", "Recovery", "Continuations", "Stopped history", "Cancelled filter task", "History rows are read-only; use Cancel goal only on active work."]) {
+    for (const expected of ["Approvals", "Recovery", "Human prompts", "Stopped history", "Cancelled filter task", "Read-only"]) {
       assert(mixedQueueMarkup.includes(expected), `mixed action queue markup includes ${expected}`);
     }
     const actionResultMarkup = renderToStaticMarkup(React.createElement(ActionResultCard, {
@@ -1198,9 +1280,9 @@ async function assertOperatorWorkflowRender() {
     }));
     assert(actionResultMarkup.includes("Restart accepted"), "action result renders accepted action name");
     assert(actionResultMarkup.includes("Clear notice"), "action result exposes local-only clear control");
-    assert(actionResultMarkup.includes("Clearing this notice only updates this browser view; it does not cancel or change the goal."), "action result explains clear is local-only");
+    assert(actionResultMarkup.includes("State will refresh automatically."), "action result explains projection refresh behavior");
 
-    const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { overview }));
+    const runnersMarkup = renderToStaticMarkup(React.createElement(RunnersView, { workspace }));
     for (const expected of [
       "model-provider (Ref codex-runner-a)",
       "local-dev-a",
@@ -1211,7 +1293,7 @@ async function assertOperatorWorkflowRender() {
       assert(runnersMarkup.includes(expected), `runner fleet markup includes ${expected}`);
     }
     const runnerRow = runnerTableRow(runnerRows[0]);
-    assertEqual(runnerRow[0], "model-provider (Ref codex-runner-a)", "runner row derives display name without exposing lane labels");
+    assertEqual(runnerRow[0], "model-provider (Ref codex-runner-a)", "runner row derives display name from runner metadata");
     assertEqual(runnerRow[3], "2/3 free, 1 running", "runner row derives remaining capacity");
 
     const eventsMarkup = renderToStaticMarkup(
@@ -1248,11 +1330,14 @@ async function assertOperatorWorkflowRender() {
 
 async function assertChatApi() {
   const objective = "Draft a smoke-test plan for the control gateway chat UI.";
+  const planContextId = "018f8f2f-1fd8-7688-bb12-8bfb6b756701";
   const response = await fetch(`${baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      session_id: "operator:default",
       mode: "draft_plan",
+      plan_id: planContextId,
       messages: [{ role: "user", content: objective }],
     }),
   });
@@ -1264,16 +1349,36 @@ async function assertChatApi() {
   assert(draft, "chat returns plan draft");
   assertCompactDraftPayload(draft, "plan draft");
   assertEqual(draft.kind, "plan_draft", "plan draft compact payload records draft kind");
+  assertEqual(body.plan_id, planContextId, "chat response preserves selected plan context");
+  assertEqual(draft.plan_id, planContextId, "plan draft keeps selected plan id for staged acceptance");
+  assert(draft.allowed_actions.includes("accept_plan_draft"), "plan draft exposes explicit phase action");
   assertEqual(draft.summary, objective, "plan draft summary preserves operator request");
-  assert(!("authoring" in draft), "plan draft compact payload omits full authoring details");
+  assert(Array.isArray(draft.allowed_actions), "plan draft compact payload exposes phase actions instead of raw workflow mutation");
   assert(!("initial_tasks" in draft), "plan draft compact payload omits executable task details");
   assertEqual(body.draft_summary.plan_draft.preview, objective, "plan draft summary exposes concise preview");
+  assertEqual(body.draft_refs.plan_draft.plan_id, planContextId, "plan draft ref preserves plan id");
   assertEqual(body.session_id, "operator:default", "chat response returns durable session id");
   assert(body.run_id, "chat response returns a run id");
   assertEqual(body.chat_run.status, "done", "chat response includes completed operational trace");
   assertEqual(body.chat_run.stage, "done", "chat response includes compact completed run status");
   assertEqual(body.chat_log.backend, "jsonl", "chat falls back to local JSONL when goal-store is unavailable");
   assertEqual(body.chat_log.durable, true, "chat JSONL fallback is durable for the local server");
+
+  const workspacePlanResponse = await fetch(`${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      session_id: "plan:workspace-plan",
+      mode: "draft_plan",
+      messages: [{ role: "user", content: "Draft from the workspace intake plan without a durable plan id." }],
+    }),
+  });
+  assert(workspacePlanResponse.ok, "workspace intake plan chat returns ok");
+  const workspacePlanBody = await workspacePlanResponse.json();
+  const workspaceDraft = workspacePlanBody.drafts.plan_draft;
+  assert(workspaceDraft, "workspace intake plan chat returns a plan draft");
+  assertEqual(workspacePlanBody.plan_id, null, "workspace intake plan does not invent a durable plan id");
+  assertEqual(workspaceDraft.plan_id, undefined, "workspace intake plan draft omits durable plan id");
 
   const goalObjective = "Ship concise GoalSpec drafts through the control gateway.";
   const goalResponse = await fetch(`${baseUrl}/api/chat`, {
@@ -1304,6 +1409,7 @@ async function assertChatApi() {
   assert(traceResponse.ok, "chat run trace api returns ok");
   const trace = await traceResponse.json();
   assertEqual(trace.run_id, body.run_id, "chat run trace preserves run id");
+  assertEqual(trace.plan_id, planContextId, "chat run trace preserves plan id");
   assertEqual(trace.status, "done", "chat run trace reports done");
   assert(trace.steps.some((step) => step.stage === "using_stub"), "chat run trace exposes backend/stub stage");
 
@@ -1338,7 +1444,7 @@ async function assertDurableChatSessionApi() {
   assertEqual(body.messages[0].role, "user", "chat session first turn is user");
   assertEqual(body.messages[0].content, "Draft a smoke-test plan for the control gateway chat UI.", "chat session preserves user prompt");
   assertEqual(body.messages[1].role, "assistant", "chat session second turn is assistant");
-  assert(String(body.messages[1].content).includes("durable plan payload"), "chat session preserves assistant response");
+  assert(String(body.messages[1].content).includes("Plan draft ready"), "chat session preserves assistant response");
 }
 
 async function assertChatApiDiscoversRegisteredModel() {
@@ -1523,18 +1629,19 @@ async function assertChatApiDiscoversRegisteredModel() {
     assertEqual(chatRequests.length, 0, "default chat backend does not call registered runner models");
 
     await waitForProcessHealth(discoveryBaseUrl, discoveryServer, () => ({ stdout: discoveryStdout, stderr: discoveryStderr }));
-    const runnersResponse = await fetch(`${discoveryBaseUrl}/api/runners`);
-    assert(runnersResponse.ok, "runners api returns normalized registry rows");
+    const runnersResponse = await fetch(`${discoveryBaseUrl}/api/operator/workspace`);
+    assert(runnersResponse.ok, "operator workspace returns normalized registry rows");
     const runnersBody = await runnersResponse.json();
-    const runnerRows = Array.isArray(runnersBody.data) ? runnersBody.data : [];
-    assertEqual(runnerRows.length, 2, "runners api preserves registered runner count");
-    assertEqual(runnerRows[0].runner_id, "unlabeled-work-runner", "runners api flattens nested runner id");
-    assertEqual(runnerRows[0].node_id, "worker-node-a", "runners api flattens nested node id");
-    assertEqual(runnerRows[0].endpoint, "http://work-runner.example:9093", "runners api flattens nested endpoint");
-    assertEqual(runnerRows[0].display_name, "model-provider", "runners api derives readable runner display name without exposing lane labels");
-    assertEqual(runnerRows[0].status, "active", "runners api derives active status");
-    assertEqual(runnerRows[0].capacity_remaining, 3, "runners api preserves remaining capacity");
-    assertEqual(runnerRows[0].max_concurrency, 4, "runners api exposes registration max concurrency");
+    const runnerRows = Array.isArray(runnersBody.runners?.data) ? runnersBody.runners.data : [];
+    assertEqual(runnerRows.length, 2, "operator workspace preserves registered runner count");
+    assertEqual(runnerRows[0].runner_id, "unlabeled-work-runner", "operator workspace flattens nested runner id");
+    assertEqual(runnerRows[0].node_id, "worker-node-a", "operator workspace flattens nested node id");
+    assertEqual(runnerRows[0].endpoint, "http://work-runner.example:9093", "operator workspace flattens nested endpoint");
+    assertEqual(runnerRows[0].display_name, "model-provider", "operator workspace derives readable runner display name");
+    assertEqual(runnerRows[0].lane, undefined, "operator workspace keeps lane labels inside runner labels");
+    assertEqual(runnerRows[0].status, "active", "operator workspace derives active status");
+    assertEqual(runnerRows[0].capacity_remaining, 3, "operator workspace preserves remaining capacity");
+    assertEqual(runnerRows[0].max_concurrency, 4, "operator workspace exposes registration max concurrency");
     const response = await fetch(`${discoveryBaseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1567,27 +1674,27 @@ async function assertChatApiDiscoversRegisteredModel() {
   }
 }
 
-async function assertOverviewApi() {
-  const response = await fetch(`${baseUrl}/api/overview`);
-  assert(response.ok, "overview api returns ok even when backend services are absent");
+async function assertOperatorWorkspaceApi() {
+  const response = await fetch(`${baseUrl}/api/operator/workspace`);
+  assert(response.ok, "operator workspace api returns ok even when backend services are absent");
   const body = await response.json();
-  assertEqual(body.control_surface, "coat-control-plane-web", "overview control surface");
+  assertEqual(body.source.gateway, "api_and_sse_projection", "operator workspace identifies gateway projection role");
   assert(
-    String(body.authority_note).includes("Restate and the Rust services remain authoritative"),
-    "overview states that the gateway is not the durable engine",
+    body.source.restate === "durable_orchestration",
+    "operator workspace states that Restate owns durable orchestration",
   );
-  assert(Array.isArray(body.services), "overview includes service health rows");
+  assert(Array.isArray(body.services), "operator workspace includes service health rows");
   assert(
     body.services.some((service) => service.name === "goal-store" && typeof service.url === "string"),
-    "overview reports goal-store backend health probe target",
+    "operator workspace reports goal-store backend health probe target",
   );
-  assert(body.follow_ups && Array.isArray(body.follow_ups.items), "overview includes flattened follow-up queue");
-  assert(body.goals && typeof body.goals.status === "number", "overview includes goal-store proxy result");
-  assert(body.runner_status && typeof body.runner_status.status === "number", "overview includes runner registry proxy result");
+  assert(Array.isArray(body.goals), "operator workspace includes goal summaries");
+  assert(Array.isArray(body.actions), "operator workspace includes action queue rows");
+  assert(body.runners && typeof body.runners.status === "number", "operator workspace includes runner registry proxy result");
 }
 
 async function assertGoalSubmitAssignsWorkflowId() {
-  const response = await fetch(`${baseUrl}/api/goals/submit`, {
+  const response = await fetch(`${baseUrl}/api/operator/goals`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -1608,16 +1715,16 @@ async function assertGoalSubmitAssignsWorkflowId() {
 
 async function assertUnsupportedWorkflowHandlerGuard() {
   const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
-  const response = await fetch(`${baseUrl}/api/goals/${goalId}/native-subagent-spawn`, {
+  const response = await fetch(`${baseUrl}/api/operator/goals/${goalId}/native-subagent-spawn`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   });
-  assertEqual(response.status, 400, "unsupported workflow handler is rejected before proxying");
+  assertEqual(response.status, 400, "unsupported operator goal action is rejected before proxying");
   const body = await response.json();
   assert(
-    String(body.error).includes("unsupported workflow handler"),
-    "unsupported workflow handler response explains the guardrail",
+    String(body.error).includes("unsupported operator goal action"),
+    "unsupported operator goal action response explains the guardrail",
   );
 }
 
@@ -1625,9 +1732,55 @@ async function assertBackendBackedControlSurfaces() {
   const goalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756602";
   const compiledGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756603";
   const staleGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756604";
+  const otherGoalId = "018f8f2f-1fd8-7688-bb12-8bfb6b756605";
   const thunkId = "018f8f2f-1fd8-7688-bb12-8bfb6b756777";
   const planId = "plan-smoke-compile";
   const approvalId = "approval-prod-deploy";
+  const planRevisionRequests = [];
+  const acceptedPlanDrafts = [];
+  let planRecord = {
+    id: planId,
+    title: "Backend-backed smoke plan",
+    objective: "Exercise real control-plane projections",
+    status: "draft",
+    phase: "drafting_plan",
+    mode: "durable_plan",
+    version: 1,
+    current: {
+      version: 1,
+      author: "operator",
+      summary: "Initial smoke plan",
+      authoring: {
+        intake_summary: "Exercise real control-plane projections",
+        acceptance_evidence: ["phase actions are visible"],
+        constraints: [],
+        assumptions: [],
+        out_of_scope: [],
+        open_questions: [],
+      },
+      plan: {
+        summary: "Plan-first smoke flow",
+        subgoals: [],
+        distribution_notes: [],
+      },
+      initial_tasks: [],
+      questions: [],
+      decisions: [],
+    },
+    action_items: [
+      {
+        action_id: `plan:${planId}:review_plan_draft:1`,
+        plan_id: planId,
+        kind: "review_plan_draft",
+        title: "Review plan draft",
+        reason: "The plan needs an accepted structure before goals are staged for execution.",
+        allowed_actions: ["accept_plan_draft", "draft_goal", "cancel"],
+        required_fields: [],
+        status: "pending",
+      },
+    ],
+    revisions: [],
+  };
   const calls = {
     goalStore: [],
     restate: [],
@@ -1739,6 +1892,112 @@ async function assertBackendBackedControlSurfaces() {
       reason: "requires explicit human gate before execution",
     },
   ];
+  const allTaskRows = [
+    ...taskRows,
+    {
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      title: "Other goal task must not leak into selected projections",
+      role: "planner",
+      status: "blocked",
+      payload_json: {},
+    },
+  ];
+  const allApprovalRows = [
+    ...approvalRows,
+    {
+      approval_id: "approval-other-goal",
+      goal_id: otherGoalId,
+      status: "pending",
+      risk: "unrelated",
+      reason: "belongs to another selected-goal projection",
+    },
+  ];
+  const projectedActionRows = [
+    {
+      action_id: "goal-store-row-approval-prod-deploy",
+      kind: "resolve_approval",
+      goal_id: goalId,
+      task_id: "task-plan",
+      approval_id: approvalId,
+      status: "pending",
+      allowed_resolutions: [],
+    },
+    {
+      action_id: `task:${goalId}:task-plan`,
+      kind: "restart_task",
+      goal_id: goalId,
+      task_id: "task-plan",
+      status: "blocked",
+      allowed_resolutions: ["retry", "replan", "create_thunk"],
+      payload_json: { task_status: "blocked" },
+    },
+    {
+      action_id: `task:${otherGoalId}:task-other-goal`,
+      kind: "restart_task",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      status: "blocked",
+      allowed_resolutions: ["retry"],
+      payload_json: { task_status: "blocked" },
+    },
+  ];
+  const projectedTimelineRows = [
+    {
+      event_id: "event-selected-goal",
+      event_type: "task.updated",
+      goal_id: goalId,
+      task_id: "task-plan",
+      title: "Selected goal event",
+      detail: "selected projection only",
+      created_at: "2026-05-09T12:04:00Z",
+      payload_json: { goal_id: goalId },
+    },
+    {
+      event_id: "event-other-goal",
+      event_type: "task.updated",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      title: "Other goal event",
+      detail: "must stay filtered",
+      created_at: "2026-05-09T12:05:00Z",
+      payload_json: { goal_id: otherGoalId },
+    },
+  ];
+  const projectedWorkerRunRows = [
+    {
+      run_id: "run-selected-goal",
+      goal_id: goalId,
+      task_id: "task-plan",
+      worker: "planner",
+      status: "running",
+      summary: "selected goal worker run",
+    },
+    {
+      run_id: "run-other-goal",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      worker: "planner",
+      status: "blocked",
+      summary: "other goal worker run",
+    },
+  ];
+  const projectedEvidenceRows = [
+    {
+      evidence_id: "evidence-selected-goal",
+      goal_id: goalId,
+      task_id: "task-plan",
+      title: "Selected goal evidence",
+      uri: "git:selected",
+    },
+    {
+      evidence_id: "evidence-other-goal",
+      goal_id: otherGoalId,
+      task_id: "task-other-goal",
+      title: "Other goal evidence",
+      uri: "git:other",
+    },
+  ];
   const threadRows = [
     {
       thread_key: `approval:${approvalId}`,
@@ -1748,6 +2007,8 @@ async function assertBackendBackedControlSurfaces() {
       latest_message: "Approve before execution",
     },
   ];
+  const operatorEvents = [];
+  const chatTurns = [];
 
   const goalStoreServer = http.createServer(async (req, res) => {
     const request = await captureRequest(req);
@@ -1816,8 +2077,9 @@ async function assertBackendBackedControlSurfaces() {
     }
     if (request.method === "GET" && request.path.startsWith("/goal-store/chat/sessions/")) {
       const sessionId = decodeURIComponent(request.path.slice("/goal-store/chat/sessions/".length));
+      const storedTurns = chatTurns.filter((turn) => turn.session_id === sessionId);
       if (sessionId !== `goal:${goalId}`) {
-        respondJson(res, 200, { session_id: sessionId, turns: [] });
+        respondJson(res, 200, { session_id: sessionId, turns: storedTurns });
         return;
       }
       respondJson(res, 200, {
@@ -1841,25 +2103,110 @@ async function assertBackendBackedControlSurfaces() {
             model: "stub-control-chat",
             created_at: "2026-05-09T12:03:02Z",
           },
+          ...storedTurns,
         ],
       });
       return;
     }
+    if (request.method === "POST" && request.path === "/goal-store/chat/turns") {
+      chatTurns.push(request.body);
+      respondJson(res, 200, { accepted: true, turn: request.body });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-events") {
+      respondJson(res, 200, { events: operatorEvents });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/actions") {
+      respondJson(res, 200, { actions: projectedActionRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/tasks") {
+      respondJson(res, 200, { tasks: allTaskRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-timeline") {
+      respondJson(res, 200, { events: projectedTimelineRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-worker-runs") {
+      respondJson(res, 200, { worker_runs: projectedWorkerRunRows });
+      return;
+    }
+    if (request.method === "GET" && request.path === "/goal-store/operator-evidence") {
+      respondJson(res, 200, { evidence: projectedEvidenceRows });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/goal-store/operator-events") {
+      operatorEvents.push(request.body?.event ?? request.body);
+      respondJson(res, 200, { accepted: true, event: request.body?.event ?? request.body });
+      return;
+    }
     if (request.method === "GET" && request.path === "/goal-store/approvals") {
-      respondJson(res, 200, { data: approvalRows, queue_owner: "goal-store-projection" });
+      respondJson(res, 200, { data: allApprovalRows, queue_owner: "goal-store-projection" });
       return;
     }
     if (request.method === "GET" && request.path === "/goal-store/plans") {
       respondJson(res, 200, {
-        data: [
+        plans: [
           {
             plan_id: planId,
             title: "Backend-backed smoke plan",
             status: "ready_for_review",
+            phase: "accepting",
             mode: "durable_plan",
+            open_question_count: 0,
+            action_item_count: 1,
           },
         ],
       });
+      return;
+    }
+    if (request.method === "GET" && request.path === `/goal-store/plans/${planId}`) {
+      respondJson(res, 200, { found: true, plan: planRecord });
+      return;
+    }
+    if (request.method === "POST" && request.path === "/goal-store/plans") {
+      acceptedPlanDrafts.push(request.body);
+      const acceptedPlanId = request.body?.plan_id ?? "018f8f2f-1fd8-7688-bb12-8bfb6b756650";
+      respondJson(res, 200, {
+        found: true,
+        plan: {
+          ...planRecord,
+          ...request.body,
+          id: acceptedPlanId,
+          status: request.body?.status ?? "approved",
+          phase: "accepting",
+        },
+      });
+      return;
+    }
+    if (request.method === "POST" && request.path === `/goal-store/plans/${planId}/revisions`) {
+      planRevisionRequests.push(request.body);
+      planRecord = {
+        ...planRecord,
+        status: request.body?.status ?? "approved",
+        phase: request.body?.status === "archived" ? "cancelled" : "accepting",
+        version: planRecord.version + 1,
+        action_items: [
+          {
+            action_id: `plan:${planId}:submit_goal:${planRecord.version + 1}`,
+            plan_id: planId,
+            kind: "submit_goal",
+            title: "Submit accepted goals",
+            reason: "The plan has been accepted and can be compiled into executable goal work.",
+            allowed_actions: ["submit_goal", "draft_goal", "cancel"],
+            required_fields: [],
+            status: "pending",
+          },
+        ],
+        current: {
+          ...planRecord.current,
+          ...request.body,
+          version: planRecord.version + 1,
+        },
+      };
+      respondJson(res, 200, { found: true, plan: planRecord });
       return;
     }
     if (request.method === "POST" && request.path === `/goal-store/plans/${planId}/compile`) {
@@ -1957,6 +2304,13 @@ async function assertBackendBackedControlSurfaces() {
       return;
     }
     if (request.method === "POST" && request.path === `/GoalWorkflow/${goalId}/steer`) {
+      if (request.body?.kind?.request_replan?.reason === "Reject stale action for recovery smoke.") {
+        respondJson(res, 409, {
+          code: 409,
+          message: "the requested recovery action is stale for the current workflow state",
+        });
+        return;
+      }
       respondJson(res, 200, { accepted: true, handler: "steer", directive: request.body });
       return;
     }
@@ -2139,7 +2493,7 @@ async function assertBackendBackedControlSurfaces() {
   try {
     await waitForProcessHealth(backendBaseUrl, backendServer, () => ({ stdout: backendStdout, stderr: backendStderr }));
 
-    const submitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+    const submitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2173,11 +2527,70 @@ async function assertBackendBackedControlSurfaces() {
     const submitRunCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${submitBody.data.goal_id}/run`);
     assertEqual(submitRunCall?.body?.plan?.subgoals?.[0]?.owner_role, "planner", "normalized submit payload reaches Restate");
 
+    const planListResponse = await fetch(`${backendBaseUrl}/api/plans?limit=100`);
+    assert(planListResponse.ok, "plan list projection returns ok");
+    const planListBody = await planListResponse.json();
+    assertEqual(planListBody.plans[0].plan_id, planId, "plan list projection preserves plan id");
+    assertEqual(planListBody.plans[0].phase, "accepting", "plan list projection exposes explicit phase");
+    assert(
+      planListBody.plans[0].actions.some((action) => action.kind === "review_plan_draft" && action.allowed_actions.includes("accept_plan_draft")),
+      "plan list projection exposes explicit phase actions",
+    );
+
+    const planDraftObjective = "Stage a plan-first smoke workflow before goals are submitted.";
+    const planDraftResponse = await fetch(`${backendBaseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: `plan:${planId}`,
+        plan_id: planId,
+        mode: "draft_plan",
+        messages: [{ role: "user", content: planDraftObjective }],
+      }),
+    });
+    assert(planDraftResponse.ok, "backend-backed plan chat draft returns ok");
+    const planDraftBody = await planDraftResponse.json();
+    const planDraft = planDraftBody.drafts.plan_draft;
+    assertCompactDraftPayload(planDraft, "backend-backed plan draft");
+    assertEqual(planDraftBody.plan_id, planId, "plan chat response preserves selected plan id");
+    assertEqual(planDraft.plan_id, planId, "plan draft compact payload preserves selected plan id");
+    assert(planDraft.allowed_actions.includes("accept_plan_draft"), "plan draft exposes accept phase action");
+    assertEqual(planDraftBody.draft_refs.plan_draft.plan_id, planId, "plan draft ref preserves plan id");
+    const planChatTurn = chatTurns.find((turn) => turn.session_id === `plan:${planId}` && turn.role === "user");
+    assertEqual(planChatTurn?.plan_id, planId, "goal-store chat turn preserves plan id");
+
+    const acceptPlanDraftResponse = await fetch(`${backendBaseUrl}/api/plans/drafts/${encodeURIComponent(planDraft.draft_id)}/accept`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        plan_id: planId,
+        acceptance: "revise_plan",
+        operator: "smoke",
+        summary: "Accepted the staged smoke plan.",
+      }),
+    });
+    assert(acceptPlanDraftResponse.ok, "plan draft acceptance api returns ok");
+    const acceptPlanDraftBody = await acceptPlanDraftResponse.json();
+    assertEqual(acceptPlanDraftBody.ok, true, "plan draft acceptance reports success");
+    assertEqual(acceptPlanDraftBody.plan_id, planId, "plan draft acceptance preserves plan id");
+    assertEqual(planRevisionRequests[0].status, "approved", "plan draft acceptance moves the plan into accepted phase");
+    assertEqual(planRevisionRequests[0].plan.summary, "Chat-authored durable plan draft.", "plan draft acceptance forwards full server-side plan payload");
+    assertEqual(acceptedPlanDrafts.length, 0, "accepting into an existing plan uses revisions rather than creating a sibling plan");
+    assert(operatorEvents.some((event) => event.transition === "plan_draft_accepted" && event.actor?.plan_id === planId), "plan draft acceptance appends a plan-scoped event");
+
+    const planActionsResponse = await fetch(`${backendBaseUrl}/api/plans/${encodeURIComponent(planId)}/actions`);
+    assert(planActionsResponse.ok, "plan action list returns ok");
+    const planActionsBody = await planActionsResponse.json();
+    assertEqual(planActionsBody.phase, "accepting", "plan action list reflects accepted plan phase");
+    assert(planActionsBody.actions.some((action) => action.kind === "submit_goal"), "accepted plan exposes submit-goal action");
+
     const draftObjective = "Submit a compact chat draft through the server-side draft store.";
     const chatDraftResponse = await fetch(`${backendBaseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        session_id: "operator:default",
+        plan_id: planId,
         mode: "draft_goal",
         messages: [{ role: "user", content: draftObjective }],
       }),
@@ -2186,10 +2599,17 @@ async function assertBackendBackedControlSurfaces() {
     const chatDraftBody = await chatDraftResponse.json();
     const compactDraft = chatDraftBody.drafts.goal_spec;
     assertCompactDraftPayload(compactDraft, "backend-backed goal draft");
+    assertEqual(compactDraft.plan_id, planId, "goal draft preserves selected plan id");
     assert(compactDraft.draft_id, "backend-backed goal draft includes server-side draft id");
     assert(!("root_budget" in compactDraft), "compact goal draft omits default budget payload");
+    const activeDraftSessionResponse = await fetch(`${backendBaseUrl}/api/chat/session?session_id=operator%3Adefault`);
+    assert(activeDraftSessionResponse.ok, "chat session reads server-owned draft state");
+    const activeDraftSession = await activeDraftSessionResponse.json();
+    assertEqual(activeDraftSession.durable, true, "chat session is backed by the goal-store chat log when available");
+    assertEqual(activeDraftSession.drafts[0].draft_id, compactDraft.draft_id, "chat session lists the server-owned draft id");
+    assertEqual(activeDraftSession.drafts[0].status, "active", "chat session exposes active draft state before submission");
 
-    const compactSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+    const compactSubmitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2211,8 +2631,42 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(compactReceived.initial_tasks[0].role, "planner", "compact submit preserves stored initial task frontier");
     assertEqual(compactReceived.plan.subgoals[0].id, "plan-next-frontier", "compact submit preserves stored subgoal payload");
     assertEqual(compactReceived.authoring.constraints[0], "Preserve the stored full draft when submitting compact review edits.", "compact submit applies edited authoring fields");
+    const acceptedDraftSessionResponse = await fetch(`${backendBaseUrl}/api/chat/session?session_id=operator%3Adefault`);
+    assert(acceptedDraftSessionResponse.ok, "chat session remains readable after draft acceptance");
+    const acceptedDraftSession = await acceptedDraftSessionResponse.json();
+    assertEqual(acceptedDraftSession.drafts[0].status, "accepted", "accepted draft state is server-owned");
+    assertEqual(acceptedDraftSession.drafts[0].accepted_goal_id, compactSubmitBody.goal_id, "accepted draft records the durable goal id");
+    const draftAcceptedEvent = operatorEvents.find((event) => event.transition === "draft_accepted" && event.payload_json?.draft_id === compactDraft.draft_id);
+    assert(draftAcceptedEvent, "accepting a chat draft appends a durable operator event");
+    assert(
+      String(draftAcceptedEvent.event_id).startsWith("operator-event:"),
+      "draft accepted operator event id is stable and projection-shaped",
+    );
 
-    const badSubmitResponse = await fetch(`${backendBaseUrl}/api/goals/submit`, {
+    const replayAcceptedDraftResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(compactDraft),
+    });
+    assertEqual(replayAcceptedDraftResponse.status, 409, "accepted server-owned draft cannot be submitted again as a new goal");
+    const replayAcceptedDraftBody = await replayAcceptedDraftResponse.json();
+    assertEqual(replayAcceptedDraftBody.recovery.accepted_goal_id, compactSubmitBody.goal_id, "accepted draft rejection points back to the selected goal");
+
+    const missingDraftResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        compact: true,
+        draft_id: "missing-draft-id",
+        title: "Missing server draft",
+        objective: "This compact payload must not become source-of-truth state.",
+      }),
+    });
+    assertEqual(missingDraftResponse.status, 409, "missing server-owned draft id rejects compact UI-owned payloads");
+    const missingDraftBody = await missingDraftResponse.json();
+    assertEqual(missingDraftBody.recovery.actions[0], "refresh_chat_session", "missing draft response gives an operator recovery action");
+
+    const badSubmitResponse = await fetch(`${backendBaseUrl}/api/operator/goals`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2224,20 +2678,32 @@ async function assertBackendBackedControlSurfaces() {
     const badSubmitBody = await badSubmitResponse.json();
     assertEqual(badSubmitBody.status, 400, "goal submit preserves upstream proxy status in the response body");
 
-    const snapshotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}`);
-    assert(snapshotResponse.ok, "backend-backed goal snapshot returns ok");
-    const snapshot = await snapshotResponse.json();
-    assertEqual(snapshot.goal_id, goalId, "goal snapshot preserves requested goal id");
-    assertEqual(snapshot.goal_store_goal.status, 200, "goal snapshot includes successful goal projection status");
-    assertEqual(snapshot.goal_store_goal.data.objective, "Exercise real control-plane projections", "goal snapshot preserves backend objective");
-    assertEqual(snapshot.workflow_status.data.durable_owner, "restate", "goal snapshot includes Restate workflow status");
-    assertEqual(snapshot.workflow_progress.data.satisfaction_score, 0.42, "goal snapshot includes workflow progress score");
-    assertEqual(snapshot.workflow_compute_graph.data.open_thunks, 1, "goal snapshot includes live compute graph thunk count");
-    assertEqual(snapshot.workflow_compute_graph.data.nodes.length, 3, "goal snapshot includes live compute graph nodes");
-    assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "goal snapshot includes actionable continuation thunk id");
-    assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "goal snapshot includes checkpoint refs");
-    assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "goal snapshot includes human approval gates");
-    assertEqual(snapshot.agent_activity.length, 2, "goal snapshot derives agent activity rows from projected tasks");
+    const snapshotResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}`);
+    assert(snapshotResponse.ok, "backend-backed operator goal detail returns ok");
+    const snapshotDetail = await snapshotResponse.json();
+    const snapshot = snapshotDetail.snapshot ?? snapshotDetail;
+    assertEqual(snapshot.goal_id, goalId, "operator goal detail preserves requested goal id");
+    assertEqual(snapshot.goal_store_goal.status, 200, "operator goal detail includes successful goal projection status");
+    assertEqual(snapshot.goal_store_goal.data.objective, "Exercise real control-plane projections", "operator goal detail preserves backend objective");
+    assertEqual(snapshot.workflow_status.data.durable_owner, "restate", "operator goal detail includes Restate workflow status");
+    assertEqual(snapshot.workflow_progress.data.satisfaction_score, 0.42, "operator goal detail includes workflow progress score");
+    assertEqual(snapshot.workflow_compute_graph.data.open_thunks, 1, "operator goal detail includes live compute graph thunk count");
+    assertEqual(snapshot.workflow_compute_graph.data.nodes.length, 3, "operator goal detail includes live compute graph nodes");
+    assertEqual(snapshot.workflow_compute_graph.data.nodes[2].thunk_id, thunkId, "operator goal detail includes actionable continuation thunk id");
+    assertEqual(snapshot.checkpoints.data.checkpoints[0].snapshot_uri, "s3://coat-smoke/checkpoints/cp-git-1.tar.zst", "operator goal detail includes checkpoint refs");
+    assertEqual(snapshot.approvals.data.approvals[0].approval_id, approvalId, "operator goal detail includes human approval gates");
+    assertEqual(snapshot.agent_activity.length, 2, "operator goal detail derives agent activity rows from projected tasks");
+    const graphResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/graph`);
+    assert(graphResponse.ok, "operator graph api returns ok");
+    const graphBody = await graphResponse.json();
+    assertEqual(graphBody.goal_id, goalId, "operator graph response preserves selected goal id");
+    assertEqual(graphBody.graph.open_thunks, 1, "operator graph exposes open continuation count");
+    assert(graphBody.graph.edges.some((edge) => edge.kind === "suspends_into"), "operator graph exposes suspension boundary edges");
+    assert(graphBody.actions.some((action) => action.kind === "resume_thunk"), "operator graph includes continuation actions");
+    assert(
+      graphBody.actions.every((action) => Array.isArray(action.recovery?.actions) && action.recovery.actions.includes("refresh_actions")),
+      "operator graph action rows expose product recovery actions",
+    );
     const activity = snapshot.agent_activity[0];
     assertEqual(activity.task_id, "task-plan", "agent activity preserves task id");
     assertEqual(activity.current_prompt, taskPrompt, "agent activity exposes current prompt payload");
@@ -2252,7 +2718,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(activity.budget.max_attempts, 2, "agent activity exposes task budget");
     assertEqual(activity.sandbox.network, "disabled", "agent activity exposes sandbox policy");
     assertEqual(activity.done_criteria.tests_pass, true, "agent activity exposes done criteria");
-    assertEqual(snapshot.chat_session.messages[0].content, "What is the planner waiting on?", "goal snapshot includes compact goal chat messages");
+    assertEqual(snapshot.chat_session.messages[0].content, "What is the planner waiting on?", "operator goal detail includes compact goal chat messages");
     assertEqual(snapshot.agent_context.chat_session.session_id, `goal:${goalId}`, "agent context advertises goal chat session ref");
     assertEqual(snapshot.agent_context.chat_session.latest_turns[0].content, "What is the planner waiting on?", "agent context includes latest compact chat turns");
     assertEqual(snapshot.agent_context.tasks[0].current_prompt, taskPrompt, "agent context exposes drill-down current prompt");
@@ -2264,7 +2730,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(snapshot.agent_context.tasks[0].thread_refs.payload_thread_id, "thr-task-plan-001", "agent context exposes payload thread ref");
     assertEqual(snapshot.agent_context.notification_threads[0].thread_key, `approval:${approvalId}`, "agent context includes relevant notifier thread summary");
 
-    const agentContextResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/agent-context?task_id=task-plan`);
+    const agentContextResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/agent-context?task_id=task-plan`);
     assert(agentContextResponse.ok, "agent context api returns ok");
     const agentContext = await agentContextResponse.json();
     assertEqual(agentContext.found, true, "agent context task filter finds projected task");
@@ -2272,7 +2738,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(agentContext.tasks[0].chat_session_ref, `goal:${goalId}`, "agent context endpoint returns chat session ref");
     assertEqual(agentContext.tasks[0].notification_threads[0].latest_status, "waiting_operator", "agent context endpoint returns relevant notification thread");
     const adversarialActivity = snapshot.agent_activity.find((row) => row.task_id === "task-adversarial");
-    assert(adversarialActivity, "goal snapshot keeps adversarial review task visible");
+    assert(adversarialActivity, "operator goal detail keeps adversarial review task visible");
     assert(
       adversarialActivity.current_prompt.includes("native subagent"),
       "agent activity preserves adversarial prompt text as inspectable context",
@@ -2291,11 +2757,12 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(adversarialActivity.sandbox.network, "disabled", "adversarial task preserves sandbox network policy");
     assertEqual(adversarialActivity.done_criteria.evidence[0], "review rejects native subagent delegation", "adversarial task preserves review evidence criteria");
 
-    const mcpSnapshot = await callMcpAt(backendBaseUrl, "coat_goal_snapshot", { goal_id: goalId });
-    assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp goal snapshot uses the same backend aggregation path");
-    assertEqual(mcpSnapshot.agent_activity[1].execution.subagents.native_spawning, "disabled", "mcp goal snapshot projects disabled native spawning");
-    assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp goal snapshot includes compute graph continuation edge");
-    const mcpAgentContext = await callMcpAt(backendBaseUrl, "coat_agent_context", { goal_id: goalId, task_id: "task-plan" });
+    const mcpSnapshotDetail = await callMcpAt(backendBaseUrl, "coat_operator_goal", { goal_id: goalId });
+    const mcpSnapshot = mcpSnapshotDetail.snapshot ?? mcpSnapshotDetail;
+    assertEqual(mcpSnapshot.agent_activity[0].task_id, "task-plan", "mcp operator goal detail uses the same backend aggregation path");
+    assertEqual(mcpSnapshot.agent_activity[1].execution.subagents.native_spawning, "disabled", "mcp operator goal detail projects disabled native spawning");
+    assertEqual(mcpSnapshot.workflow_compute_graph.data.edges[1].kind, "suspends_into", "mcp operator goal detail includes compute graph continuation edge");
+    const mcpAgentContext = await callMcpAt(backendBaseUrl, "coat_operator_agent_context", { goal_id: goalId, task_id: "task-plan" });
     assertEqual(mcpAgentContext.tasks[0].current_prompt, taskPrompt, "mcp agent context uses the same drill-down aggregation path");
     assertEqual(mcpAgentContext.tasks[0].runner.runner_id, "codex-runner-a", "mcp agent context exposes runner routing");
 
@@ -2303,18 +2770,188 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(checkpointHistory.data.checkpoints[0].git.commit, "abc1234", "checkpoint history returns git checkpoint commit");
     assertEqual(checkpointHistory.data.checkpoints[0].task_id, "task-plan", "checkpoint history preserves task ownership");
 
-    const threadsResponse = await fetch(`${backendBaseUrl}/api/human/threads`);
-    assert(threadsResponse.ok, "human threads api returns ok");
-    const threads = await threadsResponse.json();
-    assertEqual(threads.data.data[0].thread_key, `approval:${approvalId}`, "human threads preserve notifier thread key");
-    assertEqual(threads.data.data[0].latest_status, "waiting_operator", "human threads preserve waiting status");
-    const approvalQueue = await callMcpAt(backendBaseUrl, "coat_approval_queue", { limit: 3 });
-    assertEqual(approvalQueue.data.data[0].approval_id, approvalId, "approval queue reads projected human gate");
+    const workspaceResponse = await fetch(`${backendBaseUrl}/api/operator/workspace?goal_id=${encodeURIComponent(goalId)}`);
+    assert(workspaceResponse.ok, "operator workspace returns ok");
+    const workspace = await workspaceResponse.json();
+    assertEqual(workspace.human_threads.data.data[0].thread_key, `approval:${approvalId}`, "operator workspace preserves notifier thread key");
+    assertEqual(workspace.human_threads.data.data[0].latest_status, "waiting_operator", "operator workspace preserves waiting status");
+    assert(workspace.actions.some((action) => action.kind === "resolve_approval"), "operator workspace projects approval actions");
+    assert(workspace.actions.some((action) => action.kind === "resume_thunk"), "operator workspace projects continuation actions");
+    assert(workspace.actions.some((action) => action.kind === "restart_task"), "operator workspace projects recoverable task actions");
     assert(
-      calls.goalStore.some((call) => call.url === "/goal-store/approvals?limit=3"),
-      "mcp approval queue forwards requested limit to goal-store",
+      workspace.actions.every((action) => Array.isArray(action.recovery?.actions) && action.recovery.actions.includes("inspect_actor")),
+      "operator workspace action rows expose concrete recovery actions",
     );
-    const approvalResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/approve`, {
+    assert(workspace.events.every((event) => event.payload_json), "operator workspace keeps event provenance available");
+    assert(workspace.actions.every((action) => action.goal_id === goalId), "selected workspace filters action rows to the selected goal");
+    assert(workspace.events.every((event) => event.goal_id === goalId), "selected workspace filters timeline rows to the selected goal");
+    assert(workspace.worker_runs.every((run) => run.goal_id === goalId), "selected workspace filters worker runs to the selected goal");
+    assert(workspace.evidence.every((evidence) => evidence.goal_id === goalId), "selected workspace filters evidence rows to the selected goal");
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/tasks?limit=200&goal_id=${encodeURIComponent(goalId)}`),
+      "operator workspace asks goal-store for selected-goal task projection",
+    );
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/approvals?limit=100&goal_id=${encodeURIComponent(goalId)}`),
+      "operator workspace asks goal-store for selected-goal approval projection",
+    );
+
+    const operatorActionsResponse = await fetch(`${backendBaseUrl}/api/operator/actions?goal_id=${encodeURIComponent(goalId)}`);
+    assert(operatorActionsResponse.ok, "operator action list returns ok");
+    const operatorActionsBody = await operatorActionsResponse.json();
+    assert(operatorActionsBody.actions.some((action) => action.action_id === `approval:${goalId}:${approvalId}`), "operator action list exposes approval action id");
+    assert(
+      operatorActionsBody.actions.some((action) => action.action_id === `approval:${goalId}:${approvalId}` && action.source_action_id === "goal-store-row-approval-prod-deploy"),
+      "operator action list normalizes top-level projected approval ids",
+    );
+    assert(operatorActionsBody.actions.some((action) => action.action_id === `thunk:${goalId}:${thunkId}`), "operator action list exposes thunk action id");
+    assert(operatorActionsBody.actions.every((action) => action.goal_id === goalId), "operator action list filters stale cross-goal projection rows");
+    assert(
+      operatorActionsBody.actions.every((action) => Array.isArray(action.allowed_resolutions) && action.allowed_resolutions.length > 0),
+      "operator actions always expose concrete resolutions",
+    );
+    assert(
+      operatorActionsBody.actions.every((action) => Array.isArray(action.recovery?.suggested_resolutions) && action.recovery.suggested_resolutions.length > 0),
+      "operator actions always expose recovery suggestions instead of raw coordinator errors",
+    );
+    const recoverableTaskAction = operatorActionsBody.actions.find((action) => action.action_id === `task:${goalId}:task-adversarial`);
+    assert(
+      recoverableTaskAction?.allowed_resolutions.includes("create_thunk"),
+      "recoverable task actions can create a concrete human prompt",
+    );
+
+    for (const legacyPath of ["/api/goals", "/api/approvals", "/api/runners", "/api/overview", "/api/follow-ups", "/api/human/threads"]) {
+      const legacyResponse = await fetch(`${backendBaseUrl}${legacyPath}`);
+      assertEqual(legacyResponse.status, 404, `${legacyPath} is not kept as a legacy helper route`);
+    }
+
+    const streamController = new AbortController();
+    const sinceCursor = "2026-05-09T12:00:00Z";
+    const streamResponse = await fetch(`${backendBaseUrl}/api/operator/stream?goal_id=${encodeURIComponent(goalId)}&event_type=action.required&since=${encodeURIComponent(sinceCursor)}`, {
+      signal: streamController.signal,
+      headers: {
+        "Last-Event-ID": "operator-stream:previous-projection",
+      },
+    });
+    assert(streamResponse.ok, "operator stream returns ok");
+    assert(streamResponse.headers.get("content-type")?.includes("text/event-stream"), "operator stream uses SSE content type");
+    const streamReader = streamResponse.body?.getReader();
+    assert(streamReader, "operator stream exposes a readable body");
+    let streamText = "";
+    const streamDecoder = new TextDecoder();
+    for (let readCount = 0; readCount < 10 && streamText.split("\n\n").filter(Boolean).length < 2; readCount += 1) {
+      const chunk = await streamReader.read();
+      if (chunk.done) break;
+      streamText += streamDecoder.decode(chunk.value, { stream: true });
+    }
+    streamController.abort();
+    assert(streamText.includes("event: action.required"), "operator stream emits requested product-level action event");
+    assert(streamText.includes("event: stream.heartbeat"), "operator stream emits heartbeats when projection state is unchanged");
+    assert(streamText.includes(`"selected_goal_id":"${goalId}"`), "operator stream carries the selected goal workspace projection");
+    assert(streamText.includes("\"recovery\":{\"reason\":\"operator_action_available\""), "operator stream carries product-shaped action recovery data");
+    assert(streamText.includes(`"since":"${sinceCursor}"`), "operator stream echoes the since filter");
+    assert(streamText.includes("\"last_event_id\":\"operator-stream:previous-projection\""), "operator stream reports the reconnect event id");
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/operator-events?limit=100&goal_id=${encodeURIComponent(goalId)}&event_type=action.required&since=${encodeURIComponent(sinceCursor)}`),
+      "operator stream forwards event filters to the goal-store projection",
+    );
+    const approvalQueue = await callMcpAt(backendBaseUrl, "coat_operator_actions", { goal_id: goalId });
+    const projectedApprovalAction = approvalQueue.actions.find((action) => action.approval?.approval_id === approvalId || action.approval_id === approvalId);
+    assert(projectedApprovalAction, "operator actions read projected human gate");
+    assert(
+      calls.goalStore.some((call) => call.url === `/goal-store/approvals?limit=100&goal_id=${encodeURIComponent(goalId)}`),
+      "mcp operator actions forwards selected goal filter to goal-store",
+    );
+    const approvalContextResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`approval:${goalId}:${approvalId}`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        resolution: "add_context",
+        response_summary: "Operator attached context without approving yet.",
+      }),
+    });
+    assert(approvalContextResponse.ok, "approval add-context action resolution returns ok");
+    const approvalContextBody = await approvalContextResponse.json();
+    assertEqual(approvalContextBody.resolution, "add_context", "approval add-context keeps the requested resolution");
+    assertEqual(approvalContextBody.result.data.handler, "steer", "approval add-context routes through steering, not approval");
+    const approvalContextCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer` && call.body?.kind?.add_context?.approval_id === approvalId);
+    assert(approvalContextCall, "approval add-context forwards target approval id to the coordinator");
+
+    const invalidActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`task:${goalId}:task-plan`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        resolution: "teleport",
+        response_summary: "Invalid resolution should not restart work.",
+      }),
+    });
+    assertEqual(invalidActionResponse.status, 400, "invalid operator action resolution returns HTTP 400");
+    const invalidActionBody = await invalidActionResponse.json();
+    assertEqual(invalidActionBody.accepted, false, "invalid operator action is not accepted");
+    assertEqual(invalidActionBody.recovery.reason, "invalid_operator_action_resolution", "invalid action response carries recovery reason");
+    assert(invalidActionBody.recovery.suggested_resolutions.includes("retry"), "invalid action recovery includes retry");
+    assert(invalidActionBody.recovery.suggested_resolutions.includes("create_thunk"), "invalid action recovery includes create-thunk prompt option");
+    assert(
+      !calls.restate.some((call) => call.url === `/GoalWorkflow/${goalId}/restart` && call.body?.message === "Invalid resolution should not restart work."),
+      "invalid action resolution is rejected before a restart mutation",
+    );
+
+    const staleActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`task:${goalId}:task-plan`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        resolution: "replan",
+        response_summary: "Reject stale action for recovery smoke.",
+      }),
+    });
+    assertEqual(staleActionResponse.status, 409, "operator action resolution surfaces stale coordinator state as HTTP 409");
+    const staleActionBody = await staleActionResponse.json();
+    assertEqual(staleActionBody.accepted, false, "stale operator action is not accepted");
+    assertEqual(staleActionBody.recovery.reason, "coordinator_rejected_current_action_state", "stale action response carries recovery guidance");
+    assert(staleActionBody.recovery.suggested_resolutions.includes("retry"), "stale action recovery suggests an alternate progress action");
+    assert(staleActionBody.recovery.suggested_resolutions.includes("create_thunk"), "stale action recovery can turn blocked work into an explicit prompt");
+    assert(staleActionBody.recovery.actions.includes("refresh_actions"), "stale action recovery asks the operator to refresh the projection");
+    assert(staleActionBody.recovery.actions.includes("inspect_actor"), "stale action recovery preserves an inspect path");
+    assert(!String(staleActionBody.error ?? "").includes("requested recovery action is stale"), "stale action does not expose raw Restate errors as the operator-facing error");
+    assertEqual(staleActionBody.operator_event.event.event_type, "goal.updated", "stale action still appends an operator event projection");
+
+    const createPromptActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`task:${goalId}:task-plan`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        task_id: "task-plan",
+        resolution: "create_thunk",
+        response_summary: "Ask the operator which recovery path to use.",
+      }),
+    });
+    assert(createPromptActionResponse.ok, "operator action can create a concrete recovery prompt");
+    const createPromptActionBody = await createPromptActionResponse.json();
+    assertEqual(createPromptActionBody.result.data.handler, "create_thunk", "create-thunk action resolution routes through workflow create_thunk");
+    const createPromptCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/create_thunk` && call.body?.continuation?.continuation_id?.includes("task:"));
+    assertEqual(createPromptCall?.body?.kind, "human_input", "create-thunk action resolution creates a human-input thunk");
+    assertEqual(createPromptCall?.body?.continuation?.boundary, "task_dispatch", "create-thunk action resolution resumes at task dispatch");
+
+    const thunkActionResponse = await fetch(`${backendBaseUrl}/api/operator/actions/${encodeURIComponent(`thunk:${goalId}:${thunkId}`)}/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal_id: goalId,
+        resolution: "continue",
+        response_summary: "Resume from the action queue.",
+      }),
+    });
+    assert(thunkActionResponse.ok, "thunk action resolution returns ok");
+    const thunkActionBody = await thunkActionResponse.json();
+    assertEqual(thunkActionBody.result.data.handler, "resume_thunk", "thunk action resolution resumes the delayed compute thunk");
+    assertEqual(thunkActionBody.accepted, true, "thunk action resolution reports accepted workflow mutation");
+
+    const approvalResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/approve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ approval_id: approvalId, approved: true, note: "smoke approval" }),
@@ -2345,7 +2982,7 @@ async function assertBackendBackedControlSurfaces() {
       kind: { kind: "add_constraint", constraint: "Keep fake backend assertions behavior-level." },
       message: "Pin behavioral smoke coverage.",
     };
-    const steerResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/steer`, {
+    const steerResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/steer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(directive),
@@ -2354,10 +2991,10 @@ async function assertBackendBackedControlSurfaces() {
     const steerBody = await steerResponse.json();
     assertEqual(steerBody.data.handler, "steer", "goal steering routes through workflow steer handler");
     assertEqual(steerBody.data.directive.kind.kind, "add_constraint", "goal steering forwards directive kind");
-    const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer`);
+    const steerCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/steer` && call.body?.id === "directive-smoke");
     assertEqual(steerCall?.body?.message, "Pin behavioral smoke coverage.", "goal steering forwards operator message");
 
-    const staleSteerResponse = await fetch(`${backendBaseUrl}/api/goals/${staleGoalId}/steer`, {
+    const staleSteerResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${staleGoalId}/steer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2382,7 +3019,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(staleSteerBody.active_state.workflow_status.data.unavailable, true, "null workflow status read carries unavailable label");
     assertEqual(staleSteerBody.active_state.workflow_status.data.stale, true, "null workflow status read carries stale label");
 
-    const voteResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/vote`, {
+    const voteResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/vote`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2402,7 +3039,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(voteCall?.body?.direction, "up", "goal vote forwards vote direction");
     assertEqual(voteCall?.body?.suggested_role, "overarching_goal", "goal vote forwards promotion role");
 
-    const restartResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/restart`, {
+    const restartResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/restart`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2422,7 +3059,7 @@ async function assertBackendBackedControlSurfaces() {
     const restartCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/restart`);
     assertEqual(restartCall?.body?.task_id, "task-plan", "goal restart forwards target task");
 
-    const branchResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/branch`, {
+    const branchResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/branch`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2445,7 +3082,7 @@ async function assertBackendBackedControlSurfaces() {
     assertEqual(branchCall?.body?.candidate_count, 2, "goal branch forwards candidate count");
 
     const groupId = "018f8f2f-1fd8-7688-bb12-8bfb6b756888";
-    const selectBranchResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/select_branch`, {
+    const selectBranchResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/select_branch`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2462,7 +3099,7 @@ async function assertBackendBackedControlSurfaces() {
     const selectBranchCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/select_branch`);
     assertEqual(selectBranchCall?.body?.group_id, groupId, "goal branch selection forwards group id");
 
-    const thunkCreateResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/create_thunk`, {
+    const thunkCreateResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/create_thunk`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2487,7 +3124,7 @@ async function assertBackendBackedControlSurfaces() {
     const thunkCreateCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/create_thunk`);
     assertEqual(thunkCreateCall?.body?.continuation?.boundary, "task_dispatch", "goal thunk create forwards continuation boundary");
 
-    const mechanismResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/mechanism_start`, {
+    const mechanismResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/mechanism_start`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2508,7 +3145,7 @@ async function assertBackendBackedControlSurfaces() {
     const mechanismCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/mechanism_start`);
     assertEqual(mechanismCall?.body?.target, "branch_selection", "goal mechanism start forwards target");
 
-    const ballotResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/mechanism_ballot`, {
+    const ballotResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/mechanism_ballot`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2526,7 +3163,7 @@ async function assertBackendBackedControlSurfaces() {
     const ballotCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/mechanism_ballot`);
     assertEqual(ballotCall?.body?.allocations?.[0]?.support, 1, "goal mechanism ballot forwards allocation support");
 
-    const resumeResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/resume_thunk`, {
+    const resumeResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/resume_thunk`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2539,11 +3176,11 @@ async function assertBackendBackedControlSurfaces() {
     assert(resumeResponse.ok, "goal thunk resume api returns ok");
     const resumeBody = await resumeResponse.json();
     assertEqual(resumeBody.data.handler, "resume_thunk", "goal thunk resume routes through workflow resume handler");
-    const resumeCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/resume_thunk`);
+    const resumeCall = calls.restate.find((call) => call.url === `/GoalWorkflow/${goalId}/resume_thunk` && call.body?.response_summary === "Smoke continuation can resume.");
     assertEqual(resumeCall?.body?.thunk_id, thunkId, "goal thunk resume forwards thunk id");
     assertEqual(resumeCall?.body?.responder, "operator", "goal thunk resume forwards responder");
 
-    const cancelResponse = await fetch(`${backendBaseUrl}/api/goals/${goalId}/cancel`, {
+    const cancelResponse = await fetch(`${backendBaseUrl}/api/operator/goals/${goalId}/cancel`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify("Cancel from control surface smoke."),
@@ -2647,37 +3284,6 @@ async function assertBackendBackedControlSurfaces() {
   }
 }
 
-async function assertFollowUpsApi() {
-  const response = await fetch(`${baseUrl}/api/follow-ups`);
-  assert(response.ok, "follow-ups api returns ok");
-  const body = await response.json();
-  assert(Array.isArray(body.plans), "follow-ups response includes plans");
-  assert(Array.isArray(body.items), "follow-ups response includes flattened items");
-  assert(typeof body.follow_up_count === "number", "follow-ups response includes count");
-}
-
-async function assertFollowUpDraftApi() {
-  const response = await fetch(`${baseUrl}/api/follow-ups/draft-plan`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      plan: "Smoke Plan",
-      path: "docs/exec-plans/active/smoke.md",
-      index: 0,
-      text: "Make follow-ups actionable from the control surface.",
-    }),
-  });
-  assert(response.ok, "follow-up draft api returns ok");
-  const body = await response.json();
-  assertEqual(body.mode, "draft_plan", "follow-up draft mode");
-  assert(body.prompt.includes("<task>"), "follow-up draft prompt is structured");
-  assert(body.prompt.includes("<instruction>MUST turn this durable continuation item"), "follow-up draft uses hard instruction text");
-  assert(body.prompt.includes("MUST propose subgoals, evidence requirements, budget/sandbox assumptions, review gates"), "follow-up draft requests durable execution criteria");
-  assert(body.prompt.includes("<source_plan>Smoke Plan</source_plan>"), "follow-up draft preserves source plan");
-  assert(body.prompt.includes("<source_path>docs/exec-plans/active/smoke.md</source_path>"), "follow-up draft preserves source path");
-  assert(body.prompt.includes("<follow_up>Make follow-ups actionable from the control surface.</follow_up>"), "follow-up draft prompt includes source item");
-}
-
 async function assertMcpTools() {
   const response = await fetch(`${baseUrl}/mcp`, {
     method: "POST",
@@ -2688,14 +3294,33 @@ async function assertMcpTools() {
   const body = await response.json();
   const names = new Set(body.result.tools.map((tool) => tool.name));
   for (const expected of [
-    "coat_goal_snapshot",
+    "coat_operator_workspace",
+    "coat_operator_goal",
+    "coat_operator_actions",
+    "coat_operator_action_resolve",
+    "coat_operator_agent_context",
+    "coat_operator_goal_submit",
+    "coat_operator_goal_steer",
     "coat_chat_assist",
-    "coat_steer_goal",
-    "coat_follow_up_draft_plan",
     "coat_memory_edit_preview",
     "coat_apply_research_output",
   ]) {
     assert(names.has(expected), `mcp tools include ${expected}`);
+  }
+  const removedTool = (suffix) => ["coat", suffix].join("_");
+  for (const removed of [
+    removedTool("overview"),
+    removedTool(["goal", "snapshot"].join("_")),
+    removedTool(["agent", "activity"].join("_")),
+    removedTool(["human", "threads"].join("_")),
+    removedTool(["approval", "queue"].join("_")),
+    removedTool(["approve", "goal"].join("_")),
+    removedTool(["runner", "list"].join("_")),
+    removedTool(["agent", "context"].join("_")),
+    removedTool(["goal", "submit"].join("_")),
+    removedTool(["steer", "goal"].join("_")),
+  ]) {
+    assert(!names.has(removed), `mcp tools do not include removed operator tool ${removed}`);
   }
 }
 
@@ -2717,27 +3342,6 @@ async function assertMcpChatAssistBehavior() {
   assert(
     goal.plan.distribution_notes.some((note) => note.includes("Coordinator owns task creation")),
     "mcp chat draft preserves durable subagent routing rule",
-  );
-}
-
-async function assertMcpFollowUpDraftBehavior() {
-  const body = await callMcp("coat_follow_up_draft_plan", {
-    plan: "Behavioral Coverage Plan",
-    path: "docs/exec-plans/active/060-test-review-validator.md",
-    index: 2,
-    text: "Replace presence-only smoke tests with workflow tests that fail on broken goal authoring.",
-  });
-  assertEqual(body.mode, "draft_plan", "mcp follow-up draft mode");
-  assertEqual(body.item.plan, "Behavioral Coverage Plan", "mcp follow-up preserves source plan");
-  assertEqual(body.item.path, "docs/exec-plans/active/060-test-review-validator.md", "mcp follow-up preserves source path");
-  assertEqual(body.item.index, 2, "mcp follow-up preserves source index");
-  assert(
-    body.prompt.includes("<follow_up>Replace presence-only smoke tests with workflow tests that fail on broken goal authoring.</follow_up>"),
-    "mcp follow-up prompt preserves actionable text",
-  );
-  assert(
-    body.prompt.includes("MUST identify any questions that block execution"),
-    "mcp follow-up prompt requires blocking questions",
   );
 }
 
@@ -2892,7 +3496,7 @@ function assert(value, message) {
 
 function assertNoAmbiguousLaneCopy(markup, label) {
   const ambiguousLaneCopy = /\b(?:runner|agent|task|model|provider|work|research|chat|embedding|implementation|smoke|fast|deep review|xhigh reasoning|speed tier)[ -]lanes?\b/i;
-  assert(!ambiguousLaneCopy.test(markup), `${label} does not expose ambiguous lane copy`);
+  assert(!ambiguousLaneCopy.test(markup), `${label} has no ambiguous runner-lane copy`);
 }
 
 function assertNoCliCoverageOrDebugInventory(markup, label) {

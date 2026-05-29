@@ -302,20 +302,6 @@ impl GoalWorkflowImpl {
         Ok(())
     }
 
-    async fn skip_cancelled_mutation(
-        &self,
-        ctx: &ObjectContext<'_>,
-        state: &mut GoalState,
-        event: &'static str,
-        transition: &'static str,
-    ) -> HandlerResult<bool> {
-        let Some(skip) = cancelled_mutation_skip(&state.status, event, transition) else {
-            return Ok(false);
-        };
-        self.record_skipped_mutation(ctx, state, skip).await?;
-        Ok(true)
-    }
-
     async fn record_skipped_mutation(
         &self,
         ctx: &ObjectContext<'_>,
@@ -325,6 +311,54 @@ impl GoalWorkflowImpl {
         state.events.push(StateEvent::new(skip.event));
         ctx.set(STATE_KEY, Json(state.clone()));
         self.project_state(ctx, state, skip.transition).await
+    }
+
+    async fn apply_goal_control(
+        &self,
+        ctx: &ObjectContext<'_>,
+        handler: &'static str,
+        transition: GoalControlTransition,
+    ) -> HandlerResult<AppliedGoalControl> {
+        let mut state = require_goal_state(
+            ctx.get::<Json<GoalState>>(STATE_KEY)
+                .await?
+                .map(Json::into_inner),
+            handler,
+        )?;
+
+        match apply_serialized_control_transition(&mut state, transition, &self.spawn_policy) {
+            Ok(outcome) if outcome.drive_frontier => {
+                let state = self.drive_state(ctx, state).await?;
+                Ok(AppliedGoalControl {
+                    state,
+                    outcome,
+                    skipped: false,
+                })
+            }
+            Ok(outcome) => {
+                ctx.set(STATE_KEY, Json(state.clone()));
+                self.project_state(ctx, &state, outcome.projection_reason)
+                    .await?;
+                Ok(AppliedGoalControl {
+                    state,
+                    outcome,
+                    skipped: false,
+                })
+            }
+            Err(GoalControlTransitionError::Skip(skip)) => {
+                self.record_skipped_mutation(ctx, &mut state, skip).await?;
+                Ok(AppliedGoalControl {
+                    state,
+                    outcome: GoalControlOutcome {
+                        projection_reason: skip.transition,
+                        drive_frontier: false,
+                        message: format!("{handler} skipped: {}", skip.event),
+                    },
+                    skipped: true,
+                })
+            }
+            Err(GoalControlTransitionError::Domain(error)) => Err(domain_error(error)),
+        }
     }
 }
 
@@ -509,6 +543,7 @@ fn frontier_idle_status(state: &GoalState) -> coat_domain::GoalStatus {
     }
 }
 
+#[cfg(test)]
 fn cancelled_mutation_skip(
     status: &coat_domain::GoalStatus,
     event: &'static str,
@@ -548,6 +583,7 @@ fn resume_thunk_stale_skip(error: &DomainError) -> Option<SkippedMutation> {
 fn create_thunk_duplicate_skip(
     state: &GoalState,
     continuation_id: &str,
+    task_id: Option<coat_domain::TaskId>,
 ) -> Option<SkippedMutation> {
     state
         .delayed_compute_thunks
@@ -555,11 +591,264 @@ fn create_thunk_duplicate_skip(
         .any(|thunk| {
             thunk.status == coat_domain::DelayedComputeThunkStatus::Pending
                 && thunk.continuation.continuation_id == continuation_id
+                && thunk.task_id == task_id
         })
         .then_some(SkippedMutation {
             event: "create_thunk_skipped:continuation_exists",
             transition: "create_thunk_skipped_continuation_exists",
         })
+}
+
+struct AppliedGoalControl {
+    state: GoalState,
+    outcome: GoalControlOutcome,
+    skipped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalControlOutcome {
+    projection_reason: &'static str,
+    drive_frontier: bool,
+    message: String,
+}
+
+enum GoalControlTransition {
+    Cancel(String),
+    InjectFeedback(HumanFeedback),
+    Steer(SteeringDirective),
+    Approve(HumanApproval),
+    Restart(RestartRequest),
+    Branch(BranchRequest),
+    SelectBranch(BranchSelectionRequest),
+    Vote(GoalPriorityVoteRequest),
+    ResumeThunk(DelayedComputeThunkResumeRequest),
+    CreateThunk(DelayedComputeThunkRequest),
+    MechanismStart(MechanismRoundRequest),
+    MechanismBallot(MechanismBallotRequest),
+}
+
+impl GoalControlTransition {
+    fn cancelled_skip(&self) -> SkippedMutation {
+        match self {
+            Self::Cancel(_) => SkippedMutation {
+                event: "cancel_skipped:goal_cancelled",
+                transition: "cancel_skipped_goal_cancelled",
+            },
+            Self::InjectFeedback(_) => SkippedMutation {
+                event: "human_feedback_skipped:goal_cancelled",
+                transition: "human_feedback_skipped_goal_cancelled",
+            },
+            Self::Steer(_) => SkippedMutation {
+                event: "steering_skipped:goal_cancelled",
+                transition: "steering_skipped_goal_cancelled",
+            },
+            Self::Approve(_) => SkippedMutation {
+                event: "approval_skipped:goal_cancelled",
+                transition: "approval_skipped_goal_cancelled",
+            },
+            Self::Restart(_) => SkippedMutation {
+                event: "restart_skipped:goal_cancelled",
+                transition: "restart_skipped_goal_cancelled",
+            },
+            Self::Branch(_) => SkippedMutation {
+                event: "branch_skipped:goal_cancelled",
+                transition: "branch_skipped_goal_cancelled",
+            },
+            Self::SelectBranch(_) => SkippedMutation {
+                event: "select_branch_skipped:goal_cancelled",
+                transition: "select_branch_skipped_goal_cancelled",
+            },
+            Self::Vote(_) => SkippedMutation {
+                event: "goal_priority_vote_skipped:goal_cancelled",
+                transition: "goal_priority_vote_skipped_goal_cancelled",
+            },
+            Self::ResumeThunk(_) => SkippedMutation {
+                event: "resume_thunk_skipped:goal_cancelled",
+                transition: "resume_thunk_skipped_goal_cancelled",
+            },
+            Self::CreateThunk(_) => SkippedMutation {
+                event: "create_thunk_skipped:goal_cancelled",
+                transition: "create_thunk_skipped_goal_cancelled",
+            },
+            Self::MechanismStart(_) => SkippedMutation {
+                event: "mechanism_start_skipped:goal_cancelled",
+                transition: "mechanism_start_skipped_goal_cancelled",
+            },
+            Self::MechanismBallot(_) => SkippedMutation {
+                event: "mechanism_ballot_skipped:goal_cancelled",
+                transition: "mechanism_ballot_skipped_goal_cancelled",
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+enum GoalControlTransitionError {
+    Domain(DomainError),
+    Skip(SkippedMutation),
+}
+
+impl From<DomainError> for GoalControlTransitionError {
+    fn from(error: DomainError) -> Self {
+        Self::Domain(error)
+    }
+}
+
+fn apply_serialized_control_transition(
+    state: &mut GoalState,
+    transition: GoalControlTransition,
+    spawn_policy: &SpawnPolicy,
+) -> Result<GoalControlOutcome, GoalControlTransitionError> {
+    if state.status == coat_domain::GoalStatus::Cancelled {
+        return Err(GoalControlTransitionError::Skip(
+            transition.cancelled_skip(),
+        ));
+    }
+
+    match transition {
+        GoalControlTransition::Cancel(reason) => {
+            state.cancel(reason.clone());
+            Ok(GoalControlOutcome {
+                projection_reason: "cancelled",
+                drive_frontier: false,
+                message: format!("cancel requested: {reason}"),
+            })
+        }
+        GoalControlTransition::InjectFeedback(feedback) => {
+            let task_suffix = feedback
+                .task_id
+                .map(|task_id| format!(":{task_id}"))
+                .unwrap_or_default();
+            state
+                .events
+                .push(StateEvent::new(format!("human_feedback{task_suffix}")));
+            Ok(GoalControlOutcome {
+                projection_reason: "human_feedback",
+                drive_frontier: false,
+                message: format!("feedback accepted: {}", feedback.message),
+            })
+        }
+        GoalControlTransition::Steer(directive) => {
+            let should_drive = steering_should_drive(&directive.kind);
+            let is_cancel = matches!(directive.kind, SteeringDirectiveKind::Cancel { .. });
+            state.apply_steering(directive, spawn_policy)?;
+            Ok(GoalControlOutcome {
+                projection_reason: if is_cancel {
+                    "cancelled"
+                } else {
+                    "steering_applied"
+                },
+                drive_frontier: should_drive,
+                message: "steering applied".to_string(),
+            })
+        }
+        GoalControlTransition::Approve(approval) => {
+            let approved = approval.approved;
+            let updated = state.apply_human_approval(approval)?;
+            Ok(GoalControlOutcome {
+                projection_reason: if approved {
+                    "approval_accepted"
+                } else {
+                    "approval_rejected"
+                },
+                drive_frontier: approved,
+                message: format!(
+                    "approval {} {}",
+                    updated.id,
+                    if approved { "accepted" } else { "rejected" }
+                ),
+            })
+        }
+        GoalControlTransition::Restart(request) => match state.apply_restart_request(request) {
+            Ok(record) => Ok(GoalControlOutcome {
+                projection_reason: "restart_applied",
+                drive_frontier: true,
+                message: format!(
+                    "restart {} accepted for {} task(s)",
+                    record.id,
+                    record.restarted_task_ids.len()
+                ),
+            }),
+            Err(error) => {
+                if let Some(skip) = restart_stale_skip(&error) {
+                    Err(GoalControlTransitionError::Skip(skip))
+                } else {
+                    Err(GoalControlTransitionError::Domain(error))
+                }
+            }
+        },
+        GoalControlTransition::Branch(request) => {
+            state.branch_task(request, spawn_policy)?;
+            Ok(GoalControlOutcome {
+                projection_reason: "branch_created",
+                drive_frontier: false,
+                message: "branch created".to_string(),
+            })
+        }
+        GoalControlTransition::SelectBranch(request) => {
+            state.apply_branch_selection(request)?;
+            Ok(GoalControlOutcome {
+                projection_reason: "branch_selected",
+                drive_frontier: true,
+                message: "branch selected".to_string(),
+            })
+        }
+        GoalControlTransition::Vote(request) => {
+            state.record_goal_priority_vote(request)?;
+            Ok(GoalControlOutcome {
+                projection_reason: "goal_priority_vote_recorded",
+                drive_frontier: false,
+                message: "goal priority vote recorded".to_string(),
+            })
+        }
+        GoalControlTransition::ResumeThunk(request) => {
+            match state.resume_delayed_compute_thunk(request) {
+                Ok(thunk) => Ok(GoalControlOutcome {
+                    projection_reason: "resume_thunk",
+                    drive_frontier: true,
+                    message: format!("delayed compute thunk {} resumed", thunk.id),
+                }),
+                Err(error) => {
+                    if let Some(skip) = resume_thunk_stale_skip(&error) {
+                        Err(GoalControlTransitionError::Skip(skip))
+                    } else {
+                        Err(GoalControlTransitionError::Domain(error))
+                    }
+                }
+            }
+        }
+        GoalControlTransition::CreateThunk(request) => {
+            if let Some(skip) = create_thunk_duplicate_skip(
+                state,
+                &request.continuation.continuation_id,
+                request.task_id,
+            ) {
+                return Err(GoalControlTransitionError::Skip(skip));
+            }
+            let thunk = state.create_delayed_compute_thunk(request)?;
+            Ok(GoalControlOutcome {
+                projection_reason: "delayed_compute_thunk_created",
+                drive_frontier: false,
+                message: format!("delayed compute thunk {} created", thunk.id),
+            })
+        }
+        GoalControlTransition::MechanismStart(request) => {
+            state.start_mechanism_round(request)?;
+            Ok(GoalControlOutcome {
+                projection_reason: "mechanism_round_started",
+                drive_frontier: false,
+                message: "mechanism round started".to_string(),
+            })
+        }
+        GoalControlTransition::MechanismBallot(request) => {
+            state.record_mechanism_ballot(request)?;
+            Ok(GoalControlOutcome {
+                projection_reason: "mechanism_ballot_recorded",
+                drive_frontier: false,
+                message: "mechanism ballot recorded".to_string(),
+            })
+        }
+    }
 }
 
 impl GoalWorkflow for GoalWorkflowImpl {
@@ -577,27 +866,18 @@ impl GoalWorkflow for GoalWorkflowImpl {
     }
 
     async fn cancel(&self, ctx: ObjectContext<'_>, reason: String) -> HandlerResult<String> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "cancel",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "cancel_skipped:goal_cancelled",
-                "cancel_skipped_goal_cancelled",
+                "cancel",
+                GoalControlTransition::Cancel(reason.clone()),
             )
-            .await?
-        {
-            return Ok(format!("cancel skipped; goal already cancelled: {reason}"));
+            .await?;
+        if applied.skipped {
+            Ok(format!("cancel skipped; goal already cancelled: {reason}"))
+        } else {
+            Ok(applied.outcome.message)
         }
-        state.cancel(reason.clone());
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "cancelled").await?;
-        Ok(format!("cancel requested: {reason}"))
     }
 
     async fn inject_feedback(
@@ -605,23 +885,15 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         feedback: Json<HumanFeedback>,
     ) -> HandlerResult<String> {
-        let feedback = feedback.into_inner();
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "inject_feedback",
-        )?;
-        let task_suffix = feedback
-            .task_id
-            .map(|task_id| format!(":{task_id}"))
-            .unwrap_or_default();
-        state
-            .events
-            .push(StateEvent::new(format!("human_feedback{task_suffix}")));
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "human_feedback").await?;
-        Ok(format!("feedback accepted: {}", feedback.message))
+        Ok(self
+            .apply_goal_control(
+                &ctx,
+                "inject_feedback",
+                GoalControlTransition::InjectFeedback(feedback.into_inner()),
+            )
+            .await?
+            .outcome
+            .message)
     }
 
     async fn steer(
@@ -629,35 +901,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         directive: Json<SteeringDirective>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "steer",
-        )?;
-        let directive = directive.into_inner();
-        if state.status == coat_domain::GoalStatus::Cancelled
-            && !matches!(directive.kind, SteeringDirectiveKind::Cancel { .. })
-        {
-            state
-                .events
-                .push(StateEvent::new("steering_skipped:goal_cancelled"));
-            ctx.set(STATE_KEY, Json(state.clone()));
-            self.project_state(&ctx, &state, "steering_skipped_goal_cancelled")
-                .await?;
-            return Ok(Json(Some(state)));
-        }
-        let should_drive = steering_should_drive(&directive.kind);
-        state
-            .apply_steering(directive, &self.spawn_policy)
-            .map_err(domain_error)?;
-        if should_drive {
-            state = self.drive_state(&ctx, state).await?;
-        } else {
-            ctx.set(STATE_KEY, Json(state.clone()));
-            self.project_state(&ctx, &state, "steering_applied").await?;
-        }
-        Ok(Json(Some(state)))
+        let applied = self
+            .apply_goal_control(
+                &ctx,
+                "steer",
+                GoalControlTransition::Steer(directive.into_inner()),
+            )
+            .await?;
+        Ok(Json(Some(applied.state)))
     }
 
     async fn approve(
@@ -665,45 +916,16 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         approval: Json<HumanApproval>,
     ) -> HandlerResult<String> {
-        let approval = approval.into_inner();
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "approve",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "approval_skipped:goal_cancelled",
-                "approval_skipped_goal_cancelled",
+                "approve",
+                GoalControlTransition::Approve(approval.into_inner()),
             )
-            .await?
-        {
-            return Ok(format!(
-                "approval {} skipped; goal cancelled",
-                approval.approval_id
-            ));
-        }
-        let updated = state
-            .apply_human_approval(approval.clone())
-            .map_err(domain_error)?;
-        let status = if approval.approved {
-            let driven = self.drive_state(&ctx, state).await?;
-            format!("{:?}", driven.status)
-        } else {
-            ctx.set(STATE_KEY, Json(state.clone()));
-            format!("{:?}", state.status)
-        };
+            .await?;
         Ok(format!(
-            "approval {} {}; status {status}",
-            updated.id,
-            if approval.approved {
-                "accepted"
-            } else {
-                "rejected"
-            }
+            "{}; status {:?}",
+            applied.outcome.message, applied.state.status
         ))
     }
 
@@ -712,35 +934,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<RestartRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "restart",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "restart_skipped:goal_cancelled",
-                "restart_skipped_goal_cancelled",
+                "restart",
+                GoalControlTransition::Restart(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        match state.apply_restart_request(request.into_inner()) {
-            Ok(_) => {}
-            Err(error) => {
-                if let Some(skip) = restart_stale_skip(&error) {
-                    self.record_skipped_mutation(&ctx, &mut state, skip).await?;
-                    return Ok(Json(Some(state)));
-                }
-                return Err(domain_error(error));
-            }
-        }
-        let state = self.drive_state(&ctx, state).await?;
-        Ok(Json(Some(state)))
+            .await?;
+        Ok(Json(Some(applied.state)))
     }
 
     async fn branch(
@@ -748,29 +949,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<BranchRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "branch",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "branch_skipped:goal_cancelled",
-                "branch_skipped_goal_cancelled",
+                "branch",
+                GoalControlTransition::Branch(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        state
-            .branch_task(request.into_inner(), &self.spawn_policy)
-            .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "branch_created").await?;
-        Ok(Json(Some(state)))
+            .await?;
+        Ok(Json(Some(applied.state)))
     }
 
     async fn select_branch(
@@ -778,28 +964,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<BranchSelectionRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "select_branch",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "select_branch_skipped:goal_cancelled",
-                "select_branch_skipped_goal_cancelled",
+                "select_branch",
+                GoalControlTransition::SelectBranch(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        state
-            .apply_branch_selection(request.into_inner())
-            .map_err(domain_error)?;
-        let state = self.drive_state(&ctx, state).await?;
-        Ok(Json(Some(state)))
+            .await?;
+        Ok(Json(Some(applied.state)))
     }
 
     async fn vote(
@@ -807,30 +979,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<GoalPriorityVoteRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "vote",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "goal_priority_vote_skipped:goal_cancelled",
-                "goal_priority_vote_skipped_goal_cancelled",
+                "vote",
+                GoalControlTransition::Vote(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        state
-            .record_goal_priority_vote(request.into_inner())
-            .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "goal_priority_vote_recorded")
             .await?;
-        Ok(Json(Some(state)))
+        Ok(Json(Some(applied.state)))
     }
 
     async fn resume_thunk(
@@ -838,35 +994,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<DelayedComputeThunkResumeRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "resume_thunk",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "resume_thunk_skipped:goal_cancelled",
-                "resume_thunk_skipped_goal_cancelled",
+                "resume_thunk",
+                GoalControlTransition::ResumeThunk(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        match state.resume_delayed_compute_thunk(request.into_inner()) {
-            Ok(_) => {}
-            Err(error) => {
-                if let Some(skip) = resume_thunk_stale_skip(&error) {
-                    self.record_skipped_mutation(&ctx, &mut state, skip).await?;
-                    return Ok(Json(Some(state)));
-                }
-                return Err(domain_error(error));
-            }
-        }
-        let state = self.drive_state(&ctx, state).await?;
-        Ok(Json(Some(state)))
+            .await?;
+        Ok(Json(Some(applied.state)))
     }
 
     async fn create_thunk(
@@ -874,37 +1009,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<DelayedComputeThunkRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "create_thunk",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "create_thunk_skipped:goal_cancelled",
-                "create_thunk_skipped_goal_cancelled",
+                "create_thunk",
+                GoalControlTransition::CreateThunk(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        let request = request.into_inner();
-        if let Some(skip) =
-            create_thunk_duplicate_skip(&state, &request.continuation.continuation_id)
-        {
-            self.record_skipped_mutation(&ctx, &mut state, skip).await?;
-            return Ok(Json(Some(state)));
-        }
-        state
-            .create_delayed_compute_thunk(request)
-            .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "delayed_compute_thunk_created")
             .await?;
-        Ok(Json(Some(state)))
+        Ok(Json(Some(applied.state)))
     }
 
     async fn mechanism_start(
@@ -912,30 +1024,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<MechanismRoundRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "mechanism_start",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "mechanism_start_skipped:goal_cancelled",
-                "mechanism_start_skipped_goal_cancelled",
+                "mechanism_start",
+                GoalControlTransition::MechanismStart(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        state
-            .start_mechanism_round(request.into_inner())
-            .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "mechanism_round_started")
             .await?;
-        Ok(Json(Some(state)))
+        Ok(Json(Some(applied.state)))
     }
 
     async fn mechanism_ballot(
@@ -943,30 +1039,14 @@ impl GoalWorkflow for GoalWorkflowImpl {
         ctx: ObjectContext<'_>,
         request: Json<MechanismBallotRequest>,
     ) -> HandlerResult<Json<Option<GoalState>>> {
-        let mut state = require_goal_state(
-            ctx.get::<Json<GoalState>>(STATE_KEY)
-                .await?
-                .map(Json::into_inner),
-            "mechanism_ballot",
-        )?;
-        if self
-            .skip_cancelled_mutation(
+        let applied = self
+            .apply_goal_control(
                 &ctx,
-                &mut state,
-                "mechanism_ballot_skipped:goal_cancelled",
-                "mechanism_ballot_skipped_goal_cancelled",
+                "mechanism_ballot",
+                GoalControlTransition::MechanismBallot(request.into_inner()),
             )
-            .await?
-        {
-            return Ok(Json(Some(state)));
-        }
-        state
-            .record_mechanism_ballot(request.into_inner())
-            .map_err(domain_error)?;
-        ctx.set(STATE_KEY, Json(state.clone()));
-        self.project_state(&ctx, &state, "mechanism_ballot_recorded")
             .await?;
-        Ok(Json(Some(state)))
+        Ok(Json(Some(applied.state)))
     }
 
     async fn status(&self, ctx: SharedObjectContext<'_>) -> HandlerResult<Json<Option<GoalState>>> {
@@ -1549,6 +1629,23 @@ mod tests {
         }
     }
 
+    fn restart_task_request(
+        state: &GoalState,
+        task_id: coat_domain::TaskId,
+        message: &str,
+    ) -> RestartRequest {
+        RestartRequest {
+            goal_id: state.goal.id,
+            scope: RestartScope::Task,
+            reason: RestartReason::OperatorRequested,
+            message: message.to_string(),
+            task_id: Some(task_id),
+            reset_attempts: None,
+            preserve_artifacts: Some(true),
+            operator: Some("tester".to_string()),
+        }
+    }
+
     #[test]
     fn goal_store_projection_defaults_to_local_read_model() {
         assert_eq!(
@@ -1720,15 +1817,126 @@ mod tests {
         state.create_delayed_compute_thunk(request).expect("thunk");
 
         assert_eq!(
-            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input"),
+            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input", Some(task_id)),
             Some(SkippedMutation {
                 event: "create_thunk_skipped:continuation_exists",
                 transition: "create_thunk_skipped_continuation_exists",
             })
         );
         assert_eq!(
-            create_thunk_duplicate_skip(&state, "runtime-verifier/other-input"),
+            create_thunk_duplicate_skip(&state, "runtime-verifier/other-input", Some(task_id)),
             None
+        );
+    }
+
+    #[test]
+    fn serialized_duplicate_create_thunk_is_idempotent_action_resolution() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "duplicate thunk transition",
+            "replayed create-thunk actions should be explicit noops",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        let request = human_input_thunk_request(&state, task_id, "runtime-verifier/operator-input");
+
+        apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(request.clone()),
+            &SpawnPolicy::default(),
+        )
+        .expect("first create-thunk action should create the wait");
+        let first_thunk_id = state.delayed_compute_thunks[0].id;
+
+        let replay = apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(request),
+            &SpawnPolicy::default(),
+        )
+        .expect_err("duplicate create-thunk action should become an explicit skip");
+
+        assert!(
+            matches!(
+                replay,
+                GoalControlTransitionError::Skip(SkippedMutation {
+                    event: "create_thunk_skipped:continuation_exists",
+                    transition: "create_thunk_skipped_continuation_exists"
+                })
+            ),
+            "unexpected duplicate create-thunk replay result: {replay:?}"
+        );
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        assert_eq!(state.delayed_compute_thunks[0].id, first_thunk_id);
+    }
+
+    #[test]
+    fn serialized_create_thunk_preserves_domain_conflict_for_different_task() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "conflicting thunk transition",
+            "same continuation id must not be reused for another task",
+        ));
+        let root_task = state.runnable_tasks().remove(0);
+        let mut result = AgentRunResult::stub_done(&root_task);
+        result.child_requests.push(ChildTaskRequest {
+            role: WorkerKind::Codex,
+            purpose: None,
+            title: Some("Second recovery task".to_string()),
+            subgoal_id: None,
+            color: None,
+            prompt: "Exercise conflicting delayed-compute thunk routing.".to_string(),
+            reason: "test second task conflict".to_string(),
+            dependencies: Vec::new(),
+            budget: None,
+            sandbox: None,
+            done_criteria: None,
+            review_doctrine: None,
+            execution: None,
+            priority: TaskPriority::High,
+            tags: Vec::new(),
+        });
+        state
+            .apply_agent_result(result, &SpawnPolicy::default())
+            .expect("child task created");
+        let second_task_id = state
+            .tasks
+            .values()
+            .find(|task| task.parent_id == Some(root_task.id))
+            .expect("second task")
+            .id;
+        let continuation_id = "runtime-verifier/shared-continuation";
+        let first_request = human_input_thunk_request(&state, root_task.id, continuation_id);
+
+        apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(first_request),
+            &SpawnPolicy::default(),
+        )
+        .expect("first create-thunk action should create the wait");
+
+        let conflicting_request =
+            human_input_thunk_request(&state, second_task_id, continuation_id);
+        let conflict = apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::CreateThunk(conflicting_request),
+            &SpawnPolicy::default(),
+        )
+        .expect_err("same continuation for a different task should remain a domain conflict");
+
+        assert!(
+            matches!(
+                conflict,
+                GoalControlTransitionError::Domain(DomainError::InvariantViolation(ref message))
+                    if message.contains("already exists for a different task")
+            ),
+            "unexpected conflicting create-thunk result: {conflict:?}"
+        );
+        assert_eq!(state.delayed_compute_thunks.len(), 1);
+        assert_eq!(state.delayed_compute_thunks[0].task_id, Some(root_task.id));
+        assert_eq!(
+            state
+                .tasks
+                .get(&second_task_id)
+                .expect("second task")
+                .status,
+            TaskStatus::Runnable
         );
     }
 
@@ -1744,7 +1952,7 @@ mod tests {
         state.delayed_compute_thunks[0].status = coat_domain::DelayedComputeThunkStatus::Cancelled;
 
         assert_eq!(
-            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input"),
+            create_thunk_duplicate_skip(&state, "runtime-verifier/operator-input", Some(task_id)),
             None
         );
     }
@@ -1835,8 +2043,8 @@ mod tests {
         assert!(
             matches!(
                 resume_error,
-                DomainError::SteeringDenied(ref message)
-                    if message == &format!("delayed compute thunk {} is not pending", thunk.id)
+                DomainError::InvariantViolation(ref message)
+                    if message == "cannot resume delayed compute thunk because goal is terminal: Cancelled"
             ),
             "unexpected resume error: {resume_error}"
         );
@@ -1993,6 +2201,129 @@ mod tests {
         assert_eq!(
             first_thunk.status,
             coat_domain::DelayedComputeThunkStatus::Pending
+        );
+    }
+
+    #[test]
+    fn serialized_control_transition_recovers_failed_blocked_and_waiting_states() {
+        for task_status in [TaskStatus::Failed, TaskStatus::Blocked] {
+            let mut state = GoalState::new(GoalSpec::new(
+                "recoverable task",
+                "failed and blocked work should remain restartable",
+            ));
+            let task_id = *state.tasks.keys().next().expect("root task");
+            state.tasks.get_mut(&task_id).expect("task").status = task_status.clone();
+            state.status = frontier_idle_status(&state);
+            let restart = restart_task_request(&state, task_id, "operator recovery");
+
+            let outcome = apply_serialized_control_transition(
+                &mut state,
+                GoalControlTransition::Restart(restart),
+                &SpawnPolicy::default(),
+            )
+            .expect("restart transition should recover non-terminal task state");
+
+            assert!(outcome.drive_frontier);
+            assert_eq!(outcome.projection_reason, "restart_applied");
+            assert_eq!(
+                state.tasks.get(&task_id).expect("task").status,
+                TaskStatus::Runnable,
+                "{task_status:?} task should be runnable after restart"
+            );
+            assert_eq!(
+                state.status,
+                coat_domain::GoalStatus::Running,
+                "{task_status:?} goal should be running after restart"
+            );
+        }
+
+        let mut waiting_state = GoalState::new(GoalSpec::new(
+            "recover waiting task",
+            "human waits should resume through delayed compute continuations",
+        ));
+        let waiting_task_id = *waiting_state.tasks.keys().next().expect("root task");
+        let thunk = waiting_state
+            .create_delayed_compute_thunk(human_input_thunk_request(
+                &waiting_state,
+                waiting_task_id,
+                "runtime-verifier/operator-input",
+            ))
+            .expect("pending wait");
+        assert_eq!(waiting_state.status, coat_domain::GoalStatus::Paused);
+
+        let outcome = apply_serialized_control_transition(
+            &mut waiting_state,
+            GoalControlTransition::ResumeThunk(DelayedComputeThunkResumeRequest {
+                thunk_id: thunk.id,
+                responder: "operator".to_string(),
+                response_summary: "continue".to_string(),
+                artifact_refs: Vec::new(),
+            }),
+            &SpawnPolicy::default(),
+        )
+        .expect("resume transition should recover waiting task state");
+
+        assert!(outcome.drive_frontier);
+        assert_eq!(outcome.projection_reason, "resume_thunk");
+        assert_eq!(
+            waiting_state.tasks[&waiting_task_id].status,
+            TaskStatus::Runnable
+        );
+        assert_eq!(waiting_state.progress().pending_delayed_compute_thunks, 0);
+        assert_eq!(waiting_state.status, coat_domain::GoalStatus::Running);
+    }
+
+    #[test]
+    fn serialized_control_transition_keeps_terminal_goals_closed() {
+        let mut state = GoalState::new(GoalSpec::new(
+            "terminal restart",
+            "completed goals should not be restarted by recovery controls",
+        ));
+        let task_id = *state.tasks.keys().next().expect("root task");
+        state.tasks.get_mut(&task_id).expect("task").status = TaskStatus::Done;
+        state.status = coat_domain::GoalStatus::Done;
+        let restart = restart_task_request(&state, task_id, "try to reopen done goal");
+
+        let error = apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::Restart(restart),
+            &SpawnPolicy::default(),
+        )
+        .expect_err("done goals must not restart in place");
+
+        assert!(
+            matches!(
+                error,
+                GoalControlTransitionError::Domain(DomainError::RestartDenied(ref message))
+                    if message == "goal is terminal: Done"
+            ),
+            "unexpected control transition error"
+        );
+        assert_eq!(state.status, coat_domain::GoalStatus::Done);
+        assert_eq!(state.tasks[&task_id].status, TaskStatus::Done);
+
+        state.cancel("operator closure after completion");
+        let stale_thunk_id = state.goal.id;
+        let error = apply_serialized_control_transition(
+            &mut state,
+            GoalControlTransition::ResumeThunk(DelayedComputeThunkResumeRequest {
+                thunk_id: stale_thunk_id,
+                responder: "operator".to_string(),
+                response_summary: "stale".to_string(),
+                artifact_refs: Vec::new(),
+            }),
+            &SpawnPolicy::default(),
+        )
+        .expect_err("cancelled goal controls should be skipped");
+        assert!(
+            matches!(
+                error,
+                GoalControlTransitionError::Skip(SkippedMutation {
+                    event: "resume_thunk_skipped:goal_cancelled",
+                    transition: "resume_thunk_skipped_goal_cancelled"
+                })
+            ),
+            "cancelled controls should become explicit skip events"
         );
     }
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorActionKind",
+  "type": "string",
+  "enum": [
+    "accept_draft",
+    "resume_thunk",
+    "resolve_approval",
+    "create_thunk",
+    "restart_task",
+    "replan_task",
+    "select_branch",
+    "cancel_goal"
+  ]
+}

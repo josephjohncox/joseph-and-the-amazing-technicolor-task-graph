@@ -1,0 +1,275 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_pending_action",
+  "title": "Bootstrap pending action",
+  "description": "A task is intentionally left waiting on a typed human prompt so the operator action queue has a concrete unresolved item.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:03:00Z",
+    "seed": 3009,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003009",
+        "title": "Bootstrap pending action",
+        "objective": "Expose one unresolved operator action with a concrete continuation and recovery path.",
+        "initial_tasks": [
+          {
+            "role": "planner",
+            "title": "Wait for operator decision",
+            "prompt": "Create a typed human prompt and wait for the operator to choose continue, answer, or replan.",
+            "reason": "Seed an unresolved action queue item that the SPA and TUI can render directly.",
+            "tags": ["scenario", "bootstrap", "pending-action", "thunk"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "description": "Submit the pending-action bootstrap goal."
+    },
+    {
+      "id": "create_pending_action",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "description": "Replay a waiting worker result with an unresolved human prompt.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003901",
+        "status": "waiting",
+        "summary": "Waiting for the operator to choose the bootstrap path.",
+        "confidence": 0.8,
+        "runner_id": "scenario-stub-runner",
+        "operator_action": "Choose continue, answer with extra context, replan, or cancel the goal.",
+        "recovery_actions": ["continue", "answer", "add-context", "replan", "cancel"],
+        "delayed_compute_thunks": [
+          {
+            "thunk_id": "00000000-0000-4000-8000-000000003902",
+            "kind": "human_input",
+            "status": "pending",
+            "summary": "Choose how the bootstrap should continue.",
+            "wait_ref": "wait://bootstrap/pending-action",
+            "continuation_ref": "continuation://bootstrap/pending-action",
+            "operator_action": "Answer the prompt or continue continuation://bootstrap/pending-action.",
+            "human_prompt": {
+              "title": "Choose bootstrap continuation",
+              "question": "Should this bootstrap continue with the prepared fixture, receive more context, or replan?",
+              "why_waiting": "The worker is paused on a durable human-input thunk.",
+              "allowed_actions": ["continue", "answer", "add-context", "replan", "cancel"],
+              "required_context": "optional"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "expectations": {
+    "terminal_state": "blocked",
+    "goal_status": "blocked",
+    "min_tasks": 1,
+    "task_statuses": {
+      "blocked": 1
+    },
+    "required_events": ["goal_submitted", "delayed_compute_thunk_created", "action_required"],
+    "required_ui_projection": ["pending action", "continuation://bootstrap/pending-action"],
+    "action_required_expected": true,
+    "blocked_expected": true
+  },
+  "expected_terminal_state": {
+    "goal_status": "blocked",
+    "task_counts": {
+      "blocked": 1,
+      "done": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "delayed_compute_thunk_created", "action_required"],
+    "open_wait_refs": 1,
+    "satisfaction": {
+      "required": false,
+      "rationale": "This bootstrap is intentionally left waiting so an operator can resolve the pending action."
+    }
+  },
+  "fixtures": {
+    "projection": {
+      "goal_id": "00000000-0000-4000-8000-000000003009",
+      "goal_status": "blocked",
+      "terminal_state": "blocked",
+      "subgoals": [
+        {
+          "id": "bootstrap-pending-action",
+          "title": "Resolve pending operator action",
+          "owner_role": "planner"
+        }
+      ],
+      "tasks": [
+        {
+          "goal_id": "00000000-0000-4000-8000-000000003009",
+          "task_id": "00000000-0000-4000-8000-000000003901",
+          "title": "Waiting for the operator to choose the bootstrap path.",
+          "status": "blocked",
+          "purpose": "work",
+          "role": "planner",
+          "worker_result": {
+            "task_id": "00000000-0000-4000-8000-000000003901",
+            "status": "waiting",
+            "summary": "Waiting for the operator to choose the bootstrap path.",
+            "confidence": 0.8,
+            "runner_id": "scenario-stub-runner",
+            "operator_action": "Choose continue, answer with extra context, replan, or cancel the goal.",
+            "recovery_actions": ["continue", "answer", "add-context", "replan", "cancel"],
+            "delayed_compute_thunks": [
+              {
+                "thunk_id": "00000000-0000-4000-8000-000000003902",
+                "kind": "human_input",
+                "status": "pending",
+                "summary": "Choose how the bootstrap should continue.",
+                "wait_ref": "wait://bootstrap/pending-action",
+                "continuation_ref": "continuation://bootstrap/pending-action",
+                "operator_action": "Answer the prompt or continue continuation://bootstrap/pending-action.",
+                "human_prompt": {
+                  "title": "Choose bootstrap continuation",
+                  "question": "Should this bootstrap continue with the prepared fixture, receive more context, or replan?",
+                  "why_waiting": "The worker is paused on a durable human-input thunk.",
+                  "allowed_actions": ["continue", "answer", "add-context", "replan", "cancel"],
+                  "required_context": "optional"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "events": [
+        {
+          "event_type": "goal_submitted",
+          "scenario_id": "bootstrap_pending_action"
+        },
+        {
+          "event_type": "delayed_compute_thunk_created",
+          "scenario_id": "bootstrap_pending_action"
+        },
+        {
+          "event_type": "action_required",
+          "scenario_id": "bootstrap_pending_action"
+        }
+      ],
+      "artifacts": [],
+      "checkpoints": [
+        {
+          "kind": "scenario_checkpoint",
+          "uri": "checkpoint://scenarios/bootstrap_pending_action"
+        }
+      ],
+      "compute_graph_nodes": [
+        {
+          "id": "00000000-0000-4000-8000-000000003009",
+          "kind": "goal",
+          "label": "Bootstrap pending action",
+          "status": "blocked"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000003901",
+          "kind": "task",
+          "status": "blocked",
+          "purpose": "work"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000003902",
+          "kind": "delayed_compute_thunk",
+          "status": "pending",
+          "label": "action_required",
+          "goal_id": "00000000-0000-4000-8000-000000003009",
+          "wait_ref": "wait://bootstrap/pending-action",
+          "continuation_ref": "continuation://bootstrap/pending-action",
+          "operator_action": "Answer the prompt or continue continuation://bootstrap/pending-action."
+        }
+      ],
+      "runner_dispatches": [
+        {
+          "action_id": "create_pending_action",
+          "kind": "inject_worker_result",
+          "goal_id": "00000000-0000-4000-8000-000000003009",
+          "runner_id": "scenario-stub-runner"
+        }
+      ],
+      "ui_projection": {
+        "goal_list": {
+          "surface": "goal_list",
+          "goals": [
+            {
+              "goal_id": "00000000-0000-4000-8000-000000003009",
+              "title": "Bootstrap pending action",
+              "status": "blocked"
+            }
+          ]
+        },
+        "selected_goal": {
+          "surface": "selected_goal",
+          "goal_id": "00000000-0000-4000-8000-000000003009",
+          "title": "Bootstrap pending action",
+          "status": "blocked"
+        },
+        "human_queue": {
+          "surface": "human_queue",
+          "requests": [
+            {
+              "kind": "human_prompt",
+              "label": "human prompt",
+              "status": "waiting",
+              "goal_id": "00000000-0000-4000-8000-000000003009",
+              "thunk_id": "00000000-0000-4000-8000-000000003902",
+              "question": "Should this bootstrap continue with the prepared fixture, receive more context, or replan?",
+              "allowed_actions": ["continue", "answer", "add-context", "replan", "cancel"],
+              "continuation_ref": "continuation://bootstrap/pending-action"
+            }
+          ]
+        },
+        "task_graph": {
+          "surface": "task_graph",
+          "nodes": [
+            "goal",
+            "task",
+            "human prompt",
+            "thunk",
+            "action_required"
+          ]
+        },
+        "usability_coherence": {
+          "surface": "usability_coherence",
+          "visible_terms": [
+            "goal",
+            "subgoal",
+            "task",
+            "human prompt",
+            "thunk",
+            "fork",
+            "review",
+            "evidence",
+            "action",
+            "completed"
+          ],
+          "blocked_operator_action": "Choose continue, answer with extra context, replan, or cancel the goal.",
+          "completed_goal": {
+            "status": "blocked",
+            "evidence_artifacts": [],
+            "satisfaction_rationale": "This bootstrap is intentionally left waiting so an operator can resolve the pending action."
+          }
+        }
+      },
+      "transitions": ["submit_goal", "create_pending_action"],
+      "raw": {
+        "scenario_id": "bootstrap_pending_action"
+      }
+    }
+  }
+}

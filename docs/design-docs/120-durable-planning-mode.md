@@ -42,13 +42,27 @@ Supported modes:
 
 ## Workflow
 
-1. Draft a plan from a rough operator request.
-2. Revise the plan as the conversation clarifies objective, evidence, constraints, questions, subgoals, and first tasks.
-3. Review the plan as a plan, not as implementation.
-4. Compile the plan into a `GoalSpec`.
-5. Lint or submit the compiled goal.
+1. Ask in the selected plan workspace.
+2. Draft or revise the plan from the operator request, evidence, constraints,
+   questions, subgoals, and first task ideas.
+3. Draft goals as satisfiable execution units inside that plan.
+4. Accept staged plan and goal drafts explicitly.
+5. Compile accepted plan/goal structure into `GoalSpec` records, then lint or
+   submit the compiled goals.
 
 Compiling does not submit the goal. Submission remains an explicit operator or coordinator action.
+
+Plans are the high-level workflow and chat context. Goals are satisfiable
+contracts inside a plan unless an operator intentionally creates a standalone
+goal. Actions, interventions, memory, artifacts, evidence, and chat history are
+plan-scoped by default, then optionally narrowed to a selected goal or task.
+
+Plan phase state should be visible to operators. Use these phase names in
+product surfaces and projections: `asking`, `drafting_plan`, `drafting_goals`,
+`accepting`, `executing`, `reviewing`, `satisfied`, and `cancelled`. A phase is
+not complete because chat said so; it advances only through explicit backend
+actions such as accepting a draft, submitting a goal, resolving a human prompt,
+or confirming satisfaction.
 
 ## Backend Surface
 
@@ -152,7 +166,14 @@ Plan editing through the SPA or MCP still calls backend APIs. The browser does n
 ## Rules
 
 - Use durable plans for ambiguous, multi-step, high-risk, or collaborative requests.
+- Use the Ask -> Draft plan -> Draft goal -> Accept path for normal operator
+  authoring. Chat assists that path, but buttons/action items commit changes.
 - Keep open questions explicit instead of hiding them inside a prompt.
+- Keep staged plan drafts, goal drafts, open questions, and follow-on work
+  attached to `plan_id` so operators can re-enter any plan or goal and continue
+  with the right context.
+- Accepting a plan draft updates the plan. Accepting a goal draft stages it
+  into the plan or submits it only when the operator chooses that exact action.
 - Record decisions and rationale when steering changes direction.
 - Use goal ranking votes for promotion/demotion decisions after execution starts; do not encode global priority changes as hidden prompt text.
 - Use mechanism rounds when multiple agents, humans, or runners need a durable consensus, vote, or auction protocol. Plans can propose the round, but the coordinator owns the mechanism state and tally.

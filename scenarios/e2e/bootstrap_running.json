@@ -1,0 +1,225 @@
+{
+  "$schema": "../../schemas/scenario-spec.schema.json",
+  "schema_version": "scenario-spec/v1",
+  "id": "bootstrap_running",
+  "title": "Bootstrap running work",
+  "description": "A deterministic active worker run so demo/bootstrap state includes useful in-progress work without requiring a live model provider.",
+  "determinism": {
+    "mode": "stub_projection_replay",
+    "projection_mode": "fixture_replay",
+    "clock_start": "2026-05-14T09:01:00Z",
+    "seed": 3002,
+    "live_provider_credentials_required": false,
+    "network_required": false,
+    "stub_runner_id": "scenario-stub-runner"
+  },
+  "goals": [
+    {
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "creation": "submitted",
+      "spec": {
+        "id": "00000000-0000-4000-8000-000000003002",
+        "title": "Bootstrap active worker run",
+        "objective": "Show a currently running task with a visible worker run and pending evidence.",
+        "initial_tasks": [
+          {
+            "role": "codex",
+            "title": "Run deterministic bootstrap work",
+            "prompt": "Keep the deterministic bootstrap task in running state for operator demo coverage.",
+            "reason": "Seed an active task graph state for SPA and TUI navigation.",
+            "tags": ["scenario", "bootstrap", "running"]
+          }
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "submit_goal",
+      "type": "submit_goal",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Submit the running bootstrap goal."
+    },
+    {
+      "id": "start_worker_run",
+      "type": "inject_worker_result",
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "description": "Replay a worker run that is still active.",
+      "worker_result": {
+        "task_id": "00000000-0000-4000-8000-000000003201",
+        "status": "running",
+        "summary": "Scenario stub runner is executing deterministic bootstrap work.",
+        "confidence": 0.7,
+        "runner_id": "scenario-stub-runner",
+        "stage": "executing",
+        "operator_action": "Monitor worker run progress or inspect task evidence when it completes.",
+        "evidence": {
+          "status": "pending",
+          "description": "Evidence will be attached when the active run completes."
+        }
+      }
+    }
+  ],
+  "expected_terminal_state": {
+    "goal_status": "running",
+    "task_counts": {
+      "running": 1,
+      "done": 0,
+      "blocked": 0,
+      "failed": 0
+    },
+    "required_events": ["goal_submitted", "task_dispatched", "worker_run_started"],
+    "required_artifacts": [],
+    "satisfaction": {
+      "required": false,
+      "rationale": "This bootstrap is intentionally running so an operator can inspect active work."
+    }
+  },
+  "evaluator_checks": [
+    {
+      "id": "goal_running",
+      "kind": "goal_status",
+      "assertion": "goal.status == running",
+      "expected": "running",
+      "required": true
+    },
+    {
+      "id": "running_task_visible",
+      "kind": "task_count",
+      "assertion": "running task count",
+      "expected": 1,
+      "required": true
+    },
+    {
+      "id": "active_worker_run_visible",
+      "kind": "operator_flow",
+      "description": "The active worker run and pending evidence are visible to the operator.",
+      "assertion": "worker_runs_and_evidence_visible",
+      "expected": true,
+      "required": true
+    }
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "task", "action", "evidence"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  },
+  "fixtures": {
+    "projection": {
+      "goal_id": "00000000-0000-4000-8000-000000003002",
+      "goal_status": "running",
+      "terminal_state": "running",
+      "subgoals": [
+        {
+          "id": "bootstrap-running",
+          "title": "Active worker run",
+          "owner_role": "codex"
+        }
+      ],
+      "tasks": [
+        {
+          "goal_id": "00000000-0000-4000-8000-000000003002",
+          "task_id": "00000000-0000-4000-8000-000000003201",
+          "title": "Scenario stub runner is executing deterministic bootstrap work.",
+          "status": "running",
+          "purpose": "work",
+          "role": "codex",
+          "worker_result": {
+            "task_id": "00000000-0000-4000-8000-000000003201",
+            "status": "running",
+            "summary": "Scenario stub runner is executing deterministic bootstrap work.",
+            "confidence": 0.7,
+            "runner_id": "scenario-stub-runner",
+            "stage": "executing",
+            "operator_action": "Monitor worker run progress or inspect task evidence when it completes.",
+            "evidence": {
+              "status": "pending",
+              "description": "Evidence will be attached when the active run completes."
+            }
+          }
+        }
+      ],
+      "events": [
+        { "event_type": "goal_submitted", "scenario_id": "bootstrap_running" },
+        { "event_type": "task_dispatched", "scenario_id": "bootstrap_running" },
+        { "event_type": "worker_run_started", "scenario_id": "bootstrap_running" }
+      ],
+      "artifacts": [],
+      "checkpoints": [
+        {
+          "kind": "scenario_checkpoint",
+          "uri": "checkpoint://scenarios/bootstrap_running"
+        }
+      ],
+      "compute_graph_nodes": [
+        {
+          "id": "00000000-0000-4000-8000-000000003002",
+          "kind": "goal",
+          "label": "Bootstrap active worker run",
+          "status": "running"
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000003201",
+          "kind": "task",
+          "status": "running",
+          "purpose": "work"
+        }
+      ],
+      "runner_dispatches": [
+        {
+          "action_id": "start_worker_run",
+          "kind": "inject_worker_result",
+          "goal_id": "00000000-0000-4000-8000-000000003002",
+          "runner_id": "scenario-stub-runner"
+        }
+      ],
+      "ui_projection": {
+        "goal_list": {
+          "surface": "goal_list",
+          "goals": [
+            {
+              "goal_id": "00000000-0000-4000-8000-000000003002",
+              "title": "Bootstrap active worker run",
+              "status": "running"
+            }
+          ]
+        },
+        "selected_goal": {
+          "surface": "selected_goal",
+          "goal_id": "00000000-0000-4000-8000-000000003002",
+          "title": "Bootstrap active worker run",
+          "status": "running"
+        },
+        "task_graph": {
+          "surface": "task_graph",
+          "nodes": ["goal", "task", "running", "worker_run", "evidence"]
+        },
+        "worker_runs": {
+          "surface": "worker_runs",
+          "runs": [
+            {
+              "runner_id": "scenario-stub-runner",
+              "status": "running",
+              "stage": "executing",
+              "summary": "Scenario stub runner is executing deterministic bootstrap work."
+            }
+          ]
+        },
+        "operator_status": {
+          "surface": "operator_status",
+          "next_action": "Monitor worker run progress or inspect task evidence when it completes.",
+          "evidence": "pending evidence"
+        },
+        "usability_coherence": {
+          "surface": "usability_coherence",
+          "visible_terms": ["goal", "task", "action", "evidence"]
+        }
+      },
+      "transitions": ["submit_goal", "start_worker_run"],
+      "raw": {
+        "scenario_id": "bootstrap_running"
+      }
+    }
+  }
+}

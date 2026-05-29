@@ -53,7 +53,8 @@ The coordinator should group demand by execution profile:
   event processor, or SRE/data-engineering task;
 - required capabilities and local tools;
 - model route, sandbox backend, network profile, and locality;
-- labels such as `pool`, `lane`, `tenant`, `hardware`, or `auth` locality.
+- labels such as `pool`, `tenant`, `hardware`, `auth` locality, or an internal
+  compatibility label such as `labels.lane`.
 
 For each group, compute:
 
@@ -283,6 +284,20 @@ admission, defaulting, RBAC, namespace policy, service account permissions, and
 runtime class references without launching work. Use `"mode": "apply"` only
 after that dry-run returns the expected ConfigMap and Job and the coordinator
 has recorded the approval that allowed this capacity request.
+
+Before attempting the kind/k3d proof, run the CI-safe readiness scaffold:
+
+```sh
+make runtime-live-scaffold
+```
+
+The scaffold does not contact Kubernetes. With
+`COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`, it fails readiness when `kubectl`,
+kind/k3d, `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, or the coordinator
+evidence refs are missing. It writes
+`target/coat-runtime-live-scaffold/runtime-live-scaffold.json` with
+`live_proof_executed=false`, so the artifact is only a gate record, not proof
+that a Job ran.
 
 Live `server_dry_run` and `apply` requests must include coordinator evidence
 annotations before sandbox-runner contacts the cluster:

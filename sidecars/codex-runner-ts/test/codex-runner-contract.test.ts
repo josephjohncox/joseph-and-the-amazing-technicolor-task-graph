@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  agentRunResultOutputSchemaForTest,
+  appServerProtocolParamsForTest,
   loadMcpReplayFixture,
   loadReplayFixture,
   runTask,
@@ -166,6 +168,63 @@ test("live mode blocks instead of fabricating work when App Server gates are mis
   assert.ok(result.diagnostics.some((line) => line.includes("CODEX_APP_SERVER_URL is required")));
   assert.equal(result.test_evidence.length, 0);
   assert.equal(JSON.stringify(result).toLowerCase().includes("stub"), false);
+});
+
+test("App Server protocol params match the installed Codex policy enums", () => {
+  const request = agentRunRequest();
+  request.task.sandbox.approval_policy = "on_request";
+  request.task.sandbox.filesystem = "workspace_write";
+  request.task.sandbox.network = "restricted";
+  process.env.CODEX_APP_SERVER_CWD = "/tmp/coat-codex-live-test";
+
+  const params = appServerProtocolParamsForTest(request) as {
+    thread: { approvalPolicy?: string; sandbox?: string };
+    turn: { approvalPolicy?: string; sandboxPolicy?: { type?: string; networkAccess?: unknown } };
+  };
+
+  assert.equal(params.thread.approvalPolicy, "on-request");
+  assert.equal(params.thread.sandbox, "workspace-write");
+  assert.equal((params.thread as { model?: string | null }).model, null);
+  assert.equal(params.turn.approvalPolicy, "on-request");
+  assert.equal(params.turn.sandboxPolicy?.type, "workspaceWrite");
+  assert.equal((params.turn as { model?: string | null }).model, null);
+  assert.equal(params.turn.sandboxPolicy?.networkAccess, false);
+
+  request.task.sandbox.approval_policy = "on_failure";
+  request.task.sandbox.filesystem = "read_only";
+  const stricter = appServerProtocolParamsForTest(request) as {
+    thread: { approvalPolicy?: string; sandbox?: string };
+    turn: { approvalPolicy?: string; sandboxPolicy?: { type?: string } };
+  };
+
+  assert.equal(stricter.thread.approvalPolicy, "on-failure");
+  assert.equal(stricter.thread.sandbox, "read-only");
+  assert.equal(stricter.turn.approvalPolicy, "on-failure");
+  assert.equal(stricter.turn.sandboxPolicy?.type, "readOnly");
+});
+
+test("App Server output schema is strict enough for Responses structured output", () => {
+  const schema = agentRunResultOutputSchemaForTest();
+  const missing: string[] = [];
+  const visit = (node: unknown, path: string) => {
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (record.type === "object" || (Array.isArray(record.type) && record.type.includes("object"))) {
+      if (record.additionalProperties !== false) missing.push(path);
+    }
+    const properties = record.properties;
+    if (properties && typeof properties === "object") {
+      for (const [key, value] of Object.entries(properties as Record<string, unknown>)) {
+        visit(value, `${path}.properties.${key}`);
+      }
+    }
+    const items = record.items;
+    if (items) visit(items, `${path}.items`);
+  };
+
+  visit(schema, "$");
+
+  assert.deepEqual(missing, []);
 });
 
 test("stub mode remains explicit for local smoke", async () => {

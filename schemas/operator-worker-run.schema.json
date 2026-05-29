@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorWorkerRun",
+  "type": "object",
+  "properties": {
+    "finished_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "payload_json": {
+      "default": null
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "worker": {
+      "$ref": "#/$defs/WorkerKind"
+    }
+  },
+  "required": [
+    "run_id",
+    "goal_id",
+    "worker",
+    "status",
+    "summary"
+  ],
+  "$defs": {
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "claude_code",
+        "staff_engineer_claude",
+        "model_provider",
+        "research",
+        "reviewer",
+        "tester",
+        "formal_methods",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

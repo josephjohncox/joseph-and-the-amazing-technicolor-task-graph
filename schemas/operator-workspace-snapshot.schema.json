@@ -1,0 +1,1985 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorWorkspaceSnapshot",
+  "type": "object",
+  "properties": {
+    "actions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorAction"
+      }
+    },
+    "events": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorEvent"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorEvidence"
+      }
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "goals": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorGoalSummary"
+      }
+    },
+    "selected_goal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OperatorGoalDetail"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worker_runs": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorWorkerRun"
+      }
+    }
+  },
+  "required": [
+    "generated_at"
+  ],
+  "$defs": {
+    "ApprovalRecord": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requested_action": {
+          "type": "string"
+        },
+        "risk": {
+          "$ref": "#/$defs/ApprovalRisk"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "approval_id",
+        "goal_id",
+        "status",
+        "risk",
+        "reason",
+        "requested_action"
+      ]
+    },
+    "ApprovalRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "cancelled"
+      ]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "CheckpointKind": {
+      "type": "string",
+      "enum": [
+        "git_commit",
+        "git_tag",
+        "git_branch",
+        "workspace_snapshot",
+        "object_storage_archive",
+        "metadata",
+        "external"
+      ]
+    },
+    "CheckpointRef": {
+      "description": "Durable history marker returned by a worker or subagent.\n\nA checkpoint points at externally inspectable state: a git commit/tag/branch,\na workspace snapshot, an object-store archive, or a metadata marker. It lets\noperators and reviewers reconstruct task history without trusting prose\nsummaries or storing large blobs in workflow state.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitResultRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/CheckpointKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "object_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectStorageArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "task_id",
+        "kind",
+        "label",
+        "summary",
+        "artifact"
+      ]
+    },
+    "ComputeGraphEdge": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComputeGraphEdgeKind"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind"
+      ]
+    },
+    "ComputeGraphEdgeKind": {
+      "type": "string",
+      "enum": [
+        "owns",
+        "parent_child",
+        "depends_on",
+        "suspends_into",
+        "resumes_with",
+        "waits_on",
+        "mechanism_controls"
+      ]
+    },
+    "ComputeGraphNode": {
+      "type": "object",
+      "properties": {
+        "continuation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComputeGraphNodeKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "requested_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ComputeGraphNodeStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "thunk_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "wait_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "status"
+      ]
+    },
+    "ComputeGraphNodeKind": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "task",
+        "delayed_compute_thunk",
+        "continuation",
+        "wait_ref",
+        "mechanism_round"
+      ]
+    },
+    "ComputeGraphNodeStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "waiting",
+        "needs_validation",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled",
+        "paused",
+        "resumed",
+        "expired",
+        "ratification_required"
+      ]
+    },
+    "ComputeGraphSnapshot": {
+      "description": "Read-only projection of the current durable compute graph.\n\nThe graph makes delayed computation, delimited continuations, waits, task\ndependencies, and coordinator-owned mechanism rounds inspectable without\nletting a worker own those decisions. It is derived from `GoalState`, so it\ncan be rebuilt after Restate replay.",
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComputeGraphEdge"
+          }
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "nodes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComputeGraphNode"
+          }
+        },
+        "open_thunks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "runnable_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "waiting_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "required": [
+        "goal_id",
+        "open_thunks"
+      ]
+    },
+    "ContinuationBoundary": {
+      "type": "string",
+      "enum": [
+        "goal_workflow",
+        "task_dispatch",
+        "approval_gate",
+        "event_wait",
+        "external_callback"
+      ]
+    },
+    "ContinuationRef": {
+      "type": "object",
+      "properties": {
+        "boundary": {
+          "$ref": "#/$defs/ContinuationBoundary"
+        },
+        "continuation_id": {
+          "type": "string"
+        },
+        "resume_actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContinuationResumeAction"
+          }
+        },
+        "state_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "continuation_id",
+        "boundary",
+        "state_ref"
+      ]
+    },
+    "ContinuationResumeAction": {
+      "type": "string",
+      "enum": [
+        "mark_runnable",
+        "apply_feedback",
+        "apply_approval",
+        "inject_task",
+        "replan",
+        "cancel"
+      ]
+    },
+    "DelayedComputeThunk": {
+      "description": "Coordinator-owned placeholder for paused work.\n\nA delayed compute thunk captures the suspended continuation when a task needs\nhuman input, external events, time, resources, or another bounded signal\nbefore computation can continue. It is deliberately state, not a sleeping\nworker loop.",
+      "type": "object",
+      "properties": {
+        "continuation": {
+          "$ref": "#/$defs/ContinuationRef"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/DelayedComputeThunkKind"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requested_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resume_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayedComputeThunkResumeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resumed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/DelayedComputeThunkStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "wait_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "kind",
+        "status",
+        "reason",
+        "continuation",
+        "created_at"
+      ]
+    },
+    "DelayedComputeThunkKind": {
+      "type": "string",
+      "enum": [
+        "human_input",
+        "approval",
+        "external_event",
+        "timer",
+        "resource_availability",
+        "model_availability",
+        "webhook_callback"
+      ]
+    },
+    "DelayedComputeThunkResumeRecord": {
+      "type": "object",
+      "properties": {
+        "artifact_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "responder": {
+          "type": "string"
+        },
+        "response_summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "responder",
+        "response_summary"
+      ]
+    },
+    "DelayedComputeThunkStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "resumed",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "GitResultRef": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "diff_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pushed": {
+          "type": "boolean"
+        },
+        "remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "worktree_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "pushed"
+      ]
+    },
+    "GoalHierarchyRole": {
+      "type": "string",
+      "enum": [
+        "overarching_goal",
+        "peer_goal",
+        "subgoal"
+      ]
+    },
+    "GoalProgress": {
+      "type": "object",
+      "properties": {
+        "blocked_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "by_status": {
+          "type": "object",
+          "properties": {
+            "blocked": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "cancelled": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "done": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "failed": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "needs_validation": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "pending": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "runnable": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "running": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "waiting_approval": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "waiting_input": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "compute_graph": {
+          "$ref": "#/$defs/ComputeGraphSnapshot"
+        },
+        "failed_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "next_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskProgress"
+          }
+        },
+        "open_mechanism_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "open_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "pending_delayed_compute_thunks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "percent_done": {
+          "type": "number",
+          "format": "float"
+        },
+        "ranking": {
+          "$ref": "#/$defs/GoalRankingSummary"
+        },
+        "ratification_required_mechanism_rounds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "runnable_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "satisfaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SatisfactionReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        },
+        "subgoals": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SubgoalProgress"
+          }
+        },
+        "terminal_ok_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string"
+        },
+        "total_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "waiting_approval_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "waiting_input_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "goal_id",
+        "title",
+        "status",
+        "total_tasks",
+        "open_tasks",
+        "terminal_ok_tasks",
+        "blocked_tasks",
+        "failed_tasks",
+        "waiting_approval_tasks",
+        "waiting_input_tasks",
+        "percent_done",
+        "ranking",
+        "open_mechanism_rounds",
+        "ratification_required_mechanism_rounds",
+        "pending_delayed_compute_thunks",
+        "compute_graph"
+      ]
+    },
+    "GoalRankingDecision": {
+      "type": "object",
+      "properties": {
+        "downvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effective_priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "hierarchy_role": {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "outcome": {
+          "$ref": "#/$defs/GoalRankingOutcome"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "upvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vote_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "score",
+        "upvotes",
+        "downvotes",
+        "vote_count",
+        "effective_priority",
+        "hierarchy_role",
+        "outcome",
+        "reason"
+      ]
+    },
+    "GoalRankingOutcome": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "promoted",
+        "demoted",
+        "unchanged"
+      ]
+    },
+    "GoalRankingSummary": {
+      "type": "object",
+      "properties": {
+        "downvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effective_priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "hierarchy_role": {
+          "$ref": "#/$defs/GoalHierarchyRole"
+        },
+        "latest_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalRankingDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "score": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "upvotes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vote_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "score",
+        "upvotes",
+        "downvotes",
+        "vote_count",
+        "effective_priority",
+        "hierarchy_role"
+      ]
+    },
+    "GoalStatus": {
+      "type": "string",
+      "enum": [
+        "running",
+        "waiting_approval",
+        "done",
+        "blocked",
+        "failed",
+        "paused",
+        "cancelled"
+      ]
+    },
+    "GraphColorRef": {
+      "description": "Optional visual metadata for the Technicolor Task Graph.\n\nColors are presentation hints for dashboards, screenshots, and operator\nreadability. They must not drive routing, budgets, validation, approvals,\nor any other coordinator policy.",
+      "type": "object",
+      "properties": {
+        "hex": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "meaning": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "hex",
+        "meaning"
+      ]
+    },
+    "ObjectStorageArtifactRef": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "store": {
+          "$ref": "#/$defs/ObjectStoreRef"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "key",
+        "uri",
+        "description"
+      ]
+    },
+    "ObjectStoreKind": {
+      "type": "string",
+      "enum": [
+        "aws_s3",
+        "s3_compatible",
+        "minio",
+        "cloudflare_r2",
+        "gcs_s3",
+        "other"
+      ]
+    },
+    "ObjectStoreRef": {
+      "type": "object",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force_path_style": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObjectStoreKind"
+        },
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SecretRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "bucket",
+        "force_path_style"
+      ]
+    },
+    "OperatorAction": {
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "allowed_resolutions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OperatorActionResolutionKind"
+          }
+        },
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/OperatorActionKind"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "question": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "thunk": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayedComputeThunk"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "kind",
+        "goal_id",
+        "title",
+        "question",
+        "status"
+      ]
+    },
+    "OperatorActionKind": {
+      "type": "string",
+      "enum": [
+        "accept_draft",
+        "resume_thunk",
+        "resolve_approval",
+        "create_thunk",
+        "restart_task",
+        "replan_task",
+        "select_branch",
+        "cancel_goal"
+      ]
+    },
+    "OperatorActionResolutionKind": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "answer",
+        "add_context",
+        "approve",
+        "reject",
+        "retry",
+        "replan",
+        "create_thunk",
+        "cancel_goal",
+        "accept_draft",
+        "discard_draft",
+        "select_branch"
+      ]
+    },
+    "OperatorEvent": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "title",
+        "detail"
+      ]
+    },
+    "OperatorEvidence": {
+      "type": "object",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CheckpointRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_id": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "goal_id",
+        "title"
+      ]
+    },
+    "OperatorGoalDetail": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OperatorAction"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OperatorEvidence"
+          }
+        },
+        "graph": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperatorGraph"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "$ref": "#/$defs/OperatorGoalSummary"
+        },
+        "tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TaskRecord"
+          }
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "OperatorGoalSummary": {
+      "type": "object",
+      "properties": {
+        "blocked_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failed_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "open_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "percent_done": {
+          "type": "number",
+          "format": "float"
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "goal_id",
+        "title",
+        "objective",
+        "status",
+        "percent_done",
+        "open_tasks",
+        "blocked_tasks",
+        "failed_tasks",
+        "satisfied"
+      ]
+    },
+    "OperatorGraph": {
+      "type": "object",
+      "properties": {
+        "compute_graph": {
+          "$ref": "#/$defs/ComputeGraphSnapshot"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "goal_id",
+        "compute_graph"
+      ]
+    },
+    "OperatorWorkerRun": {
+      "type": "object",
+      "properties": {
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "worker": {
+          "$ref": "#/$defs/WorkerKind"
+        }
+      },
+      "required": [
+        "run_id",
+        "goal_id",
+        "worker",
+        "status",
+        "summary"
+      ]
+    },
+    "ReviewDecision": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "changes_requested",
+        "blocked",
+        "inconclusive"
+      ]
+    },
+    "SatisfactionReport": {
+      "type": "object",
+      "properties": {
+        "all_tasks_terminal": {
+          "type": "boolean"
+        },
+        "latest_decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "open_findings": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "open_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reasons": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "reviews_passed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reviews_required": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        },
+        "unification_done": {
+          "type": "boolean"
+        },
+        "work_done": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "satisfied",
+        "score",
+        "work_done",
+        "reviews_required",
+        "reviews_passed",
+        "unification_done",
+        "all_tasks_terminal",
+        "open_tasks",
+        "open_findings"
+      ]
+    },
+    "SecretProvider": {
+      "type": "string",
+      "enum": [
+        "env",
+        "kubernetes_secret",
+        "vault",
+        "aws_secrets_manager",
+        "gcp_secret_manager",
+        "azure_key_vault",
+        "one_password",
+        "bitwarden",
+        "doppler",
+        "sops",
+        "external_broker",
+        "local_file"
+      ]
+    },
+    "SecretRef": {
+      "type": "object",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/SecretProvider"
+        }
+      },
+      "required": [
+        "provider",
+        "name"
+      ]
+    },
+    "SubgoalProgress": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphColorRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dependencies": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "open_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "owner_role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runnable_tasks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/SubgoalStatus"
+        },
+        "subgoal_id": {
+          "type": "string"
+        },
+        "terminal_ok_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total_tasks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "subgoal_id",
+        "status",
+        "total_tasks",
+        "open_tasks",
+        "terminal_ok_tasks"
+      ]
+    },
+    "SubgoalStatus": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "open",
+        "running",
+        "done",
+        "blocked",
+        "failed"
+      ]
+    },
+    "TaskPriority": {
+      "type": "string",
+      "enum": [
+        "critical",
+        "high",
+        "normal",
+        "low",
+        "background"
+      ]
+    },
+    "TaskProgress": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "blocked_by": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "child_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphColorRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dependency_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "parent_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "purpose_kind": {
+          "$ref": "#/$defs/TaskPurposeKind"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "runnable": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "subgoal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "title",
+        "status",
+        "role",
+        "purpose_kind",
+        "depth",
+        "priority",
+        "attempts",
+        "dependency_count",
+        "child_count",
+        "runnable"
+      ]
+    },
+    "TaskPurposeKind": {
+      "type": "string",
+      "enum": [
+        "work",
+        "review",
+        "unification",
+        "actor_retry",
+        "candidate_branch",
+        "branch_vote",
+        "branch_unification",
+        "research"
+      ]
+    },
+    "TaskRecord": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphColorRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "parent_task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "priority": {
+          "$ref": "#/$defs/TaskPriority"
+        },
+        "priority_rank": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "purpose_kind": {
+          "$ref": "#/$defs/TaskPurposeKind"
+        },
+        "result_uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "$ref": "#/$defs/WorkerKind"
+        },
+        "runnable": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "subgoal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "goal_id",
+        "task_id",
+        "title",
+        "role",
+        "status",
+        "purpose_kind",
+        "depth",
+        "priority",
+        "priority_rank",
+        "attempts",
+        "runnable"
+      ]
+    },
+    "TaskStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "runnable",
+        "running",
+        "needs_validation",
+        "waiting_approval",
+        "waiting_input",
+        "done",
+        "blocked",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "WaitRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WaitRefKind"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
+      ]
+    },
+    "WorkerKind": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "codex",
+        "claude_code",
+        "staff_engineer_claude",
+        "model_provider",
+        "research",
+        "reviewer",
+        "tester",
+        "formal_methods",
+        "validator",
+        "patch_merger",
+        "rust_tool"
+      ]
+    }
+  }
+}

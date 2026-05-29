@@ -2,9 +2,9 @@ use coat_domain::{
     AgentRunResult, ApprovalPolicy, ApprovalStatus, ContinuationBoundary, ContinuationRef,
     ContinuationResumeAction, DelayedComputeThunk, DelayedComputeThunkKind,
     DelayedComputeThunkRequest, DelayedComputeThunkResumeRequest, DelayedComputeThunkStatus,
-    GoalSpec, GoalState, GoalStatus, HumanApproval, RestartReason, RestartRequest, RestartScope,
-    SpawnPolicy, TaskId, TaskStatus, ValidationReport, ValidationRequest, WaitRef, WaitRefKind,
-    WorkerRunStatus,
+    DomainError, GoalSpec, GoalState, GoalStatus, GoalStoreSnapshot, HumanApproval, OperatorActor,
+    OperatorTransition, RestartReason, RestartRequest, RestartScope, SpawnPolicy, TaskActor,
+    TaskId, TaskStatus, ValidationReport, ValidationRequest, WaitRef, WaitRefKind, WorkerRunStatus,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -411,6 +411,7 @@ fn assert_recoverable_states_are_actionable(state: &GoalState) {
             TaskStatus::Blocked => assert!(
                 has_pending_approval_for_task(state, task.id)
                     || has_pending_thunk_for_task(state, task.id)
+                    || blocked_task_without_wait_has_operator_recovery(state, task.id)
                     || restart_would_succeed(state, RestartScope::Task, Some(task.id))
                     || restart_would_succeed(state, RestartScope::Blocked, None),
                 "blocked task {} has no recovery action",
@@ -464,6 +465,27 @@ fn has_pending_approval_for_task(state: &GoalState, task_id: TaskId) -> bool {
     })
 }
 
+fn blocked_task_without_wait_has_operator_recovery(state: &GoalState, task_id: TaskId) -> bool {
+    let snapshot = GoalStoreSnapshot::from_state(state);
+    let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) else {
+        return false;
+    };
+    if task.status != TaskStatus::Blocked {
+        return false;
+    }
+    let Err(rejection) = TaskActor(task).can_apply(&OperatorTransition::TaskDispatched) else {
+        return false;
+    };
+    let actions: Vec<_> = rejection
+        .recovery_hints
+        .iter()
+        .map(|hint| hint.action.as_str())
+        .collect();
+    ["retry", "replan", "cancel_goal", "create_thunk"]
+        .iter()
+        .all(|action| actions.contains(action))
+}
+
 fn restart_would_succeed(state: &GoalState, scope: RestartScope, task_id: Option<TaskId>) -> bool {
     let mut clone = state.clone();
     clone
@@ -474,4 +496,199 @@ fn restart_would_succeed(state: &GoalState, scope: RestartScope, task_id: Option
             "restart dry-run for generated state",
         ))
         .is_ok()
+}
+
+#[test]
+fn terminal_done_goal_rejects_stale_worker_validation_and_wait_mutations() {
+    let mut state = completed_goal_state("terminal done");
+    let task = state.tasks.values().next().expect("root task").clone();
+    assert_eq!(state.status, GoalStatus::Done);
+    assert_eq!(task.status, TaskStatus::Done);
+
+    let snapshot_before = GoalStoreSnapshot::from_state(&state);
+    let stale_result = AgentRunResult::stub_done(&task);
+    assert_terminal_mutation_rejected(
+        state.apply_agent_result(stale_result.clone(), &SpawnPolicy::default()),
+        "goal is terminal",
+    );
+    assert_terminal_mutation_rejected(
+        state.apply_validation(ValidationReport::from_result(ValidationRequest {
+            goal_id: state.goal.id,
+            task: task.clone(),
+            result: stale_result,
+        })),
+        "goal is terminal",
+    );
+    assert_terminal_mutation_rejected(state.mark_running(task.id), "goal is terminal");
+    assert_terminal_mutation_rejected(
+        state.create_delayed_compute_thunk(delayed_compute_thunk_request(
+            &state,
+            task.id,
+            "stale-done",
+        )),
+        "goal is terminal",
+    );
+
+    assert_eq!(GoalStoreSnapshot::from_state(&state), snapshot_before);
+}
+
+#[test]
+fn cancelled_goal_rejects_late_worker_validation_dispatch_and_wait_mutations() {
+    let mut state = GoalState::new(GoalSpec::new(
+        "terminal cancelled",
+        "cancelled goals should ignore late worker and operator mutations",
+    ));
+    let task_id = state.runnable_tasks().remove(0).id;
+    state.cancel("operator stop");
+    let task = state.tasks[&task_id].clone();
+    assert_eq!(state.status, GoalStatus::Cancelled);
+    assert_eq!(task.status, TaskStatus::Cancelled);
+
+    let snapshot_before = GoalStoreSnapshot::from_state(&state);
+    let stale_result = AgentRunResult::stub_done(&task);
+    assert_terminal_mutation_rejected(
+        state.apply_agent_result(stale_result.clone(), &SpawnPolicy::default()),
+        "goal is terminal",
+    );
+    assert_terminal_mutation_rejected(
+        state.apply_validation(ValidationReport::from_result(ValidationRequest {
+            goal_id: state.goal.id,
+            task: task.clone(),
+            result: stale_result,
+        })),
+        "goal is terminal",
+    );
+    assert_terminal_mutation_rejected(state.mark_running(task.id), "goal is terminal");
+    assert_terminal_mutation_rejected(
+        state.create_delayed_compute_thunk(delayed_compute_thunk_request(
+            &state,
+            task.id,
+            "stale-cancelled",
+        )),
+        "goal is terminal",
+    );
+
+    assert_eq!(GoalStoreSnapshot::from_state(&state), snapshot_before);
+}
+
+#[test]
+fn terminal_task_rejects_late_worker_result_even_if_goal_was_not_refreshed() {
+    let mut state = GoalState::new(GoalSpec::new(
+        "terminal task",
+        "terminal task nodes should not be reopened by stale worker results",
+    ));
+    let task_id = state.runnable_tasks().remove(0).id;
+    state.tasks.get_mut(&task_id).expect("task").status = TaskStatus::Done;
+    state.status = GoalStatus::Running;
+    let task = state.tasks[&task_id].clone();
+    let snapshot_before = GoalStoreSnapshot::from_state(&state);
+
+    assert_terminal_mutation_rejected(
+        state.apply_agent_result(AgentRunResult::stub_done(&task), &SpawnPolicy::default()),
+        "task",
+    );
+
+    assert_eq!(GoalStoreSnapshot::from_state(&state), snapshot_before);
+}
+
+#[test]
+fn goal_store_projection_is_deterministic_for_same_state() {
+    let mut goal = GoalSpec::new(
+        "projection determinism",
+        "projecting the same durable state twice should produce identical records",
+    );
+    goal.restart_policy.enabled = false;
+    let mut state = GoalState::new(goal);
+    let task = state.runnable_tasks().remove(0);
+    let result = AgentRunResult {
+        status: WorkerRunStatus::Blocked,
+        summary: "need operator context before continuing".to_string(),
+        next_actions: vec!["answer the recovery prompt".to_string()],
+        ..AgentRunResult::stub_done(&task)
+    };
+
+    state
+        .apply_agent_result(result, &SpawnPolicy::default())
+        .expect("blocked result gets repaired into an actionable wait");
+
+    let first = GoalStoreSnapshot::from_state(&state);
+    let second = GoalStoreSnapshot::from_state(&state);
+    assert_eq!(first, second);
+    assert_eq!(
+        serde_json::to_value(&first).expect("snapshot serializes"),
+        serde_json::to_value(&second).expect("snapshot serializes")
+    );
+}
+
+#[test]
+fn non_stub_goal_cannot_be_satisfied_by_stub_result_through_state() {
+    let mut goal = GoalSpec::new(
+        "non stub satisfaction gate",
+        "non-stub work should not be satisfiable with placeholder worker output",
+    );
+    goal.review_policy.enabled = false;
+    goal.default_execution
+        .runner
+        .required_labels
+        .insert("allow_stub_runners".to_string(), "false".to_string());
+    let mut state = GoalState::new(goal);
+    let task = state.runnable_tasks().remove(0);
+    let result = AgentRunResult::stub_done(&task);
+    state
+        .apply_agent_result(result.clone(), &SpawnPolicy::default())
+        .expect("worker result is recorded before validation rejects placeholder evidence");
+
+    let report = ValidationReport::from_result(ValidationRequest {
+        goal_id: task.goal_id,
+        task,
+        result,
+    });
+    assert!(!report.passed);
+    assert!(
+        report
+            .missing_criteria
+            .contains(&"stub_actor_output".to_string()),
+        "{:?}",
+        report.missing_criteria
+    );
+    state
+        .apply_validation(report)
+        .expect("failed validation is projected");
+
+    assert_ne!(state.status, GoalStatus::Done);
+    assert!(!state.satisfaction_report().satisfied);
+    assert_eq!(state.progress().terminal_ok_tasks, 0);
+}
+
+fn completed_goal_state(title: &str) -> GoalState {
+    let mut goal = GoalSpec::new(title, "complete once and reject stale transitions");
+    goal.review_policy.enabled = false;
+    let mut state = GoalState::new(goal);
+    let task_id = state.runnable_tasks().remove(0).id;
+    state.mark_running(task_id).expect("task starts");
+    let task = state.tasks[&task_id].clone();
+    let result = AgentRunResult::stub_done(&task);
+    state
+        .apply_agent_result(result.clone(), &SpawnPolicy::default())
+        .expect("worker result applies");
+    let task = state.tasks[&task_id].clone();
+    state
+        .apply_validation(ValidationReport::from_result(ValidationRequest {
+            goal_id: state.goal.id,
+            task,
+            result,
+        }))
+        .expect("validation completes goal");
+    state
+}
+
+fn assert_terminal_mutation_rejected<T>(result: Result<T, DomainError>, expected: &str) {
+    let error = match result {
+        Ok(_) => panic!("terminal mutation should reject"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains(expected),
+        "expected error to contain {expected:?}, got {error}"
+    );
 }

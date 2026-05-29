@@ -1,0 +1,40 @@
+{
+  "id": "00000000-0000-4000-8000-000000004004",
+  "title": "Demo completed executor lifecycle",
+  "objective": "Create a deterministic completed goal that runs through coordinator dispatch, bounded worker execution, validation, evidence projection, and goal satisfaction for operator UI navigation.",
+  "repo": null,
+  "root_budget": {
+    "max_tokens": 200000,
+    "remaining_tokens": 200000,
+    "max_runtime_seconds": 600,
+    "remaining_runtime_seconds": 600,
+    "max_tool_calls": 50,
+    "remaining_tool_calls": 50,
+    "max_child_tasks": 8,
+    "remaining_child_tasks": 8,
+    "max_patch_size": 50000
+  },
+  "done_criteria": {
+    "tests_pass": false,
+    "artifact_exists": true,
+    "validator_score_min": 0.8
+  },
+  "initial_tasks": [
+    {
+      "role": "tester",
+      "purpose": {
+        "kind": "work"
+      },
+      "title": "Produce a demo artifact",
+      "subgoal_id": "demo-completed-artifact",
+      "prompt": "Produce a small structured test evidence artifact proving the demo executor path ran and can be validated by the coordinator.",
+      "reason": "The bootstrap should leave one completed goal visible in the SPA and TUI with task evidence and a satisfaction outcome.",
+      "done_criteria": {
+        "tests_pass": false,
+        "artifact_exists": true,
+        "validator_score_min": 0.8
+      },
+      "tags": ["bootstrap", "completed", "executor-lifecycle"]
+    }
+  ]
+}

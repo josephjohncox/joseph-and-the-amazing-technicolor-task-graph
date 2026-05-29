@@ -12,13 +12,14 @@ test.describe("COAT live deterministic stack", () => {
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     await expect(page.locator(".outcome-meta")).toContainText("Context: workspace");
 
-    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Goal" })).toHaveClass(/active/);
+    await expect(page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Ask" })).toHaveClass(/active/);
+    await page.getByRole("group", { name: "Draft type" }).getByRole("button", { name: "Draft goal" }).click();
     await sendComposerMessage(page, objective);
     await expect(page.getByText("Goal draft ready", { exact: true })).toBeVisible();
 
     await page.locator(".goal-draft-editor").getByLabel("Title").fill(title);
     await page.locator(".goal-draft-editor").getByLabel("Objective").fill(objective);
-    await page.getByRole("button", { name: "Accept draft" }).click();
+    await page.getByLabel("Draft actions").getByRole("button", { name: "Accept draft" }).click();
 
     const goalId = await selectedGoalIdFromUrl(page);
     expect(goalId).toMatch(/^[0-9a-f-]{36}$/);
@@ -31,8 +32,8 @@ test.describe("COAT live deterministic stack", () => {
       intervals: [500, 1_000, 2_000],
     }).toBe(true);
 
-    await expect.poll(async () => goalSnapshotHasProjectedWork(page, goalId), {
-      message: "goal snapshot should expose projected tasks or compute graph nodes",
+    await expect.poll(async () => operatorGoalDetailHasProjectedWork(page, goalId), {
+      message: "operator goal detail should expose projected tasks or compute graph nodes",
       timeout: 60_000,
       intervals: [500, 1_000, 2_000],
     }).toBe(true);
@@ -69,8 +70,10 @@ test.describe("COAT live deterministic stack", () => {
     }).toBe(true);
     await expect(page.getByText(replacementKey).first()).toBeVisible();
 
-    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Human Queue", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Approvals" })).toBeVisible();
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Action Queue", exact: true }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Action Queue", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Action queue", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Approvals \d+/ })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Feedback threads" })).toBeVisible();
 
     await expect.poll(async () => runnerCount(page), {
@@ -79,6 +82,7 @@ test.describe("COAT live deterministic stack", () => {
       intervals: [500, 1_000, 2_000],
     }).toBeGreaterThan(0);
     await page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: "Runners", exact: true }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Runner Fleet", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: "Runner fleet", exact: true })).toBeVisible();
     await expect(page.getByLabel("Runner fleet state")).toContainText("registered");
 
@@ -111,23 +115,26 @@ async function selectedGoalIdFromUrl(page: Page): Promise<string> {
 
 async function goalListContains(page: Page, goalId: string, title: string): Promise<boolean> {
   const response = await page.evaluate(async () => {
-    const result = await fetch("/api/goals?limit=100");
+    const result = await fetch("/api/operator/goals?limit=100");
     return result.json();
   });
   const text = JSON.stringify(response);
   return text.includes(goalId) && text.includes(title);
 }
 
-async function goalSnapshotHasProjectedWork(page: Page, goalId: string): Promise<boolean> {
+async function operatorGoalDetailHasProjectedWork(page: Page, goalId: string): Promise<boolean> {
   const response = await page.evaluate(async (selectedGoalId) => {
-    const result = await fetch(`/api/goals/${encodeURIComponent(selectedGoalId)}`);
+    const result = await fetch(`/api/operator/goals/${encodeURIComponent(selectedGoalId)}`);
     return result.json();
   }, goalId);
   const text = JSON.stringify(response);
   if (!text.includes(goalId)) {
     return false;
   }
-  const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+  const detail = response && typeof response === "object" ? response as Record<string, unknown> : {};
+  const record = detail.snapshot && typeof detail.snapshot === "object"
+    ? detail.snapshot as Record<string, unknown>
+    : detail;
   const tasks = rowsFrom((record.tasks as Record<string, unknown> | undefined)?.data ?? record.tasks);
   const agentActivity = Array.isArray(record.agent_activity) ? record.agent_activity : [];
   const workflowGraph = record.workflow_compute_graph && typeof record.workflow_compute_graph === "object"
@@ -243,8 +250,8 @@ async function memoryEventsContain(page: Page, goalId: string, key: string): Pro
 }
 
 async function runnerCount(page: Page): Promise<number> {
-  const response = await apiJson(page, "/api/runners");
-  return rowsFrom((response as Record<string, unknown>).data ?? response).length;
+  const response = await apiJson(page, "/api/operator/workspace");
+  return rowsFrom((response as Record<string, unknown>).runners).length;
 }
 
 async function eventSourcesContain(page: Page, sourceId: string): Promise<boolean> {

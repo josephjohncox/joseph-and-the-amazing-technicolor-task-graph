@@ -1,0 +1,417 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OperatorAction",
+  "type": "object",
+  "properties": {
+    "action_id": {
+      "type": "string"
+    },
+    "allowed_resolutions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OperatorActionResolutionKind"
+      }
+    },
+    "approval": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "goal_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "$ref": "#/$defs/OperatorActionKind"
+    },
+    "payload_json": {
+      "default": null
+    },
+    "question": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "thunk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DelayedComputeThunk"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_id",
+    "kind",
+    "goal_id",
+    "title",
+    "question",
+    "status"
+  ],
+  "$defs": {
+    "ApprovalRecord": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payload_json": {
+          "default": null
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requested_action": {
+          "type": "string"
+        },
+        "risk": {
+          "$ref": "#/$defs/ApprovalRisk"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "approval_id",
+        "goal_id",
+        "status",
+        "risk",
+        "reason",
+        "requested_action"
+      ]
+    },
+    "ApprovalRisk": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "cancelled"
+      ]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "patch",
+        "test_result",
+        "report",
+        "pull_request",
+        "workspace_snapshot",
+        "checkpoint",
+        "git_branch",
+        "git_commit",
+        "git_worktree",
+        "object_storage_object",
+        "object_storage_prefix",
+        "artifact_manifest",
+        "schema",
+        "other"
+      ]
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "uri",
+        "description"
+      ]
+    },
+    "ContinuationBoundary": {
+      "type": "string",
+      "enum": [
+        "goal_workflow",
+        "task_dispatch",
+        "approval_gate",
+        "event_wait",
+        "external_callback"
+      ]
+    },
+    "ContinuationRef": {
+      "type": "object",
+      "properties": {
+        "boundary": {
+          "$ref": "#/$defs/ContinuationBoundary"
+        },
+        "continuation_id": {
+          "type": "string"
+        },
+        "resume_actions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ContinuationResumeAction"
+          }
+        },
+        "state_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "continuation_id",
+        "boundary",
+        "state_ref"
+      ]
+    },
+    "ContinuationResumeAction": {
+      "type": "string",
+      "enum": [
+        "mark_runnable",
+        "apply_feedback",
+        "apply_approval",
+        "inject_task",
+        "replan",
+        "cancel"
+      ]
+    },
+    "DelayedComputeThunk": {
+      "description": "Coordinator-owned placeholder for paused work.\n\nA delayed compute thunk captures the suspended continuation when a task needs\nhuman input, external events, time, resources, or another bounded signal\nbefore computation can continue. It is deliberately state, not a sleeping\nworker loop.",
+      "type": "object",
+      "properties": {
+        "continuation": {
+          "$ref": "#/$defs/ContinuationRef"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/DelayedComputeThunkKind"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requested_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resume_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelayedComputeThunkResumeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resumed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/DelayedComputeThunkStatus"
+        },
+        "task_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "timeout_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "wait_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "goal_id",
+        "kind",
+        "status",
+        "reason",
+        "continuation",
+        "created_at"
+      ]
+    },
+    "DelayedComputeThunkKind": {
+      "type": "string",
+      "enum": [
+        "human_input",
+        "approval",
+        "external_event",
+        "timer",
+        "resource_availability",
+        "model_availability",
+        "webhook_callback"
+      ]
+    },
+    "DelayedComputeThunkResumeRecord": {
+      "type": "object",
+      "properties": {
+        "artifact_refs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          }
+        },
+        "responder": {
+          "type": "string"
+        },
+        "response_summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "responder",
+        "response_summary"
+      ]
+    },
+    "DelayedComputeThunkStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "resumed",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "OperatorActionKind": {
+      "type": "string",
+      "enum": [
+        "accept_draft",
+        "resume_thunk",
+        "resolve_approval",
+        "create_thunk",
+        "restart_task",
+        "replan_task",
+        "select_branch",
+        "cancel_goal"
+      ]
+    },
+    "OperatorActionResolutionKind": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "answer",
+        "add_context",
+        "approve",
+        "reject",
+        "retry",
+        "replan",
+        "create_thunk",
+        "cancel_goal",
+        "accept_draft",
+        "discard_draft",
+        "select_branch"
+      ]
+    },
+    "WaitRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WaitRefKind"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "WaitRefKind": {
+      "type": "string",
+      "enum": [
+        "human_thread",
+        "notification_outbox",
+        "sqs_message",
+        "webhook_correlation",
+        "calendar_event",
+        "durable_timer",
+        "runner_capacity",
+        "model_route"
+      ]
+    }
+  }
+}

@@ -127,6 +127,7 @@
       "failed": 0
     },
     "required_events": ["goal_submitted", "runner_dispatch_recorded", "task_blocked", "goal_cancelled", "task_cancelled", "queue_history_recorded"],
+    "forbidden_events": ["dispatch_left_in_queue", "task_left_blocked", "live_provider_called"],
     "required_artifacts": ["artifact://scenarios/bootstrap_cancelled_queue_history/queue-history.json"],
     "cancellation": {
       "reason": "Operator stopped the bootstrap goal before retry.",
@@ -140,6 +141,26 @@
       "assertion": "goal.status == cancelled && queue history includes dispatch, cancellation, and drain records",
       "expected": true,
       "required": true
+    },
+    {
+      "id": "cancelled_frontier_drained",
+      "kind": "terminal_frontier",
+      "assertion": "frontier_empty == true && no blocked task remains after cancellation",
+      "expected": true,
+      "required": true
+    },
+    {
+      "id": "cancelled_operator_cleanup_visible",
+      "kind": "operator_flow",
+      "assertion": "cancel_cleanup",
+      "expected": true,
+      "required": true
     }
-  ]
+  ],
+  "usability_coherence": {
+    "required_visible_terms": ["goal", "subgoal", "task", "thunk", "fork", "review", "evidence", "action", "completed"],
+    "blocked_operator_action_required": true,
+    "completed_evidence_required": true,
+    "completed_satisfaction_rationale_required": true
+  }
 }

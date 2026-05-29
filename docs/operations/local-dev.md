@@ -139,7 +139,7 @@ The Rust service image builds all `coat` Rust binaries once in a shared builder 
 Restate ingress is exposed on `http://localhost:8080`.
 When using the Restate Cloud profile, cloud ingress is exposed through the tunnel on `http://localhost:18080` by default.
 The coordinator service listens internally on `http://coordinator:9080`.
-The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Accepting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up. With a goal selected, the SPA opens `/api/goals/<goal_id>/stream` and keeps the visible graph, action queue, and control state updated from backend snapshots. Workflow actions such as approve, resume, restart, steer, vote, branch, and cancel return an action envelope with the upstream Restate result plus the active state read after the mutation.
+The control gateway and SPA listen on `http://localhost:9090`. The SPA has one current-goal selector in the top bar. Chat, Task Graph, Flow Control, Memory, and Human Queue inherit that selection, so normal use should not require pasting raw goal UUIDs into individual panels. Accepting a chat-authored goal draft selects the returned goal immediately while the goal-store projection catches up. With a goal selected, the SPA opens `/api/operator/stream?goal_id=<goal_id>` and keeps the visible graph, action queue, worker runs, evidence, and control state updated from backend projections. Workflow actions such as approve, resume, restart, steer, vote, branch, and cancel return an action envelope with the upstream Restate result plus the active state read after the mutation.
 
 For a browser proof against real local services, run:
 
@@ -178,9 +178,8 @@ target/debug/coat scenario run --file scenarios/e2e/goal_lifecycle_basic.json --
 target/debug/coat scenario report --run-dir target/coat-scenarios/goal_lifecycle_basic
 ```
 
-Use the bootstrap scenario shell script when reviewers need one command that
-prepares the deterministic local stub stack and runs the checked-in bootstrap
-scenario specs:
+Use the scenario E2E shell script when reviewers need one command that prepares
+the deterministic local stub stack and runs the checked-in scenario specs:
 
 ```sh
 sh scripts/coat-scenario-e2e.sh
@@ -189,22 +188,117 @@ sh scripts/coat-scenario-e2e.sh
 The script writes a stub provider env file under
 `target/coat-scenarios/latest/stack`, runs local preflight and resolved Compose
 config checks, starts or reuses the local stack, waits for health endpoints,
-and runs `scripts/coat-scenarios/*.json` through `coat scenario run`. Evidence
+and runs `scenarios/e2e/*.json` through `coat scenario run`. Evidence
 is written under `target/coat-scenarios/latest` and the scenario-specific
 output directories. Set `COAT_SCENARIO_E2E_STACK_ONLY=1` to bootstrap and
 health-check the stack without running specs, `COAT_SCENARIO_E2E_STACK=preflight`
 to stop after config/preflight validation, or `COAT_SCENARIO_E2E_KEEP_STACK=0`
 to tear the stack down after the run.
 
+Use the system exercise wrapper when you want one top-level command for the
+common local proof paths. The wrapper composes the existing reset, bootstrap,
+scenario, event, runner, SQS, and UI helpers; it does not delete Docker volumes
+or mutate state outside those helpers. Every run writes a summary to
+`target/coat-scenarios/latest/system-exercise.json` and per-step stdout/stderr
+logs under `target/coat-scenarios/latest/system-exercise/<timestamp>/`.
+
+```sh
+make exercise-quick
+make exercise-demo
+make exercise-e2e
+make exercise-ui
+make exercise-full
+sh scripts/coat-exercise-system.sh --mode quick --dry-run
+```
+
+Modes:
+
+- `quick`: reset syntax/dry-run smoke, deterministic bootstrap fixtures,
+  runner-registry smoke, and event-gateway smoke.
+- `demo`: deterministic local stub stack plus live/demo goal bootstrapping for
+  SPA/TUI navigation.
+- `e2e`: backend scenario suite plus task-graph validation.
+- `ui`: browser E2E against the deterministic local stub stack.
+- `full`: quick, e2e, ui, demo, LocalStack SQS, and Compose runner smokes.
+
+Use the runtime live scaffold when you need CI-safe evidence that the first live
+proofs are still explicitly gated and do not silently run on a machine without
+credentials, Docker, or a cluster:
+
+```sh
+make runtime-live-scaffold
+cat target/coat-runtime-live-scaffold/runtime-live-scaffold.json
+```
+
+With no live gates set, the scaffold records skipped Restate restart/resume,
+Codex App Server, and kind/k3d executor proofs. It never starts Docker, Restate,
+Codex App Server, kind, k3d, kubectl, or a Kubernetes workload. If an operator
+sets a live gate, missing or unsafe configuration becomes a failed readiness
+record instead of an implicit skip. The scaffold also records
+`live_proof_executed=false` so its CI artifact cannot be mistaken for real live
+proof evidence.
+
+Live readiness gates:
+
+- `COAT_RESTATE_RESTART_RESUME_TEST=1`: checks the pinned
+  `COAT_RESTATE_TESTCONTAINERS_IMAGE`, Docker CLI presence, and coordinator
+  binary path. When the gates are ready, the ignored Rust RuntimeVerifier test
+  starts Restate, registers the coordinator, restarts both services, and proves
+  the durable workflow state survives.
+- `COAT_CODEX_APP_SERVER_LIVE_PROOF=1`: requires
+  `CODEX_RUNNER_MODE=live`, `CODEX_AUTH_MODE=app_server`,
+  `CODEX_APP_SERVER_URL`, and an existing isolated
+  `CODEX_APP_SERVER_CWD` or `CODEX_WORKSPACE_DIR`. When the gates are ready,
+  the scaffold builds `sidecars/codex-runner-ts`, calls `/verify`, runs the
+  typed `/run-task` contract against the App Server, and writes `verify.json`,
+  `run-task-result.json`, and `summary.json` under the scaffold proof
+  directory.
+- `COAT_KUBERNETES_EXECUTOR_LIVE_PROOF=1`: requires
+  `SANDBOX_ENABLE_KUBERNETES_PROVISIONER=true`, `kubectl`, kind or k3d, a
+  `server_dry_run` or `apply` proof mode, and coordinator evidence refs for the
+  capacity decision, template, and result ingestion target.
+
+Use the live bootstrap helper when you want real coordinator-created demo goals
+visible in the local operator UI. It submits fixed demo goals through
+`coat goal submit`, creates a durable human-input thunk with
+`coat goal thunk create`, and then records the resulting goal-store projections.
+This requires the local stack to be running:
+
+```sh
+coat deploy local up --allow-stub-runners
+make bootstrap-goals
+```
+
+The live bootstrap leaves three navigable goals in the SPA and TUI:
+
+- `00000000-0000-4000-8000-000000004004`: completed executor lifecycle.
+- `00000000-0000-4000-8000-000000004002`: pending approval action.
+- `00000000-0000-4000-8000-000000004003`: pending human prompt thunk.
+
+Use `make bootstrap-scenarios` for deterministic scenario evidence without
+touching the goal-store. Use fixture seeding only when a test needs direct
+read-model projections instead of real coordinator execution:
+
+```sh
+make bootstrap-scenarios
+make bootstrap-fixture-goals
+coat scenario seed --file scenarios/e2e/bootstrap_basic.json
+```
+
+Fixture scenario seeding is a test/read-model path. It is useful for local UI
+fixtures, but it does not replace Restate-owned workflow execution for real
+goals.
+
 The PR gate runs every checked-in spec under `scenarios/e2e` with
 `coat scenario run --output-dir target/coat-scenarios`. The deterministic E2E
 scenario uses local services, stub runner behavior, fixed seeds, bounded timeouts,
 and explicit fixtures. It should not require live model credentials, provider
 auth, real web search, or external SaaS. When the run drives the browser, it
-must assert the same goal-selection model operators use: the SPA top-bar
-current goal is the source for Chat, Task Graph, Flow Control, Memory, and
-Human Queue, and the TUI sends the selected goal through control-gateway
-chat/session APIs instead of asking the operator to retype raw UUIDs.
+must assert the same plan-first selection model operators use: the SPA top-bar
+current plan is the chat/workflow workspace, the selected goal is nested focus
+for Task Graph, Flow Control, Memory, and Human Queue, and the TUI sends selected
+plan plus optional goal context through control-gateway chat/session APIs instead
+of asking the operator to retype raw UUIDs.
 Scenario checks for blocked, failed, waiting, approval, or budget-exhausted
 states must also assert the progress invariant: human waits have delayed
 compute thunks with typed prompts and continuation refs, and blocked work
@@ -228,6 +322,7 @@ first when changing paths or Compose options:
 
 ```sh
 make reset-help
+make reset-smoke
 sh scripts/coat-local-reset.sh --help
 ```
 
@@ -243,8 +338,8 @@ sh scripts/coat-local-reset.sh --mode scenario --dry-run
 
 Add bootstrap evidence cleanup only when those generated bootstrap runs should
 also be removed. This clears known run directories under
-`target/coat-scenarios/bootstrap` and the compatibility output directory
-`target/coat-bootstrap-scenarios` when present:
+`target/coat-scenarios/bootstrap` for checked-in scenario IDs, plus the optional
+extra output directory `target/coat-bootstrap-scenarios` when present:
 
 ```sh
 make bootstrap-reset-dry-run
@@ -646,7 +741,7 @@ with a journaled notifier outbox entry, while the notifier unit tests cover
 local acknowledgement mutation, retry scheduling, journal replay, and DLQ state
 transitions.
 
-`coat-goal-store` listens on `http://localhost:9088` in Compose. It stores queryable goal, task, event, approval, and artifact projections in an append-only JSONL journal at `/data/goal-store.jsonl` by default. Restate remains authoritative; the goal store is for local operator inspection and future dashboards.
+`coat-goal-store` listens on `http://localhost:9088` in Compose. It stores queryable goal, task, event, operator-event, approval, and artifact projections in an append-only JSONL journal at `/data/goal-store.jsonl` by default. Restate remains authoritative; the goal store is for local operator inspection and future dashboards.
 
 Inspect projections with:
 
@@ -655,6 +750,7 @@ coat store policy
 coat store goal --goal-id <goal-id>
 coat store tasks --goal-id <goal-id>
 coat store events --goal-id <goal-id>
+coat store operator-events --goal-id <goal-id> --limit 25
 coat store artifacts --goal-id <goal-id>
 coat store goal-approvals --goal-id <goal-id>
 coat store event-source-approvals --limit 25
@@ -666,16 +762,16 @@ The web gateway uses the goal-store list endpoints for dashboard views:
 ```sh
 curl -sS http://localhost:9090/api/plans
 curl -sS http://localhost:9090/api/plans/<plan-id>/continuity
-curl -sS http://localhost:9090/api/follow-ups
-curl -sS http://localhost:9090/api/goals
-curl -sS http://localhost:9090/api/agents
-curl -sS http://localhost:9090/api/approvals
+curl -sS http://localhost:9090/api/operator/workspace
+curl -sS http://localhost:9090/api/operator/goals
+curl -sS http://localhost:9090/api/operator/actions
 ```
 
 Per-goal views combine Restate workflow handlers with goal-store projection data so operators can inspect current task prompts from `TaskRecord.payload_json.prompt`:
 
 ```sh
-curl -sS http://localhost:9090/api/goals/<goal-id>
+curl -sS http://localhost:9090/api/operator/goals/<goal-id>
+curl -sS http://localhost:9090/api/operator/goals/<goal-id>/agent-context
 ```
 
 The MCP dashboard surface is available at `POST /mcp`:
@@ -690,9 +786,9 @@ Set `COAT_CONTROL_GATEWAY_TOKEN` and `COAT_CONTROL_MCP_TOKEN` when exposing the 
 
 The Chat tab is always routed through the control gateway backend. The browser calls `/api/chat`; it does not call Ollama, vLLM, OpenAI, or other model providers directly.
 
-Chat inherits the top-bar current goal. With a goal selected, chat history and requests use the `goal:<goal_id>` session and send that goal id as context; without one, chat uses the operator workspace session.
+Chat inherits the top-bar current plan. With a plan selected, chat history and requests use the `plan:<plan_id>` session and send that plan id as context; a selected goal is sent as nested focus. Without a durable plan, chat uses the workspace intake session.
 
-Use the chat mode switcher for the three standard authoring paths: Plan, Goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
+Use the chat mode switcher for the standard authoring paths: Ask, Draft plan, Draft goal, and Search. Search mode drafts a backend-routed search request and, when needed, a coordinator-owned research task proposal. It does not claim that memory, web, or reference search already ran unless a backend tool returned evidence.
 
 While a chat request is running, open **Chat activity** in the SPA to inspect the operational trace: request mode, session, selected goal, backend resolution, model/stub stage, journaling status, and errors. This is an execution trace, not hidden model reasoning.
 

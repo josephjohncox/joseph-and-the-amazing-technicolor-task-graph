@@ -6,7 +6,16 @@
  *
  * Architecture reference: docs/design-docs/110-control-gateway-spa.md
  */
-import type { ChatMessage, ChatResponse, ChatRunTrace, GoalSnapshot, JsonRecord, Overview } from "./types";
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatRunTrace,
+  JsonRecord,
+  OperatorGoalDetail,
+  OperatorWorkspaceSnapshot,
+  PlanDetailResponse,
+  PlanListResponse,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -46,40 +55,50 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T;
 }
 
-export function overview(): Promise<Overview> {
-  return api<Overview>("/api/overview");
+export function operatorWorkspace(goalId?: string): Promise<OperatorWorkspaceSnapshot> {
+  const suffix = goalId ? `?goal_id=${encodeURIComponent(goalId)}` : "";
+  return api<OperatorWorkspaceSnapshot>(`/api/operator/workspace${suffix}`);
 }
 
-export function goals(): Promise<unknown> {
-  return api("/api/goals?limit=100");
+export function operatorGoals(): Promise<unknown> {
+  return api("/api/operator/goals?limit=100");
 }
 
-export function goalSnapshot(goalId: string): Promise<GoalSnapshot> {
-  return api<GoalSnapshot>(`/api/goals/${encodeURIComponent(goalId)}`);
+export function operatorActions(goalId?: string): Promise<unknown> {
+  const suffix = goalId ? `?goal_id=${encodeURIComponent(goalId)}` : "";
+  return api(`/api/operator/actions${suffix}`);
 }
 
-export function plans(): Promise<unknown> {
-  return api("/api/plans?limit=100");
+export function resolveOperatorAction(actionId: string, body: JsonRecord): Promise<unknown> {
+  return api(`/api/operator/actions/${encodeURIComponent(actionId)}/resolve`, jsonPost(body));
 }
 
-export function approvals(): Promise<unknown> {
-  return api("/api/approvals?limit=100");
+export function submitOperatorGoal(body: JsonRecord): Promise<unknown> {
+  return api("/api/operator/goals", jsonPost(body));
 }
 
-export function runners(): Promise<unknown> {
-  return api("/api/runners");
+export function operatorGoalDetail(goalId: string): Promise<OperatorGoalDetail> {
+  return api<OperatorGoalDetail>(`/api/operator/goals/${encodeURIComponent(goalId)}`);
 }
 
-export function threads(): Promise<unknown> {
-  return api("/api/human/threads");
+export function plans(): Promise<PlanListResponse> {
+  return api<PlanListResponse>("/api/plans?limit=100");
 }
 
-export function followUps(): Promise<unknown> {
-  return api("/api/follow-ups");
+export function planDetail(planId: string): Promise<PlanDetailResponse> {
+  return api<PlanDetailResponse>(`/api/plans/${encodeURIComponent(planId)}`);
 }
 
-export function draftFollowUpPlan(body: JsonRecord): Promise<{ mode?: string; prompt?: string; item?: JsonRecord }> {
-  return api("/api/follow-ups/draft-plan", jsonPost(body));
+export function planActions(planId: string): Promise<unknown> {
+  return api(`/api/plans/${encodeURIComponent(planId)}/actions`);
+}
+
+export function resolvePlanAction(planId: string, actionId: string, body: JsonRecord): Promise<unknown> {
+  return api(`/api/plans/${encodeURIComponent(planId)}/actions/${encodeURIComponent(actionId)}/resolve`, jsonPost(body));
+}
+
+export function acceptPlanDraft(draftId: string, body: JsonRecord): Promise<unknown> {
+  return api(`/api/plans/drafts/${encodeURIComponent(draftId)}/accept`, jsonPost(body));
 }
 
 export function memorySearch(body: JsonRecord): Promise<unknown> {
@@ -106,8 +125,15 @@ export function memoryEvents(goalId: string): Promise<unknown> {
   return api(`/api/memory/events/${encodeURIComponent(goalId)}`);
 }
 
-export function chat(sessionId: string, mode: string, goalId: string, prompt: string, runId?: string): Promise<ChatResponse> {
-  return api<ChatResponse>("/api/chat", jsonPost({ session_id: sessionId, run_id: runId, mode, goal_id: goalId || undefined, prompt }));
+export function chat(sessionId: string, mode: string, goalId: string, prompt: string, runId?: string, planId?: string): Promise<ChatResponse> {
+  return api<ChatResponse>("/api/chat", jsonPost({
+    session_id: sessionId,
+    run_id: runId,
+    mode,
+    plan_id: planId || undefined,
+    goal_id: goalId || undefined,
+    prompt,
+  }));
 }
 
 export function chatSession(sessionId: string): Promise<{ session_id: string; messages: ChatMessage[] }> {
@@ -116,10 +142,6 @@ export function chatSession(sessionId: string): Promise<{ session_id: string; me
 
 export function chatRun(runId: string): Promise<ChatRunTrace> {
   return api<ChatRunTrace>(`/api/chat/runs/${encodeURIComponent(runId)}`);
-}
-
-export function submitGoal(body: JsonRecord): Promise<unknown> {
-  return api("/api/goals/submit", jsonPost(body));
 }
 
 export function steer(goalId: string, body: JsonRecord): Promise<unknown> {
@@ -167,7 +189,8 @@ export function mechanismBallot(goalId: string, body: JsonRecord): Promise<unkno
 }
 
 export function workflowAction(goalId: string, handler: string, body: unknown): Promise<unknown> {
-  return api(`/api/goals/${encodeURIComponent(goalId)}/${encodeURIComponent(handler)}`, jsonPost(body));
+  const operatorHandler = handler === "select_branch" ? "select-branch" : handler;
+  return api(`/api/operator/goals/${encodeURIComponent(goalId)}/${encodeURIComponent(operatorHandler)}`, jsonPost(body));
 }
 
 function jsonPost(body: unknown): RequestInit {
@@ -191,7 +214,7 @@ export function rowsFrom(value: unknown): JsonRecord[] {
     return value.filter(isRecord);
   }
   if (isRecord(value)) {
-    for (const key of ["goals", "tasks", "plans", "approvals", "threads", "items", "records", "events", "event_sources", "sources", "triggers"]) {
+    for (const key of ["goals", "tasks", "actions", "plans", "approvals", "threads", "items", "records", "events", "event_sources", "sources", "triggers"]) {
       const candidate = value[key];
       if (Array.isArray(candidate)) {
         return candidate.filter(isRecord);

@@ -99,10 +99,10 @@ The workflow builds release binaries for:
 - `aarch64-unknown-linux-gnu`;
 - `aarch64-apple-darwin`.
 
-Linux release binaries are built on native GitHub-hosted runners instead of cross-compiling ARM from x64: x64 Linux uses `ubuntu-22.04`, ARM Linux uses `ubuntu-22.04-arm`, and macOS ARM uses `macos-latest`. The main CI workflow also has a runner-target compatibility job across `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest` so runner-label regressions are caught before release.
+Linux release binaries are built on native GitHub-hosted runners instead of cross-compiling ARM from x64: x64 Linux uses `ubuntu-22.04`, ARM Linux uses `ubuntu-22.04-arm`, and macOS ARM uses `macos-latest`. The main CI workflow also has a lightweight runner-target compatibility job across `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-22.04`, `ubuntu-24.04-arm`, `ubuntu-22.04-arm`, and `macos-latest`; it checks hosted-runner OS/architecture shape only, so runner-label regressions are caught before release without multiplying product compile failures across every hosted label.
 
 It uploads tarballs plus SHA-256 files to the GitHub Release. After the binary build matrix passes, the same workflow publishes multi-arch service images to GHCR under `ghcr.io/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/...` with `vX.Y.Z`, `X.Y.Z`, and `latest` tags.
-Release binary jobs use Rust dependency caches plus `sccache` compiler-output caching. GHCR image publishing uses GitHub Actions BuildKit caches and registry-backed cache images by default so the large Rust and sidecar layers can survive normal Actions cache churn. Rust service image tags are produced from one shared service image build, while the toolbox image remains a separate target in the same visible job; Node sidecar images fan out in parallel jobs so a slow or failed sidecar does not hide behind one opaque serial publish step. Set `BUILDX_CACHE=false` to disable GitHub Actions cache and `BUILDX_REGISTRY_CACHE=false` to disable GHCR-backed cache when manually debugging the image script without remote cache state.
+Release binary jobs use Rust dependency caches plus `sccache` compiler-output caching. CI TypeScript builds pin Node `22.12.0`, the minimum version accepted by the Makefile validation guard for the Vite control surface and sidecars. GHCR image publishing uses GitHub Actions BuildKit caches and registry-backed cache images by default so the large Rust and sidecar layers can survive normal Actions cache churn. Rust service image tags are produced from one shared service image build, while the toolbox image remains a separate target in the same visible job; Node sidecar images fan out in parallel jobs so a slow or failed sidecar does not hide behind one opaque serial publish step. Set `BUILDX_CACHE=false` to disable GitHub Actions cache and `BUILDX_REGISTRY_CACHE=false` to disable GHCR-backed cache when manually debugging the image script without remote cache state.
 Rust service images are built from the `service` target in
 `infra/containers/rust-service.Dockerfile`. The released service image contains
 all Rust service binaries; deployments select the process with
@@ -215,7 +215,7 @@ local Rust builds.
 ## Helm Chart Release
 
 Helm chart releases are handled by `.github/workflows/release-helm.yml`.
-When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/jattg/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`.
+When the workflow runs from a `chart-v*` tag, it packages the chart with the `appVersion` already committed in `infra/helm/jattg/Chart.yaml`; `workflow_dispatch` can still override it with `app_version`. The workflow deliberately omits `--app-version` when that input is blank so the packaging helper keeps the chart metadata rather than replacing it with an empty value.
 
 Trigger it manually only when the release was already cut locally, and pass the exact chart tag or ref as the workflow `ref` input. Manual dispatches must package from the intended chart release tag, not from the selected branch tip.
 
@@ -248,16 +248,21 @@ selection, rollout behavior, and rollback mechanics.
 
 The chart release workflow downloads the just-published `jattg` chart asset,
 verifies its checksum, runs `coat deploy chart lint`, and renders a smoke
-manifest. Operators can repeat the local no-cluster smoke with one command; the
-target builds `target/debug/coat` first and uses that binary for chart lint,
-template, and dry-run upgrade checks:
+manifest. If no `APP_VERSION` override is supplied, the workflow and local smoke
+read `appVersion` from the packaged chart before falling back to the chart
+version. Operators can repeat the local no-cluster smoke with one command; the
+target builds `target/debug/coat` first and uses that binary for checksum,
+chart lint, and template checks:
 
 ```sh
 make release-helm-smoke CHART_VERSION=0.2.0 APP_VERSION=0.2.0
 ```
 
-Set `HELM_SMOKE_APPLY=true` only when the active Kubernetes context points at a
-disposable namespace or a cluster explicitly reserved for release validation.
+Set `HELM=/path/to/helm` when using a pinned Helm binary that is not on `PATH`.
+Set `HELM_SMOKE_UPGRADE_DRY_RUN=true` or `HELM_SMOKE_APPLY=true` only when the
+active Kubernetes context points at a disposable namespace or a cluster
+explicitly reserved for release validation. The default local smoke does not
+contact a Kubernetes API.
 
 ```sh
 CHART_VERSION=0.2.0
@@ -273,6 +278,8 @@ coat deploy chart template \
   --set "global.imageTag=${APP_VERSION}" \
   --output /tmp/jattg-chart-release-smoke.yaml
 
+# Optional cluster-capable dry-run. Skip this on machines without a configured
+# disposable Kubernetes context.
 coat deploy chart upgrade \
   --release "${RELEASE}" \
   --namespace "${NAMESPACE}" \
@@ -328,6 +335,26 @@ notes before marking the `ReleaseHardening` follow-up done. Include:
   a prior revision existed;
 - any skipped proof with the exact reason, such as no published release yet, no
   disposable cluster, or no rollback revision.
+
+### v0.0.3 Published Smoke
+
+- Binary asset: `jattg-binaries-0.0.3-aarch64-unknown-linux-gnu.tar.gz`
+  from
+  `https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v0.0.3`.
+  Command:
+  `VERSION=0.0.3 RELEASE_URL=https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/v0.0.3 make release-binary-smoke`.
+  Result: checksum verified, archive extracted, manifest parsed, released
+  binaries were executable, and the released `coat` CLI printed help, guide,
+  and the matching release plan.
+- Helm chart asset: `jattg-0.0.3.tgz` from
+  `https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.0.3/jattg-0.0.3.tgz`.
+  Command:
+  `CHART_VERSION=0.0.3 APP_VERSION=0.0.3 HELM=target/tools/helm-v3.19.5/linux-arm64/helm CHART_URL=https://github.com/josephjohncox/joseph-and-the-amazing-technicolor-task-graph/releases/download/chart-v0.0.3/jattg-0.0.3.tgz make release-helm-smoke`.
+  Result: checksum verified, chart lint passed with only the optional icon
+  recommendation, and template rendering produced a non-empty manifest.
+- Cluster apply status: not run. The default smoke intentionally avoids
+  Kubernetes API contact; use `HELM_SMOKE_UPGRADE_DRY_RUN=true` or
+  `HELM_SMOKE_APPLY=true` only with a disposable cluster context.
 
 ## Guardrails
 

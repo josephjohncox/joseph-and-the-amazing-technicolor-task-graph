@@ -1,0 +1,16 @@
+{
+  "kind": "human_input",
+  "reason": "The bootstrap is waiting for an operator decision so action handling can be tested from the SPA, TUI, CLI, and notifications.",
+  "requested_input": "Choose whether to continue the demo with local stub execution, add context for the next task, or replan the work before continuing.",
+  "wait_ref": {
+    "kind": "human_thread",
+    "reference": "thread://operator/bootstrap-human-prompt"
+  },
+  "continuation": {
+    "continuation_id": "bootstrap-human-prompt/continue",
+    "boundary": "task_dispatch",
+    "state_ref": "goal/00000000-0000-4000-8000-000000004003",
+    "resume_actions": ["apply_feedback", "mark_runnable", "replan"]
+  },
+  "timeout_seconds": 3600
+}
